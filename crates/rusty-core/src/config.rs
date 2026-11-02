@@ -49,6 +49,19 @@ fn default_gc_grace_seconds() -> u64 {
     86_400
 }
 
+/// Read at most `max` bytes from `r`. One extra byte is requested so that input longer than
+/// `max` is detected and rejected (`Invalid`, "too large") instead of silently truncated.
+fn read_bounded<R: Read>(r: R, max: usize) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    r.take(max as u64 + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| Error::storage_with("cannot read configuration file", e))?;
+    if buf.len() > max {
+        return Err(Error::Invalid("configuration file is too large".into()));
+    }
+    Ok(buf)
+}
+
 impl StartupConfig {
     /// Parse and validate. Syntax and schema errors are `Invalid` without the offending text.
     pub fn from_toml_str(s: &str) -> Result<StartupConfig> {
@@ -82,14 +95,8 @@ impl StartupConfig {
             return Err(Error::Invalid("configuration file is not a small regular file".into()));
         }
         let file = File::from(fd);
-        // Bounded even if the file grows after the check.
-        let mut buf = Vec::new();
-        file.take(MAX_CONFIG_FILE_BYTES + 1)
-            .read_to_end(&mut buf)
-            .map_err(|e| Error::storage_with("cannot read configuration file", e))?;
-        if buf.len() as u64 > MAX_CONFIG_FILE_BYTES {
-            return Err(Error::Invalid("configuration file is too large".into()));
-        }
+        // Bounded even if the file grows after the fstat check.
+        let buf = read_bounded(file, MAX_CONFIG_FILE_BYTES as usize)?;
         let text = String::from_utf8(buf)
             .map_err(|_| Error::Invalid("configuration file is not UTF-8".into()))?;
         Self::from_toml_str(&text)
@@ -109,5 +116,45 @@ impl StartupConfig {
             return Err(Error::Invalid("gc_grace_seconds must be at least 3600".into()));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{self, Read};
+
+    fn is_invalid<T: std::fmt::Debug>(r: Result<T>) -> bool {
+        matches!(r, Err(Error::Invalid(_)))
+    }
+
+    #[test]
+    fn read_bounded_rejects_one_over_the_limit() {
+        let max = MAX_CONFIG_FILE_BYTES as usize;
+        let r = read_bounded(io::repeat(b'#').take(max as u64 + 1), max);
+        match r {
+            Err(Error::Invalid(m)) => assert!(m.contains("too large"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+        // An endless reader is still cut off.
+        assert!(is_invalid(read_bounded(io::repeat(b'#'), max)));
+    }
+
+    #[test]
+    fn read_bounded_accepts_exact_limit_and_empty() {
+        let max = MAX_CONFIG_FILE_BYTES as usize;
+        assert_eq!(read_bounded(io::repeat(b'#').take(max as u64), max).unwrap().len(), max);
+        assert!(read_bounded(io::empty(), max).unwrap().is_empty());
+    }
+
+    #[test]
+    fn read_bounded_propagates_io_errors() {
+        struct Bad;
+        impl Read for Bad {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::other("boom"))
+            }
+        }
+        assert!(matches!(read_bounded(Bad, 10), Err(Error::Storage { .. })));
     }
 }

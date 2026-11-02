@@ -500,36 +500,115 @@ async fn first_custom_folder_uid_validity_exceeds_system_folders() {
     assert!(system.iter().all(|s| v > *s), "{v} vs {system:?}");
 }
 
+/// Run `local` through every entry path; returns true if ALL accept, false if ALL reject
+/// with Invalid. Panics on mixed results or other errors.
+async fn all_paths(local: &str) -> bool {
+    use rusty_directory::parse_address;
+    // A fresh directory per path so a successful path cannot cause a Conflict in the next.
+    async fn fresh() -> (Directory, rusty_core::DomainId, rusty_core::AccountId, rusty_core::ListId) {
+        let d = dir().await;
+        let dom = d.create_domain("example.com").await.unwrap();
+        let owner = d.create_account("owner", dom, None, None).await.unwrap();
+        let list = d.create_list("team", dom).await.unwrap();
+        (d, dom, owner, list)
+    }
+    let (d, dom, _, _) = fresh().await;
+    let r1 = d.create_account(local, dom, None, None).await.map(|_| ());
+    let (d, dom, _, _) = fresh().await;
+    let r2 = d.create_list(local, dom).await.map(|_| ());
+    let (d, dom, owner, _) = fresh().await;
+    let r3 = d.add_alias(local, dom, owner).await;
+    let (d, _, _, list) = fresh().await;
+    let r4 = d.add_list_member(list, None, Some(&format!("{local}@other.org"))).await;
+    let r = [parse_address(&format!("{local}@example.com")).map(|_| ()), r1, r2, r3, r4];
+    let ok = r.iter().filter(|x| x.is_ok()).count();
+    let inv = r.iter().filter(|x| matches!(x, Err(Error::Invalid(_)))).count();
+    match (ok, inv) {
+        (5, 0) => true,
+        (0, 5) => false,
+        _ => panic!("{local:?}: mixed results {r:?}"),
+    }
+}
+
 #[tokio::test]
 async fn rejects_zero_width_and_bidi_override_in_local_part() {
-    use rusty_directory::parse_address;
-    let d = dir().await;
-    let dom = d.create_domain("example.com").await.unwrap();
-    // Cf: zero width space/joiners, LRM/RLM, bidi embeddings/overrides/isolates, BOM, soft hyphen;
-    // Co: private use; Cn: unassigned.
-    let bad_chars = [
-        "\u{200B}", "\u{200C}", "\u{200D}", "\u{200E}", "\u{200F}", "\u{202A}", "\u{202B}",
-        "\u{202C}", "\u{202D}", "\u{202E}", "\u{2066}", "\u{2067}", "\u{2068}", "\u{2069}",
-        "\u{FEFF}", "\u{00AD}", "\u{E000}", "\u{F8FF}", "\u{10FFFD}", "\u{0378}", "\u{FFFF}",
+    // Positive controls next to the negatives.
+    for good in ["josé.müller", "straße", "ørsted", "łukasz", "nguyễn.văn.an", "ǆ", "ı", "a1_b-c+d"] {
+        assert!(all_paths(good).await, "{good:?}");
+    }
+    let invisible = [
+        '\u{200B}', '\u{200C}', '\u{200D}', '\u{200E}', '\u{202A}', '\u{202E}', '\u{2066}',
+        '\u{2069}', '\u{FEFF}', '\u{00AD}', '\u{034F}', '\u{FE0F}', '\u{E0100}', '\u{3164}',
+        '\u{115F}', '\u{1160}', '\u{FFA0}', '\u{2800}', '\u{E000}', '\u{0378}', '\u{00A0}',
+        '\u{0000}', '\u{2028}',
     ];
-    for c in bad_chars {
+    for c in invisible {
         for local in [format!("al{c}ice"), format!("{c}alice"), format!("alice{c}")] {
-            assert!(
-                matches!(parse_address(&format!("{local}@example.com")), Err(Error::Invalid(_))),
-                "{local:?}"
-            );
-            assert!(
-                matches!(d.create_account(&local, dom, None, None).await, Err(Error::Invalid(_))),
-                "{local:?}"
-            );
-            assert!(
-                matches!(d.create_list(&local, dom).await, Err(Error::Invalid(_))),
-                "{local:?}"
-            );
+            // parse_address trims surrounding Unicode whitespace of the whole address (pre-existing
+            // behavior), so a LEADING whitespace char is stripped rather than rejected there.
+            if c.is_whitespace() && local.starts_with(c) {
+                continue;
+            }
+            assert!(!all_paths(&local).await, "{local:?}");
         }
     }
-    // Positive controls: legitimate non-ASCII local parts still work.
-    assert_eq!(parse_address("josé.müller@example.com").unwrap().0, "josé.müller");
-    assert_eq!(parse_address("山田@example.com").unwrap().0, "山田");
-    assert!(d.create_account("josé.müller", dom, None, None).await.is_ok());
+}
+
+#[tokio::test]
+async fn local_part_allow_list_accepts_latin_and_normalizes() {
+    let d = dir().await;
+    let dom = d.create_domain("example.com").await.unwrap();
+    let nfc = "nguy\u{1EC5}n.v\u{103}n.an"; // ễ and ă precomposed
+    let nfd = "nguye\u{302}\u{303}n.va\u{306}n.an"; // decomposed
+    assert_ne!(nfc, nfd);
+    d.create_account(nfc, dom, None, None).await.unwrap();
+    assert!(matches!(
+        d.create_account(nfd, dom, None, None).await,
+        Err(Error::Conflict(_))
+    ));
+    // Uppercase is lowercased, then validated.
+    let up = rusty_directory::parse_address("NGUY\u{1EC4}N@Example.com").unwrap();
+    assert_eq!(up.0, "nguy\u{1EC5}n");
+    // a + combining acute composes to a precomposed letter and is accepted.
+    assert_eq!(rusty_directory::parse_address("a\u{301}@example.com").unwrap().0, "\u{E1}");
+    // Exactly 64 octets ok, 65 not; 64 two-octet chars is over the octet limit.
+    assert!(all_paths(&"a".repeat(64)).await);
+    assert!(!all_paths(&"a".repeat(65)).await);
+    assert!(!all_paths(&"é".repeat(33)).await);
+    assert!(all_paths(&"é".repeat(32)).await);
+}
+
+#[tokio::test]
+async fn local_part_allow_list_rejects_everything_else() {
+    let bad = [
+        "\u{430}bc",            // Cyrillic a inside a Latin word
+        "\u{430}\u{440}\u{435}", // all-Cyrillic
+        "\u{3BF}",              // Greek omicron
+        "\u{FF41}",             // fullwidth a
+        "\u{FB01}",             // ligature fi
+        "\u{261}",              // IPA g
+        "\u{AA}",
+        "\u{BA}",
+        "x\u{302}\u{303}",      // no precomposed form: combining marks stay and are rejected
+        "a\u{300}\u{301}\u{302}\u{303}\u{304}\u{305}", // Zalgo stack
+        "\u{1F600}",            // emoji
+        "\u{130}",              // I with dot: lowercases to i + U+0307
+        "\u{663}",              // Arabic-Indic digit
+        "\u{D7}",               // multiplication sign
+        "\u{F7}",               // division sign
+        "\u{C0}\u{2160}",       // roman numeral
+        "\u{1E9E}\u{1D00}",     // small cap (Ll but outside blocks)
+        ".a",
+        "a.",
+        "a..b",
+        "a b",
+        "a\tb",
+    ];
+    for b in bad {
+        assert!(!all_paths(b).await, "{b:?}");
+    }
+    // Positive controls with the same shape.
+    for good in ["abc", "a.b", "\u{DF}", "\u{FF}", "\u{17F}", "\u{24F}", "\u{1EFF}"] {
+        assert!(all_paths(good).await, "{good:?}");
+    }
 }

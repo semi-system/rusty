@@ -53,17 +53,33 @@ check_static() {
 }
 stage "static linking" check_static
 
+DEGRADED=0
 fuzz_all() {
   if command -v cargo-fuzz >/dev/null 2>&1 && rustup toolchain list | grep -q "^nightly"; then
     local t
     for t in parse_envelope parse_address; do
-      (cd fuzz && cargo +nightly fuzz run "$t" -- "-max_total_time=$FUZZ_SECS" -rss_limit_mb=2048) || return 1
+      mkdir -p "fuzz/corpus/$t"
+      # Working corpus first (new finds are written there), committed seeds second.
+      (cd fuzz && cargo +nightly fuzz run "$t" "corpus/$t" "seeds/$t" -- "-max_total_time=$FUZZ_SECS" -rss_limit_mb=2048) || return 1
     done
   else
+    DEGRADED=1
     echo "WARNING: cargo-fuzz and/or the nightly toolchain are missing; running the proptest fallback only (NOT real fuzzing)." >&2
     cargo test -p rusty-mime -p rusty-directory --test fuzz_smoke
   fi
 }
-stage "fuzz smoke" fuzz_all
+# Not via stage(): a subshell would lose DEGRADED.
+echo "==> fuzz smoke"
+if fuzz_all; then
+  STAGES=$((STAGES + 1))
+  echo "[ OK ] fuzz smoke"
+else
+  echo "[FAIL] fuzz smoke" >&2
+  exit 1
+fi
 
-echo "CI OK: $STAGES stages passed"
+if [ "$DEGRADED" -eq 1 ]; then
+  echo "CI OK (DEGRADED: fuzz ran as proptest stand-in)"
+else
+  echo "CI OK: $STAGES stages passed"
+fi

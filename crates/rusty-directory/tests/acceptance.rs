@@ -303,10 +303,13 @@ async fn acceptance_10k_messages() {
 
     let elapsed = started.elapsed();
     eprintln!("acceptance_10k_messages elapsed: {elapsed:.2?}");
-    let max_secs: u64 = std::env::var("RUSTY_ACCEPTANCE_MAX_SECS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(60);
+    let max_secs: u64 = match std::env::var("RUSTY_ACCEPTANCE_MAX_SECS") {
+        Err(std::env::VarError::NotPresent) => 60,
+        Ok(v) => v.parse().unwrap_or_else(|_| {
+            panic!("RUSTY_ACCEPTANCE_MAX_SECS must be a whole number of seconds, got {v:?}")
+        }),
+        Err(e) => panic!("RUSTY_ACCEPTANCE_MAX_SECS is unusable: {e}"),
+    };
     assert!(
         elapsed < Duration::from_secs(max_secs),
         "too slow: {elapsed:?} (limit {max_secs}s, override with RUSTY_ACCEPTANCE_MAX_SECS)"

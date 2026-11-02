@@ -112,6 +112,44 @@ fn has_unsafe_token(code: &str) -> bool {
     false
 }
 
+/// The attribute must appear in real code: it is looked up on comment-stripped text, so an
+/// occurrence inside a `//` or `/* */` comment does not count.
+fn has_attr(text: &str, attr: &str) -> bool {
+    strip_comments(text).lines().any(|l| l.trim() == attr)
+}
+
+fn strip_comments(src: &str) -> String {
+    // Same state machine as `strip`, but string literals are kept (attribute has no string).
+    let b: Vec<char> = src.chars().collect();
+    let mut o = String::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == '/' && b.get(i + 1) == Some(&'/') {
+            while i < b.len() && b[i] != '\n' {
+                i += 1;
+            }
+        } else if b[i] == '/' && b.get(i + 1) == Some(&'*') {
+            let mut depth = 1;
+            i += 2;
+            while i < b.len() && depth > 0 {
+                if b[i] == '/' && b.get(i + 1) == Some(&'*') {
+                    depth += 1;
+                    i += 2;
+                } else if b[i] == '*' && b.get(i + 1) == Some(&'/') {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+        } else {
+            o.push(b[i]);
+            i += 1;
+        }
+    }
+    o
+}
+
 fn crate_dirs() -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = fs::read_dir(crates_dir())
         .unwrap()
@@ -131,8 +169,8 @@ fn workspace_forbids_unsafe() {
         let text = fs::read_to_string(&lib).unwrap_or_else(|e| panic!("{}: {e}", lib.display()));
         let attr = format!("#![forbid({}_code)]", "unsafe");
         assert!(
-            text.lines().any(|l| l.trim() == attr),
-            "{} lacks {attr}",
+            has_attr(&text, &attr),
+            "{} lacks {attr} (outside comments)",
             lib.display()
         );
         let mut files = Vec::new();
@@ -155,4 +193,12 @@ fn scanner_detects_unsafe_and_ignores_comments_and_strings() {
     assert!(!has_unsafe_token(&strip("let s = \"unsafe \\\" unsafe\";")));
     assert!(!has_unsafe_token(&strip("let s = r#\"unsafe\"#;")));
     assert!(!has_unsafe_token(&strip("let unsafe_thing = 1;")));
+}
+
+#[test]
+fn forbid_attribute_inside_a_comment_does_not_count() {
+    let attr = format!("#![forbid({}_code)]", "unsafe");
+    assert!(has_attr(&format!("{attr}\nfn f() {{}}"), &attr));
+    assert!(!has_attr(&format!("/*\n{attr}\n*/\nfn f() {{}}"), &attr));
+    assert!(!has_attr(&format!("// {attr}\nfn f() {{}}"), &attr));
 }

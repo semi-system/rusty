@@ -2,20 +2,10 @@
 //! invariants, driven by proptest. Run by scripts/ci.sh when cargo-fuzz/nightly are missing.
 
 use proptest::prelude::*;
-use unicode_general_category::{get_general_category, GeneralCategory as G};
 
 fn check(s: &str) {
     if let Ok((local, domain)) = rusty_directory::parse_address(s) {
-        for c in local.chars() {
-            assert!(!c.is_whitespace() && !c.is_control(), "{c:?}");
-            assert!(
-                !matches!(
-                    get_general_category(c),
-                    G::Format | G::PrivateUse | G::Unassigned | G::Control
-                ),
-                "{c:?}"
-            );
-        }
+        assert!(local.chars().all(rusty_directory::allowed_local_char), "{local:?}");
         assert!(!domain.chars().any(|c| c.is_whitespace() || c.is_control()));
         let again = rusty_directory::parse_address(&format!("{local}@{domain}")).unwrap();
         assert_eq!(again, (local.clone(), domain.clone()));

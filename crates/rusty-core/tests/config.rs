@@ -107,10 +107,11 @@ fn log_level_is_case_sensitive() {
 }
 
 #[test]
-fn bounded_read_boundary_is_64_kib_plus_one() {
+fn file_of_64_kib_plus_one_is_rejected_by_the_fstat_size_check() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("over.toml");
-    // 65537 bytes of comment padding: must be rejected on the bounded-read path, not by TOML syntax.
+    // 65537 bytes of valid-TOML padding: rejected by the fstat size check before reading.
+    // (The post-read "too large" branch is unit-tested via read_bounded in config.rs.)
     let mut s = String::from(BASE);
     s.push(char::from(35u8));
     s.push_str(&"x".repeat(64 * 1024 + 1 - s.len()));

@@ -1045,7 +1045,6 @@ dependencies = [
  "libfuzzer-sys",
  "rusty-directory",
  "rusty-mime",
- "unicode-general-category",
 ]
 
 [[package]]

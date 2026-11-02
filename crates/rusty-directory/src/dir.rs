@@ -64,20 +64,46 @@ pub(crate) fn normalize_domain(domain: &str) -> Result<String> {
     Ok(ascii.to_lowercase())
 }
 
-/// Unicode categories rejected in local parts: Cf (format: zero-width, joiners, bidi controls,
-/// BOM, soft hyphen), Co (private use), Cn (unassigned). Cc/Zs/Zl/Zp are covered by the
-/// control/whitespace checks; Cs cannot occur in a `char`.
-pub(crate) fn is_forbidden_category(c: char) -> bool {
-    use unicode_general_category::{get_general_category, GeneralCategory as G};
-    matches!(
-        get_general_category(c),
-        G::Format | G::PrivateUse | G::Unassigned | G::Surrogate | G::Control
-    )
+/// Which non-ASCII scripts local parts may use. Only Latin today. Other scripts will be
+/// opt-in per tenant later and must follow a single-script rule (no mixing within one local
+/// part); there is deliberately no per-tenant plumbing yet.
+struct LocalPartPolicy {
+    latin: bool,
 }
 
-/// Normalize a local part: NFC, lowercase. Does not trim (whitespace is invalid).
-/// ASCII must be RFC 5322 atext plus interior single dots; any non-ASCII character is allowed
-/// (RFC 6531) except control and whitespace. Quoted forms and comments are not supported.
+const POLICY: LocalPartPolicy = LocalPartPolicy { latin: true };
+
+/// Latin blocks accepted for non-ASCII lowercase letters (covers Vietnamese and western and
+/// central European names). Each range is checked together with General_Category Ll.
+const LATIN_RANGES: &[std::ops::RangeInclusive<u32>] = &[
+    0x00DF..=0x00FF, // Latin-1 lowercase letters (U+00F7 DIVISION SIGN is not Ll)
+    0x0100..=0x017F, // Latin Extended-A
+    0x0180..=0x024F, // Latin Extended-B
+    0x1E00..=0x1EFF, // Latin Extended Additional
+];
+
+/// Allow list for one character of an already NFC+lowercased local part (dots are handled
+/// separately by the caller). ASCII: a-z, 0-9 and the RFC 5322 atext specials. Non-ASCII:
+/// only Ll letters inside [`LATIN_RANGES`]. Everything else (combining marks, other scripts,
+/// digits, symbols, emoji, spaces, controls, format characters, private use, unassigned,
+/// compatibility forms) is rejected. The Ll test uses `unicode-general-category` because
+/// `char::is_lowercase` also accepts Other_Lowercase characters that are not Ll.
+pub fn allowed_local_char(c: char) -> bool {
+    use unicode_general_category::{get_general_category, GeneralCategory};
+    if c.is_ascii() {
+        return c.is_ascii_lowercase()
+            || c.is_ascii_digit()
+            || c == '.'
+            || "!#$%&'*+-/=?^_`{|}~".contains(c);
+    }
+    POLICY.latin
+        && LATIN_RANGES.iter().any(|r| r.contains(&(c as u32)))
+        && get_general_category(c) == GeneralCategory::LowercaseLetter
+}
+
+/// Normalize a local part: NFC, lowercase, NFC; then every character must pass
+/// [`allowed_local_char`]. Does not trim (whitespace is invalid). At most 64 octets and 64
+/// characters; '.' may not lead, trail or repeat. Quoted forms and comments are not supported.
 pub(crate) fn normalize_local(local: &str) -> Result<String> {
     use unicode_normalization::UnicodeNormalization;
     let l: String = local
@@ -89,18 +115,10 @@ pub(crate) fn normalize_local(local: &str) -> Result<String> {
     if l.is_empty() {
         return Err(Error::Invalid("empty local part".into()));
     }
-    if l.len() > 64 {
+    if l.len() > 64 || l.chars().count() > 64 {
         return Err(Error::Invalid("local part longer than 64 octets".into()));
     }
-    let atext_special = "!#$%&'*+-/=?^_`{|}~";
-    let ok = l.chars().all(|c| {
-        if c.is_ascii() {
-            c.is_ascii_alphanumeric() || c == '.' || atext_special.contains(c)
-        } else {
-            !c.is_whitespace() && !c.is_control() && !is_forbidden_category(c)
-        }
-    });
-    if !ok {
+    if !l.chars().all(allowed_local_char) {
         return Err(Error::Invalid("invalid character in local part".into()));
     }
     if l.starts_with('.') || l.ends_with('.') || l.contains("..") {

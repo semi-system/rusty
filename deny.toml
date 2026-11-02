@@ -8,6 +8,11 @@ targets = [
 [advisories]
 version = 2
 yanked = "deny"
+# Semantics (from cargo-deny 0.20 source/CHANGELOG, PR#753): "workspace" makes unmaintained
+# advisories an ERROR only when the crate is a direct dependency of a workspace member;
+# unmaintained transitive crates are not reported by cargo-deny at all. Those are surfaced
+# as warnings by `cargo audit` in scripts/ci.sh. (No unmaintained crate exists today, so
+# this was verified from the source/changelog, not by an observed failure.)
 unmaintained = "workspace"
 ignore = []
 
