@@ -113,8 +113,10 @@ CREATE TABLE folders (
   next_uid      INTEGER NOT NULL DEFAULT 1 CHECK (next_uid >= 1),
   PRIMARY KEY (mailbox_id, id),
   CHECK (parent_id IS NULL OR parent_id <> id),
-  FOREIGN KEY (mailbox_id, parent_id) REFERENCES folders(mailbox_id, id) ON DELETE RESTRICT
+  FOREIGN KEY (mailbox_id, parent_id) REFERENCES folders(mailbox_id, id) ON DELETE NO ACTION
 ) STRICT;
+-- NO ACTION (kiểm tra cuối câu lệnh) thay vì RESTRICT (kiểm tra từng hàng): xóa trực tiếp folder cha còn con
+-- vẫn bị từ chối, nhưng xóa account kéo theo cả cây folder (CASCADE) thì thành công.
 CREATE UNIQUE INDEX folders_sibling_name ON folders (mailbox_id, COALESCE(parent_id, 0), name);
 CREATE UNIQUE INDEX folders_role ON folders (mailbox_id, role) WHERE role <> 'custom';
 
@@ -135,7 +137,7 @@ CREATE TABLE messages (
   deleted_at     INTEGER,                                          -- NULL = chưa xóa mềm
   PRIMARY KEY (mailbox_id, id),
   FOREIGN KEY (mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE,
-  FOREIGN KEY (mailbox_id, folder_id) REFERENCES folders(mailbox_id, id) ON DELETE RESTRICT,
+  FOREIGN KEY (mailbox_id, folder_id) REFERENCES folders(mailbox_id, id) ON DELETE NO ACTION,  -- như trên
   UNIQUE (mailbox_id, folder_id, uid)
 ) STRICT;
 CREATE INDEX messages_thread ON messages (mailbox_id, thread_id);
