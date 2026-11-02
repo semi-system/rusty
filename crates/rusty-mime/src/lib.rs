@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Envelope extraction from raw RFC 5322 messages, wrapping `mail-parser`.
 
 use mail_parser::{Address, HeaderValue, MessageParser};

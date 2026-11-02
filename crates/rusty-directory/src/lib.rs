@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Directory: domains, plans, accounts, aliases, lists, config and authentication.
 
 mod auth;

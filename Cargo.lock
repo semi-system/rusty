@@ -1147,12 +1147,14 @@ version = "0.1.0"
 dependencies = [
  "argon2",
  "async-trait",
+ "bytes",
  "idna",
  "rand_core 0.6.4",
  "rusty-core",
  "rusty-store",
  "serde_json",
  "sqlx",
+ "tempfile",
  "tokio",
  "unicode-normalization",
 ]

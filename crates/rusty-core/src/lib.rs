@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod config;
 mod error;
 mod ids;
