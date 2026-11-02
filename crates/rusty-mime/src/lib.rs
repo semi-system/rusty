@@ -9,6 +9,8 @@ pub struct Envelope {
     pub from: String,
     pub to: String,
     pub message_id: Option<String>,
+    /// The first id in the `In-Reply-To` header. Note for threading: the direct
+    /// parent is usually the LAST id in `references`, not this value.
     pub in_reply_to: Option<String>,
     pub references: Vec<String>,
     pub date: Option<i64>,
@@ -18,7 +20,7 @@ fn join_addresses(addr: Option<&Address<'_>>) -> String {
     addr.map(|a| {
         a.iter()
             .filter_map(|x| x.address.as_deref())
-            .map(|s| s.trim().to_lowercase())
+            .map(|s| s.replace(['<', '>'], "").trim().to_lowercase())
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
             .join(", ")
@@ -27,15 +29,32 @@ fn join_addresses(addr: Option<&Address<'_>>) -> String {
 }
 
 fn id_list(v: &HeaderValue<'_>) -> Vec<String> {
-    match v {
+    let raw: Vec<String> = match v {
         HeaderValue::Text(t) => vec![t.to_string()],
         HeaderValue::TextList(l) => l.iter().map(|s| s.to_string()).collect(),
         _ => Vec::new(),
-    }
+    };
+    raw.into_iter()
+        .map(|s| {
+            s.trim()
+                .trim_matches(|c| c == '<' || c == '>')
+                .trim()
+                .to_string()
+        })
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
-/// Parse the envelope fields of a raw message. Empty input is `Error::Invalid`;
-/// malformed or missing headers yield empty strings / `None`.
+/// Parse the envelope fields of a raw message.
+///
+/// Behavior:
+/// - Empty input is `Error::Invalid`; any other input returns `Ok`.
+/// - Malformed or missing headers yield empty strings / `None` / empty vec.
+/// - Address fields are lowercase bare addresses joined with ", "; display-name-only
+///   entries, group syntax with no members (`undisclosed-recipients:;`) and empty
+///   headers yield an empty string. With several `From` headers the first wins.
+/// - Empty ids (`<>`) are dropped, so they yield `None` / empty vec.
+/// - `date` is unix seconds (negative before 1970), `None` if unparseable.
 pub fn parse_envelope(raw: &[u8]) -> Result<Envelope> {
     if raw.is_empty() {
         return Err(Error::Invalid("empty message".into()));
@@ -55,9 +74,16 @@ pub fn parse_envelope(raw: &[u8]) -> Result<Envelope> {
         subject: msg.subject().unwrap_or_default().to_string(),
         from: join_addresses(msg.from()),
         to: join_addresses(msg.to()),
-        message_id: msg.message_id().map(str::to_string),
+        message_id: id_list(&HeaderValue::Text(
+            msg.message_id().unwrap_or_default().to_string().into(),
+        ))
+        .into_iter()
+        .next(),
         in_reply_to: id_list(msg.in_reply_to()).into_iter().next(),
         references: id_list(msg.references()),
-        date: msg.date().map(|d| d.to_timestamp()),
+        date: msg
+            .date()
+            .filter(|d| d.is_valid())
+            .map(|d| d.to_timestamp()),
     })
 }
