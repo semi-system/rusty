@@ -487,3 +487,170 @@ async fn rejects_message_uid_zero() {
     bad(p, &msg(1, 1, 1, 0, HASH_A, 5, 0)).await;
     ok(p, &msg(1, 1, 1, 1, HASH_A, 5, 0)).await;
 }
+
+// ----- blobs.zero_since (migration 0002) -----
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+async fn zero_since(p: &SqlitePool, h: &str) -> Option<i64> {
+    sqlx::query_scalar(&format!("SELECT zero_since FROM blobs WHERE hash='{h}'"))
+        .fetch_one(p)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn zero_since_is_set_when_blob_inserted_unreferenced() {
+    let before = unix_now();
+    let s = seed().await;
+    let after = unix_now();
+    let z = zero_since(s.pool(), HASH_A)
+        .await
+        .expect("zero_since set on insert");
+    assert!((before..=after).contains(&z), "{before} <= {z} <= {after}");
+}
+
+#[tokio::test]
+async fn zero_since_follows_message_insert_update_delete() {
+    let s = seed().await;
+    let p = s.pool();
+    ok(
+        p,
+        &format!("UPDATE blobs SET zero_since = 1 WHERE hash IN ('{HASH_A}','{HASH_B}')"),
+    )
+    .await;
+    ok(p, &msg(1, 1, 1, 1, HASH_A, 5, 0)).await;
+    assert_eq!(
+        zero_since(p, HASH_A).await,
+        None,
+        "referenced blob has no zero_since"
+    );
+    assert_eq!(zero_since(p, HASH_B).await, Some(1));
+
+    // a second reference keeps it NULL
+    ok(p, &msg(1, 2, 1, 2, HASH_A, 5, 0)).await;
+    ok(p, "DELETE FROM messages WHERE mailbox_id=1 AND id=2").await;
+    assert_eq!(zero_since(p, HASH_A).await, None);
+
+    // moving the last reference A -> B: A released, B referenced
+    let before = unix_now();
+    ok(
+        p,
+        &format!("UPDATE messages SET blob_hash='{HASH_B}' WHERE mailbox_id=1 AND id=1"),
+    )
+    .await;
+    let z = zero_since(p, HASH_A)
+        .await
+        .expect("released blob gets zero_since");
+    assert!(z >= before);
+    assert_eq!(zero_since(p, HASH_B).await, None);
+
+    // deleting the last reference sets it again
+    ok(
+        p,
+        &format!("UPDATE blobs SET zero_since = 1 WHERE hash='{HASH_A}'"),
+    )
+    .await;
+    ok(p, "DELETE FROM messages WHERE mailbox_id=1 AND id=1").await;
+    let z = zero_since(p, HASH_B)
+        .await
+        .expect("released blob gets zero_since");
+    assert!(z >= before);
+    assert_eq!(
+        zero_since(p, HASH_A).await,
+        Some(1),
+        "unrelated blob untouched"
+    );
+}
+
+#[tokio::test]
+async fn zero_since_set_again_after_cascade_delete_of_account() {
+    let s = seed().await;
+    let p = s.pool();
+    ok(p, &msg(1, 1, 1, 1, HASH_A, 5, 0)).await;
+    assert_eq!(zero_since(p, HASH_A).await, None);
+    let before = unix_now();
+    ok(p, "DELETE FROM accounts WHERE id=1").await;
+    assert!(zero_since(p, HASH_A).await.unwrap() >= before);
+}
+
+#[tokio::test]
+async fn rejects_negative_zero_since() {
+    let s = seed().await;
+    let p = s.pool();
+    bad(
+        p,
+        &format!("UPDATE blobs SET zero_since = -1 WHERE hash='{HASH_A}'"),
+    )
+    .await;
+    ok(
+        p,
+        &format!("UPDATE blobs SET zero_since = 0 WHERE hash='{HASH_A}'"),
+    )
+    .await;
+    ok(
+        p,
+        &format!("UPDATE blobs SET zero_since = NULL WHERE hash='{HASH_A}'"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn messages_have_partial_index_on_deleted_at() {
+    let s = mem().await;
+    let n = count(
+        s.pool(),
+        "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='messages_deleted_at'",
+    )
+    .await;
+    assert_eq!(n, 1);
+}
+
+/// A database created before migration 0002: its unreferenced blobs get `zero_since` (now)
+/// when 0002 runs, referenced ones stay NULL.
+#[tokio::test]
+async fn migration_0002_backfills_zero_since() {
+    let dir = tempfile::tempdir().unwrap();
+    let only_0001 = dir.path().join("migrations");
+    std::fs::create_dir(&only_0001).unwrap();
+    std::fs::write(
+        only_0001.join("0001_init.sql"),
+        include_str!("../migrations/0001_init.sql"),
+    )
+    .unwrap();
+    let url = format!(
+        "sqlite://{}?mode=rwc",
+        dir.path().join("old.sqlite").display()
+    );
+    {
+        let pool = SqlitePool::connect(&url).await.unwrap();
+        sqlx::migrate::Migrator::new(only_0001.as_path())
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+        for sql in [
+            "INSERT INTO domains(id,name,created_at) VALUES (1,'example.com',0)",
+            "INSERT INTO accounts(id,local_part,domain_id,status,created_at) VALUES (1,'a',1,'active',0)",
+            "INSERT INTO mailboxes(id,account_id,uid_validity) VALUES (1,1,1)",
+            "INSERT INTO folders(mailbox_id,id,parent_id,name,role,uid_validity) VALUES (1,1,NULL,'INBOX','inbox',1)",
+            &format!("INSERT INTO blobs(hash,size) VALUES ('{HASH_A}',10)"),
+            &format!("INSERT INTO blobs(hash,size) VALUES ('{HASH_B}',10)"),
+            &msg(1, 1, 1, 1, HASH_B, 5, 0),
+        ] {
+            ok(&pool, sql).await;
+        }
+        pool.close().await;
+    }
+    let before = unix_now();
+    let s = SqliteStore::open(&url).await.unwrap();
+    let z = zero_since(s.pool(), HASH_A).await.expect("backfilled");
+    assert!(z >= before);
+    assert_eq!(zero_since(s.pool(), HASH_B).await, None);
+}
