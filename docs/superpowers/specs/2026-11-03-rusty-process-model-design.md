@@ -1,6 +1,6 @@
 # Rusty - Mô hình tiến trình: multi daemon + `rustyd` + `rustyctl`
 
-Ngày: 2026-11-03. Trạng thái: chờ người dùng duyệt spec (sau đó mới lập kế hoạch triển khai chi tiết).
+Ngày: 2026-11-03. Trạng thái: chờ người dùng duyệt spec (sau đó mới lập kế hoạch triển khai chi tiết). Quyết định của người dùng (2026-11-03): **tách `store` thành dịch vụ riêng ngay từ đầu** (mục 7b).
 
 ## 1. Bối cảnh và mục tiêu
 Zimbra vận hành bằng nhiều daemon, điều khiển bởi `zmcontrol` (start/stop/status theo dịch vụ và thứ tự phụ thuộc). Rusty giữ ý tưởng đó nhưng làm lại theo định hướng **bảo mật trước, chịu zero-day** (spec nền tảng §8b):
@@ -20,6 +20,7 @@ Nền tảng chỉ Linux (dev chạy trong WSL).
 | Giám sát | `rustyd` tự giám sát, được systemd khởi động (một unit duy nhất) | Chạy cả trong container; không phụ thuộc systemd để có thứ tự và health; vẫn tích hợp được journald |
 | Điều khiển | `rustyctl` nói chuyện với `rustyd` qua **Unix socket**, không có cổng TCP | Không lộ ra mạng; xác thực bằng uid/gid của peer |
 | Định nghĩa dịch vụ | **Bảng dịch vụ biên dịch sẵn** (trong crate `rusty-svc`), tệp cấu hình chỉ bật/tắt và chỉnh tham số có giới hạn | Kẻ ghi được `/etc` không thể bắt `rustyd` (chạy root) thực thi lệnh tùy ý |
+| Truy cập dữ liệu | **Chỉ dịch vụ `store` được mở DB và thư mục blob**; mọi dịch vụ khác gọi `store` qua Unix socket với quyền theo vai trò (mục 7b) | Một parser bị khai thác không đọc được DB; kiểm soát truy cập tập trung một nơi |
 | Cấp quyền | `rustyd` chạy root chỉ để bind cổng đặc quyền, tạo thư mục, hạ quyền con; mọi dịch vụ hạ quyền ngay khi khởi động | Giảm thiểu mã chạy với quyền cao |
 | Sandbox | Landlock (hệ thống tệp) + seccomp (syscall) theo hồ sơ từng dịch vụ; `NoNewPrivileges` | Chặn leo thang khi một parser bị khai thác |
 | `unsafe` | Mã của dự án vẫn `#![forbid(unsafe_code)]`; syscall đi qua các crate đã được kiểm chứng (`rustix`, `landlock`, `seccompiler`) | Giữ cam kết §8b, và ghi rõ phần `unsafe` nằm trong phụ thuộc |
@@ -30,8 +31,9 @@ crates/
   rusty-ipc       giao thức ctl: kiểu Request/Response, mã hóa, giới hạn kích thước (không phụ thuộc DB)
   rusty-svc       bảng dịch vụ: tên, lệnh con, user, phụ thuộc, hồ sơ sandbox, chính sách restart, health
   rusty-sandbox   hạ quyền (setuid/setgid/groups), landlock, seccomp, rlimit, NoNewPrivileges
+  rusty-storeapi  giao thức store: kiểu yêu cầu/đáp, vai trò, capability, truyền luồng; có `RemoteMailbox`/`RemoteDirectory` (client) cho các dịch vụ khác
 apps/
-  rusty           binary multi-call: `rusty <dịch-vụ> [--config ...]`
+  rusty           binary multi-call: `rusty <dịch-vụ> [--config ...]` (gồm `rusty store`, nơi duy nhất dùng `rusty-store` + `rusty-directory`)
   rustyd          supervisor
   rustyctl        CLI điều khiển
 ```
@@ -74,13 +76,41 @@ Chỉ khai báo những gì đang có; còn lại là chỗ giữ chỗ (`planne
 | Dịch vụ | Trạng thái | Phụ thuộc | Ghi chú |
 |---|---|---|---|
 | `gc` | có (Task 7) | — | dọn thư đã xóa, blob mồ côi, tệp tạm |
-| `store` | planned | — | người ghi DB duy nhất khi tách quyền |
-| `lmtp`, `smtp-in`, `smtp-submit`, `imap`, `jmap`, `dav`, `proxy`, `filter`, `admin-api` | planned | `store` | thêm khi làm các dự án 2 trở đi |
+| `store` | có (giai đoạn 8b, trước mọi dịch vụ giao thức) | — | người truy cập DB và blob duy nhất; chạy `Mailbox`/`Directory` đã có |
+| `gc` | có | `store` | gọi các thao tác dọn qua API vai trò `gc` (không mở DB trực tiếp) |
+| `lmtp`, `smtp-in`, `smtp-submit`, `imap`, `jmap`, `dav`, `proxy`, `filter`, `admin-api` | planned | `store` | thêm khi làm các dự án 2 trở đi; chỉ nói chuyện với `store` |
 
 Mỗi dịch vụ khai báo: user riêng (`rusty-gc`, `rusty-imap`...), thư mục dữ liệu được phép (Landlock), danh sách syscall (seccomp), cổng, rlimit, restart, heartbeat.
 
+## 7b. Dịch vụ `store` (tách riêng)
+`rusty store` là tiến trình duy nhất có quyền mở file DB (SQLite WAL, sau này kết nối Postgres) và thư mục blob. Nó chạy lại nguyên thư viện đã có (`Mailbox`, `Directory`, GC) phía sau một API hẹp.
+
+**Kênh:** Unix socket `/run/rusty/store.sock`, quyền `0660` thuộc nhóm `rusty-store-clients`; nhận diện peer bằng `SO_PEERCRED` -> **vai trò** theo uid dịch vụ (bảng cấp quyền biên dịch sẵn, không đọc từ tệp cấu hình). Khung 4 byte + mã hóa nhị phân/JSON có phiên bản, mỗi khung tối đa 1 MiB, thư lớn truyền theo luồng nhiều khung (mỗi khối <= 256 KiB, kèm tổng kích thước đã khai báo và kiểm tra giới hạn 50 MiB), hạn chót đọc/ghi, giới hạn kết nối đồng thời theo vai trò.
+
+**Vai trò và quyền (mỗi vai trò chỉ gọi được các thao tác sau):**
+
+| Vai trò | Được làm | Không được làm |
+|---|---|---|
+| `lmtp` / `smtp-in` | `Resolve(address)`, `Deliver(address, thư)`: chỉ thêm vào Inbox (hoặc folder do bộ lọc chỉ định) | đọc thư, liệt kê, xóa, xác thực |
+| `imap` / `jmap` / `dav` | `Authenticate(address, password) -> Capability`; mọi thao tác mailbox cần capability | truy cập mailbox mà không có capability; liệt kê tài khoản |
+| `smtp-submit` | `Authenticate`, `AppendSent(capability, thư)`, `Resolve` | đọc mailbox ngoài việc ghi Sent |
+| `filter` | `GetForScan(blob)`, `SetVerdict` trên thư đang giao | duyệt mailbox |
+| `gc` | `PurgeDeleted`, `CollectBlobs` | đọc nội dung |
+| `admin-api` | thao tác `Directory` (tạo tài khoản, đổi mật khẩu, alias, list, cấu hình) | đọc nội dung thư |
+
+**Capability (chống "một dịch vụ bị chiếm có thể đòi mọi mailbox"):** `Authenticate` chạy bên trong `store` (argon2 như hiện có); kết quả là một capability ngẫu nhiên 256 bit, gắn với (vai trò, `AccountId`, hạn dùng ngắn, kết nối). `store` chỉ giữ băm của nó, hết hạn tự động, thu hồi được (đổi mật khẩu, khóa tài khoản, `Logout`). Dịch vụ giao thức bị khai thác chỉ truy cập được các tài khoản **đang đăng nhập qua nó**, không phải cả cơ sở dữ liệu. `Deliver` không cần capability vì chỉ cho phép thêm vào Inbox của địa chỉ hợp lệ, đã có giới hạn kích thước/tần suất.
+
+**Hợp đồng lỗi:** `store` trả đúng `rusty_core::Error` (đã được làm sạch, không lộ SQL). Mất kết nối tới `store` -> dịch vụ gọi trả lỗi tạm thời (SMTP `451`, IMAP `NO [UNAVAILABLE]`), không bao giờ "cho qua".
+
+**Truy cập từ phía dịch vụ:** các trait `MetadataStore`/`Mailbox` hiện có là ranh giới; `rusty-storeapi` cung cấp `RemoteMailbox`/`RemoteDirectory` cùng giao diện nên mã nghiệp vụ trong các dịch vụ không phải viết lại. Cài đặt trực tiếp vẫn giữ cho test và cho chế độ `all-in-one` ở dev.
+
+**Phiên bản và vá:** `Hello` trao đổi phiên bản giao thức; lệch phiên bản thì từ chối. Vá lỗi logic dữ liệu chỉ cần restart `store` (và các dịch vụ phụ thuộc nối lại).
+
+**Hệ quả hiệu năng:** thêm một bước IPC cho mỗi thao tác; giảm thiểu bằng pipeline nhiều yêu cầu trên một kết nối, truyền luồng, và danh sách có phân trang (hoàn thành minor M1 của Task 6: `list_folder`/`changes_since` nhận `limit` + cursor trong API này).
+
 ## 8. Mô hình đe dọa (tóm tắt, chi tiết trong `SECURITY.md` ở Task 9)
-- Kẻ khai thác parser của một dịch vụ: bị nhốt bởi user, Landlock, seccomp; không đọc được khóa của dịch vụ khác; không gọi được `rustyd` (socket chỉ cho root/nhóm admin, con không thuộc nhóm).
+- Kẻ khai thác parser của một dịch vụ: bị nhốt bởi user, Landlock, seccomp; không đọc được khóa của dịch vụ khác; không mở được DB; không gọi được `rustyd` (socket chỉ cho root/nhóm admin, con không thuộc nhóm); với `store` chỉ làm được các thao tác của vai trò đó, trên các tài khoản đang đăng nhập qua nó.
+- Kẻ khai thác `store`: là thành phần có giá trị cao nhất; thu nhỏ mã (không có parser giao thức, chỉ có `rusty-mime` cho `parse_envelope`), sandbox chặt nhất, không có quyền mạng; fuzz và review bảo mật ưu tiên cao nhất.
 - Kẻ ghi được tệp cấu hình: không thể đổi lệnh thực thi (bảng dịch vụ biên dịch sẵn); giá trị cấu hình được xác thực.
 - Dịch vụ crash-loop: circuit breaker, cảnh báo, không loop vô hạn.
 - Cập nhật/vá: thay binary `rusty` bằng tệp mới rồi `rustyctl restart all`; `rustyd` kiểm tra phiên bản giao thức giữa các thành phần, từ chối chạy khi lệch.
@@ -94,17 +124,21 @@ Mỗi dịch vụ khai báo: user riêng (`rusty-gc`, `rusty-imap`...), thư m�
 ## 10. Phân kỳ triển khai (sẽ thành kế hoạch chi tiết sau khi duyệt)
 1. `rusty-ipc`: kiểu, mã hóa, giới hạn, fuzz.
 2. `rusty-svc`: bảng dịch vụ, đồ thị phụ thuộc, kiểm tra chu trình.
+2b. `rusty-storeapi` (kiểu, vai trò, capability, luồng, fuzz) — làm sau mục 7, trước mục 8.
 3. `rustyd` lõi: spawn, máy trạng thái, backoff, circuit breaker, drain, với dịch vụ giả `testsvc`.
 4. Ready/heartbeat và log.
 5. Máy chủ ctl: Unix socket, `SO_PEERCRED`, kiểm toán.
 6. `rustyctl`: `status`, `start|stop|restart|reload`, `logs`, `check`, `--json`, mã thoát.
 7. `rusty-sandbox`: hạ quyền, rlimit, `NoNewPrivileges`, Landlock, seccomp.
-8. Tích hợp dịch vụ thật đầu tiên: `rusty gc` (hồ sơ sandbox riêng).
+8. Tích hợp dịch vụ thật đầu tiên: `rusty store` (bao `Mailbox`/`Directory`, hồ sơ sandbox riêng, API theo vai trò, capability), rồi `rusty gc` gọi `store` qua vai trò `gc`.
+8b. `RemoteMailbox`/`RemoteDirectory`, phân trang `list_folder`/`changes_since`, test vai trò và thu hồi capability.
 9. Gói triển khai: systemd unit cho `rustyd`, tạo user/nhóm, thư mục, tài liệu vận hành.
 10. Củng cố: fuzz, bài kiểm tra musl (static) và vòng review bảo mật.
 
 ## 11. Rủi ro và điểm mở
 - Seccomp theo syscall dễ vỡ khi thay đổi phụ thuộc: cần chế độ `audit` (ghi log thay vì giết) để dựng hồ sơ, và test hồi quy cho mỗi hồ sơ.
 - Landlock cần kernel ≥ 5.13 (ABI mới hơn có thêm tính năng); `rustyctl check` phải báo rõ mức hỗ trợ và chính sách khi thiếu (mặc định **từ chối chạy ở chế độ production** nếu không có sandbox, cho phép `--insecure-dev` ở dev).
-- Dịch vụ `store` tách quyền ghi DB thay vì để mỗi dịch vụ mở DB trực tiếp là thay đổi lớn đến kiến trúc truy cập dữ liệu; quyết định ở spec của dự án 2 (tạm thời mọi dịch vụ dùng chung SQLite ở chế độ WAL nếu cần).
+- `store` thành điểm lỗi đơn: cần restart nhanh, kết nối lại tự động, và (sau này) chạy nhiều bản với Postgres. Đây là cái giá có chủ ý của việc tách.
+- Thiết kế API `store` theo từng thao tác nghiệp vụ (không phải SQL thô) để vai trò kiểm soát được; thao tác mới cần cập nhật bảng vai trò, test âm cho mọi vai trò không được phép.
+- Truyền thư lớn qua socket tốn bộ nhớ nếu làm vụng: bắt buộc truyền luồng và có giới hạn; cân nhắc truyền file descriptor (SCM_RIGHTS qua `rustix`) cho blob lớn ở bước sau.
 - Chuyển nóng (socket handoff) để restart không rớt kết nối: để sau, không nằm trong phạm vi này.
