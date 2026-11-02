@@ -1,0 +1,12 @@
+[package]
+name = "rusty-mime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rusty-core = { path = "../rusty-core" }
+mail-parser.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

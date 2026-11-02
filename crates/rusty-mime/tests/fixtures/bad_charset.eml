@@ -1,0 +1,9 @@
+From: alice@example.com
+To: bob@example.com
+Subject: Odd charset
+Message-ID: <cs@example.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=x-unknown-9999
+Content-Transfer-Encoding: 8bit
+
+xin chào
