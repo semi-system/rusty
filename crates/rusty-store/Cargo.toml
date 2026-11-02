@@ -1,0 +1,13 @@
+[package]
+name = "rusty-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rusty-core = { path = "../rusty-core" }
+sqlx.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
