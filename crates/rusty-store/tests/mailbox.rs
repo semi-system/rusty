@@ -740,28 +740,152 @@ async fn thread_id_own_id_when_no_parent() {
 async fn thread_lookup_is_scoped_to_mailbox() {
     let e = env().await;
     let bob = e.other("bob").await;
-    bob.append(INBOX, raw("bob's", Some("shared@x")), Flags::empty())
+    // Bob: thread 1 = { p@x (id 1), b2@x (id 2, reply to p@x) }
+    bob.append(INBOX, raw("bob root", Some("p@x")), Flags::empty())
         .await
         .unwrap();
-    bob.append(INBOX, raw("bob's 2", Some("b2@x")), Flags::empty())
-        .await
-        .unwrap();
-    e.mb.append(INBOX, raw("mine", Some("m@x")), Flags::empty())
-        .await
-        .unwrap();
-    let r =
-        e.mb.append(
+    let b2 = bob
+        .append(
             INBOX,
-            reply("re", Some("re@x"), Some("b2@x"), &[]),
+            reply("bob reply", Some("b2@x"), Some("p@x"), &[]),
             Flags::empty(),
         )
         .await
         .unwrap();
+    let foreign_thread = bob
+        .list_folder(INBOX)
+        .await
+        .unwrap()
+        .iter()
+        .find(|m| m.id == b2.id)
+        .unwrap()
+        .thread_id;
+    assert_eq!(foreign_thread, 1);
+
+    // Alice: two unrelated messages first, so her reply gets id 3.
+    e.mb.append(INBOX, raw("mine 1", Some("m1@x")), Flags::empty())
+        .await
+        .unwrap();
+    e.mb.append(INBOX, raw("mine 2", Some("m2@x")), Flags::empty())
+        .await
+        .unwrap();
+    // Alice replies to Bob's b2@x, which exists only in Bob's mailbox.
+    let r =
+        e.mb.append(
+            INBOX,
+            reply("re", Some("re@x"), Some("b2@x"), &["p@x", "b2@x"]),
+            Flags::empty(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.id, MessageId(3));
     let list = e.mb.list_folder(INBOX).await.unwrap();
+    let own_thread = list.iter().find(|m| m.id == r.id).unwrap().thread_id;
+    // No cross-mailbox inheritance: the reply starts its own thread...
+    assert_eq!(own_thread, r.id.0);
+    // ...which an unscoped lookup (Bob's thread 1) would not have produced.
+    assert_ne!(own_thread, foreign_thread);
+}
+
+// ---------- folder uid_validity (RFC 3501/9051 §2.3.1.1) ----------
+
+async fn folder_uidv(e: &Env, mb: &Mailbox, f: FolderId) -> i64 {
+    sqlx::query_scalar("SELECT uid_validity FROM folders WHERE mailbox_id = ? AND id = ?")
+        .bind(mb.id().0)
+        .bind(f.0)
+        .fetch_one(e.store.pool())
+        .await
+        .unwrap()
+}
+
+async fn high_water(e: &Env, mb: &Mailbox) -> i64 {
+    sqlx::query_scalar("SELECT uid_validity FROM mailboxes WHERE id = ?")
+        .bind(mb.id().0)
+        .fetch_one(e.store.pool())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn recreated_folder_gets_greater_uid_validity() {
+    let e = env().await;
+    // create / delete / create the same name: same folder id, same second
+    let f1 = e.mb.create_folder(None, "Projects").await.unwrap();
+    let v1 = folder_uidv(&e, &e.mb, f1).await;
+    e.mb.delete_folder(f1).await.unwrap();
+    let f2 = e.mb.create_folder(None, "Projects").await.unwrap();
+    let v2 = folder_uidv(&e, &e.mb, f2).await;
+    assert_eq!(f1, f2, "folder id is reused");
+    assert!(v2 > v1, "{v2} must be > {v1}");
+    assert_eq!(high_water(&e, &e.mb).await, v2);
+}
+
+#[tokio::test]
+async fn folder_uid_validity_strictly_increases() {
+    let e = env().await;
+    let start = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let mut prev = high_water(&e, &e.mb).await;
+    for i in 0..20 {
+        let f = e.mb.create_folder(None, &format!("f{i}")).await.unwrap();
+        let v = folder_uidv(&e, &e.mb, f).await;
+        assert!(v > prev, "{i}: {v} must be > {prev}");
+        assert!(
+            v >= start,
+            "uses the clock when it is ahead of the high-water mark"
+        );
+        assert!(v <= i64::from(u32::MAX));
+        assert_eq!(high_water(&e, &e.mb).await, v);
+        prev = v;
+    }
+}
+
+#[tokio::test]
+async fn uid_validity_high_water_mark_persists() {
+    let e = env().await;
+    let f = e.mb.create_folder(None, "a").await.unwrap();
+    let v1 = folder_uidv(&e, &e.mb, f).await;
+    let reopened = Mailbox::open(
+        e.store.clone(),
+        e.blobs.clone() as Arc<dyn BlobStore>,
+        e.account,
+    )
+    .await
+    .unwrap();
+    let g = reopened.create_folder(None, "b").await.unwrap();
+    let v2 = folder_uidv(&e, &reopened, g).await;
+    assert!(v2 > v1, "{v2} must be > {v1}");
+    assert_eq!(high_water(&e, &reopened).await, v2);
+}
+
+#[tokio::test]
+async fn uid_validity_over_u32_max_is_quota() {
+    let e = env().await;
+    let max = i64::from(u32::MAX);
+    sqlx::query("UPDATE mailboxes SET uid_validity = ? WHERE id = ?")
+        .bind(max - 1)
+        .bind(e.mb.id().0)
+        .execute(e.store.pool())
+        .await
+        .unwrap();
+    // the last representable value is still issued
+    let f = e.mb.create_folder(None, "last").await.unwrap();
+    assert_eq!(folder_uidv(&e, &e.mb, f).await, max);
+    assert_eq!(high_water(&e, &e.mb).await, max);
+
+    let folders = e.scalar("SELECT COUNT(*) FROM folders").await;
+    let changes = e.mb.changes_since(0).await.unwrap().len();
+    let r = e.mb.create_folder(None, "one-too-many").await;
+    assert!(matches!(r, Err(Error::Quota(_))), "{r:?}");
+    assert_eq!(e.scalar("SELECT COUNT(*) FROM folders").await, folders);
     assert_eq!(
-        list.iter().find(|m| m.id == r.id).unwrap().thread_id,
-        r.id.0
+        high_water(&e, &e.mb).await,
+        max,
+        "high-water mark unchanged"
     );
+    assert_eq!(e.mb.changes_since(0).await.unwrap().len(), changes);
 }
 
 // ---------- isolation ----------

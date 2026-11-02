@@ -9,7 +9,6 @@ rusty-core = { path = "../rusty-core" }
 rusty-mime = { path = "../rusty-mime" }
 async-trait.workspace = true
 bytes.workspace = true
-rand_core.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
 

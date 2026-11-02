@@ -58,6 +58,8 @@ impl SqliteStore {
     /// an open transaction (holding the write lock) on a pooled connection. In a separate
     /// task the begin always completes; if our caller is gone, the finished transaction is
     /// dropped there and rolled back. Covered by `cancelled_begin_write_does_not_leak_transaction`.
+    ///
+    /// Requires a Tokio runtime (it calls `tokio::spawn`); calling it outside one panics.
     pub async fn begin_write(&self) -> Result<Transaction<'static, Sqlite>> {
         let pool = self.pool.clone();
         tokio::spawn(async move { pool.begin_with("BEGIN IMMEDIATE").await })

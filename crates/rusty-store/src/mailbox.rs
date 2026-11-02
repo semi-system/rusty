@@ -14,7 +14,6 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
-use rand_core::{OsRng, RngCore};
 use rusty_core::{AccountId, Error, Flags, FolderId, MailboxId, MessageId, Result};
 use rusty_mime::Envelope;
 use sqlx::{Sqlite, SqliteConnection, Transaction};
@@ -182,18 +181,31 @@ fn now() -> i64 {
         .unwrap_or(0)
 }
 
-/// Random UIDVALIDITY in 1..=u32::MAX.
-fn random_uid_validity() -> Result<i64> {
-    loop {
-        let mut b = [0u8; 4];
-        OsRng
-            .try_fill_bytes(&mut b)
-            .map_err(|_| Error::storage("random source failed"))?;
-        let v = u32::from_le_bytes(b);
-        if v != 0 {
-            return Ok(i64::from(v));
-        }
+/// Issue a new folder UIDVALIDITY inside the caller's transaction.
+///
+/// RFC 3501/9051 §2.3.1.1: a folder recreated under a reused name (and here also a reused
+/// folder id) must get a strictly greater UIDVALIDITY. `mailboxes.uid_validity` is the
+/// persisted high-water mark; the new value is `max(now_secs, high_water + 1)` and the mark
+/// is advanced to it in the same transaction. Past `u32::MAX` it is `Quota` (the caller's
+/// transaction then rolls back, leaving the mark unchanged).
+async fn take_uid_validity(conn: &mut SqliteConnection, mb: MailboxId) -> Result<i64> {
+    let high_water: i64 = sqlx::query_scalar("SELECT uid_validity FROM mailboxes WHERE id = ?")
+        .bind(mb.0)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(map_db_error)?
+        .ok_or_else(|| Error::NotFound("mailbox".into()))?;
+    let v = now().max(high_water.saturating_add(1));
+    if v > i64::from(u32::MAX) {
+        return Err(Error::Quota("folder UIDVALIDITY space exhausted".into()));
     }
+    sqlx::query("UPDATE mailboxes SET uid_validity = ? WHERE id = ?")
+        .bind(v)
+        .bind(mb.0)
+        .execute(&mut *conn)
+        .await
+        .map_err(map_db_error)?;
+    Ok(v)
 }
 
 fn to_uid(v: i64) -> Result<u32> {
@@ -373,6 +385,9 @@ async fn live_message(
 
 /// Thread of the nearest known ancestor: the references from last to first, then
 /// In-Reply-To. Soft-deleted messages still anchor their thread.
+///
+/// At most `MAX_THREAD_CANDIDATES` (32) ids are tried. With more than 32 References only
+/// the last 32 are consulted and In-Reply-To is not consulted at all.
 async fn find_thread(
     conn: &mut SqliteConnection,
     mb: MailboxId,
@@ -449,7 +464,6 @@ impl Mailbox {
 
     pub async fn create_folder(&self, parent: Option<FolderId>, name: &str) -> Result<FolderId> {
         validate_folder_name(name)?;
-        let uid_validity = random_uid_validity()?;
         let mut tx = self.begin().await?;
         if let Some(p) = parent {
             let depth = ancestor_depth(&mut tx, self.id, p, None).await?;
@@ -457,6 +471,7 @@ impl Mailbox {
                 return Err(Error::Invalid("folder tree too deep".into()));
             }
         }
+        let uid_validity = take_uid_validity(&mut tx, self.id).await?;
         let id: i64 =
             sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) + 1 FROM folders WHERE mailbox_id = ?")
                 .bind(self.id.0)
