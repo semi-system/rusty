@@ -1,0 +1,17 @@
+# Rusty startup configuration. Every key except the two paths is optional.
+# Unknown keys are rejected.
+
+# SQLite metadata database (absolute path; created if missing).
+database_path = "/var/lib/rusty/meta.sqlite"
+
+# Directory holding the content-addressed message blobs (absolute path).
+blob_dir = "/var/lib/rusty/blobs"
+
+# One of: error, warn, info, debug, trace. Default: info.
+# log_level = "info"
+
+# Largest accepted message in bytes, 1024..=1073741824. Default: 52428800 (50 MiB).
+# max_message_bytes = 52428800
+
+# Seconds an unreferenced blob is kept before GC may delete it. Minimum 3600. Default: 86400.
+# gc_grace_seconds = 86400
