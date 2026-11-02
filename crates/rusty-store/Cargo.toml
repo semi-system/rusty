@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 rusty-core = { path = "../rusty-core" }
+async-trait.workspace = true
+bytes.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
 
