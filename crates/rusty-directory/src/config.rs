@@ -34,7 +34,7 @@ pub(crate) fn ensure_object(v: &Value) -> Result<()> {
 fn lookup(json: &str, key: &str) -> Result<Option<Value>> {
     let v: Value = serde_json::from_str(json)
         .map_err(|e| Error::storage_with("stored config is not valid JSON", e))?;
-    Ok(v.get(key).cloned())
+    Ok(v.get(key).filter(|x| !x.is_null()).cloned())
 }
 
 impl Directory {
@@ -92,6 +92,8 @@ impl Directory {
     }
 
     /// First hit wins: account, then its plan, then its domain, then the global config.
+    /// A JSON `null` value for the key means "inherit": that layer is skipped and lower layers
+    /// are consulted; if every layer is null or absent the result is `None`.
     pub async fn effective_config(&self, account: AccountId, key: &str) -> Result<Option<Value>> {
         let pool = self.store().pool();
         let (acfg, plan_id, domain_id): (String, Option<i64>, i64) =

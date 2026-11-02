@@ -1,5 +1,3 @@
-use std::sync::OnceLock;
-
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
 use async_trait::async_trait;
@@ -9,8 +7,14 @@ use rusty_store::map_db_error;
 
 use crate::dir::{Directory, Resolved};
 
+/// Longest accepted password, in bytes.
+pub(crate) const MAX_PASSWORD_BYTES: usize = 1024;
+
 /// Hash a password with argon2id and a random salt (PHC string). Runs on a blocking thread.
 pub(crate) async fn hash_password(password: &str) -> Result<String> {
+    if password.len() > MAX_PASSWORD_BYTES {
+        return Err(Error::Invalid("password too long".into()));
+    }
     if password.is_empty() {
         return Err(Error::Invalid("empty password".into()));
     }
@@ -26,11 +30,6 @@ fn hash_blocking(password: &str) -> Result<String> {
         .hash_password(password.as_bytes(), &salt)
         .map(|h| h.to_string())
         .map_err(|e| Error::storage(format!("password hashing failed: {e}")))
-}
-
-fn dummy_hash() -> &'static str {
-    static DUMMY: OnceLock<String> = OnceLock::new();
-    DUMMY.get_or_init(|| hash_blocking("dummy-password-for-timing").unwrap_or_default())
 }
 
 fn verify_blocking(hash: &str, password: &str) -> bool {
@@ -67,11 +66,17 @@ pub trait Authenticator: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct LocalAuthenticator {
     directory: Directory,
+    dummy_hash: String,
 }
 
 impl LocalAuthenticator {
-    pub fn new(directory: Directory) -> LocalAuthenticator {
-        LocalAuthenticator { directory }
+    /// Computes the dummy hash (same Argon2 params as real hashes) used to equalize timing.
+    pub async fn new(directory: Directory) -> Result<LocalAuthenticator> {
+        let dummy_hash = hash_password("dummy-password-for-timing").await?;
+        Ok(LocalAuthenticator {
+            directory,
+            dummy_hash,
+        })
     }
 
     async fn run_verify(hash: String, password: &str) -> Result<bool> {
@@ -85,6 +90,9 @@ impl LocalAuthenticator {
 #[async_trait]
 impl Authenticator for LocalAuthenticator {
     async fn verify(&self, addr: &str, password: &str) -> Result<Option<AccountId>> {
+        if password.len() > MAX_PASSWORD_BYTES {
+            return Ok(None);
+        }
         let account = match self.directory.resolve(addr).await {
             Ok(Resolved::Account(id)) => Some(id),
             Ok(_) | Err(Error::NotFound(_)) | Err(Error::Invalid(_)) => None,
@@ -105,7 +113,7 @@ impl Authenticator for LocalAuthenticator {
             }
             _ => {
                 // Unknown account or no local hash: burn comparable time.
-                Self::run_verify(dummy_hash().to_owned(), password).await?;
+                Self::run_verify(self.dummy_hash.clone(), password).await?;
                 Ok(None)
             }
         }

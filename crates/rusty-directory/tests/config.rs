@@ -89,3 +89,15 @@ async fn config_missing_key_is_none() {
         Err(Error::NotFound(_))
     ));
 }
+
+#[tokio::test]
+async fn null_config_value_inherits() {
+    let d = dir().await;
+    let dom = d.create_domain("example.com").await.unwrap();
+    let acc = d.create_account("alice", dom, None, None).await.unwrap();
+    d.set_domain_config(dom, json!({"q": 7})).await.unwrap();
+    d.set_account_config(acc, json!({"q": null})).await.unwrap();
+    assert_eq!(d.effective_config(acc, "q").await.unwrap(), Some(json!(7)));
+    d.set_domain_config(dom, json!({"q": null})).await.unwrap();
+    assert_eq!(d.effective_config(acc, "q").await.unwrap(), None);
+}

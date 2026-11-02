@@ -64,11 +64,12 @@ pub(crate) fn normalize_domain(domain: &str) -> Result<String> {
     Ok(ascii.to_lowercase())
 }
 
-/// Normalize a local part (RFC 6531): trim, NFC, lowercase. No quoted forms or comments.
+/// Normalize a local part: NFC, lowercase. Does not trim (whitespace is invalid).
+/// ASCII must be RFC 5322 atext plus interior single dots; any non-ASCII character is allowed
+/// (RFC 6531) except control and whitespace. Quoted forms and comments are not supported.
 pub(crate) fn normalize_local(local: &str) -> Result<String> {
     use unicode_normalization::UnicodeNormalization;
     let l: String = local
-        .trim()
         .nfc()
         .collect::<String>()
         .to_lowercase()
@@ -80,8 +81,19 @@ pub(crate) fn normalize_local(local: &str) -> Result<String> {
     if l.len() > 64 {
         return Err(Error::Invalid("local part longer than 64 octets".into()));
     }
-    if has_bad_chars(&l) || l.contains(['"', '(', ')', '\x5c']) {
+    let atext_special = "!#$%&'*+-/=?^_`{|}~";
+    let ok = l.chars().all(|c| {
+        if c.is_ascii() {
+            c.is_ascii_alphanumeric() || c == '.' || atext_special.contains(c)
+        } else {
+            !c.is_whitespace() && !c.is_control()
+        }
+    });
+    if !ok {
         return Err(Error::Invalid("invalid character in local part".into()));
+    }
+    if l.starts_with('.') || l.ends_with('.') || l.contains("..") {
+        return Err(Error::Invalid("misplaced '.' in local part".into()));
     }
     Ok(l)
 }

@@ -5,7 +5,7 @@ use rusty_store::SqliteStore;
 async fn setup() -> (Directory, LocalAuthenticator, rusty_core::DomainId) {
     let d = Directory::new(SqliteStore::open("sqlite::memory:").await.unwrap());
     let dom = d.create_domain("example.com").await.unwrap();
-    (d.clone(), LocalAuthenticator::new(d), dom)
+    (d.clone(), LocalAuthenticator::new(d).await.unwrap(), dom)
 }
 
 #[tokio::test]
@@ -87,4 +87,22 @@ async fn empty_password_is_invalid() {
         Err(Error::Invalid(_))
     ));
     d.set_password(acc, "new").await.unwrap();
+}
+
+#[tokio::test]
+async fn overlong_password_rejected() {
+    let (d, a, dom) = setup().await;
+    let long = "x".repeat(1025);
+    assert!(matches!(
+        d.create_account("alice", dom, Some(&long), None).await,
+        Err(Error::Invalid(_))
+    ));
+    let ok = "y".repeat(1024);
+    let acc = d.create_account("bob", dom, Some(&ok), None).await.unwrap();
+    assert!(matches!(
+        d.set_password(acc, &long).await,
+        Err(Error::Invalid(_))
+    ));
+    assert_eq!(a.verify("bob@example.com", &long).await.unwrap(), None);
+    assert_eq!(a.verify("bob@example.com", &ok).await.unwrap(), Some(acc));
 }

@@ -53,7 +53,7 @@ async fn create_account_makes_mailbox_and_system_folders() {
 async fn address_is_normalized_to_lowercase() {
     let d = dir().await;
     let dom = d.create_domain("Example.COM").await.unwrap();
-    let acc = d.create_account("  Alice ", dom, None, None).await.unwrap();
+    let acc = d.create_account("Alice", dom, None, None).await.unwrap();
     assert_eq!(
         d.resolve("ALICE@Example.com").await.unwrap(),
         Resolved::Account(acc)
@@ -159,20 +159,6 @@ async fn resolve_unknown_is_not_found() {
     ));
 }
 
-#[tokio::test]
-async fn create_account_rolls_back_on_failure() {
-    let d = dir().await;
-    let dom = d.create_domain("example.com").await.unwrap();
-    d.create_account("alice", dom, None, None).await.unwrap();
-    assert!(d.create_account("alice", dom, None, None).await.is_err());
-    assert!(d
-        .create_account("bob", rusty_core::DomainId(999), None, None)
-        .await
-        .is_err());
-    assert_eq!(count(&d, "accounts").await, 1);
-    assert_eq!(count(&d, "mailboxes").await, 1);
-    assert_eq!(count(&d, "folders").await, 5);
-}
 
 async fn domain_name(d: &Directory, id: rusty_core::DomainId) -> String {
     sqlx::query_scalar("SELECT name FROM domains WHERE id = ?")
@@ -310,4 +296,126 @@ fn display_domain_roundtrip() {
     );
     let (_, p) = rusty_directory::parse_address("x@münchen.de").unwrap();
     assert_eq!(rusty_directory::display_domain(&p), "münchen.de");
+}
+
+#[tokio::test]
+async fn create_account_rolls_back_on_failure() {
+    let d = dir().await;
+    let dom = d.create_domain("example.com").await.unwrap();
+    d.create_account("alice", dom, None, None).await.unwrap();
+    assert!(d.create_account("alice", dom, None, None).await.is_err());
+    // Fail on the LAST folder insert, after account, mailbox and 4 folders were inserted.
+    sqlx::query(
+        "CREATE TRIGGER t BEFORE INSERT ON folders WHEN NEW.role='spam' \
+         BEGIN SELECT RAISE(ABORT,'boom'); END;",
+    )
+    .execute(d.store().pool())
+    .await
+    .unwrap();
+    assert!(d.create_account("bob", dom, None, None).await.is_err());
+    assert_eq!(count(&d, "accounts").await, 1);
+    assert_eq!(count(&d, "mailboxes").await, 1);
+    assert_eq!(count(&d, "folders").await, 5);
+    assert!(matches!(
+        d.resolve("bob@example.com").await,
+        Err(Error::NotFound(_))
+    ));
+    // Positive control.
+    sqlx::query("DROP TRIGGER t")
+        .execute(d.store().pool())
+        .await
+        .unwrap();
+    d.create_account("bob", dom, None, None).await.unwrap();
+    assert_eq!(count(&d, "accounts").await, 2);
+    assert_eq!(count(&d, "folders").await, 10);
+}
+
+#[tokio::test]
+async fn local_part_must_be_atext() {
+    let d = dir().await;
+    let dom = d.create_domain("example.com").await.unwrap();
+    for c in "<>,;:[]\"()\\@ ".chars() {
+        let bad = format!("a{c}b");
+        assert!(
+            matches!(
+                d.create_account(&bad, dom, None, None).await,
+                Err(Error::Invalid(_))
+            ),
+            "{bad:?}"
+        );
+    }
+    for bad in [".a", "a.", "a..b", " alice", "alice "] {
+        for r in [
+            d.create_account(bad, dom, None, None).await.map(|_| ()),
+            d.create_list(bad, dom).await.map(|_| ()),
+        ] {
+            assert!(matches!(r, Err(Error::Invalid(_))), "{bad:?}");
+        }
+    }
+    let acc = d.create_account("x", dom, None, None).await.unwrap();
+    assert!(matches!(
+        d.add_alias("a>b", dom, acc).await,
+        Err(Error::Invalid(_))
+    ));
+    let list = d.create_list("team", dom).await.unwrap();
+    assert!(matches!(
+        d.add_list_member(list, None, Some("x>,y@evil.com")).await,
+        Err(Error::Invalid(_))
+    ));
+    assert!(matches!(
+        d.resolve("alice @example.com").await,
+        Err(Error::Invalid(_)) | Err(Error::NotFound(_))
+    ));
+    // Positive controls.
+    let a = d
+        .create_account("A.b+tag_c", dom, None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        d.resolve("a.b+tag_c@example.com").await.unwrap(),
+        Resolved::Account(a)
+    );
+    let u = d.create_account("josé.müller", dom, None, None).await.unwrap();
+    assert_eq!(
+        d.resolve("JOSÉ.müller@example.com").await.unwrap(),
+        Resolved::Account(u)
+    );
+}
+
+#[tokio::test]
+async fn case_variant_external_members_collide() {
+    let d = dir().await;
+    let dom = d.create_domain("example.com").await.unwrap();
+    let list = d.create_list("team", dom).await.unwrap();
+    d.add_list_member(list, None, Some("Bob@Other.org"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        d.add_list_member(list, None, Some("bob@OTHER.org")).await,
+        Err(Error::Conflict(_))
+    ));
+}
+
+#[tokio::test]
+async fn folder_uid_validities_are_independent() {
+    let d = dir().await;
+    let dom = d.create_domain("example.com").await.unwrap();
+    for i in 0..20 {
+        d.create_account(&format!("u{i}"), dom, None, None)
+            .await
+            .unwrap();
+    }
+    let rows: Vec<(i64, i64)> = sqlx::query_as("SELECT mailbox_id, uid_validity FROM folders")
+        .fetch_all(d.store().pool())
+        .await
+        .unwrap();
+    let varied = (1..=20)
+        .filter(|m| {
+            let mut v: Vec<i64> = rows.iter().filter(|r| r.0 == *m).map(|r| r.1).collect();
+            v.sort();
+            v.dedup();
+            v.len() > 1
+        })
+        .count();
+    assert!(varied >= 19, "only {varied} mailboxes had varied validities");
 }
