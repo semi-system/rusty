@@ -1,6 +1,5 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rand_core::{OsRng, RngCore};
 use rusty_core::{AccountId, DomainId, Error, FolderRole, ListId, MailboxId, PlanId, Result};
 use rusty_store::{map_db_error, SqliteStore};
 
@@ -27,14 +26,15 @@ pub(crate) fn now() -> i64 {
         .unwrap_or(0)
 }
 
-/// Random value in 1..=u32::MAX.
-fn random_uid_validity() -> i64 {
-    loop {
-        let v = OsRng.next_u32();
-        if v != 0 {
-            return i64::from(v);
-        }
-    }
+/// Number of system folders created with every mailbox (folder ids 1..=SYSTEM_FOLDERS).
+const SYSTEM_FOLDERS: i64 = 5;
+
+/// UIDVALIDITY seed for a new mailbox (spec §4, RFC 3501/9051 §2.3.1.1): the clock in
+/// seconds, clamped so that `base + SYSTEM_FOLDERS` still fits in 1..=u32::MAX. System
+/// folder `id` gets `base + id`; the mailbox high-water mark gets `base + SYSTEM_FOLDERS`,
+/// the largest value issued, so later folders (`Mailbox::create_folder`) are all greater.
+fn uid_validity_base() -> i64 {
+    now().clamp(1, i64::from(u32::MAX) - SYSTEM_FOLDERS)
 }
 
 fn has_bad_chars(s: &str) -> bool {
@@ -179,11 +179,12 @@ impl Directory {
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db_error)?;
+        let uv_base = uid_validity_base();
         let mb: i64 = sqlx::query_scalar(
             "INSERT INTO mailboxes (account_id, uid_validity) VALUES (?, ?) RETURNING id",
         )
         .bind(acc)
-        .bind(random_uid_validity())
+        .bind(uv_base + SYSTEM_FOLDERS)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db_error)?;
@@ -203,7 +204,7 @@ impl Directory {
             .bind(id)
             .bind(name)
             .bind(role.as_str())
-            .bind(random_uid_validity())
+            .bind(uv_base + id)
             .execute(&mut *tx)
             .await
             .map_err(map_db_error)?;

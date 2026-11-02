@@ -419,3 +419,83 @@ async fn folder_uid_validities_are_independent() {
         .count();
     assert!(varied >= 19, "only {varied} mailboxes had varied validities");
 }
+
+// ---------- uid_validity seeding (RFC 3501/9051 2.3.1.1, spec 4) ----------
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+/// (mailbox high-water mark, uid_validity of the 5 system folders)
+async fn seeded(d: &Directory, acc: rusty_core::AccountId) -> (i64, Vec<i64>) {
+    let mb = d.mailbox_for(acc).await.unwrap();
+    let hw: i64 = sqlx::query_scalar("SELECT uid_validity FROM mailboxes WHERE id = ?")
+        .bind(mb.0)
+        .fetch_one(d.store().pool())
+        .await
+        .unwrap();
+    let folders: Vec<i64> =
+        sqlx::query_scalar("SELECT uid_validity FROM folders WHERE mailbox_id = ? ORDER BY id")
+            .bind(mb.0)
+            .fetch_all(d.store().pool())
+            .await
+            .unwrap();
+    (hw, folders)
+}
+
+#[tokio::test]
+async fn mailbox_high_water_mark_covers_system_folders() {
+    let d = dir().await;
+    let dom = d.create_domain("example.com").await.unwrap();
+    for i in 0..5 {
+        let acc = d.create_account(&format!("hw{i}"), dom, None, None).await.unwrap();
+        let (hw, folders) = seeded(&d, acc).await;
+        assert_eq!(folders.len(), 5);
+        assert!(folders.iter().all(|v| *v <= hw), "{hw} vs {folders:?}");
+    }
+}
+
+#[tokio::test]
+async fn uid_validity_seed_is_the_clock() {
+    let d = dir().await;
+    let dom = d.create_domain("example.com").await.unwrap();
+    let before = now_secs();
+    let acc = d.create_account("clock", dom, None, None).await.unwrap();
+    let (hw, folders) = seeded(&d, acc).await;
+    for v in folders.iter().chain(std::iter::once(&hw)) {
+        assert!(
+            (before - 5..=before + 10).contains(v),
+            "{v} not within [now-5s, now+10s] of {before}"
+        );
+        assert!(*v <= i64::from(u32::MAX));
+    }
+}
+
+#[tokio::test]
+async fn first_custom_folder_uid_validity_exceeds_system_folders() {
+    use std::sync::Arc;
+
+    use rusty_store::{BlobStore, FsBlobStore, Mailbox};
+
+    let d = dir().await;
+    let dom = d.create_domain("example.com").await.unwrap();
+    let acc = d.create_account("custom", dom, None, None).await.unwrap();
+    let (_, system) = seeded(&d, acc).await;
+    // create_folder never touches the blob store; this path is never written.
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::new(
+        std::env::temp_dir().join("rusty-directory-test-unused-blobs"),
+    ));
+    let mailbox = Mailbox::open(d.store().clone(), blobs, acc).await.unwrap();
+    let f = mailbox.create_folder(None, "Projects").await.unwrap();
+    let v: i64 =
+        sqlx::query_scalar("SELECT uid_validity FROM folders WHERE mailbox_id = ? AND id = ?")
+            .bind(mailbox.id().0)
+            .bind(f.0)
+            .fetch_one(d.store().pool())
+            .await
+            .unwrap();
+    assert!(system.iter().all(|s| v > *s), "{v} vs {system:?}");
+}
