@@ -1,11 +1,16 @@
 #![forbid(unsafe_code)]
 
 mod blob;
+mod gc;
 mod mailbox;
 mod sqlite;
 mod traits;
 
-pub use blob::{BlobStore, FsBlobStore};
+pub use blob::{BlobEntry, BlobStore, FsBlobStore};
+pub use gc::{
+    collect_blobs, collect_blobs_at, purge_deleted, GcReport, DEFAULT_GC_GRACE, GC_BATCH,
+    MAX_GC_ERRORS, PURGE_BATCH,
+};
 pub use mailbox::{
     normalize_keyword, validate_folder_name, Change, ChangeKind, ChangeOp, Mailbox, MailboxLimits,
     MessageRef, MessageSummary, DEFAULT_MAX_MESSAGE_BYTES, MAX_FOLDER_DEPTH,
