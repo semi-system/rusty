@@ -1,4 +1,4 @@
-use rusty_core::{BlobHash, Flags, FolderRole};
+use rusty_core::{BlobHash, Flags, FolderRole, ListId};
 
 #[test]
 fn blob_hash_of_known_input() {
@@ -32,4 +32,11 @@ fn folder_role_roundtrip() {
         assert_eq!(r.as_str().parse::<FolderRole>().unwrap(), r);
     }
     assert!("bogus".parse::<FolderRole>().is_err());
+}
+
+#[test]
+fn list_id_is_a_newtype() {
+    assert_eq!(ListId(7), ListId(7));
+    assert_ne!(ListId(7), ListId(8));
+    assert_eq!(ListId(7).0, 7);
 }

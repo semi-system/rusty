@@ -14,7 +14,7 @@ macro_rules! newtype_id {
     };
 }
 
-newtype_id!(AccountId, MailboxId, FolderId, MessageId, DomainId, PlanId);
+newtype_id!(AccountId, MailboxId, FolderId, MessageId, DomainId, PlanId, ListId);
 
 /// Lowercase hex SHA-256 digest (exactly 64 chars).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
