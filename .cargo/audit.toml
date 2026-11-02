@@ -1,0 +1,5 @@
+[advisories]
+# RUSTSEC-2023-0071 (rsa, Marvin timing attack): rsa appears in Cargo.lock only because
+# sqlx-macros-core lists the sqlx-mysql driver; it is never compiled or linked here
+# (verify: cargo tree -i rsa --target all prints nothing). Re-check when sqlx is upgraded.
+ignore = ["RUSTSEC-2023-0071"]

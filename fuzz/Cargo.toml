@@ -1,0 +1,31 @@
+[package]
+name = "rusty-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+unicode-general-category = "1"
+rusty-mime = { path = "../crates/rusty-mime" }
+rusty-directory = { path = "../crates/rusty-directory" }
+
+# Not part of the main workspace (needs nightly); has its own lockfile.
+[workspace]
+
+[[bin]]
+name = "parse_envelope"
+path = "fuzz_targets/parse_envelope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_address"
+path = "fuzz_targets/parse_address.rs"
+test = false
+doc = false
+bench = false

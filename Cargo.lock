@@ -1150,6 +1150,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "idna",
+ "proptest",
  "rand_core 0.6.4",
  "rusty-core",
  "rusty-store",
