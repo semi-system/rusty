@@ -45,7 +45,7 @@ impl BlobStore for FsBlobStore {
         if tokio::fs::try_exists(&path).await.map_err(|e| io_err("blob exists check", e))? {
             return Ok(hash);
         }
-        let dir = path.parent().expect("blob path has parent");
+        let dir = path.parent().ok_or_else(|| Error::storage("blob path has no parent"))?;
         tokio::fs::create_dir_all(dir).await.map_err(|e| io_err("create blob dir", e))?;
         let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let tmp = dir.join(format!(".{}.{}.{}.tmp", hash.as_str(), std::process::id(), n));

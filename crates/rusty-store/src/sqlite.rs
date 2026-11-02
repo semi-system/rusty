@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use rusty_core::{Error, Result};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqlitePool, Transaction};
 
 /// SQLite-backed metadata store. Every pooled connection has
 /// `PRAGMA foreign_keys = ON`; `open` verifies it.
@@ -26,6 +26,10 @@ impl SqliteStore {
             .min_connections(if in_memory { 1 } else { 0 })
             .idle_timeout(None)
             .max_lifetime(None)
+            // sqlx closes an idle connection if `acquire` is cancelled during its liveness
+            // ping; for the single in-memory connection that would silently swap in a new,
+            // empty database. An in-process database needs no ping.
+            .test_before_acquire(!in_memory)
             .connect_with(opts)
             .await
             .map_err(|e| Error::storage_with("cannot open database", e))?;
@@ -40,6 +44,26 @@ impl SqliteStore {
 
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// Begin a write transaction with `BEGIN IMMEDIATE`, taking SQLite's write lock up
+    /// front so concurrent writers serialize instead of failing on lock upgrade.
+    ///
+    /// Dropping the returned transaction without committing (an early `?` return or a
+    /// cancelled future) queues a rollback on the connection's worker, which runs before the
+    /// connection is reused, so the write lock is never leaked.
+    ///
+    /// The begin step itself runs in its own task: in sqlx 0.8.6, cancelling `begin_with`
+    /// after SQLite acknowledged the `BEGIN` but before sqlx's follow-up check returns leaves
+    /// an open transaction (holding the write lock) on a pooled connection. In a separate
+    /// task the begin always completes; if our caller is gone, the finished transaction is
+    /// dropped there and rolled back. Covered by `cancelled_begin_write_does_not_leak_transaction`.
+    pub async fn begin_write(&self) -> Result<Transaction<'static, Sqlite>> {
+        let pool = self.pool.clone();
+        tokio::spawn(async move { pool.begin_with("BEGIN IMMEDIATE").await })
+            .await
+            .map_err(|e| Error::storage_with("begin task failed", e))?
+            .map_err(map_db_error)
     }
 
     async fn verify_foreign_keys(&self) -> Result<()> {
