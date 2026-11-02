@@ -9,8 +9,16 @@
 //!   content, re-touches) the file *before* its transaction inserts the row, so a file that
 //!   is about to gain a row is always younger than the grace window, provided the window is
 //!   longer than the slowest `put` -> commit of an append. Use hours, not seconds
-//!   ([`DEFAULT_GC_GRACE`]).
-//! - Run at most one GC per blob root at a time.
+//!   ([`DEFAULT_GC_GRACE`]); [`collect_blobs`] refuses less than [`MIN_GC_GRACE`].
+//! - At most one GC runs per blob root: `collect_blobs` takes the store's advisory lock
+//!   (`<blob root>/.gc.lock`, `File::try_lock`) and fails fast with `Conflict` otherwise.
+//! - File deletion renames the blob aside first (`.<hash>.gc<pid>.<n>.gcq`, see
+//!   `BlobStore::delete_if_older`). A referenced blob can therefore read `NotFound` from
+//!   `BlobStore::get` only in one narrow race (GC renamed it aside just as a `put` of the same
+//!   content refreshed it); it is moved back within microseconds, and callers do not retry. A
+//!   quarantine file left by a crash is healed at the start of the next run
+//!   (`BlobStore::heal_quarantine`): restored if the blob path is missing, removed if the blob
+//!   path exists and the copy is past the grace window.
 //!
 //! Memory: rows are read in batches of [`GC_BATCH`]; files are walked one shard (1/256 of the
 //! store) at a time, together with the row hashes of that shard. The error list is capped at
@@ -32,6 +40,8 @@ pub const GC_BATCH: i64 = 1000;
 pub const MAX_GC_ERRORS: usize = 1000;
 /// A conservative grace window for production use.
 pub const DEFAULT_GC_GRACE: Duration = Duration::from_secs(24 * 3600);
+/// The shortest grace window [`collect_blobs`] accepts.
+pub const MIN_GC_GRACE: Duration = Duration::from_secs(3600);
 
 /// Hard-delete soft-deleted messages with `deleted_at < older_than` (unix seconds), at most
 /// [`PURGE_BATCH`] per `BEGIN IMMEDIATE` transaction, until none are left. Keywords cascade,
@@ -70,6 +80,10 @@ pub struct GcReport {
     pub files_deleted: u64,
     /// Stale temporary files deleted.
     pub tmp_swept: u64,
+    /// Quarantined blobs moved back to their blob path at startup.
+    pub quarantine_restored: u64,
+    /// Stale quarantine copies removed at startup.
+    pub quarantine_removed: u64,
     /// Per-blob failures that were skipped. Messages name blob hashes or shards only: no
     /// content and no filesystem paths.
     pub errors: Vec<String>,
@@ -95,16 +109,22 @@ fn describe(e: &Error) -> String {
     }
 }
 
-/// [`collect_blobs_at`] with the current time.
+/// Collect unreferenced blobs now (phases: see [`collect_blobs_at`]). A `grace` below
+/// [`MIN_GC_GRACE`] is `Invalid`: it must exceed the slowest `put` -> commit of an append.
 pub async fn collect_blobs(
     store: &SqliteStore,
     blobs: &dyn BlobStore,
     grace: Duration,
 ) -> Result<GcReport> {
+    if grace < MIN_GC_GRACE {
+        return Err(Error::Invalid("gc grace must be at least one hour".into()));
+    }
     collect_blobs_at(store, blobs, grace, SystemTime::now()).await
 }
 
-/// Remove unreferenced blobs as seen at time `now`:
+/// Remove unreferenced blobs as seen at time `now`, with any `grace` (for tests; production
+/// code calls [`collect_blobs`]). Under the GC lock (`Conflict` if another GC holds it):
+/// 0. heal quarantine files left by an interrupted run;
 /// 1. rows with `refcount = 0` and `zero_since < now - grace` (seconds): the row is deleted in
 ///    a transaction that re-checks both conditions, then the file is deleted if its mtime is
 ///    older than `now - grace` (a younger file is left as an orphan for a later run);
@@ -113,8 +133,10 @@ pub async fn collect_blobs(
 /// 3. temporary files older than `now - grace`.
 ///
 /// A blob with `refcount > 0` is never deleted. Errors on one blob are recorded in
-/// [`GcReport::errors`] and the run continues; `Err` only when the database cannot be
+/// [`GcReport::errors`] and the run continues; `Err` only when the GC lock is held elsewhere
+/// (`Conflict`), the lock cannot be taken, or the database cannot be
 /// queried at all.
+#[doc(hidden)]
 pub async fn collect_blobs_at(
     store: &SqliteStore,
     blobs: &dyn BlobStore,
@@ -123,7 +145,19 @@ pub async fn collect_blobs_at(
 ) -> Result<GcReport> {
     let cutoff = now.checked_sub(grace).unwrap_or(UNIX_EPOCH);
     let cutoff_secs = unix_secs(cutoff);
+    // Held until this function returns (or unwinds).
+    let _lock = blobs.try_lock_gc().await?;
     let mut report = GcReport::default();
+    match blobs.heal_quarantine(cutoff).await {
+        Ok(h) => {
+            report.quarantine_restored = h.restored;
+            report.quarantine_removed = h.removed;
+            if h.failed > 0 {
+                report.error(|| format!("quarantine: {} files could not be healed", h.failed));
+            }
+        }
+        Err(e) => report.error(|| format!("quarantine: {}", describe(&e))),
+    }
     collect_rows(store, blobs, cutoff, cutoff_secs, &mut report).await?;
     collect_orphans(store, blobs, cutoff, cutoff_secs, &mut report).await;
     match blobs.sweep_temp_before(cutoff).await {

@@ -6,9 +6,11 @@ use std::time::{Duration, SystemTime};
 
 use bytes::Bytes;
 use common::*;
+use rusty_core::Error;
 use rusty_core::{BlobHash, Flags};
 use rusty_store::{
-    collect_blobs, collect_blobs_at, purge_deleted, BlobStore, GcReport, PURGE_BATCH,
+    collect_blobs, collect_blobs_at, purge_deleted, BlobStore, GcReport, GC_LOCK_FILE,
+    MIN_GC_GRACE, PURGE_BATCH, QUARANTINE_SUFFIX,
 };
 
 const HOUR: Duration = Duration::from_secs(3600);
@@ -283,7 +285,8 @@ async fn delete_account_cascades_mailbox_and_decrements_refcount() {
     assert_eq!(counts(&r), (1, 1, 0));
     assert!(!has_row(&e, &hs).await);
     assert!(!blob_path(&root(&e), &hs).exists());
-    assert!(e.blob_files().is_empty());
+    // only the GC lock file is left
+    assert_eq!(e.blob_files(), vec![root(&e).join(GC_LOCK_FILE)]);
 }
 
 #[tokio::test]
@@ -573,6 +576,18 @@ async fn collect_ignores_symlinks_and_odd_names() {
         d.join(format!("{}.bak", hash("0123"))), // suffix
         d.join(&hash("0123")[..63]),             // too short
         d.join("0123zzzz"),
+        // multibyte UTF-8: exactly 64 bytes, char boundaries off the 2/4-byte split points
+        d.join(format!("€{}", "0".repeat(61))),
+        d.join(format!("01€{}", "0".repeat(59))),
+        d.join(format!("012€{}", "0".repeat(58))),
+        d.join(format!(".€{}.gc1.1.gcq", "0".repeat(61))),
+        // multibyte shard / second-level directory names
+        r0.join("é").join("23").join(hash("0123")),
+        r0.join("€").join("23").join(hash("0123")),
+        r0.join("01").join("é").join(hash("01")),
+        r0.join("fe")
+            .join("dc")
+            .join(format!("fedc€{}", "0".repeat(57))),
     ];
     for p in &odd {
         file(p);
@@ -587,10 +602,13 @@ async fn collect_ignores_symlinks_and_odd_names() {
     // one real orphan in the same directory: GC must reach and delete it
     let real = d.join(hash("0123"));
     file(&real);
+    // and one in another shard, next to multibyte junk
+    let real2 = r0.join("fe").join("dc").join(hash("fedc"));
+    file(&real2);
 
     let listed = e.blobs.list().await.unwrap();
     let names: Vec<&str> = listed.iter().map(|b| b.hash.as_str()).collect();
-    assert_eq!(names, vec![hash("0123").as_str()]);
+    assert_eq!(names, vec![hash("0123").as_str(), hash("fedc").as_str()]);
 
     let r = collect_blobs_at(
         &e.store,
@@ -600,8 +618,10 @@ async fn collect_ignores_symlinks_and_odd_names() {
     )
     .await
     .unwrap();
-    assert_eq!(counts(&r), (0, 1, 0), "{:?}", r.errors);
+    assert_eq!(counts(&r), (0, 2, 0), "{:?}", r.errors);
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
     assert!(!real.exists());
+    assert!(!real2.exists());
     assert!(std::fs::symlink_metadata(&link)
         .unwrap()
         .file_type()
@@ -614,4 +634,125 @@ async fn collect_ignores_symlinks_and_odd_names() {
         .unwrap()
         .file_type()
         .is_symlink());
+}
+
+// ---------- quarantine healing, lock, grace (review fixes) ----------
+
+fn quarantine_path(root: &Path, h: &BlobHash, n: u32) -> PathBuf {
+    blob_path(root, h).with_file_name(format!(".{}.gc999.{n}{QUARANTINE_SUFFIX}", h.as_str()))
+}
+
+/// A GC that crashed between "rename aside" and "rename back" left the only copy of a
+/// referenced blob under its quarantine name: the next run puts it back.
+#[tokio::test]
+async fn startup_restores_quarantined_blob_when_path_missing() {
+    let e = env().await;
+    let msg = raw("quarantined", Some("q@x"));
+    let h = BlobHash::of(&msg);
+    e.mb.append(INBOX, msg.clone(), Flags::default())
+        .await
+        .unwrap();
+    let p = blob_path(&root(&e), &h);
+    let q = quarantine_path(&root(&e), &h, 1);
+    std::fs::rename(&p, &q).unwrap();
+    set_mtime(&q, SystemTime::now() - 3 * DAY); // restored regardless of age
+    assert!(matches!(e.blobs.get(&h).await, Err(Error::NotFound(_))));
+
+    let r = collect_blobs(&e.store, e.blobs.as_ref(), HOUR)
+        .await
+        .unwrap();
+    assert_eq!((r.quarantine_restored, r.quarantine_removed), (1, 0));
+    assert_eq!(counts(&r), (0, 0, 0), "{:?}", r.errors);
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert!(!q.exists());
+    assert_eq!(e.blobs.get(&h).await.unwrap(), msg);
+    assert_eq!(refcount(&e, &h).await, Some(1));
+}
+
+#[tokio::test]
+async fn startup_removes_stale_quarantine_when_path_exists() {
+    let e = env().await;
+    let msg = raw("present", None);
+    let h = BlobHash::of(&msg);
+    e.mb.append(INBOX, msg.clone(), Flags::default())
+        .await
+        .unwrap();
+    let (stale, fresh) = (
+        quarantine_path(&root(&e), &h, 1),
+        quarantine_path(&root(&e), &h, 2),
+    );
+    std::fs::write(&stale, &msg).unwrap();
+    std::fs::write(&fresh, &msg).unwrap();
+    set_mtime(&stale, SystemTime::now() - 2 * HOUR);
+
+    let r = collect_blobs(&e.store, e.blobs.as_ref(), HOUR)
+        .await
+        .unwrap();
+    assert_eq!((r.quarantine_restored, r.quarantine_removed), (0, 1));
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert!(!stale.exists());
+    assert!(
+        fresh.exists(),
+        "a copy within the grace window is left alone"
+    );
+    assert_eq!(e.blobs.get(&h).await.unwrap(), msg);
+}
+
+#[tokio::test]
+async fn second_gc_fails_fast_while_lock_is_held() {
+    let e = env().await;
+    // a GC in progress elsewhere (separate open file description, as another process would)
+    let held = e.blobs.try_lock_gc().await.unwrap();
+    let r = collect_blobs(&e.store, e.blobs.as_ref(), HOUR).await;
+    assert!(
+        matches!(r, Err(Error::Conflict(ref m)) if m == "gc already running"),
+        "{r:?}"
+    );
+    let r = collect_blobs_at(&e.store, e.blobs.as_ref(), HOUR, SystemTime::now()).await;
+    assert!(matches!(r, Err(Error::Conflict(_))), "{r:?}");
+    assert!(matches!(
+        e.blobs.try_lock_gc().await,
+        Err(Error::Conflict(_))
+    ));
+    drop(held);
+
+    // a finished GC released the lock
+    collect_blobs(&e.store, e.blobs.as_ref(), HOUR)
+        .await
+        .unwrap();
+    collect_blobs(&e.store, e.blobs.as_ref(), HOUR)
+        .await
+        .unwrap();
+
+    // the lock is released when its holder panics
+    let blobs = e.blobs.clone();
+    let task = tokio::spawn(async move {
+        let _lock = blobs.try_lock_gc().await.unwrap();
+        panic!("gc crashed");
+    });
+    assert!(task.await.unwrap_err().is_panic());
+    collect_blobs(&e.store, e.blobs.as_ref(), HOUR)
+        .await
+        .unwrap();
+
+    // the lock file is not a blob
+    assert!(root(&e).join(GC_LOCK_FILE).is_file());
+    assert!(e.blobs.list().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn collect_blobs_rejects_grace_under_one_hour() {
+    let e = env().await;
+    for g in [
+        Duration::ZERO,
+        Duration::from_secs(1),
+        MIN_GC_GRACE - Duration::from_secs(1),
+    ] {
+        let r = collect_blobs(&e.store, e.blobs.as_ref(), g).await;
+        assert!(matches!(r, Err(Error::Invalid(_))), "{g:?}: {r:?}");
+    }
+    assert_eq!(MIN_GC_GRACE, HOUR);
+    collect_blobs(&e.store, e.blobs.as_ref(), MIN_GC_GRACE)
+        .await
+        .unwrap();
 }

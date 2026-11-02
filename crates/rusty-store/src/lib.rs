@@ -6,10 +6,12 @@ mod mailbox;
 mod sqlite;
 mod traits;
 
-pub use blob::{BlobEntry, BlobStore, FsBlobStore};
+pub use blob::{
+    BlobEntry, BlobStore, FsBlobStore, GcLock, HealReport, GC_LOCK_FILE, QUARANTINE_SUFFIX,
+};
 pub use gc::{
     collect_blobs, collect_blobs_at, purge_deleted, GcReport, DEFAULT_GC_GRACE, GC_BATCH,
-    MAX_GC_ERRORS, PURGE_BATCH,
+    MAX_GC_ERRORS, MIN_GC_GRACE, PURGE_BATCH,
 };
 pub use mailbox::{
     normalize_keyword, validate_folder_name, Change, ChangeKind, ChangeOp, Mailbox, MailboxLimits,

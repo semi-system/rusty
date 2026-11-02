@@ -11,6 +11,7 @@ async-trait.workspace = true
 bytes.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
+rustix.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

@@ -254,3 +254,85 @@ async fn sweep_temp_removes_only_stale_tmp_files() {
         .file_type()
         .is_symlink());
 }
+
+#[tokio::test]
+async fn sweep_temp_ignores_quarantine_files() {
+    let (dir, s) = store();
+    let h = s.put(Bytes::from_static(b"quarantined")).await.unwrap();
+    let p = blob_path(dir.path(), &h);
+    let q = p.with_file_name(format!(
+        ".{}.gc4242.7{}",
+        h.as_str(),
+        rusty_store::QUARANTINE_SUFFIX
+    ));
+    std::fs::rename(&p, &q).unwrap();
+    set_mtime(&q, SystemTime::now() - 30 * DAY);
+
+    assert_eq!(s.sweep_temp(Duration::ZERO).await.unwrap(), 0);
+    assert_eq!(
+        s.sweep_temp_before(SystemTime::now() + DAY).await.unwrap(),
+        0
+    );
+    assert!(q.is_file(), "a quarantine copy is never swept");
+    assert!(s.list().await.unwrap().is_empty(), "nor listed as a blob");
+}
+
+/// M3: a symlink or FIFO squatting on a blob path is never followed and never blocks.
+#[tokio::test]
+async fn symlink_or_fifo_at_blob_path_is_not_followed_and_does_not_block() {
+    let (dir, s) = store();
+    let limit = Duration::from_secs(5);
+
+    // FIFO at the path of `fifo_data`
+    let fifo_data = Bytes::from_static(b"fifo content");
+    let hf = BlobHash::of(&fifo_data);
+    let pf = blob_path(dir.path(), &hf);
+    std::fs::create_dir_all(pf.parent().unwrap()).unwrap();
+    rustix::fs::mkfifoat(
+        rustix::fs::CWD,
+        &pf,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+    )
+    .unwrap();
+    let got = tokio::time::timeout(limit, s.get(&hf))
+        .await
+        .expect("get must not block");
+    assert!(matches!(got, Err(Error::Storage { .. })), "{got:?}");
+    let put = tokio::time::timeout(limit, s.put(fifo_data.clone()))
+        .await
+        .expect("put must not block");
+    assert!(put.is_err(), "put over a FIFO fails closed");
+    let del = tokio::time::timeout(limit, s.delete_if_older(&hf, SystemTime::now() + DAY))
+        .await
+        .expect("delete_if_older must not block");
+    assert!(del.is_err());
+
+    // symlink at the path of `link_data`, pointing at an outside file
+    let link_data = Bytes::from_static(b"link content");
+    let hl = BlobHash::of(&link_data);
+    let pl = blob_path(dir.path(), &hl);
+    std::fs::create_dir_all(pl.parent().unwrap()).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let secret = outside.path().join("secret");
+    std::fs::write(&secret, b"outside secret").unwrap();
+    let old = SystemTime::now() - DAY;
+    set_mtime(&secret, old);
+    std::os::unix::fs::symlink(&secret, &pl).unwrap();
+    let got = s.get(&hl).await;
+    assert!(
+        matches!(got, Err(Error::Storage { .. })),
+        "never follows: {got:?}"
+    );
+    assert!(s.put(link_data.clone()).await.is_err());
+    assert_eq!(mtime(&secret), old, "the symlink target is not touched");
+    assert_eq!(std::fs::read(&secret).unwrap(), b"outside secret");
+
+    assert!(s.list().await.unwrap().is_empty());
+    assert!(
+        pf.exists()
+            && std::fs::symlink_metadata(&pl)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+    );
+}

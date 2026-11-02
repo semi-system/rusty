@@ -21,6 +21,7 @@ mail-parser = "0.9"
 argon2 = "0.5"
 proptest = "1"
 tempfile = "3"
+rustix = { version = "1", features = ["fs"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 idna = "1"
 unicode-normalization = "0.1"

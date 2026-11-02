@@ -91,7 +91,8 @@ Một địa chỉ (`local_part@domain`) chỉ được thuộc đúng một tro
 CREATE TABLE blobs (
   hash      TEXT PRIMARY KEY CHECK (length(hash) = 64 AND hash NOT GLOB '*[^0-9a-f]*'),
   size      INTEGER NOT NULL CHECK (size >= 0),
-  refcount  INTEGER NOT NULL DEFAULT 0 CHECK (refcount >= 0)
+  refcount  INTEGER NOT NULL DEFAULT 0 CHECK (refcount >= 0),
+  zero_since INTEGER CHECK (zero_since IS NULL OR zero_since >= 0)  -- migration 0002; xem dưới
 ) STRICT;
 
 CREATE TABLE mailboxes (
@@ -142,6 +143,7 @@ CREATE TABLE messages (
 ) STRICT;
 CREATE INDEX messages_thread ON messages (mailbox_id, thread_id);
 CREATE INDEX messages_msgid  ON messages (mailbox_id, message_id_hdr);
+CREATE INDEX messages_deleted_at ON messages (deleted_at) WHERE deleted_at IS NOT NULL;  -- 0002, cho purge
 
 CREATE TABLE keywords (
   mailbox_id  INTEGER NOT NULL,
@@ -163,6 +165,7 @@ CREATE TABLE change_log (
 
 Ràng buộc kèm theo (trigger, kiểm tra bằng test):
 - `blobs.refcount` được trigger `AFTER INSERT/DELETE/UPDATE OF blob_hash` trên `messages` cập nhật; code ứng dụng không tự ghi. Job dọn chỉ xóa blob có `refcount = 0` và quá hạn ân hạn.
+- `blobs.zero_since` (migration `0002_blob_zero_since.sql`): `NULL` khi `refcount > 0`, ngược lại là unix giây lúc `refcount` về 0 lần gần nhất. Chỉ trigger ghi: `blobs_zero_since_ins` (`AFTER INSERT`, `refcount = 0` → `unixepoch()`), `blobs_zero_since_released` (`AFTER UPDATE OF refcount`, `NEW = 0 AND OLD <> 0` → `unixepoch()`), `blobs_zero_since_referenced` (`AFTER UPDATE OF refcount`, `NEW > 0` → `NULL`); các trigger refcount trên `messages` kích hoạt chúng. Migration backfill một lần `zero_since = unixepoch()` cho hàng `refcount = 0` có sẵn.
 - Cấm tạo chu trình trong cây folder: trigger `BEFORE UPDATE OF parent_id` đi ngược lên chuỗi cha, từ chối nếu gặp lại chính nó (độ sâu tối đa 64).
 - Folder có role khác `custom` là folder hệ thống: tầng `Mailbox` không cho xóa, đổi tên hay đổi role.
 - Cấm xóa folder còn con hoặc còn thư (khóa ngoại `NO ACTION`; tầng `Mailbox` trả `Conflict`). Việc chuyển thư vào `trash` trước khi xóa là việc của tầng giao thức (IMAP/JMAP), không phải của `Mailbox`. Thư đã expunge trong folder được xóa thật cùng folder.
@@ -173,10 +176,19 @@ Ràng buộc kèm theo (trigger, kiểm tra bằng test):
 ## 5. Trait lưu trữ
 ```rust
 #[async_trait] pub trait BlobStore {
-    async fn put(&self, bytes: Bytes) -> Result<BlobHash>;   // idempotent, SHA-256
+    async fn put(&self, bytes: Bytes) -> Result<BlobHash>;   // idempotent, SHA-256; nội dung đã có → làm mới mtime
     async fn get(&self, h: &BlobHash) -> Result<Bytes>;
     async fn delete(&self, h: &BlobHash) -> Result<()>;
+    // Hỗ trợ GC:
+    async fn list_shard(&self, shard: u8) -> Result<Vec<BlobEntry>>;   // 1/256 kho; bỏ qua tên lạ, symlink, tmp, .gcq
+    async fn list(&self) -> Result<Vec<BlobEntry>>;                    // mặc định: gộp 256 shard
+    async fn delete_if_older(&self, h: &BlobHash, cutoff: SystemTime) -> Result<bool>;
+    async fn sweep_temp_before(&self, cutoff: SystemTime) -> Result<u64>; // chỉ `.*.tmp`, không bao giờ `.gcq`
+    async fn sweep_temp(&self, older_than: Duration) -> Result<u64>;      // mặc định: sweep_temp_before(now - d)
+    async fn heal_quarantine(&self, cutoff: SystemTime) -> Result<HealReport>;
+    async fn try_lock_gc(&self) -> Result<GcLock>;                      // Conflict("gc already running")
 }
+// BlobEntry { hash, size, modified_unix }
 #[async_trait] pub trait MetadataStore {
     async fn tx(&self) -> Result<Box<dyn Tx>>;               // mọi thao tác ghi qua Tx
 }
@@ -184,6 +196,15 @@ Ràng buộc kèm theo (trigger, kiểm tra bằng test):
 //     expunge, list_folder, changes_since(seq), commit()
 ```
 `Mailbox::append` ghi blob trước, rồi metadata trong transaction. Nếu transaction hỏng thì blob mồ côi, job dọn xử lý (blob chưa có `blobs` row hoặc `refcount = 0`).
+
+**Dọn rác (`rusty_store::gc`):**
+- `purge_deleted(store, older_than)`: xóa thật thư có `deleted_at < older_than`, tối đa 1000 hàng mỗi transaction `BEGIN IMMEDIATE`; keyword cascade, refcount theo trigger, `change_log` giữ nguyên.
+- `collect_blobs(store, blobs, grace)`: `grace` tối thiểu 1 giờ (`MIN_GC_GRACE`, nhỏ hơn → `Invalid`), mặc định khuyến nghị 24 giờ (`DEFAULT_GC_GRACE`). **`grace` phải lớn hơn độ trễ lớn nhất từ `put` tới commit của một `append`**: `put` ghi (hoặc với nội dung đã có, làm mới mtime) file trước khi transaction chèn hàng, nên file sắp có hàng luôn trẻ hơn `grace`. (`collect_blobs_at(.., now)` nhận `grace` bất kỳ, `#[doc(hidden)]`, chỉ cho test.)
+- Mỗi lần chạy giữ khóa tư vấn `<blob root>/.gc.lock` (`File::try_lock`): chỉ một GC trên một blob root; GC thứ hai trả `Conflict("gc already running")` ngay. Khóa nhả khi drop (kể cả khi panic/return sớm).
+- Thứ tự: (0) chữa quarantine; (1) hàng `refcount = 0 AND zero_since < now - grace`: xóa hàng trong `BEGIN IMMEDIATE` có kiểm tra lại, commit, rồi mới xóa file nếu mtime cũ hơn `grace`; (2) file không có hàng và mtime cũ hơn `grace` (kiểm tra lại không có hàng ngay trước khi xóa); (3) `sweep_temp_before`. Lỗi của từng blob được ghi vào `GcReport.errors` (chỉ hash, không đường dẫn/nội dung) và chạy tiếp. Không bao giờ xóa blob có `refcount > 0` (FK `RESTRICT` chặn cả khi refcount bị hỏng).
+- `delete_if_older` đổi tên file sang `.<hash>.gc<pid>.<n>.gcq` (quarantine) trong cùng thư mục, kiểm tra mtime trên file đã đổi tên rồi xóa hoặc trả lại; trả lại không bao giờ ghi đè bản mới (hard link, `AlreadyExists` → bỏ bản quarantine). `put` sau khi làm mới mtime kiểm tra lại đường dẫn; thiếu thì ghi bản mới. Hệ quả: trong khe race hẹp này, `get` một blob đang được tham chiếu có thể trả `NotFound` trong chốc lát rồi blob được trả lại; không retry.
+- Chữa quarantine lúc khởi đầu mỗi lần chạy: đường dẫn blob thiếu → trả bản quarantine về; đường dẫn blob có và bản quarantine cũ hơn `grace` → xóa bản quarantine; còn lại để yên.
+- `FsBlobStore` mở file bằng `O_NOFOLLOW | O_NONBLOCK` (qua `rustix`, không `unsafe`) và kiểm tra `fstat` là file thường; duyệt thư mục không theo symlink; tên file không hợp lệ (kể cả UTF-8 nhiều byte) bị bỏ qua, không panic.
 
 ## 6. Directory và cấu hình
 - Cấu hình phân cấp: global → domain → plan → account; ưu tiên account > plan > domain > global. Mỗi cấp là JSON có schema serde, validate khi ghi.
