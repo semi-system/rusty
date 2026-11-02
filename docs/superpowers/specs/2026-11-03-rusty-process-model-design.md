@@ -98,7 +98,8 @@ Mỗi dịch vụ khai báo: user riêng (`rusty-gc`, `rusty-imap`...), thư m�
 | `smtp-submit` | `Authenticate`, `AppendSent(capability, thư)`, `Resolve` | đọc mailbox ngoài việc ghi Sent |
 | `filter` | `GetForScan(blob)`, `SetVerdict` trên thư đang giao | duyệt mailbox |
 | `gc` | `PurgeDeleted`, `CollectBlobs` | đọc nội dung |
-| `admin-api` | thao tác `Directory` (tạo tài khoản, đổi mật khẩu, alias, list, cấu hình) | đọc nội dung thư |
+| `admin-api` (superadmin) | thao tác `Directory` trên mọi tenant, domain, plan hệ thống, trần, cài đặt hệ thống | đọc nội dung thư |
+| `admin-api` (domain-admin cho domain D) | thao tác `Directory` **chỉ trong tenant D** (capability mang `domain_id`), quota/giới hạn trong trần | thấy hay đoán tenant khác (trả `NotFound`), đọc nội dung thư |
 
 **Capability (chống "một dịch vụ bị chiếm có thể đòi mọi mailbox"):** `Authenticate` chạy bên trong `store` (argon2 như hiện có); kết quả là một capability ngẫu nhiên 256 bit, gắn với (vai trò, `AccountId`, hạn dùng ngắn, kết nối). `store` chỉ giữ băm của nó, hết hạn tự động, thu hồi được (đổi mật khẩu, khóa tài khoản, `Logout`). Dịch vụ giao thức bị khai thác chỉ truy cập được các tài khoản **đang đăng nhập qua nó**, không phải cả cơ sở dữ liệu. `Deliver` không cần capability vì chỉ cho phép thêm vào Inbox của địa chỉ hợp lệ, đã có giới hạn kích thước/tần suất.
 

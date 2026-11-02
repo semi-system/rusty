@@ -5,7 +5,8 @@ Ngày: 2026-11-03. Trạng thái: chờ người dùng duyệt spec (sau đó m�
 ## 1. Bối cảnh và quyết định
 Dự án nền tảng dùng SQLite làm kho metadata duy nhất. SQLite chỉ cho một người ghi trên mỗi file DB, nên một DB chung cho mọi người dùng sẽ nghẽn khi tải ghi tăng (xem benchmark Task 8: ~26 s cho ~17 nghìn giao dịch ghi, một người ghi). Quyết định của người dùng (2026-11-03):
 
-- **Nguồn sự thật: Postgres** (qua TCP/TLS), sau trait `MetadataStore` đã có.
+- **Nguồn sự thật: Postgres 18** (phiên bản mục tiêu do người dùng chọn; CI và benchmark chạy trên 18; không phụ thuộc tính năng riêng của 18 trừ khi được ghi rõ ở mục dùng nó) (qua TCP/TLS), sau trait `MetadataStore` đã có.
+- **Multi-tenant: domain = tenant** (mục 3c).
 - **Cache: Valkey** (nhánh BSD của Redis, tương thích giao thức RESP; người dùng chọn Valkey thay Redis vì giấy phép), chỉ là cache, không bao giờ là nơi lưu chính.
 - **Cấu hình hệ thống và mọi dữ liệu không liên quan người dùng nằm trong SQLite** ("system DB", mục 3b) cho dễ quản lý; dữ liệu liên quan người dùng (tài khoản, mailbox, thư, và các bảng có khóa ngoại tới chúng) nằm trong Postgres.
 - **Bỏ ý tưởng cache SQLite theo từng user.**
@@ -131,6 +132,52 @@ Mọi thay đổi ghi `admin_audit` (ai, làm gì, kết quả).
 - System DB nằm trên một máy. Khi có nhiều node `store`, cài đặt phải được phân phối (node chính ghi, node phụ nhận ảnh chụp), hoặc chuyển sang một schema trong Postgres; vì vậy truy cập qua trait `SystemSettings` để đổi backend sau mà không đổi nghiệp vụ. Ngoài phạm vi hiện tại.
 - Không thể có khóa ngoại từ Postgres tới system DB: mọi tham chiếu từ dữ liệu người dùng tới cài đặt hệ thống (nếu cần sau này) phải là giá trị tự mô tả, kiểm tra ở tầng ứng dụng; đây là lý do dữ liệu nào cần ràng buộc chặt thì ở lại Postgres.
 
+## 3c. Multi-tenant: domain = tenant
+
+Quyết định của người dùng: **một domain là một tenant**. Mô hình giống Zimbra (nhiều domain trên một hệ thống, mỗi domain có cấu hình, giới hạn và quản trị viên riêng) nhưng ranh giới tenant là **ranh giới bảo mật được thực thi và kiểm thử**, không chỉ là quy ước.
+
+### 3c.1 Thay đổi lược đồ (cả Postgres và SQLite)
+- `mailboxes.domain_id bigint NOT NULL REFERENCES domains(id)`: sao chép tenant xuống mailbox để ràng buộc, RLS và truy vấn quota không cần nối nhiều bảng. Trigger giữ `mailboxes.domain_id = accounts.domain_id`, bất biến sau khi tạo.
+- `accounts.domain_id` **bất biến** (trigger chặn `UPDATE`). Chuyển tài khoản sang tenant khác là thao tác xuất/nhập có kiểm toán, không phải đổi cột.
+- `UNIQUE (id, domain_id)` trên `accounts` để các bảng khác dùng khóa ngoại tổng hợp `(account_id, domain_id)`.
+- `plans.domain_id bigint NULL REFERENCES domains(id)`: `NULL` = **plan hệ thống** (chỉ superadmin tạo/sửa, mọi tenant dùng được); khác `NULL` = **plan của tenant** (chỉ tenant đó dùng). Ràng buộc: `accounts.plan_id` phải trỏ plan hệ thống hoặc plan cùng `domain_id` (khóa ngoại tổng hợp hoặc trigger, cùng cách kiểm thử như các ràng buộc khác).
+- `domain_admins (account_id, domain_id, PRIMARY KEY (account_id, domain_id), FOREIGN KEY (account_id, domain_id) REFERENCES accounts(id, domain_id))`: quản trị viên ủy quyền chỉ có thể là tài khoản **thuộc chính tenant đó**.
+- Bộ đếm sử dụng: `mailbox_usage (mailbox_id PK, bytes, messages)` và `domain_usage (domain_id PK, bytes, messages, accounts)` do trigger cập nhật cùng transaction với `messages`/`accounts`; `CHECK (>= 0)`. Dung lượng tính cho tới khi thư bị xóa thật (thư đã expunge và Thùng rác vẫn tính, giống Zimbra).
+
+### 3c.2 Quota và giới hạn theo tenant
+- Khóa cài đặt trong cấu hình plan/domain/account: `quota.mailbox_bytes`, `quota.mailbox_messages`, `quota.domain_bytes`, `quota.domain_accounts`, `limits.max_message_bytes`, `limits.send_per_hour`, `limits.max_folders`, `limits.max_keywords_per_message`.
+- **Trần hệ thống:** mỗi khóa có trần trong system DB (ví dụ `caps.limits.max_message_bytes`); giá trị của tenant/plan/account **không được vượt trần**, bị từ chối khi ghi và bị kẹp khi đọc. Tenant không thể tự nâng giới hạn quá mức hệ thống cho phép.
+- Thực thi: `Mailbox::append` và các thao tác tạo tài khoản/folder kiểm tra quota trong cùng transaction với việc ghi; vượt thì `Error::Quota`. Không kiểm tra ngoài transaction.
+
+### 3c.3 Phân quyền và quản trị ủy quyền
+Vai trò mới trong ma trận quyền của `store` (spec mô hình tiến trình §7b):
+
+| Vai trò | Phạm vi | Được làm | Không được làm |
+|---|---|---|---|
+| `superadmin` | toàn hệ thống | tạo/xóa domain, plan hệ thống, đặt trần, cài đặt hệ thống, gán `domain-admin` | đọc nội dung thư |
+| `domain-admin(D)` | **chỉ domain D** (mang `domain_id` trong capability) | tạo/sửa/khóa tài khoản, alias, danh sách, plan của tenant, cấu hình domain D trong giới hạn trần; xem sử dụng/quota của D | thấy hoặc đoán sự tồn tại của domain khác, đọc nội dung thư, vượt trần |
+
+- Truy cập ngoài phạm vi trả **`NotFound`**, không phải `Forbidden`, để không lộ tenant khác có tồn tại hay không (chống oracle liệt kê).
+- Không vai trò quản trị nào đọc được nội dung thư; xem thư của người dùng khi cần hỗ trợ là quy trình riêng có phê duyệt và kiểm toán (ngoài phạm vi).
+- Mọi thao tác quản trị ghi `admin_audit` kèm tenant liên quan.
+
+### 3c.4 Cô lập dữ liệu và mã hóa
+- **RLS bắt buộc ở giai đoạn cứng hóa:** chính sách theo `domain_id` (bảng có cột này) và theo `mailbox_id` thuộc tenant (bảng khác, qua `mailboxes.domain_id`); phiên đặt `rusty.domain_id` và `rusty.mailbox_id` đầu mỗi transaction. Đây là lớp thứ hai sau điều kiện `WHERE` trong mã.
+- **Khóa mã hóa cache theo tenant:** khóa mailbox = HKDF(master, `tenant:{domain_id}`, `mailbox:{id}`); khóa cache chứa `domain_id` trong AAD. Hủy khóa tenant (crypto-shredding) làm mọi giá trị cache của tenant không đọc được.
+- **Hàng xóm ồn ào:** giới hạn đồng thời và tốc độ theo tenant tại `store` (số kết nối, số yêu cầu mỗi giây, hàng đợi công bằng giữa tenant); `statement_timeout` theo vai trò; một tenant không thể làm nghẽn tenant khác ở mức tài nguyên cấu hình.
+- **Xóa tenant (offboarding):** xóa domain yêu cầu đã xóa hết tài khoản (`RESTRICT`), thao tác ghi kiểm toán, GC dọn blob; xuất dữ liệu tenant là lệnh riêng.
+
+### 3c.5 Kiểm thử cô lập chéo tenant (bắt buộc)
+- Tạo hai tenant A và B với dữ liệu đầy đủ. Với **mỗi** thao tác của `store`, chạy với quyền của A nhắm vào đối tượng của B: kết quả phải là `NotFound`/rỗng, không thay đổi dữ liệu, không khác biệt quan sát được giữa "không tồn tại" và "thuộc tenant khác" (kể cả thông báo lỗi và mã lỗi).
+- Test thuộc tính (proptest): chuỗi thao tác ngẫu nhiên của A không bao giờ làm thay đổi hàm băm trạng thái dữ liệu của B.
+- Test âm DB cho từng ràng buộc mới (plan của tenant khác, `domain_admins` sai tenant, `accounts.domain_id` bị đổi, `mailboxes.domain_id` lệch).
+- Test quota: vượt quota mailbox/domain trong cùng transaction (hai `append` đồng thời gần ngưỡng không cùng vượt), trần hệ thống không bị vượt, xóa thật thư giảm bộ đếm đúng.
+- Test RLS: dùng vai trò `rusty_store` với biến phiên sai không đọc được hàng nào.
+
+### 3c.6 Ghi chú
+- Không có "tổ chức" chứa nhiều domain trong phạm vi này; nếu cần sau này sẽ thêm lớp `organizations` phía trên domain (không đổi ranh giới bảo mật hiện tại).
+- Cài đặt riêng của tenant nằm trong `domains.config` (Postgres), không trong system DB, vì có khóa ngoại và ranh giới tenant.
+
 ## 4. Cache Valkey: những gì được cache
 Chỉ metadata, không bao giờ cache nội dung thư (đã ở file blob) hay hash mật khẩu.
 
@@ -196,6 +243,7 @@ Thông báo vô hiệu hóa giữa các node đi qua Postgres `LISTEN/NOTIFY` ho
   - **chaos:** Valkey chết, treo, trả giá trị hỏng/bị đổi AAD/quá cỡ/phiên bản lạ -> yêu cầu vẫn thành công qua Postgres, không panic, ghi nhận sự kiện bảo mật;
   - kẻ giả mạo Valkey hoán đổi giá trị giữa hai mailbox bị phát hiện (AAD);
   - mã hóa: nonce không lặp, xoay khóa, giải mã bằng khóa cũ trong thời gian chuyển tiếp.
+- **Multi-tenant:** toàn bộ mục 3c.5.
 - **System DB:** test âm cho mọi ràng buộc (khóa lạ theo registry, vượt giới hạn, JSON hỏng, kích thước, scope sai, sửa/xóa lịch sử và kiểm toán); trigger lịch sử ghi đúng; `config import` nguyên tử (một giá trị sai thì không áp dụng gì); danh sách cấm tên khóa nhạy cảm; quyền tệp `0600`; ghép cấu hình giữa Postgres và system DB đúng thứ tự ưu tiên và đổi `settings_version` làm mất hiệu lực cache.
 - **Bảo mật cấu hình:** test `scripts/check-valkey-config.sh` (hoặc lệnh `rustyctl check`) xác minh ACL, lệnh bị tắt, không persistence, TLS; fuzz bộ giải mã giá trị cache.
 - **Benchmark:** cùng kịch bản trên SQLite và Postgres (1, 4, 16 người ghi; thư nhỏ và 1 MiB), có và không có Valkey cho tải đọc; báo cáo thông lượng và p50/p99. Dùng số liệu này quyết định bước tiếp theo (sharding, replica, hay đủ dùng).
@@ -203,6 +251,7 @@ Thông báo vô hiệu hóa giữa các node đi qua Postgres `LISTEN/NOTIFY` ho
 ## 9. Rủi ro và điểm mở
 - **Giấy phép:** đã chọn **Valkey** (nhánh BSD của Redis, tương thích giao thức RESP, do Linux Foundation bảo trợ) thay vì Redis, vì Redis đã đổi giấy phép (RSALv2/SSPL từ 7.4, rồi thêm tùy chọn AGPLv3 ở bản 8). Mã dùng giao thức RESP chung nên đổi qua lại được. Cần kiểm tra khi triển khai: phiên bản Valkey đang được bảo trì và có advisory bảo mật được theo dõi; một số lệnh/tính năng mới của Redis có thể không có ở Valkey, nhưng spec chỉ dùng các lệnh cơ bản.
 - **Bề mặt tấn công:** Valkey là dịch vụ C chứa dữ liệu của mọi người dùng trong bộ nhớ; giảm thiểu bằng mã hóa giá trị, ACL, cô lập mạng; rủi ro còn lại là từ chối dịch vụ cache (đã có fallback).
+- **Tenant = domain là quyết định khó đảo ngược:** `domain_id` được nhúng vào mailbox, plan, khóa mã hóa và RLS. Nếu sau này cần "tổ chức" nhiều domain, phải thêm lớp phía trên chứ không đổi nghĩa của tenant.
 - **Ba nơi lưu dữ liệu** (Postgres, Valkey, SQLite system DB): mỗi nơi có vai trò riêng và quy tắc ranh giới rõ (mục 3b); sao lưu và khôi phục cần thống nhất giữa Postgres và system DB (cùng thời điểm, `rustyctl backup` làm cả hai).
 - **Hai backend:** tăng công bảo trì; giảm bằng bộ test dùng chung và test tương đương schema. Nếu gánh nặng quá lớn, cân nhắc bỏ SQLite sau khi Postgres ổn định (quyết định riêng).
 - **Quản lý khóa chính của cache:** hiện là tệp; sau này nên dùng KMS/HSM hoặc `systemd-creds`.
@@ -210,6 +259,7 @@ Thông báo vô hiệu hóa giữa các node đi qua Postgres `LISTEN/NOTIFY` ho
 - Chưa quyết: chọn crate Postgres (`sqlx` đã dùng, tiếp tục) và có bật RLS ở giai đoạn đầu hay sau.
 
 ## 10. Phân kỳ triển khai (sẽ thành kế hoạch chi tiết sau khi duyệt)
+00. **Mô hình tenant** (làm trước hết, cả hai backend): migration cho `mailboxes.domain_id`, bất biến `accounts.domain_id`, `plans.domain_id`, `domain_admins`, bộ đếm sử dụng; quota trong `Mailbox::append`; vai trò `domain-admin`; bộ test cô lập chéo tenant.
 0. `rusty-sysdb`: migration SQLite, registry cài đặt có kiểu, trigger lịch sử, trait `SystemSettings`, API `store` cho cài đặt, chuyển `__global__` ra khỏi `plans`, `rustyctl config ...` (phần lệnh làm cùng dự án `rustyctl`).
 1. Harness test dùng chung cho hai backend; tách test hiện có thành test dùng chung; ánh xạ lỗi theo SQLSTATE/mã backend.
 2. `rusty-store-pg`: migration Postgres, trigger plpgsql, `PgStore` cho `MetadataStore`; chạy toàn bộ test dùng chung trên Postgres.
