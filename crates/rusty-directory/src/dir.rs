@@ -64,6 +64,17 @@ pub(crate) fn normalize_domain(domain: &str) -> Result<String> {
     Ok(ascii.to_lowercase())
 }
 
+/// Unicode categories rejected in local parts: Cf (format: zero-width, joiners, bidi controls,
+/// BOM, soft hyphen), Co (private use), Cn (unassigned). Cc/Zs/Zl/Zp are covered by the
+/// control/whitespace checks; Cs cannot occur in a `char`.
+pub(crate) fn is_forbidden_category(c: char) -> bool {
+    use unicode_general_category::{get_general_category, GeneralCategory as G};
+    matches!(
+        get_general_category(c),
+        G::Format | G::PrivateUse | G::Unassigned | G::Surrogate | G::Control
+    )
+}
+
 /// Normalize a local part: NFC, lowercase. Does not trim (whitespace is invalid).
 /// ASCII must be RFC 5322 atext plus interior single dots; any non-ASCII character is allowed
 /// (RFC 6531) except control and whitespace. Quoted forms and comments are not supported.
@@ -86,7 +97,7 @@ pub(crate) fn normalize_local(local: &str) -> Result<String> {
         if c.is_ascii() {
             c.is_ascii_alphanumeric() || c == '.' || atext_special.contains(c)
         } else {
-            !c.is_whitespace() && !c.is_control()
+            !c.is_whitespace() && !c.is_control() && !is_forbidden_category(c)
         }
     });
     if !ok {

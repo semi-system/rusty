@@ -499,3 +499,37 @@ async fn first_custom_folder_uid_validity_exceeds_system_folders() {
             .unwrap();
     assert!(system.iter().all(|s| v > *s), "{v} vs {system:?}");
 }
+
+#[tokio::test]
+async fn rejects_zero_width_and_bidi_override_in_local_part() {
+    use rusty_directory::parse_address;
+    let d = dir().await;
+    let dom = d.create_domain("example.com").await.unwrap();
+    // Cf: zero width space/joiners, LRM/RLM, bidi embeddings/overrides/isolates, BOM, soft hyphen;
+    // Co: private use; Cn: unassigned.
+    let bad_chars = [
+        "\u{200B}", "\u{200C}", "\u{200D}", "\u{200E}", "\u{200F}", "\u{202A}", "\u{202B}",
+        "\u{202C}", "\u{202D}", "\u{202E}", "\u{2066}", "\u{2067}", "\u{2068}", "\u{2069}",
+        "\u{FEFF}", "\u{00AD}", "\u{E000}", "\u{F8FF}", "\u{10FFFD}", "\u{0378}", "\u{FFFF}",
+    ];
+    for c in bad_chars {
+        for local in [format!("al{c}ice"), format!("{c}alice"), format!("alice{c}")] {
+            assert!(
+                matches!(parse_address(&format!("{local}@example.com")), Err(Error::Invalid(_))),
+                "{local:?}"
+            );
+            assert!(
+                matches!(d.create_account(&local, dom, None, None).await, Err(Error::Invalid(_))),
+                "{local:?}"
+            );
+            assert!(
+                matches!(d.create_list(&local, dom).await, Err(Error::Invalid(_))),
+                "{local:?}"
+            );
+        }
+    }
+    // Positive controls: legitimate non-ASCII local parts still work.
+    assert_eq!(parse_address("josé.müller@example.com").unwrap().0, "josé.müller");
+    assert_eq!(parse_address("山田@example.com").unwrap().0, "山田");
+    assert!(d.create_account("josé.müller", dom, None, None).await.is_ok());
+}

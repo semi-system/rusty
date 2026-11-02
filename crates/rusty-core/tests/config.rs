@@ -98,3 +98,50 @@ fn load_from_file_and_limits() {
 fn example_file_parses() {
     StartupConfig::from_toml_str(include_str!("../../../rusty.example.toml")).unwrap();
 }
+
+#[test]
+fn log_level_is_case_sensitive() {
+    invalid(with("log_level = \"INFO\""));
+    invalid(with("log_level = \"Info\""));
+    assert!(with("log_level = \"info\"").is_ok());
+}
+
+#[test]
+fn bounded_read_boundary_is_64_kib_plus_one() {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("over.toml");
+    // 65537 bytes of comment padding: must be rejected on the bounded-read path, not by TOML syntax.
+    let mut s = String::from(BASE);
+    s.push(char::from(35u8));
+    s.push_str(&"x".repeat(64 * 1024 + 1 - s.len()));
+    assert_eq!(s.len(), 64 * 1024 + 1);
+    std::fs::write(&p, s).unwrap();
+    match StartupConfig::load(&p) {
+        Err(Error::Invalid(m)) => assert!(m.contains("small regular file"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn load_does_not_block_on_fifo() {
+    use std::sync::mpsc;
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("fifo.toml");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &p,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let p2 = p.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(StartupConfig::load(&p2));
+    });
+    let r = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("load blocked on a FIFO");
+    invalid(r);
+}

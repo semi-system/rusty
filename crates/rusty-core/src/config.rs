@@ -6,6 +6,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use rustix::fs::{FileType, Mode, OFlags};
 use serde::Deserialize;
 
 use crate::{Error, Result};
@@ -59,16 +60,28 @@ impl StartupConfig {
 
     /// Read at most [`MAX_CONFIG_FILE_BYTES`] from `path` and parse it.
     pub fn load(path: &Path) -> Result<StartupConfig> {
-        let file = File::open(path).map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => Error::NotFound("configuration file".into()),
-            _ => Error::storage_with("cannot open configuration file", e),
+        // O_NONBLOCK so opening a FIFO (or similar) cannot hang the process; the fstat on the
+        // opened descriptor (no path race) then rejects anything that is not a regular file.
+        let fd = rustix::fs::open(
+            path,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|e| match std::io::Error::from(e) {
+            e if e.kind() == std::io::ErrorKind::NotFound => {
+                Error::NotFound("configuration file".into())
+            }
+            e => Error::storage_with("cannot open configuration file", e),
         })?;
-        let meta = file
-            .metadata()
-            .map_err(|e| Error::storage_with("cannot stat configuration file", e))?;
-        if !meta.is_file() || meta.len() > MAX_CONFIG_FILE_BYTES {
+        let st = rustix::fs::fstat(&fd)
+            .map_err(|e| Error::storage_with("cannot stat configuration file", std::io::Error::from(e)))?;
+        if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile
+            || st.st_size < 0
+            || st.st_size as u64 > MAX_CONFIG_FILE_BYTES
+        {
             return Err(Error::Invalid("configuration file is not a small regular file".into()));
         }
+        let file = File::from(fd);
         // Bounded even if the file grows after the check.
         let mut buf = Vec::new();
         file.take(MAX_CONFIG_FILE_BYTES + 1)

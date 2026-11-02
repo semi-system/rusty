@@ -6,6 +6,7 @@ members = ["crates/*"]
 edition = "2021"
 version = "0.1.0"
 license = "MIT"
+rust-version = "1.89"
 
 [workspace.dependencies]
 tokio = { version = "1.40", features = ["full"] }
@@ -26,3 +27,4 @@ rustix = { version = "1", features = ["fs"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 idna = "1"
 unicode-normalization = "0.1"
+unicode-general-category = "1"

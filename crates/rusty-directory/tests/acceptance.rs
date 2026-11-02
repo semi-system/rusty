@@ -148,6 +148,12 @@ async fn acceptance_10k_messages() {
         replies += 1;
     }
     assert!(replies > 900);
+    // Unrelated messages (no shared references) must not be merged into one thread.
+    let unrelated: HashSet<i64> = [0usize, 1, 2, 3, 4, 6, 7, 10, 11, 12]
+        .iter()
+        .map(|&n| thread_of[&msgs[n].id.0])
+        .collect();
+    assert_eq!(unrelated.len(), 10, "unrelated messages share thread ids");
 
     // Flags on half (even positions).
     for m in msgs.iter().step_by(2) {
@@ -297,5 +303,12 @@ async fn acceptance_10k_messages() {
 
     let elapsed = started.elapsed();
     eprintln!("acceptance_10k_messages elapsed: {elapsed:.2?}");
-    assert!(elapsed < Duration::from_secs(60), "too slow: {elapsed:?}");
+    let max_secs: u64 = std::env::var("RUSTY_ACCEPTANCE_MAX_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60);
+    assert!(
+        elapsed < Duration::from_secs(max_secs),
+        "too slow: {elapsed:?} (limit {max_secs}s, override with RUSTY_ACCEPTANCE_MAX_SECS)"
+    );
 }
