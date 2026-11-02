@@ -165,7 +165,8 @@ Ràng buộc kèm theo (trigger, kiểm tra bằng test):
 - `blobs.refcount` được trigger `AFTER INSERT/DELETE/UPDATE OF blob_hash` trên `messages` cập nhật; code ứng dụng không tự ghi. Job dọn chỉ xóa blob có `refcount = 0` và quá hạn ân hạn.
 - Cấm tạo chu trình trong cây folder: trigger `BEFORE UPDATE OF parent_id` đi ngược lên chuỗi cha, từ chối nếu gặp lại chính nó (độ sâu tối đa 64).
 - Folder có role khác `custom` là folder hệ thống: tầng `Mailbox` không cho xóa, đổi tên hay đổi role.
-- Cấm xóa folder còn thư (nhờ `RESTRICT`); tầng `Mailbox` chuyển thư vào `trash` trước khi xóa.
+- Cấm xóa folder còn con hoặc còn thư (khóa ngoại `NO ACTION`; tầng `Mailbox` trả `Conflict`). Việc chuyển thư vào `trash` trước khi xóa là việc của tầng giao thức (IMAP/JMAP), không phải của `Mailbox`. Thư đã expunge trong folder được xóa thật cùng folder.
+- `uid_validity` của folder mới phải **lớn hơn** mọi giá trị đã cấp trước đó trong mailbox (RFC 3501/9051 §2.3.1.1, vì id folder có thể được tái dùng). Cài đặt: `mailboxes.uid_validity` làm cột high-water mark; folder mới nhận `max(now_secs, mailboxes.uid_validity + 1)` và cột được cập nhật trong cùng transaction; vượt `u32::MAX` thì `Quota`.
 - `Mailbox` chạy mọi thao tác ghi trong **một transaction**, bao gồm tăng `next_*`, ghi `change_log` (seq lấy từ `next_change_seq`). Test kiểm tra không có lỗ hổng/trùng `seq`.
 - Migration bằng `sqlx::migrate!`; mỗi migration có test "schema sau migrate khớp snapshot" và test vi phạm từng ràng buộc (INSERT sai phải lỗi).
 
