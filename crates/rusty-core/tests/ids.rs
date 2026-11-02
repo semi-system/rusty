@@ -40,3 +40,20 @@ fn list_id_is_a_newtype() {
     assert_ne!(ListId(7), ListId(8));
     assert_eq!(ListId(7).0, 7);
 }
+
+#[test]
+fn flags_bitor_contains_and_empty() {
+    let f = Flags::SEEN | Flags::FLAGGED;
+    assert_eq!(f.bits(), 3);
+    assert!(f.contains(Flags::SEEN));
+    assert!(f.contains(Flags::SEEN | Flags::FLAGGED));
+    assert!(!f.contains(Flags::DRAFT));
+    assert!(!f.contains(Flags::SEEN | Flags::DRAFT));
+    assert!(f.contains(Flags::empty()));
+    assert_eq!(Flags::empty(), Flags::default());
+    let mut g = Flags::empty();
+    g |= Flags::DELETED;
+    assert_eq!(g, Flags::DELETED);
+    let all = Flags::SEEN | Flags::FLAGGED | Flags::ANSWERED | Flags::DRAFT | Flags::DELETED;
+    assert_eq!(all.bits(), 31);
+}

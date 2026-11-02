@@ -56,6 +56,30 @@ impl Flags {
     pub fn from_bits(bits: u8) -> Option<Flags> {
         (bits <= 31).then_some(Flags(bits))
     }
+
+    pub const fn empty() -> Flags {
+        Flags(0)
+    }
+
+    /// True if every flag set in `other` is also set in `self`.
+    pub fn contains(self, other: Flags) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
+// The union of two valid flag sets is always <= 31, so the invariant holds.
+impl std::ops::BitOr for Flags {
+    type Output = Flags;
+
+    fn bitor(self, rhs: Flags) -> Flags {
+        Flags(self.0 | rhs.0)
+    }
+}
+
+impl std::ops::BitOrAssign for Flags {
+    fn bitor_assign(&mut self, rhs: Flags) {
+        self.0 |= rhs.0;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
