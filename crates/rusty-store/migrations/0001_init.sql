@@ -50,37 +50,37 @@ CREATE TABLE list_members (
 -- An address (local_part, domain_id) belongs to exactly one of accounts / aliases / lists.
 CREATE TRIGGER accounts_addr_unique_ins BEFORE INSERT ON accounts
 BEGIN
-  SELECT RAISE(ABORT, 'address already used by an alias or list')
+  SELECT RAISE(ABORT, 'conflict: address already used by an alias or list')
   WHERE EXISTS (SELECT 1 FROM aliases WHERE local_part = NEW.local_part AND domain_id = NEW.domain_id)
      OR EXISTS (SELECT 1 FROM lists   WHERE local_part = NEW.local_part AND domain_id = NEW.domain_id);
 END;
 CREATE TRIGGER accounts_addr_unique_upd BEFORE UPDATE ON accounts
 BEGIN
-  SELECT RAISE(ABORT, 'address already used by an alias or list')
+  SELECT RAISE(ABORT, 'conflict: address already used by an alias or list')
   WHERE EXISTS (SELECT 1 FROM aliases WHERE local_part = NEW.local_part AND domain_id = NEW.domain_id)
      OR EXISTS (SELECT 1 FROM lists   WHERE local_part = NEW.local_part AND domain_id = NEW.domain_id);
 END;
 CREATE TRIGGER aliases_addr_unique_ins BEFORE INSERT ON aliases
 BEGIN
-  SELECT RAISE(ABORT, 'address already used by an account or list')
+  SELECT RAISE(ABORT, 'conflict: address already used by an account or list')
   WHERE EXISTS (SELECT 1 FROM accounts WHERE local_part = NEW.local_part AND domain_id = NEW.domain_id)
      OR EXISTS (SELECT 1 FROM lists    WHERE local_part = NEW.local_part AND domain_id = NEW.domain_id);
 END;
 CREATE TRIGGER aliases_addr_unique_upd BEFORE UPDATE ON aliases
 BEGIN
-  SELECT RAISE(ABORT, 'address already used by an account or list')
+  SELECT RAISE(ABORT, 'conflict: address already used by an account or list')
   WHERE EXISTS (SELECT 1 FROM accounts WHERE local_part = NEW.local_part AND domain_id = NEW.domain_id)
      OR EXISTS (SELECT 1 FROM lists    WHERE local_part = NEW.local_part AND domain_id = NEW.domain_id);
 END;
 CREATE TRIGGER lists_addr_unique_ins BEFORE INSERT ON lists
 BEGIN
-  SELECT RAISE(ABORT, 'address already used by an account or alias')
+  SELECT RAISE(ABORT, 'conflict: address already used by an account or alias')
   WHERE EXISTS (SELECT 1 FROM accounts WHERE local_part = NEW.local_part AND domain_id = NEW.domain_id)
      OR EXISTS (SELECT 1 FROM aliases  WHERE local_part = NEW.local_part AND domain_id = NEW.domain_id);
 END;
 CREATE TRIGGER lists_addr_unique_upd BEFORE UPDATE ON lists
 BEGIN
-  SELECT RAISE(ABORT, 'address already used by an account or alias')
+  SELECT RAISE(ABORT, 'conflict: address already used by an account or alias')
   WHERE EXISTS (SELECT 1 FROM accounts WHERE local_part = NEW.local_part AND domain_id = NEW.domain_id)
      OR EXISTS (SELECT 1 FROM aliases  WHERE local_part = NEW.local_part AND domain_id = NEW.domain_id);
 END;
@@ -110,7 +110,7 @@ CREATE TABLE folders (
   next_uid      INTEGER NOT NULL DEFAULT 1 CHECK (next_uid >= 1),
   PRIMARY KEY (mailbox_id, id),
   CHECK (parent_id IS NULL OR parent_id <> id),
-  FOREIGN KEY (mailbox_id, parent_id) REFERENCES folders(mailbox_id, id) ON DELETE RESTRICT
+  FOREIGN KEY (mailbox_id, parent_id) REFERENCES folders(mailbox_id, id) ON DELETE NO ACTION
 ) STRICT;
 CREATE UNIQUE INDEX folders_sibling_name ON folders (mailbox_id, COALESCE(parent_id, 0), name);
 CREATE UNIQUE INDEX folders_role ON folders (mailbox_id, role) WHERE role <> 'custom';
@@ -160,7 +160,7 @@ CREATE TABLE messages (
   deleted_at     INTEGER,                                          -- NULL = not soft-deleted
   PRIMARY KEY (mailbox_id, id),
   FOREIGN KEY (mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE,
-  FOREIGN KEY (mailbox_id, folder_id) REFERENCES folders(mailbox_id, id) ON DELETE RESTRICT,
+  FOREIGN KEY (mailbox_id, folder_id) REFERENCES folders(mailbox_id, id) ON DELETE NO ACTION,
   UNIQUE (mailbox_id, folder_id, uid)
 ) STRICT;
 CREATE INDEX messages_thread ON messages (mailbox_id, thread_id);

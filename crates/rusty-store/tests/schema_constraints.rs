@@ -159,7 +159,7 @@ async fn rejects_folder_cycle() {
 async fn rejects_folder_tree_deeper_than_64() {
     let s = seed().await;
     let p = s.pool();
-    // chain 1 <- 2 <- ... <- 65 : 65 levels via inserts (inserts are unchecked)
+    // chain 1 <- 2 <- ... <- 70 : 70 levels, built via inserts (the depth trigger only guards UPDATE OF parent_id)
     for i in 2..=70 {
         ok(p, &folder(1, i, &(i - 1).to_string(), &format!("d{i}"), "custom")).await;
     }
@@ -375,10 +375,115 @@ async fn map_db_error_classifies_constraint_violations() {
     assert!(matches!(map_db_error(e), Error::Invalid(_)));
     // trigger RAISE
     let e = err(p, "INSERT INTO lists(local_part,domain_id) VALUES ('a',1)").await;
-    assert!(matches!(map_db_error(e), Error::Invalid(_)));
+    assert!(matches!(map_db_error(e), Error::Conflict(_))); // address-collision triggers use "conflict:"
+    // trigger RAISE without the prefix -> Invalid, and the text does not contain "constraint failed"
+    ok(p, &folder(1, 2, "1", "A", "custom")).await;
+    let e = err(p, "UPDATE folders SET parent_id=2 WHERE mailbox_id=1 AND id=1").await;
+    match map_db_error(e) {
+        Error::Invalid(m) => assert!(!m.contains("constraint failed") && m.contains("cycle"), "{m}"),
+        other => panic!("{other:?}"),
+    }
     // non-constraint errors are Storage
     let e = err(p, "SELECT * FROM no_such_table").await;
     assert!(matches!(map_db_error(e), Error::Storage { .. }));
     // positive control: the valid variant succeeds
     ok(p, "INSERT INTO lists(local_part,domain_id) VALUES ('fine',1)").await;
+}
+
+#[tokio::test]
+async fn map_db_error_messages_do_not_leak_sqlite_text() {
+    let s = seed().await;
+    let p = s.pool();
+    for sql in [
+        "INSERT INTO domains(name,created_at) VALUES ('example.com',0)",
+        "INSERT INTO accounts(local_part,domain_id,status,created_at) VALUES ('q',99,'active',0)",
+        "INSERT INTO domains(name,created_at) VALUES ('UP.org',0)",
+        "INSERT INTO domains(name) VALUES ('nn.org')",
+        "INSERT INTO lists(local_part,domain_id) VALUES ('a',1)",
+    ] {
+        let m = map_db_error(sqlx::query(sql).execute(p).await.unwrap_err()).to_string();
+        assert!(!m.contains("constraint failed") && !m.contains("domains.") && !m.contains("UNIQUE"), "{m}");
+    }
+}
+
+#[tokio::test]
+async fn delete_account_with_nested_folders_and_messages_succeeds() {
+    let s = seed().await;
+    let p = s.pool();
+    ok(p, &folder(1, 2, "1", "L2", "custom")).await;
+    ok(p, &folder(1, 3, "2", "L3", "custom")).await;
+    ok(p, &msg(1, 1, 1, 1, HASH_A, 5, 0)).await;
+    ok(p, &msg(1, 2, 2, 1, HASH_A, 5, 0)).await;
+    ok(p, &msg(1, 3, 3, 1, HASH_B, 5, 0)).await;
+    assert_eq!(count(p, &format!("SELECT refcount FROM blobs WHERE hash='{HASH_A}'")).await, 2);
+    ok(p, "DELETE FROM accounts WHERE id=1").await;
+    assert_eq!(count(p, "SELECT count(*) FROM mailboxes WHERE id=1").await, 0);
+    assert_eq!(count(p, "SELECT count(*) FROM folders WHERE mailbox_id=1").await, 0);
+    assert_eq!(count(p, "SELECT count(*) FROM messages WHERE mailbox_id=1").await, 0);
+    assert_eq!(count(p, "SELECT sum(refcount) FROM blobs").await, 0);
+    // other account untouched
+    assert_eq!(count(p, "SELECT count(*) FROM folders WHERE mailbox_id=2").await, 1);
+}
+
+#[tokio::test]
+async fn rejects_delete_folder_with_children() {
+    let s = seed().await;
+    let p = s.pool();
+    ok(p, &folder(1, 2, "1", "Child", "custom")).await;
+    bad(p, "DELETE FROM folders WHERE mailbox_id=1 AND id=1").await;
+    ok(p, "DELETE FROM folders WHERE mailbox_id=1 AND id=2").await;
+    ok(p, "DELETE FROM folders WHERE mailbox_id=1 AND id=1").await;
+}
+
+#[tokio::test]
+async fn rejects_address_collision_via_domain_id_update() {
+    let s = seed().await;
+    let p = s.pool();
+    ok(p, "INSERT INTO domains(id,name,created_at) VALUES (2,'other.org',0)").await;
+    ok(p, "INSERT INTO lists(id,local_part,domain_id) VALUES (1,'a',2)").await;
+    // moving list a to domain 1 would collide with account a@example.com
+    bad(p, "UPDATE lists SET domain_id=1 WHERE id=1").await;
+    ok(p, "UPDATE lists SET local_part='a2', domain_id=1 WHERE id=1").await;
+}
+
+#[tokio::test]
+async fn rejects_keyword_not_lowercase() {
+    let s = seed().await;
+    let p = s.pool();
+    ok(p, &msg(1, 1, 1, 1, HASH_A, 5, 0)).await;
+    bad(p, "INSERT INTO keywords(mailbox_id,message_id,keyword) VALUES (1,1,'Urgent')").await;
+    ok(p, "INSERT INTO keywords(mailbox_id,message_id,keyword) VALUES (1,1,'urgent')").await;
+    bad(p, "INSERT INTO keywords(mailbox_id,message_id,keyword) VALUES (1,1,'')").await;
+}
+
+#[tokio::test]
+async fn rejects_folder_name_with_slash() {
+    let s = seed().await;
+    let p = s.pool();
+    bad(p, &folder(1, 2, "NULL", "a/b", "custom")).await;
+    ok(p, &folder(1, 2, "NULL", "ab", "custom")).await;
+}
+
+#[tokio::test]
+async fn rejects_invalid_account_status() {
+    let s = seed().await;
+    let p = s.pool();
+    bad(p, "INSERT INTO accounts(local_part,domain_id,status,created_at) VALUES ('z',1,'bogus',0)").await;
+    ok(p, "INSERT INTO accounts(local_part,domain_id,status,created_at) VALUES ('z',1,'locked',0)").await;
+}
+
+#[tokio::test]
+async fn rejects_invalid_folder_role() {
+    let s = seed().await;
+    let p = s.pool();
+    bad(p, &folder(1, 2, "NULL", "X", "bogus")).await;
+    ok(p, &folder(1, 2, "NULL", "X", "archive")).await;
+}
+
+#[tokio::test]
+async fn rejects_message_uid_zero() {
+    let s = seed().await;
+    let p = s.pool();
+    bad(p, &msg(1, 1, 1, 0, HASH_A, 5, 0)).await;
+    ok(p, &msg(1, 1, 1, 1, HASH_A, 5, 0)).await;
 }

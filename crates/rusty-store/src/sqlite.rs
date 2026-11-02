@@ -54,24 +54,31 @@ impl SqliteStore {
     }
 }
 
-/// Map a database error to a domain error: FK/UNIQUE/PRIMARY KEY violations
-/// become `Conflict`; CHECK/NOT NULL/trigger RAISE violations become
-/// `Invalid`; everything else is `Storage`.
+/// Map a database error to a domain error without leaking raw SQLite text.
+/// UNIQUE/PRIMARY KEY -> `Conflict("already exists")`, FK -> `Conflict("referenced row
+/// missing or still in use")`, CHECK/NOT NULL -> `Invalid("invalid value")`. Trigger
+/// `RAISE(ABORT, ..)` messages (ours) pass through: a `conflict:` prefix gives `Conflict`,
+/// anything else `Invalid`. Everything else is `Storage`.
 pub fn map_db_error(e: sqlx::Error) -> Error {
     if let sqlx::Error::Database(db) = &e {
         use sqlx::error::ErrorKind;
         match db.kind() {
-            ErrorKind::UniqueViolation | ErrorKind::ForeignKeyViolation => {
-                return Error::Conflict(db.message().to_string());
+            ErrorKind::UniqueViolation => return Error::Conflict("already exists".into()),
+            ErrorKind::ForeignKeyViolation => {
+                return Error::Conflict("referenced row missing or still in use".into());
             }
             ErrorKind::CheckViolation | ErrorKind::NotNullViolation => {
-                return Error::Invalid(db.message().to_string());
+                return Error::Invalid("invalid value".into());
             }
             _ => {}
         }
         // SQLITE_CONSTRAINT_TRIGGER (RAISE(ABORT, ..)) is not classified by sqlx.
         if db.code().as_deref() == Some("1811") {
-            return Error::Invalid(db.message().to_string());
+            let msg = db.message();
+            return match msg.strip_prefix("conflict:") {
+                Some(rest) => Error::Conflict(rest.trim().to_string()),
+                None => Error::Invalid(msg.to_string()),
+            };
         }
     }
     Error::storage_with("database error", e)
