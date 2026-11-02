@@ -64,6 +64,8 @@ rustyctl start|stop|restart|reload [dịch-vụ... | all]
 rustyctl logs <dịch-vụ> [-f] [-n 100]
 rustyctl check              # kiểm tra cấu hình, quyền tệp, hỗ trợ sandbox của kernel, phiên bản các daemon
 rustyctl version
+rustyctl config list|get|set|history|export|import|reload   # cài đặt hệ thống (system DB); xem spec Postgres+Valkey §3b
+rustyctl backup                                             # sao lưu thống nhất Postgres + system DB
 ```
 - `status` in bảng dịch vụ: tên, trạng thái, pid, thời gian chạy, số lần restart, ready; mã thoát khác 0 nếu có dịch vụ bắt buộc không `Running` (dùng được trong giám sát).
 - `restart all` thực hiện theo thứ tự phụ thuộc; `restart <dịch-vụ>` kèm các dịch vụ phụ thuộc vào nó nếu cần (tùy chọn `--with-dependents`).
