@@ -20,6 +20,7 @@
 - Mọi thao tác ghi của `Mailbox` nằm trong một transaction, gồm tăng `next_*` và ghi `change_log`.
 - Lỗi: một enum `rusty_core::Error` (`NotFound, Conflict, Quota, Invalid, Storage`); vi phạm ràng buộc DB ánh xạ sang `Conflict`/`Invalid`, không lộ lỗi SQL thô.
 - Ngoài phạm vi: SMTP, IMAP, JMAP, tìm kiếm, calendar/contacts, proxy, import.
+- Bảo mật là ưu tiên hàng đầu (spec §8b): mỗi crate có `#![forbid(unsafe_code)]`; đầu vào ngoài không được gây panic; kích thước thư tối đa mặc định 50 MiB (vượt thì `Error::Quota`); fail-closed.
 - Hoàn thành khi: `cargo test --workspace` xanh, `cargo clippy --workspace -- -D warnings` sạch.
 
 ## Review Focus
@@ -165,3 +166,21 @@
 - [ ] **Step 2: Chạy** `cargo test --workspace` — mong đợi tất cả PASS.
 - [ ] **Step 3: Chạy** `cargo clippy --workspace -- -D warnings` — mong đợi không có cảnh báo; sửa nếu có.
 - [ ] **Step 4: Commit** `test: foundation acceptance`.
+
+### Task 9: Nền tảng bảo mật (thêm theo định hướng security-first)
+
+**Files:**
+- Modify: `crates/*/src/lib.rs` (thêm `#![forbid(unsafe_code)]`), `crates/rusty-store/src/mailbox.rs` (giới hạn kích thước thư, nếu Task 6 chưa làm)
+- Create: `deny.toml`, `fuzz/Cargo.toml`, `fuzz/fuzz_targets/{parse_envelope.rs,normalize_address.rs}`, `scripts/ci.sh`, `SECURITY.md`
+- Test: `crates/rusty-store/tests/limits.rs`
+
+**Interfaces:**
+- Consumes: `parse_envelope`, `normalize_address`/`parse_address`, `Mailbox::append`.
+- Produces: không có API mới ngoài `MailboxLimits { max_message_bytes: usize }` (mặc định 50 MiB) nếu chưa có.
+
+- [ ] **Step 1: Test:** `append_over_limit_is_quota`, `append_exactly_at_limit_ok`, `workspace_forbids_unsafe` (test đọc mọi `lib.rs` và kiểm tra có `#![forbid(unsafe_code)]`).
+- [ ] **Step 2: Chạy, FAIL.**
+- [ ] **Step 3: Implement** giới hạn kích thước ở `Mailbox::append` (kiểm tra trước khi ghi blob) và thêm `forbid(unsafe_code)` cho mọi crate. Thêm vào `normalize_local` (rusty-directory): từ chối ký tự Unicode nhóm Cf (format, ví dụ U+200B zero-width space, U+202E bidi override) và nhóm Co/Cn; thêm test `rejects_zero_width_and_bidi_override_in_local_part` (có positive control).
+- [ ] **Step 4: Thêm** `deny.toml` (cấm nguồn ngoài crates.io, bật advisory, chặn giấy phép không cho phép), `scripts/ci.sh` chạy `cargo test`, `clippy -D warnings`, `cargo deny check`, `cargo audit`; hai fuzz target (`cargo fuzz`) cho `parse_envelope` và `parse_address`, chạy mỗi target tối thiểu 60 giây không crash; `SECURITY.md` mô tả mô hình đe dọa và quy trình báo lỗi.
+- [ ] **Step 5: Chạy** `bash scripts/ci.sh` và fuzz 60 giây mỗi target — mong đợi sạch. Nếu công cụ chưa cài, ghi rõ trong báo cáo cách cài, không bỏ qua im lặng.
+- [ ] **Step 6: Commit** `feat(security): unsafe ban, limits, supply-chain checks, fuzz targets`.

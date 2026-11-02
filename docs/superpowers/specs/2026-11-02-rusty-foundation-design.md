@@ -196,6 +196,17 @@ Ràng buộc kèm theo (trigger, kiểm tra bằng test):
 ## 8. Tiêu chí hoàn thành
 Tạo domain/account; cây folder; append 10.000 thư; đổi flag; move; expunge; đọc `changes_since`; mọi test xanh với `cargo test --workspace`; `cargo clippy -- -D warnings` sạch; test âm xác nhận DB từ chối dữ liệu sai quan hệ.
 
+## 8b. Tư thế bảo mật (định hướng của dự án, do người dùng đặt)
+Rusty ưu tiên bảo mật và khả năng chịu được zero-day. Nguyên tắc áp cho mọi crate, kể cả các dự án sau:
+- **Không `unsafe` trong mã của dự án**: mỗi crate khai báo `#![forbid(unsafe_code)]`. Ngoại lệ cần ghi lý do trong spec.
+- **Mọi đầu vào ngoài là thù địch**: parser (MIME, địa chỉ, sau này IMAP/SMTP/JMAP) không panic, có giới hạn kích thước, độ sâu, số phần; được fuzz.
+- **Giới hạn tài nguyên mặc định**: kích thước thư tối đa (mặc định 50 MiB, cấu hình được, vượt thì `Error::Quota`), độ dài mật khẩu, độ sâu cây, số keyword mỗi thư.
+- **Fail-closed**: lỗi thì từ chối, không "cho qua".
+- **Chuỗi cung ứng**: ghim phiên bản (`Cargo.lock` commit), `cargo-deny` (giấy phép, nguồn, advisory) và `cargo-audit` trong CI, ít phụ thuộc, ưu tiên crate được bảo trì tốt.
+- **Cô lập quyền (định hướng cho các dịch vụ mạng)**: mỗi giao thức chạy tiến trình riêng, quyền tối thiểu, sandbox (seccomp/landlock), parser chạy ở tiến trình ít quyền nhất. Dự án 1 chỉ chuẩn bị bằng cách giữ tách lớp rõ ràng.
+- **Giảm thiệt hại khi lọt lỗi**: ràng buộc quan hệ ở DB (đã có), không lưu bí mật dạng rõ, log không chứa mật khẩu/hash/nội dung thư, cập nhật nóng nhờ restart từng dịch vụ.
+- **Kiểm thử đối kháng**: fuzz (`cargo-fuzz`) cho `parse_envelope` và chuẩn hóa địa chỉ, test âm cho mỗi ràng buộc.
+
 ## 9. Rủi ro đã biết
 - Ràng buộc "một địa chỉ thuộc một loại" dựa vào trigger, phải có bản Postgres tương đương.
 - `COALESCE(parent_id,0)` trong index unique yêu cầu id folder bắt đầu từ 1 (đã đảm bảo bằng `CHECK`/sinh id từ 1).
