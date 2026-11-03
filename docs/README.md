@@ -35,7 +35,7 @@ Mục lục của mọi spec (thiết kế) và plan (kế hoạch) trong `docs/
 | [plans/2026-11-02-rusty-foundation.md](superpowers/plans/2026-11-02-rusty-foundation.md) | Đã triển khai | Task 1-9 xong và qua review |
 | [plans/2026-11-03-distributed-prep.md](superpowers/plans/2026-11-03-distributed-prep.md) | Đang làm | P0-P4 xong; P6 đang sửa sau review; P5 đang chạy |
 | [plans/2026-11-03-edge-haproxy.md](superpowers/plans/2026-11-03-edge-haproxy.md) | Sẵn sàng thực thi | Biên HAProxy cách A (H1-H3), có báo cáo go/no-go |
-| [plans/2026-11-03-postgres-backend.md](superpowers/plans/2026-11-03-postgres-backend.md) | Sẵn sàng thực thi (phần 1) | Backend Postgres 18: hạ tầng test, schema + parity, spike chọn ranh giới trait; phần 2 viết sau báo cáo spike |
+| [plans/2026-11-03-postgres-backend.md](superpowers/plans/2026-11-03-postgres-backend.md) | Phần 1 (PG0-PG2) xong, GO; phần 2 (PG3-PG8) sẵn sàng thực thi | Backend Postgres 18: hạ tầng test, schema + parity, spike (GO); phần 2: Busy + chính sách đồng hồ + repo Directory, repo Mailbox, Jobs/GC, chạy toàn bộ test trên 2 backend + mutation, benchmark quy mô, hardening (role, pool, hàng đợi) |
 | [plans/2026-11-03-edge-skeleton.md](superpowers/plans/2026-11-03-edge-skeleton.md) | Đã thay thế | Kế hoạch Traefik cũ; **không thực thi** |
 
 ## Việc cần viết tiếp (chưa có tài liệu)

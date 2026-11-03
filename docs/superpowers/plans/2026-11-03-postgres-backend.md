@@ -95,12 +95,208 @@
 
 ---
 
-## Part 2 (to be written after the PG2 report is reviewed)
+## Part 2: repository extraction, conformance, hardening, benchmark (PG3-PG8)
 
-Outline only, so nothing here is executed before it is expanded into tasks with exact interfaces:
-- PG3 Directory repository extraction (domains, accounts, aliases, lists, config, auth hashes, capabilities) with conformance tests.
-- PG4 Mailbox repository extraction (folders, messages, keywords, batch operations, deliveries) incl. blob-ordering and deadlock retry.
-- PG5 Jobs (claim with `FOR UPDATE SKIP LOCKED`, fence/complete_in with `FOR SHARE`/`UPDATE`) and GC/purge repositories; `zero_since` DB-clock semantics.
-- PG6 Whole-suite parametrisation: every behavioural test runs on both backends; acceptance test (10,000 messages) on Postgres; schema/catalog parity kept green.
-- PG7 Benchmark G1/G2 on this machine (SQLite vs Postgres 18; 1/4/16 writers; small and 1 MiB messages; p50/p99; handshake not included), results stored in the repo.
-- PG8 Hardening: separate migrator/runtime/read-only roles, `statement_timeout`/`idle_in_transaction_session_timeout` per role, TLS verify-full option in `PgStore::connect`, optional Row-Level Security by `mailbox_id`, WAL archiving notes; Valkey cache comes in its own plan.
+> Written after the PG2 report (`2026-11-03-postgres-backend-pg2-report.md`, verdict GO, commits `ae75541`, `630f321`, `5b10e60`) and the independent review of PG0/PG1 (`.superpowers/sdd/2026-11-03-postgres-backend/review-pg0-pg1.md`). Part 1 above is unchanged. The Global Constraints and Review Focus of Part 1 apply to every task below; the items here add to them.
+
+### Decisions (DECIDED by the user's delegate; do not reopen inside a task, raise in review if evidence contradicts)
+
+- **D1 Transient error.** `rusty_core::Error` gets a new variant `Busy(String)` (fixed text, never raw DB text) meaning "transient, retry later": `lock_timeout` (55P03), `statement_timeout`/cancel (57014), `53300`, pool-acquire timeout / `PoolClosed`, and `40P01`/`40001` after retry exhaustion. It is mapped distinct from `Storage` (corruption / unexpected). Daemons later map it to SMTP 451 and HTTP 503; that mapping is outside this plan but the variant must be documented for it. Lands in PG3.
+- **D2 Clock policy.** The database clock is authoritative for every correctness-relevant column on BOTH backends: `created_at`, `internal_date`, lease checks (`lease_expires_at`, `run_after` comparisons), `zero_since` and the GC grace cutoff. The Rust clock is used only for display-only values (log lines, metrics, UI hints). SQLite uses `unixepoch()`, Postgres `rs_now()` (`statement_timestamp()`), both through the `{NOW}` token. The `_at(now)` test twins stay: they bind the caller's value in place of `{NOW}` and exist for tests only. PG3 audits every existing SQLite column and fixes divergences, with tests.
+- **D3 Boundary.** Repository traits at operation granularity, `Arc<dyn Trait>` (async_trait), the repository owns the transaction, `tx_retry!` macro for Postgres retry, `JobFence` as a parameter (`Option<JobFence>`) instead of a transaction handle, shared SQL text with `{NOW}` and `$N` placeholders where the dialects agree, generic code only for read queries with primitive columns. The closed `enum Tx` is the documented fallback, not built unless a case forces it.
+- **D4 PG8 scope.** Pool sizing, per-mailbox in-process queue (taken before acquiring a connection), `lock_timeout`, migrator/runtime role split with `REVOKE` on `address_owners`, and the `jsonb`-vs-text decision for config columns.
+- **D5 PG6/PG7 scope.** PG6 includes dialect mutation tests. PG7 is the scale benchmark against the 100,000 mailboxes / 1,000,000 mails/day target with `fsync=on`, real network, failover (RPO > 0 documented, asynchronous replication per scale-targets §1c), hot-blob-row measurement and the statement-merging optimisation (append 9 -> about 5 round trips).
+
+### Order and dependencies
+
+```text
+PG3 (Busy, clock, repo foundation, Directory, infra fixes)
+  -> PG4 (Mailbox repo)  -> PG5 (Jobs + GC)  -> PG6 (whole-suite + mutation)  -> PG8 (hardening)
+                      \-> PG7a append-path benchmark can start after PG4; PG7 final after PG6 and PG8 pool design
+```
+
+PG4 is the risk concentration (batch, blob ordering, deadlock retry, property tests). PG3 is mostly mechanical but carries D1 and D2. Every task ends green on SQLite and Postgres (3 consecutive runs of the Postgres suites), `cargo clippy -D warnings` with and without `--features postgres`, and `scripts/wsl-ci.sh`.
+
+### Review-finding carry-over (PG0/PG1 review, `review-pg0-pg1.md`)
+
+| Finding | Where fixed | How |
+|---|---|---|
+| 1 folder cycle/depth race | PG4 | migration `0002_pg_hardening.sql`: trigger takes `SELECT 1 FROM mailboxes WHERE id = NEW.mailbox_id FOR UPDATE` first; two-session test |
+| 2 leaked DBs / tmpfs exhaustion | PG3 step 1 | synchronous cleanup in guard `Drop`, drop stale `rusty_test_%` at start of a test binary, `max_wal_size=256MB` |
+| 3 shared container/URL file | PG3 step 1 | per-run compose project name and URL file, pg-down removes only what its own pg-up started |
+| 4 weak negative tests | PG6 | port the remaining SQLite negative tests with exact-constraint assertions; the 13 survivors become killing tests; mutation table recorded |
+| 5 parity test is self-referential | PG6 | oracle from `sqlite_master` through an explicit mapping table; also compare function bodies, identity kind and collations; pin `ORDER BY ... COLLATE "C"` in the snapshot |
+| 6 `list_members.seq` | PG3 | one semantic on both backends (see PG3 step 5) |
+| 7 `ci.sh` has no exit trap | PG3 step 1 | stage variable plus never-cleared EXIT trap printing `[FAIL] ci.sh exited with <rc> during <stage>` |
+| 8 healthcheck on init-phase server | PG3 step 1 | `pg_isready -h 127.0.0.1` and TCP `psql` in `verify_server` |
+| 9 registry drift | PG8 | `REVOKE` DML/TRUNCATE for runtime role; drift-check test (registry equals union of the three tables) |
+| 10 trigger `search_path` | PG8 | `SET search_path = pg_catalog, public` on all trigger functions (in `0002` for PG4 if touched earlier) |
+| 11 `zero_since` AFTER trigger | PG5 | BEFORE trigger assigning `NEW.zero_since` plus `CHECK ((refcount = 0) = (zero_since IS NOT NULL))`, on both backends if SQLite can express it |
+| 12 `jsonb` config | PG8 | decision per D4 |
+| 13 migrations on every connect | PG8 | migrator separated from `PgStore::connect` |
+| 14, 15 `ci.sh` message, 3x loop | PG3 step 1 | correct degraded message, `RUSTY_REQUIRE_PG` strict parsing, remove or explain the loop |
+
+---
+
+### Task PG3: Foundation (Busy, clock policy), Directory repository, test-infra fixes
+
+**Files:**
+- Modify: `crates/rusty-core/src/error.rs` (variant `Busy(String)`; update every exhaustive `match` on `Error` across the workspace; grep first), `crates/rusty-store/src/error.rs` or wherever `map_db_error` lives (extend by SQLSTATE), `crates/rusty-store/src/pg.rs` (`begin_write` pool-acquire and begin failures -> `Busy`), `crates/rusty-store/src/lib.rs` (`pub mod repo` promoted; delete `traits.rs` stub and its exports), `crates/rusty-directory/src/*` (`Directory` becomes a facade over `Arc<dyn DirectoryRepo>`; the 11 `pool()` and 7 `begin_write()` call sites go away), `crates/rusty-store/migrations/` (SQLite `0009_*.sql` only if the clock audit needs a schema change), `scripts/ci.sh`, `scripts/pg-up.sh`, `scripts/pg-down.sh`, `deploy/dev/postgres.compose.yaml`, `crates/rusty-store/tests/common/pg.rs`
+- Create: `crates/rusty-store/src/repo/pg/tx.rs` (`tx_retry!`, `finish`, `PgRetryStats`, test knobs moved out of the spike file), `crates/rusty-store/src/repo/directory.rs` (full `DirectoryRepo`), `crates/rusty-store/src/repo/{sqlite,pg}/directory.rs`, `crates/rusty-store/src/store.rs` (`Store::open(StoreConfig)` choosing the backend and returning `Repos { directory, mailbox, jobs, gc }`; mailbox/jobs/gc fields filled by PG4/PG5, until then the spike types), `crates/rusty-store/tests/common/backends.rs` (promoted from `common/spike.rs`: `for_each_backend`, `exec`/fixture helpers), `crates/rusty-store/tests/clock_policy.rs`, `crates/rusty-store/tests/error_busy.rs`, `crates/rusty-store/tests/directory_conformance.rs`
+- Rename: spike types lose the "Spike" prefix when their real replacements land (`SpikeDirectory` -> replaced by `Directory`, see PG4 for the mailbox side); keep the spike tests green until replaced, then move them into the conformance files.
+
+**Interfaces:**
+- Produces: `DirectoryRepo` covering domains, plans, accounts (create, status, delete, config, password hash), aliases, lists and members (member order by `seq`), `resolve`, auth hashes, capabilities (insert, revoke, lookup, `set_status` + capability revocation in one transaction under the account row lock). Inputs are already normalized (IDNA/local-part normalization stays in `rusty-directory`); the repository returns plain DTOs.
+- Produces: `Error::Busy`, `StoreConfig { backend: Sqlite{path} | Postgres{url, pool, tls, timeouts} }`, `Store::open`.
+- Consumes: PG2 `tx_retry!`, `map_db_error`, `rs_now()`.
+
+**Clock audit (D2), mandatory output:** a table in `docs/superpowers/specs/2026-11-03-rusty-clock-policy.md` (short; this is the one allowed new doc) listing EVERY timestamp-bearing column and code path in the SQLite backend (`created_at`, `internal_date`, `jobs.run_after`, `jobs.lease_expires_at`, `blobs.zero_since`, `capabilities.expires_at`/`revoked`, `deliveries`, `change_log`, GC cutoffs, any `SystemTime::now()` in `rusty-store` and `rusty-directory`) with: source of the value today (SQLite `unixepoch()`, Rust clock, caller argument), policy (DB clock / display-only / caller-supplied by contract such as client-provided `internal_date` on import), and the fix. Caller-supplied values that the protocol defines (IMAP APPEND date, message `Date:` header) are data, not clock decisions, and stay.
+
+- [ ] **Step 1: Test-infra fixes first (they gate everything else).** Write failing tests/checks: a guard test that panics on purpose in a subprocess and asserts no `rusty_test_%` database remains; `pg-up.sh` run twice concurrently with different run ids yields two containers and two URL files, and one `pg-down` leaves the other alive; `ci.sh` EXIT trap prints the failing stage on a forced failure (`RUSTY_CI_FORCE_FAIL=<stage>` hook, used only by a script test); `verify_server` waits for TCP. Implement: synchronous cleanup (std thread, blocking connection) in the guard `Drop` plus a start-of-binary sweep of stale `rusty_test_%` databases; `max_wal_size=256MB` in the compose command; per-run project name/URL file/random host port with an ownership marker; healthcheck on `127.0.0.1`; stage variable + permanent EXIT trap; honest DEGRADED message; `RUSTY_REQUIRE_PG` accepts only `1`; remove the 3x loop of `pg_smoke` or document it as a deliberate flake probe with a counter.
+- [ ] **Step 2: Write failing tests for D1** (`error_busy.rs`, Postgres): `lock_timeout` on a held mailbox lock -> `Error::Busy` (set `lock_timeout` low through the connect options); `statement_timeout` -> `Busy`; pool exhausted (pool of 1, one held connection, `acquire_timeout` 200 ms) -> `Busy` and the message is a fixed string without URL or SQL text; 5 forced consecutive 40P01 (test knob) -> `Busy`, `stats.exhausted == 1`; `RS003` and any unknown SQLSTATE -> `Storage`, NOT `Conflict`; connection reset mid-transaction -> `Storage` or `Busy` per the table, never retried; `Error::Busy` is distinct from `Storage` in an exhaustive-match test in `rusty-core`. SQLite: `SQLITE_BUSY` after `busy_timeout` -> `Busy`.
+- [ ] **Step 3: Write failing tests for D2** (`clock_policy.rs`, both backends, one body): for each column in the audit table, a test that sets a skewed process clock stand-in (the `_at(now)` twin with an absurd `now`, and where the production path takes no `now`, a test that asserts the stored value is within +-2 s of the DATABASE `{NOW}` read in the same session, not of `SystemTime`), including: `created_at` of domain/account/mailbox, `internal_date` default on append, lease expiry decided by DB clock in `claim`/`heartbeat`/`fence`, `zero_since` set from the DB clock at refcount 0, GC grace cutoff computed from the DB clock. A test per policy-exempt column proves the caller value is stored verbatim.
+- [ ] **Step 4: Run to confirm FAIL** (D1: variant missing; D2: any SQLite path still on the Rust clock fails).
+- [ ] **Step 5: Implement.** (a) `Error::Busy` and the mapping table (55P03, 57014, 53300, 40001/40P01 after exhaustion, pool timeout, `PoolClosed`, SQLite busy); fix every exhaustive match; document the variant for SMTP 451 / HTTP 503. (b) `repo/pg/tx.rs`; `repo/` renamed out of spike naming; `traits.rs` deleted. (c) `DirectoryRepo` for both backends with shared `{NOW}` SQL where possible; `Directory` facade keeps validation, normalization, Argon2 (off-thread); `rusty-directory` no longer calls `store().pool()`/`begin_write()` (assert with a grep check in `scripts/ci.sh`: no `pool()` use outside `rusty-store`). (d) Clock fixes for each divergence found by the audit, SQLite side included. (e) `list_members.seq` (review finding 6): one semantic on both backends, per-list dense sequence allocated under a `SELECT ... FROM lists WHERE id=$1 FOR UPDATE` row lock then `COALESCE(MAX(seq),0)+1`; the PG identity default is dropped in `migrations_pg/0002_pg_hardening.sql` and the migration comment corrected; test: 20 concurrent `add_member` on one list, no spurious `Conflict`, seq 1..=20 on both backends.
+- [ ] **Step 6: Port the `rusty-directory` tests and `schema_capabilities.rs`-level behaviours to `directory_conformance.rs` via `for_each_backend`** (about 60 tests: every operation has a both-backend test; error kinds asserted exactly, e.g. `Conflict` for duplicate alias vs account, `Invalid` for bad local part, `NotFound` for unknown).
+- [ ] **Step 7: Run everything (SQLite, Postgres x3, clippy both feature sets, `wsl-ci.sh`); commit** in small commits: `fix(ci): Postgres test infra isolation and failure reporting`, `feat(core): Error::Busy for transient storage failures`, `fix(store): database clock for correctness-relevant timestamps`, `feat(store): DirectoryRepo on both backends`.
+
+**Acceptance:** 393+ existing tests green; new tests fail first for the reason stated; the clock policy document lists every column with a test; no `pool()` / `begin_write()` use outside `rusty-store` for directory code; `Busy` never carries raw DB text; Postgres suites 3x green; a deliberately failing Postgres test leaves no database behind.
+
+**Review level:** strong reviewer (error taxonomy affects every daemon; clock semantics change observable behaviour on SQLite; concurrency of `add_member`). Review focus: audit table completeness (grep `SystemTime`, `Utc::now`, `unixepoch`), no behaviour change in tests other than the documented clock fixes, Busy not swallowed into `Storage` anywhere, `RS003` not mapped to `Conflict`.
+
+**Depends on:** PG0-PG2 only.
+
+---
+
+### Task PG4: Mailbox repository (all mailbox operations, batches, deliveries)
+
+**Files:**
+- Create: `crates/rusty-store/src/repo/mailbox.rs` (trait + shared SQL + policy), `crates/rusty-store/src/repo/{sqlite,pg}/mailbox.rs`, `crates/rusty-store/migrations_pg/0002_pg_hardening.sql` (extended: folder trigger lock, see below; created in PG3 for the `list_members` change), `crates/rusty-store/tests/mailbox_conformance.rs`, `crates/rusty-store/tests/pg_mailbox_concurrency.rs`, `crates/rusty-store/tests/query_shape_pg.rs` (statement-count oracle with Postgres numbers)
+- Modify: `crates/rusty-store/src/mailbox.rs` (`Mailbox` becomes a facade over `Arc<dyn MailboxRepo>`: validation, size limits, MIME parsing, `blob.put` BEFORE the transaction, paging limits, result shaping stay), `crates/rusty-store/src/repo/mod.rs`, existing tests `mailbox.rs`, `mailbox_paging.rs`, `mailbox_props.rs`, `batch.rs`, `deliveries.rs`, `query_shape.rs` (parametrised, assertions unchanged)
+
+**Interfaces:**
+- `MailboxRepo` (operation granularity, plain DTOs, each method is one transaction): the 9 spike operations promoted plus the remaining 14: `rename_folder`, `move_folder`, `delete_folder`, `set_flags` / `move_messages` / `expunge` (single and `_many`), `purge_deleted`, keyword add/remove, `get_message`/`get_raw_ref`, `search`-support queries, `deliver_many`, `append_many`. Operations a job step may perform atomically (`deliver`, `deliver_many`, `append`, and any other the worker kinds use) take `fence: Option<JobFence>`; the list is recorded in the module docs and checked in review against `rusty-queue`/worker call sites.
+- Locking rule (module docs, enforced by a test): every write method starts with the mailbox row lock unless it is a documented read-then-write-free path; blobs are touched only via `lock_blobs` (ascending hash) in EVERY path that can change a refcount: append, `append_many`, `deliver_many`, `delete_folder`, `purge_deleted`, `move` between mailboxes if it exists, expunge-with-purge.
+- Post-commit hook point: operations return the committed `seq`; cache/notification hooks (Valkey plan) run after the final commit outside `tx_retry!`, never inside the loop. Provide `MailboxRepo` result types carrying `committed_seq`; no hook is implemented here.
+
+- [ ] **Step 1: Write failing tests.**
+  - `mailbox_conformance.rs`: every one of the 23 operations has a both-backend test (happy path, NotFound for foreign mailbox ids, Invalid/Conflict cases); `deliver_many` outcome vector (Created/Duplicate per item, in-batch duplicate, same id different content -> Conflict, all-or-nothing) with 1,000-item and 64 MiB bounds enforced by the facade; keyword limit count under concurrency (read-then-write); folder delete with messages (refcount to zero, `zero_since` set); `purge_deleted` decrements refcounts in ascending order.
+  - `pg_mailbox_concurrency.rs` (Postgres, multi-thread runtime, separate connections): the PG1-review folder race (two sessions moving folders 1->2 and 2->1: second gets `Invalid`, no cycle committed; same for depth 64 boundary), `delete_folder` vs concurrent `append` into that folder (one winner, no orphan message, no negative refcount), `move_messages` vs `expunge` on the same message, `purge_deleted` vs `append` of the same blob (extends the PG2 GC interleaving test), batch deadlock matrix: 12 mailboxes x `deliver_many`/`append_many`/`delete_folder` over the same 3 blobs in rotated/reversed order: 0 unretried deadlocks and refcount exact, a forced-deadlock control per NEW code path that is expected to deadlock when ordering is disabled (test knob) and succeeds with retry when ordering is enabled but the knob forces a crossed order, retry exhaustion path (5 consecutive 40P01) returns `Busy` and leaves no partial state, gaplessness of `uid`, `id`, `seq` AND `folder_id`, `uid_validity` under concurrency including batches (50 tasks, pool of 4), reader never sees a hole in `changes_since` during `deliver_many`.
+  - `mailbox_props.rs` (proptest) parametrised: model-based sequences of operations produce identical observable state on both backends; Postgres case count bounded (64 cases, 20 ops) via env, SQLite unchanged.
+  - `query_shape_pg.rs`: statement counts per operation on Postgres (budget table; this is the baseline PG7 improves), plus a "lock-first" test: a query-log probe asserts the first statement after BEGIN of each write method is the mailbox lock (or a documented exemption) — guards review risk 6.3.1.
+- [ ] **Step 2: Run to confirm FAIL** (trait, Postgres impl, migration `0002` trigger lock missing).
+- [ ] **Step 3: Implement** `0002` (folder-cycle/depth trigger takes the mailbox row lock first; verify plpgsql statement snapshot behaviour with the two-session test; keep SQLite semantics), the repository for both backends reusing PG2 techniques (`unnest` batches, one-statement id/seq range allocation, per-folder uid ranges ascending, `lock_blobs`), facade conversion of `Mailbox`, blob IO before the transaction and never repeated by a retry.
+- [ ] **Step 4: Mutation spot check** (record in the PG6 table later; here prove the new concurrency tests bite): remove `FOR UPDATE` in the trigger, remove ascending order in `delete_folder`/`purge_deleted`/`deliver_many`, set `MAX_ATTEMPTS = 1`; each must fail at least one test.
+- [ ] **Step 5: Run everything; commit** per area: `feat(store): MailboxRepo folders and flags`, `feat(store): MailboxRepo batches and deliveries`, `fix(store): serialize folder cycle check on Postgres`.
+
+**Acceptance:** all existing mailbox tests (unchanged assertions) pass on SQLite through the facade; the same behaviour tests pass on Postgres; every mailbox operation appears in `mailbox_conformance.rs`; the folder-cycle race test fails before `0002` and passes after; `Mailbox` public API unchanged for consumers (no new type parameter); `pool()` no longer reachable from outside `rusty-store` for mailbox code.
+
+**Review level:** strong reviewer (locking, ordering, deadlock, atomicity, SQL injection surface of dynamic `IN (...)` on SQLite). Review focus: any refcount-changing path missing `lock_blobs`; any retry that repeats IO or an external effect; counters after rollback; `FOR UPDATE` placement; cross-mailbox access through shared DTO ids; dyn-dispatch borrows compile without leaking `'static` clones of large buffers.
+
+**Depends on:** PG3.
+
+---
+
+### Task PG5: Jobs and GC repositories
+
+**Files:**
+- Create: `crates/rusty-store/src/repo/jobs.rs`, `repo/{sqlite,pg}/jobs.rs`, `repo/gc.rs`, `repo/{sqlite,pg}/gc.rs`, `crates/rusty-store/tests/jobs_conformance.rs`, `crates/rusty-store/tests/pg_jobs_gc_concurrency.rs`
+- Modify: `crates/rusty-store/src/jobs.rs` (`JobQueue` facade over `Arc<dyn JobRepo>`), `crates/rusty-store/src/gc.rs` (facade over `GcRepo`; advisory-lock-instead-of-`.gc.lock` stays a separate spec item), `crates/rusty-store/tests/jobs.rs` (27 `SqliteTx` call sites converted to `JobFence` parameters), `crates/rusty-store/tests/gc.rs`, `crates/rusty-store/migrations_pg/0003_zero_since.sql` and SQLite counterpart if expressible (review finding 11)
+
+**Interfaces:**
+- `JobRepo`: `enqueue` (idempotency key if present today), `claim(kinds, owner, lease) -> Option<Job>` (Postgres: single `UPDATE .. WHERE id = (SELECT id .. ORDER BY run_after, id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING ..`, `kind = ANY($1)`; dead-letter settling in the same transaction; no mailbox lock: `run(None, ..)`), `heartbeat`, `complete`, `fail` (backoff from DB clock), `fence_check`. `fence`/`complete_in` become `JobFence` parameters of the mailbox operations (PG4) and of any other operation PG5 inventories; the inventory is written into the module docs.
+- `GcRepo`: `collect_blobs(batch)` walks ascending hashes, deletes rows in ascending order, cutoff = `{NOW} - grace` from the DB clock (D2), `purge_*` equivalents; returns the hashes whose rows were deleted so the facade removes files AFTER commit.
+- `zero_since` (finding 11): BEFORE trigger assigns `NEW.zero_since`; `CHECK ((refcount = 0) = (zero_since IS NOT NULL))` where the backend can express it; the SQLite migration only if the existing tests and data allow it, otherwise a documented Postgres-only strengthening plus a conformance test of observable behaviour.
+
+- [ ] **Step 1: Write failing tests.** Conformance (both backends): every job state transition, attempts/max_attempts dead-letter, lease expiry by DB clock (D2), epoch fencing (stale epoch -> Conflict and the fenced delivery rolls back), `claim` filters by kind, ordering by `run_after, id`, `fail` backoff arithmetic, `heartbeat` of an expired lease rejected, GC grace boundary exactly at cutoff (`zero_since = cutoff` stays, `cutoff - 1` goes) using the `_at(now)` twin and the DB-clock path. Postgres concurrency: 16 claimers on 100 jobs, each job claimed exactly once (no duplicates, no starvation), `SKIP LOCKED` does not skip a job whose claimer rolled back; claim vs heartbeat vs reaper race; GC delete in flight while a new reference arrives, AND the untested interleaving "delete commits between my blob insert and my lock" using a pause knob between the two statements (extends `lock_blobs` 3-round loop test); GC batch vs `purge_deleted` ordering test (no deadlock); trigger invariant tests: `INSERT blobs refcount=1, zero_since=5` rejected, `zero_since` becomes the DB clock value (not 0, not ms: kills two PG1 survivors).
+- [ ] **Step 2: Run to confirm FAIL.**
+- [ ] **Step 3: Implement** both backends, convert the 27 `SqliteTx` sites, remove `SqliteTx`/`begin_write` from the public API of jobs/gc, add the trigger/CHECK migration.
+- [ ] **Step 4: Mutation spot check:** drop `SKIP LOCKED`, drop the epoch predicate, drop the lease predicate, GC cutoff from Rust clock; each must fail a test.
+- [ ] **Step 5: Run everything; commit** `feat(store): JobRepo with SKIP LOCKED claim`, `feat(store): GcRepo with database-clock grace`, `fix(store): zero_since invariant as constraint`.
+
+**Acceptance:** each job and GC operation has a both-backend conformance test; claim exclusivity proven under real concurrency; no `Rust clock` correctness decision remains in jobs/gc (grep check); `Busy` returned (not `Storage`) when a claim hits `lock_timeout`.
+
+**Review level:** strong reviewer (concurrency, lease/fence correctness, data deletion). Review focus: a lease checked with a clock different from the one that granted it; a fenced operation that can commit its effect without completing the job; GC deleting a blob row between lock and reference creation; file removal before commit.
+
+**Depends on:** PG3 (Busy, clock, foundation), PG4 (`Option<JobFence>` on mailbox operations and the `lock_blobs` helper used by GC).
+
+---
+
+### Task PG6: Whole-suite parametrisation, parity oracle and mutation runs
+
+**Files:**
+- Modify: every behavioural test file under `crates/rusty-store/tests/` and `crates/rusty-directory/tests/` not yet parametrised; `crates/rusty-store/tests/common/*` (`Env` stops exposing raw SQLite pools: fixtures via helper functions such as `exec`), `crates/rusty-store/tests/pg_schema_constraints.rs`, `crates/rusty-store/tests/pg_schema_parity.rs`, `crates/rusty-store/tests/snapshots/pg_catalog.snap`
+- Create: `crates/rusty-store/tests/acceptance_10k.rs` (10,000 messages on Postgres and SQLite), `crates/rusty-store/tests/pg_dialect_mutations.rs`, `scripts/pg-mutate.sh` (scratch-database mutation runner: applies one mutation to a COPY of the migration or repository SQL text, runs the named suite, records caught/not caught), `docs/superpowers/plans/2026-11-03-postgres-backend-mutation-table.md` (generated table committed as evidence)
+
+- [ ] **Step 1: Write failing tests / checks.**
+  - Whole-suite: a CI check that lists every `#[tokio::test]`/`#[test]` in the store and directory test dirs and fails unless the file uses `for_each_backend` or carries an explicit `// backend-neutral: <reason>` marker (SQLite-only tests such as WAL pragmas are marked). Initially red.
+  - Negative-test port (review finding 4): all SQLite negative tests of `schema_constraints.rs`/`schema_capabilities.rs` exist in `pg_schema_constraints.rs` with assertions on the specific constraint (`constraint_name()` / SQLSTATE detail), including cross-tenant composite FK on capabilities, address-uniqueness triggers for accounts and lists (insert, update, delete, cross-kind), folder depth 63/64/65, refcount delete branch, every UNIQUE, every FK action (RESTRICT vs CASCADE vs NO ACTION), and the 13 PG1 survivors.
+  - Parity oracle (finding 5): `pg_schema_parity` compares Postgres against `sqlite_master` through an explicit mapping table (tables, columns with normalized types and nullability, defaults, constraints, indexes, triggers by name); additional PG-only assertions for function bodies hash (`md5(pg_get_functiondef)` listed in the snapshot), identity `ALWAYS`, column collations; snapshot sorted `COLLATE "C"`; regenerating the snapshot requires the env var AND prints a diff summary.
+  - Dialect mutation tests (`pg_dialect_mutations.rs`, D5): a table of SQL-text mutations applied to the shared statement text and to the Postgres-only statements — `CAST(1 AS BIGINT)` -> bare `1` in `UNION ALL`, missing derived-table alias, `max()`/`GREATEST()` swapped, `= ANY($1)` -> `IN`, `unixepoch()` in a Postgres statement, `rs_now()` in a SQLite statement, `$N` -> `?N`, missing `ORDER BY` in a `unnest` insert, `ON CONFLICT DO NOTHING` on a registry table — each must make at least one conformance test fail on the backend where it applies (the runner executes statements through a test-only SQL override hook; the override hook compiles only under `cfg(test)`/a `mutation-testing` feature and is absent from release builds, asserted by a build check).
+  - `acceptance_10k.rs`: 10,000 messages through `deliver_many` and `append` over 20 mailboxes, flags, moves, expunge/purge, GC; final counts, refcounts, gapless counters, blob files reconciled; runs on both backends, bounded time.
+- [ ] **Step 2: Run to confirm FAIL** (unparametrised files, missing negative tests, oracle).
+- [ ] **Step 3: Implement** parametrisation, oracle, mutation runner. Run `scripts/pg-mutate.sh` over: every trigger and constraint of the schema (as PG1 step 4 required), repository mutations (drop `FOR UPDATE`, drop `lock_blobs` ordering, drop retry, drop fence, drop `SKIP LOCKED`, remove DB-clock use), recording the table. Every survivor gets a killing test or a justified waiver line in the table (reviewer decides waivers).
+- [ ] **Step 4: Run everything 3x on Postgres; commit** `test(store): run every behaviour test on both backends`, `test(store): Postgres negative tests and parity oracle`, `test(store): dialect and repository mutation runs`.
+
+**Acceptance:** the parametrisation check is green with no unmarked file; mutation table committed with 0 unexplained survivors; parity test fails when a trigger/column/index is added on one side only (demonstrated by mutation); `acceptance_10k` green on both backends.
+
+**Review level:** lighter reviewer on the mechanical parametrisation; strong reviewer on the mutation table and waivers (the table is the evidence for the claim "tests protect the dialect").
+
+**Depends on:** PG3, PG4, PG5 (all repositories exist); the dialect mutation hook needs the shared statement text from PG3-PG5.
+
+---
+
+### Task PG7: Scale benchmark (100,000 mailboxes / 1,000,000 mails per day)
+
+**Files:**
+- Create: `crates/rusty-store/benches/` or `crates/rusty-store/tests/bench/` harness promoted from `spike_measure.rs` (repeatable, `#[ignore]`, env-driven), `scripts/bench-pg.sh` (starts a NON-tmpfs Postgres with `fsync=on`, optionally a second node for streaming replication), `deploy/bench/postgres.bench.compose.yaml` (volume on real disk, network namespace so traffic crosses a real network hop, TLS on), `docs/superpowers/plans/results/2026-11-xx-postgres-benchmark.md` (results, machine, versions, digests, raw numbers, commit hash)
+- Modify: `crates/rusty-store/src/repo/pg/mailbox.rs` (statement merging, only after the baseline from `query_shape_pg.rs` is recorded), `crates/rusty-store/tests/query_shape_pg.rs` (budgets lowered with the merge)
+
+- [ ] **Step 1: Write the harness and the baseline run first** (no optimisation yet): workload derived from the target: 1,000,000 deliveries/day is about 12/s average; test at 10x peak (120/s) and at saturation; 100,000 mailboxes populated (seed with `append_many`, record seed time) with a Zipf-like activity skew; message sizes 2 KiB, 100 KiB, 1 MiB; writers 1/4/16/64; pool sizes 4/16/64 (feeds PG8); read mix (`list_folder`, `changes_since`, `get_message`); report ops/s, p50/p95/p99/p999, CPU and IO of the server, WAL volume per message, table and index growth after the run, `EXPLAIN (ANALYZE, BUFFERS)` of the hot queries on the populated data (index use, no seq scan on `messages`/`change_log`).
+- [ ] **Step 2: Real conditions.** `fsync=on` and `synchronous_commit=on` on a real disk volume; client and server in separate network namespaces/hosts with TLS; the SQLite comparison uses WAL mode with `synchronous=FULL` configured as production would (state it; the PG2 numbers used sqlx defaults and are not comparable). Failover test: asynchronous streaming replica, kill the primary during a write load, promote, measure unavailability window, list acknowledged-but-lost deliveries (RPO > 0 expected, per scale-targets §1c) and verify every `DeliveryId` retry after promotion yields Duplicate or Created exactly once (idempotency makes the loss recoverable by redelivery); document RPO/RTO measured, and the exact commit-ack-lost behaviour (client sees an error but the commit happened).
+- [ ] **Step 3: Hot-blob-row measurement.** Fan-out of one blob to 1, 10, 100, 1,000 mailboxes (mailing list), concurrent; measure commit serialization on the `blobs` row (PG2 saw -40% at 8); report the knee. If the knee is below the largest distributed-list size the spec targets, record the mitigation options (deferred refcount via per-mailbox counters, batched fan-out in one transaction with one lock pass) as a follow-up decision, not implemented here unless the number is clearly unacceptable.
+- [ ] **Step 4: Statement merging (9 -> about 5).** Failing tests first: `query_shape_pg.rs` budget for `append` lowered to the target (<= 5 round trips including BEGIN/COMMIT, or the measured achievable number, justified) and all conformance/concurrency tests unchanged. Merge (a) blob insert + blob lock into one CTE, (b) mailbox lock into the first `UPDATE mailboxes` for paths with no read-then-write (documented per method; the lock-first probe test from PG4 is updated to accept the merged form and still rejects a missing lock), (c) message + change inserts into one CTE. Re-run the full PG4/PG5 concurrency suite and the mutation runner for the touched methods; re-measure and put before/after in the results file.
+- [ ] **Step 5: Verdict section** in the results file: does the measured capacity meet the 100,000 mailbox / 1M per day target with margin, at which pool size and writer count, which resource limits first (CPU, IO, lock on hot mailbox, network), and a list of what is still unproven. Commit `bench(store): Postgres scale benchmark harness and results`, `perf(store): merge Postgres append statements`.
+
+**Acceptance:** results file committed with commit hash, hardware, config and raw numbers; failover run documents RPO > 0 with the measured lost-ack count and idempotent recovery; statement budget lowered with all correctness tests green; no claim without a number.
+
+**Review level:** strong reviewer for Step 4 (it edits locking paths); lighter reviewer for the harness. The results need a second person to re-run the quick profile.
+
+**Depends on:** PG4 (append path baseline can start earlier), PG6 (mutation runner for Step 4), PG8 (pool/queue/timeouts settings are inputs to the sweep: if PG8 is not done, record that the pool sweep is raw and re-run after PG8).
+
+---
+
+### Task PG8: Hardening (pool, queueing, timeouts, roles, JSON policy)
+
+**Files:**
+- Create: `crates/rusty-store/src/repo/pg/queue.rs` (per-mailbox in-process async queue), `crates/rusty-store/migrations_pg/0004_roles.sql` (or `deploy/db/roles.sql` if roles must not live in app migrations; DECIDE in step 1 and document), `crates/rusty-store/src/migrate.rs` + `rustyctl` subcommand `db migrate` (migrator entry point), `crates/rusty-store/tests/pg_roles.rs`, `crates/rusty-store/tests/pg_pool_queue.rs`, `crates/rusty-store/tests/pg_json_policy.rs`, `docs/superpowers/specs/2026-11-03-rusty-postgres-ops-notes.md` (roles, pool sizing, WAL archiving, TLS; short)
+- Modify: `crates/rusty-store/src/pg.rs` (`PgStore::connect` no longer migrates; `connect_migrator`; connect options: `lock_timeout`, `statement_timeout`, `idle_in_transaction_session_timeout` per role; TLS `verify-full` option with CA path), `crates/rusty-store/src/repo/pg/tx.rs` (`begin_locked` takes the queue permit before `acquire`, sets `SET LOCAL rusty.mailbox_id`, `lock_timeout`), `migrations_pg/0001_init.sql` successors for `SET search_path` on trigger functions (review finding 10) and the config column decision
+
+**Decisions to implement (D4):**
+1. **Pool sizing.** Pool size is configuration with a validated floor: `pool >= hot_mailbox_concurrency + headroom` (PG2 §5.3: pool 4 with 12 hot writers gave cold-mailbox p50 25 ms vs 4.3 ms with pool 16). Defaults chosen from the PG7 sweep; `StoreConfig` validation rejects pool 0 and warns (log, no secret) below the floor. `acquire_timeout` explicit; exhaustion -> `Busy`.
+2. **Per-mailbox in-process queue.** A map of `mailbox_id -> tokio::sync::Semaphore(1)` (bounded, entries reaped when idle, size capped so a mailbox-id flood cannot grow memory without bound) acquired BEFORE a pool connection by every mailbox write; waiting is cancel-safe; queue wait counts toward an overall operation deadline and expiry returns `Busy`. Postgres row lock stays the arbiter across processes.
+3. **`lock_timeout`** set per role at connect (runtime role short, migrator longer); 55P03 -> `Busy` (D1); `statement_timeout` and `idle_in_transaction_session_timeout` likewise.
+4. **Roles.** `rusty_migrator` (DDL, owns objects), `rusty_runtime` (DML on tables it needs, `EXECUTE` on functions, no DDL, no `TRUNCATE`, `REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON address_owners FROM rusty_runtime` since the registry is maintained by SECURITY-INVOKER triggers: DECIDE in step 1 whether the trigger functions become `SECURITY DEFINER` owned by the migrator with pinned `search_path` — the revoke only works if the writes go through definer functions — and document the choice and its threat model), `rusty_readonly` (SELECT only; for admin/reporting). `PgStore::connect` uses the runtime role and never migrates; `rustyctl db migrate` uses the migrator role. RLS by `mailbox_id` via `SET LOCAL rusty.mailbox_id` is implemented only if step 1 shows the policy fits the repository (spec 3.2); otherwise record it as deferred with the reason.
+5. **`jsonb` vs text for `domains/plans/accounts.config`.** Decide with evidence: default recommendation is keep `jsonb` for validation and indexing but state the contract that config round-trips are semantically (not byte) equal and make SQLite normalize the same way on write (canonical JSON), or switch Postgres to `text` + `CHECK (config IS JSON)`. The step-1 test decides: round-trip tests for key order, duplicate keys, `\u0000`, large numbers, whitespace, on both backends; pick the option that gives identical observable behaviour with less machinery and record it as DECIDED in the ops-notes file.
+
+- [ ] **Step 1: Write failing tests.** `pg_roles.rs` (connects as each role against a scratch cluster): runtime cannot `CREATE TABLE`, cannot `TRUNCATE` any table, cannot `INSERT/UPDATE/DELETE/TRUNCATE address_owners` directly, CAN still create an account/alias/list (so triggers work), cannot `ALTER` trigger functions; readonly cannot write anything; `PgStore::connect(runtime)` against an un-migrated database fails with a clear fixed error and does not migrate; `rustyctl db migrate` migrates idempotently; a drift-check test (registry equals the union of accounts, aliases, lists) and a test that `TRUNCATE lists` is impossible for the runtime role (review finding 9); trigger functions have `search_path` pinned (catalog test) and a malicious schema named `public.folders` shadow attempt does not change behaviour. `pg_pool_queue.rs`: hot mailbox with 12 writers, pool 4, the cold-mailbox append p99 stays below a bound close to the idle p99 (assert a ratio, not absolute milliseconds, to avoid flakes); queue entries are reaped; 10,000 distinct mailbox ids do not leave 10,000 entries; cancelled waiter does not leak a permit; deadline expiry returns `Busy`; pool-size floor validation. Timeout tests: `lock_timeout` fires in a role-specific way; `idle_in_transaction_session_timeout` kills a stalled transaction and the next operation recovers (pool discards the connection). TLS: `verify-full` with a wrong host name fails with a fixed error without leaking the URL; `sslmode=disable` refused in production config unless explicitly allowed. `pg_json_policy.rs` per decision 5.
+- [ ] **Step 2: Run to confirm FAIL.**
+- [ ] **Step 3: Implement** in this order: roles + migrator split, timeouts, TLS, queue, pool validation, search_path pin, JSON decision, `FOR NO KEY UPDATE` evaluation on the mailbox row (PG2 §9: measure the effect on FK key-share checks of non-lock-first writers; adopt only with a test showing no weaker serialization, else record as rejected).
+- [ ] **Step 4: Mutation spot check:** remove a `REVOKE`, remove the queue permit, remove `lock_timeout`, unpin `search_path`; each must fail a test.
+- [ ] **Step 5: Run everything incl. the PG7 quick benchmark profile to confirm no regression; write the ops notes (roles, pool formula, WAL archiving for PITR as RPO mitigation, TLS, timeouts; no secrets); commit** `feat(store): migrator/runtime/readonly roles`, `feat(store): per-mailbox queue and pool policy`, `feat(store): lock and idle timeouts`, `feat(store): TLS verify-full`, `docs: Postgres operations notes`.
+
+**Acceptance:** runtime role provably cannot touch `address_owners` or run DDL; connect never migrates; hot-mailbox starvation test passes with the small pool; every timeout class maps to `Busy`; JSON policy documented with tests; no secret in logs (grep test on captured tracing output).
+
+**Review level:** strong reviewer (security: privileges, definer functions, search_path, TLS; concurrency: queue and permits).
+
+**Depends on:** PG3 (Busy, `Store::open`), PG4 (`begin_locked` users), PG5, PG6 (mutation runner). PG7 consumes the pool/queue settings; if PG7 finishes first its sweep is re-run after PG8.
+
+---
+
+### Part 2 exit criteria
+
+- All repositories (directory, mailbox, jobs, gc) exist for both backends; `pool()`, `begin_write()`, `SqliteTx` and `traits.rs` are gone from the public API.
+- Every behavioural test runs on both backends; the mutation table has no unexplained survivor; the parity test is a real oracle.
+- `Error::Busy` is the transient class; the clock policy document and its tests are in place.
+- Benchmark results show (or honestly fail to show) the 100,000 mailbox / 1M per day target with `fsync=on`, real network and failover; RPO > 0 is documented.
+- Valkey cache invalidation hooks (post-commit, carrying the committed `seq`) are the next plan, not part of this one.
