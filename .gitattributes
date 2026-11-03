@@ -1,7 +1,15 @@
-# Force LF line endings everywhere: scripts, SQL migrations, snapshots and
-# include_str!-embedded files are byte-sensitive, and some developers use Windows
-# git with core.autocrlf=true. An explicit attribute overrides that setting.
+# Force LF line endings for source, scripts, SQL migrations and snapshots: they are
+# byte-sensitive (shell scripts, include_str!-embedded files, schema snapshot) and
+# some developers use Windows git with core.autocrlf=true. An explicit attribute
+# overrides that setting.
 * text=auto eol=lf
+
+# Test inputs that are deliberately byte-exact (e-mail uses CRLF line endings; fuzz seeds
+# and fixtures must never be rewritten by line-ending conversion).
+crates/rusty-mime/tests/fixtures/** -text
+fuzz/seeds/** -text
+fuzz/corpus/** -text
+fuzz/artifacts/** -text
 
 # Binary files must never be touched by line-ending conversion.
 *.png binary
