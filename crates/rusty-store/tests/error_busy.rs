@@ -125,6 +125,46 @@ mod pg {
         db.cleanup().await;
     }
 
+    /// D6 (transaction pooling): `lock_timeout` is transaction-local. Inside the write
+    /// transaction it has the configured value; once the transaction ended, the same (only)
+    /// pooled connection reports the server default, so nothing leaks to the next borrower.
+    #[tokio::test]
+    async fn lock_timeout_is_transaction_local() {
+        let Some(admin) = pg_admin_url() else { return };
+        let db = PgTestDb::create(&admin).await;
+        let store = PgStore::connect_with_config(
+            db.url(),
+            PgPoolConfig {
+                max_connections: 1,
+                lock_timeout: Duration::from_millis(2345),
+                ..PgPoolConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+        let mut conn = store.pool().acquire().await.unwrap();
+        let before: String = sqlx::query_scalar("SHOW lock_timeout").fetch_one(&mut *conn).await.unwrap();
+        drop(conn);
+
+        for finish in ["commit", "rollback"] {
+            let mut tx = store.begin_write().await.unwrap();
+            let inside: String = sqlx::query_scalar("SHOW lock_timeout").fetch_one(&mut *tx).await.unwrap();
+            assert_eq!(inside, "2345ms", "the configured timeout applies inside the transaction");
+            if finish == "commit" {
+                tx.commit().await.unwrap();
+            } else {
+                tx.rollback().await.unwrap();
+            }
+            // max_connections = 1: this is the very connection the transaction used.
+            let mut conn = store.pool().acquire().await.unwrap();
+            let after: String = sqlx::query_scalar("SHOW lock_timeout").fetch_one(&mut *conn).await.unwrap();
+            assert_eq!(after, before, "lock_timeout leaked out of the transaction ({finish})");
+            assert_ne!(after, "2345ms");
+        }
+        store.close().await;
+        db.cleanup().await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn statement_timeout_is_busy() {
         let Some(admin) = pg_admin_url() else { return };
