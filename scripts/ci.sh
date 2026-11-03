@@ -1,5 +1,3 @@
-XX  bash scripts/pg-up.sh || return 1
-  bash scripts/tests/pg-isolation.sh || return 1
 #!/usr/bin/env bash
 # Local CI gate. Run from anywhere: bash scripts/ci.sh
 # Exits non-zero on the first failing stage. See SECURITY.md for tool installation.
@@ -114,6 +112,18 @@ postgres_tests() {
   return "$rc"
 }
 stage "postgres" postgres_tests
+
+# Two concurrent runs get isolated containers (needs Docker). Runs after clippy/test, so
+# ci-trap.sh (which forces clippy to fail) never reaches it and cannot start it a second time.
+pg_isolation() {
+  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+    PG_SKIPPED=1
+    echo "WARNING: Docker is unavailable; pg isolation test was not run." >&2
+    return 0
+  fi
+  bash scripts/tests/pg-isolation.sh
+}
+stage "pg isolation" pg_isolation
 stage "cargo-deny"   cargo deny check
 stage "cargo-audit"  cargo audit
 stage "test (musl)"  cargo test --workspace --target "$MUSL"
