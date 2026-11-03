@@ -93,13 +93,24 @@ async fn handle(
                 .map_err(|_| "write failed")
         }
         "starttls" => starttls(stream, banner, tls.ok_or("TLS unavailable")?).await,
+        // Accepts TCP and never speaks: used to prove protocol-aware health checks.
+        "silent" => {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+            Ok(())
+        }
         "tls-echo" => {
-            let _ = required_proxy_header(&mut stream).await?;
-            let tls_stream = tls
+            let source = required_proxy_header(&mut stream).await?;
+            let mut tls_stream = tls
                 .ok_or("TLS unavailable")?
                 .accept(stream)
                 .await
                 .map_err(|_| "TLS handshake failed")?;
+            if let Some(banner) = banner.filter(|b| *b != "unused") {
+                tls_stream
+                    .write_all(banner.replace("{src}", &source).as_bytes())
+                    .await
+                    .map_err(|_| "write failed")?;
+            }
             echo(tls_stream).await
         }
         "http-whoami" => {
@@ -133,9 +144,14 @@ async fn starttls(
     banner: Option<&str>,
     tls: TlsAcceptor,
 ) -> Result<(), &'static str> {
-    let _ = required_proxy_header(&mut stream).await?;
+    let source = required_proxy_header(&mut stream).await?;
     stream
-        .write_all(banner.unwrap_or("220 fake ready\r\n").as_bytes())
+        .write_all(
+            banner
+                .unwrap_or("220 fake ready\r\n")
+                .replace("{src}", &source)
+                .as_bytes(),
+        )
         .await
         .map_err(|_| "write failed")?;
     let mut line = Vec::with_capacity(128);
@@ -146,11 +162,30 @@ async fn starttls(
         }
         line.push(byte);
         if line.ends_with(b"\n") {
-            if String::from_utf8_lossy(&line)
-                .trim()
-                .eq_ignore_ascii_case("STARTTLS")
-            {
+            let text = String::from_utf8_lossy(&line).trim().to_owned();
+            if text.eq_ignore_ascii_case("STARTTLS") {
                 break;
+            }
+            if text.to_ascii_uppercase().starts_with("EHLO") {
+                stream
+                    .write_all(b"250 fake\r\n")
+                    .await
+                    .map_err(|_| "write failed")?;
+            } else if let Some(count) = text.strip_prefix("ECHO ") {
+                // Plaintext binary round trip: ECHO <n>\r\n followed by n raw bytes.
+                let count: usize = count.parse().map_err(|_| "bad ECHO length")?;
+                if count > 4 * 1024 * 1024 {
+                    return Err("ECHO too large");
+                }
+                let mut data = vec![0u8; count];
+                stream
+                    .read_exact(&mut data)
+                    .await
+                    .map_err(|_| "read failed")?;
+                stream
+                    .write_all(&data)
+                    .await
+                    .map_err(|_| "write failed")?;
             }
             line.clear();
         }

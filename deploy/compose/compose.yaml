@@ -61,22 +61,22 @@ services:
 
   be-imap:
     <<: *fake
-    command: [mail, "0.0.0.0:1143", "0.0.0.0:1993", "* OK fake IMAP\r\n", unused]
+    command: [mail, "0.0.0.0:1143", "0.0.0.0:1993", "* OK fake IMAP starttls {src}\r\n", "* OK fake IMAPS {src}\r\n"]
     healthcheck: { test: [CMD, /fake-backend, health, "127.0.0.1:1143"] }
 
   be-pop3:
     <<: *fake
-    command: [mail, "0.0.0.0:1110", "0.0.0.0:1995", "+OK fake POP3\r\n", unused]
+    command: [mail, "0.0.0.0:1110", "0.0.0.0:1995", "+OK fake POP3 starttls {src}\r\n", "+OK fake POP3S {src}\r\n"]
     healthcheck: { test: [CMD, /fake-backend, health, "127.0.0.1:1110"] }
 
   be-smtp:
     <<: *fake
-    command: [serve, starttls, "0.0.0.0:1025", "220 fake SMTP ready\r\n"]
+    command: [serve, starttls, "0.0.0.0:1025", "220 fake SMTP ready {src}\r\n"]
     healthcheck: { test: [CMD, /fake-backend, health, "127.0.0.1:1025"] }
 
   be-submission:
     <<: *fake
-    command: [mail, "0.0.0.0:1587", "0.0.0.0:1465", "220 fake submission ready\r\n", unused]
+    command: [mail, "0.0.0.0:1587", "0.0.0.0:1465", "220 fake submission starttls {src}\r\n", "220 fake submission tls {src}\r\n"]
     healthcheck: { test: [CMD, /fake-backend, health, "127.0.0.1:1587"] }
 
   be-http:
