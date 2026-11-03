@@ -1,14 +1,13 @@
 #![forbid(unsafe_code)]
 
 use std::env;
-use std::fs::File;
-use std::io::BufReader;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::{RootCertStore, ServerConfig};
+use rustls_pki_types::pem::PemObject;
+use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
@@ -255,15 +254,12 @@ fn load_tls(require_client: bool) -> Result<ServerConfig, &'static str> {
 }
 
 fn load_certs(path: &str) -> Result<Vec<CertificateDer<'static>>, &'static str> {
-    let file = File::open(path).map_err(|_| "certificate open failed")?;
-    rustls_pemfile::certs(&mut BufReader::new(file))
+    CertificateDer::pem_file_iter(path)
+        .map_err(|_| "certificate open failed")?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| "certificate parse failed")
 }
 
 fn load_key(path: &str) -> Result<PrivateKeyDer<'static>, &'static str> {
-    let file = File::open(path).map_err(|_| "key open failed")?;
-    rustls_pemfile::private_key(&mut BufReader::new(file))
-        .map_err(|_| "key parse failed")?
-        .ok_or("private key missing")
+    PrivateKeyDer::from_pem_file(path).map_err(|_| "key parse failed")
 }
