@@ -1,2 +1,3 @@
 .superpowers/
 target/
+deploy/compose/generated/
