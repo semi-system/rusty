@@ -17,6 +17,7 @@
 //!   [`MAX_REFERENCES`] references.
 
 use mail_parser::{Address, HeaderValue, MessageParser};
+use rusty_core::text::is_format_or_line_separator;
 use rusty_core::{Error, Result};
 
 /// Largest accepted header section (including the empty line that ends it), in bytes.
@@ -88,18 +89,6 @@ fn header_end(w: &[u8]) -> Option<usize> {
 /// Arabic and other scripts need them.
 fn is_bidi_control(c: char) -> bool {
     matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
-}
-
-/// Unicode format (Cf) characters and line/paragraph separators (Zl, Zp): none belongs in an
-/// email address. Covers the Cf code points of Unicode 15/16 (the standard library has no
-/// general-category lookup).
-fn is_format_or_line_separator(c: char) -> bool {
-    matches!(c,
-        '\u{AD}' | '\u{600}'..='\u{605}' | '\u{61C}' | '\u{6DD}' | '\u{70F}' | '\u{890}'..='\u{891}'
-        | '\u{8E2}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}'
-        | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}'
-        | '\u{110BD}' | '\u{110CD}' | '\u{13430}'..='\u{1343F}' | '\u{1BCA0}'..='\u{1BCA3}'
-        | '\u{1D173}'..='\u{1D17A}' | '\u{E0001}' | '\u{E0020}'..='\u{E007F}')
 }
 
 /// Drop control characters (TAB, NEL, U+2028 and U+2029 become spaces; bidi overrides and
