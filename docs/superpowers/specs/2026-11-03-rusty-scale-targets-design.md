@@ -9,12 +9,24 @@ Ngày: 2026-11-03. Trạng thái: chờ người dùng duyệt các con số (đ
 
 Nguyên tắc: **thiết kế cho T3, triển khai nhỏ, kiểm chứng mở rộng bằng benchmark theo bậc**. Không vì thiết kế cho quy mô lớn mà bắt triển khai nhỏ phải chạy đủ mọi thành phần: cấu hình tối thiểu (một node) phải chạy được bằng cùng mã (mục 6).
 
+## 1b. MỤC TIÊU ĐÃ CHỐT (người dùng, 2026-11-03) - thay cho mục tiêu T3 ở lượt trước
+- **100.000 hộp thư và 1.000.000 thư mỗi ngày** (hiểu là tổng vào + ra; cần xác nhận nếu là mỗi chiều).
+- **Nhân bản Postgres bất đồng bộ** (RPO > 0): xem hệ quả ở mục 1c.
+- Quy ra tải: 1M thư/ngày ~ **11,6 thư/s trung bình, ~116 thư/s đỉnh** (hệ số 10). Với khoảng 10 câu lệnh DB mỗi thư vào, đỉnh cỡ ~1.200 câu lệnh/s ghi: nằm trong khả năng của **một primary Postgres** (tôi chưa đo; cổng G2 sẽ kiểm chứng). Số kết nối đồng thời giả định ~30.000 (30% hộp thư có phiên mở; giả định cần xác nhận). Dung lượng ~75 GB/ngày ~ 27 TB/năm với thư 75 KB (giả định, trước nén/dedupe).
+- **Kết luận:** mục tiêu này là bậc **T2 (đã nới)**, không phải T3. **T3 trở thành mục tiêu mở rộng (stretch), không phải yêu cầu**. Phân mảnh nhiều cụm, bộ cân bằng tải chuyên dụng, hàng đợi sự kiện riêng **chưa cần** và được hoãn; nhưng **quy tắc khóa phân mảnh theo mailbox (mục 3) vẫn giữ làm quy tắc thiết kế rẻ** để không đóng cửa tương lai.
+
+## 1c. Hệ quả của nhân bản bất đồng bộ (cần hiểu rõ)
+- Khi primary hỏng và chuyển sang bản dự phòng, **những giao dịch vừa commit trên primary nhưng chưa tới bản dự phòng sẽ mất** (thường dưới vài giây, tùy độ trễ nhân bản).
+- Với thư đến: nếu MTA đã nhận được phản hồi thành công (`250`) cho một thư thuộc cửa sổ bị mất, **thư đó mất thật** mà MTA gửi không gửi lại. Đây là rủi ro mất thư đã xác nhận, có xác suất thấp nhưng khác 0.
+- Giảm thiểu (đề xuất, chọn khi triển khai): (a) giữ nhân bản bất đồng bộ cho phần lớn thao tác; (b) với **đường giao thư vào**, đặt `synchronous_commit` đồng bộ cho riêng giao dịch giao nhận khi có bản dự phòng đủ gần (Postgres cho phép cấu hình theo từng giao dịch), chấp nhận độ trễ ghi cao hơn; (c) lưu trữ WAL liên tục ra kho ngoài (PITR) để giới hạn mất dữ liệu ở các sự cố khác; (d) khi failover, ghi nhận khoảng WAL bị mất và tự đối soát (các `delivery_id` đã xác nhận trong nhật ký MTA/proxy nhưng không có trong DB được báo động).
+- Đây là RPO đã được người dùng chọn; spec phân tán §7 (hàng "Postgres failover") phải sửa cho khớp: giao dịch đã trả thành công **có thể** mất trong cửa sổ nhân bản.
+
 ## 2. Các bậc quy mô (giả định, cần người dùng xác nhận)
 | Bậc | Hộp thư | Thư/ngày (vào+ra) | Đỉnh (x10 trung bình) | Kết nối IMAP/JMAP đồng thời | Dung lượng thư/năm (giả định 75 KB/thư, chưa nén/dedupe) |
 |---|---|---|---|---|---|
 | **T1 - hiện tại** | ~vài chục-trăm | ~1.600 | ~0,2/s | vài chục | ~45 GB |
-| **T2 - lớn** | 100.000 | 2.000.000 | ~230/s | ~50.000 | ~55 TB |
-| **T3 - siêu lớn (mục tiêu thiết kế)** | 10.000.000 | 100.000.000 | ~11.600/s | ~2.000.000 | ~2,7 PB |
+| **T2 - lớn (≈ MỤC TIÊU ĐÃ CHỐT: 100.000 hộp thư, 1.000.000 thư/ngày, đỉnh ~116/s)** | 100.000 | 2.000.000 (mục tiêu chốt: 1.000.000) | ~230/s (chốt: ~116/s) | ~50.000 (chốt giả định: ~30.000) | ~55 TB (chốt: ~27 TB) |
+| **T3 - siêu lớn (mục tiêu mở rộng, KHÔNG phải yêu cầu hiện tại)** | 10.000.000 | 100.000.000 | ~11.600/s | ~2.000.000 | ~2,7 PB |
 
 Ghi chú tính toán: T3 trung bình ~1.160 thư/s, đỉnh ~11.600/s; một thư vào kéo theo nhiều thao tác DB (chèn thư, đếm, `change_log`, thông báo đẩy, chỉ mục), nên tải ghi DB gấp vài lần tải thư. Kích thước thư 75 KB và tỉ lệ vào/ra chỉ là giả định; dung lượng là chi phí lớn nhất ở T3 và phụ thuộc chính sách lưu giữ, nén và dedupe.
 
@@ -73,6 +85,18 @@ Cấu hình tối thiểu cho T1: một máy, các container: `edge`, một `sto
 | Hạ ưu tiên P-43/P-44/P-45 (phân tầng lưu trữ, nhiều node, Kubernetes) | **Khôi phục** như dự án chính; thêm dự án cụm điều khiển và phân mảnh (roadmap) |
 | P6 (lô và tối ưu truy vấn) giảm ưu tiên | **Khôi phục**: hiệu năng ghi theo lô và truy vấn ít vòng là điều kiện để đạt G2-G3 |
 | Traefik làm cổng vào | Giữ ở T1-T2; T3 dùng bộ cân bằng tải tầng 4 chuyên dụng (Traefik chỉ còn cho HTTP) |
+
+## 7b. Cập nhật theo mục tiêu đã chốt (mục 1b)
+| Mục | Trạng thái |
+|---|---|
+| Postgres 18 + Valkey là đích sản xuất, **backend Postgres làm trước** | Giữ |
+| Một primary + replica bất đồng bộ + lưu trữ WAL | Đủ cho mục tiêu; kiểm chứng ở G2 |
+| Phân mảnh nhiều cụm theo mailbox, cụm điều khiển tách riêng (P-13b) | **Hoãn** (post-MVP, chỉ khi vượt mục tiêu); giữ quy tắc "không ràng buộc chéo mailbox" |
+| Hàng đợi sự kiện riêng | Chưa cần ở mục tiêu này |
+| Traefik làm cổng vào | Đủ cho mục tiêu này (bộ cân bằng tầng 4 chuyên dụng chỉ khi tới T3) |
+| Kho đối tượng S3 / Kubernetes | Hoãn; volume cục bộ + sao lưu đủ cho giai đoạn đầu, nhưng ~27 TB/năm cần kế hoạch dung lượng và `S3BlobStore` sớm trong vòng 1-2 năm |
+| P6 (lô, tối ưu truy vấn) | Giữ ở mức vừa phải; không còn là điều kiện cứng cho G2 |
+| Bộ test G3-G4 (đa mảnh, T3) | **Hoãn**; chỉ G1-G2 là bắt buộc |
 
 ## 8. Việc phải làm tiếp (đưa vào lộ trình)
 1. **Xác nhận con số mục 2** (hoặc thay bằng số thật), đặt SLO (độ trễ, sẵn sàng, RPO/RTO).

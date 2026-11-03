@@ -24,13 +24,45 @@ Tải thực tế hiện tại nhỏ (~700-800 thư đi và đến mỗi ngày c
 - Đánh giá lại hàng đợi/sự kiện (message queue) ở cổng G3; chưa cần ở T1-T2.
 - Triển khai nhỏ vẫn phải gọn (scale-targets §6): mọi thành phần phân tán tắt mặc định, cùng một mã.
 
+## 0c. QUYẾT ĐỊNH ĐÃ CHỐT (người dùng, 2026-11-03)
+| # | Quyết định | Hệ quả |
+|---|---|---|
+| 1 | **Mức C** (tương đương B + tính năng bản thương mại: ActiveSync, sao lưu/khôi phục tích hợp, HSM...) | Đưa P-50 (ActiveSync) vào phạm vi, kèm điều kiện: kiểm tra điều khoản/giấy phép của giao thức trước khi triển khai. Zimlets (P-51), chat (P-52), eDiscovery/DLP (P-53) **chưa được chọn**, vẫn cần quyết định riêng |
+| 2 | **Dùng thư viện có sẵn trước, viết lại sau MVP** | Chính sách thư viện ở mục 0d; giữ ranh giới (trait) để thay thế được |
+| 3 | **rspamd + ClamAV** trong container cô lập | P-12 dùng hai thành phần ngoài; sandbox chặt, không cấp mạng ra ngoài trừ cập nhật chữ ký qua cổng riêng |
+| 4 | **100.000 hộp thư, 1.000.000 thư/ngày** | Mục tiêu thiết kế nới từ T3 xuống T2; phân mảnh hoãn (scale-targets §1b, §7b) |
+| 5 | **Nhân bản Postgres bất đồng bộ** | RPO > 0; hệ quả và giảm thiểu ở scale-targets §1c |
+| 6 | **Backend Postgres trước** | P-13 đứng trước IMAP trên đường găng; M1 chạy trên Postgres |
+
+Hệ quả thứ tự: P-01 (hoàn tất chuẩn bị) -> benchmark G1 (SQLite làm đường cơ sở) -> **P-13 (Postgres + Valkey)** song song với P-02 (`store`) -> P-04/P-05/P-06 (M1). P-13b (phân mảnh) hoãn; P-43/P-44/P-45 hạ xuống sau M3, trừ HA đơn giản (replica bất đồng bộ + WAL) vào P-40.
+
+## 0d. Chính sách thư viện: dùng có sẵn trước, viết lại sau MVP
+Nguyên tắc: bọc mọi thư viện giao thức sau trait/ranh giới của Rusty để thay được; chỉ nhận thư viện có giấy phép cho phép (allowlist `deny.toml`: MIT, Apache-2.0, BSD, ISC, MPL-2.0...), bảo trì tốt, và phải qua `cargo-deny`/`cargo-audit`/fuzz của ta; mỗi thư viện phải được ghi lại phiên bản, giấy phép, người bảo trì và kế hoạch thay thế.
+
+Kết quả kiểm tra giấy phép ngày 2026-11-03 (lấy từ API công khai của crates.io qua công cụ tra cứu, **cần kiểm lại bằng `cargo-deny` khi thực sự đưa vào**):
+| Nhu cầu | Ứng viên | Giấy phép | Ghi chú |
+|---|---|---|---|
+| IMAP (mã hóa/giải mã giao thức) | `imap-codec` (duesee) 1.0.0 ổn định, 2.0.0-alpha mới nhất; `imap-next` 0.3.4 | MIT OR Apache-2.0 | Chỉ là codec/sans-I/O; **logic máy chủ IMAP vẫn tự viết**; bản 2.x còn alpha: cân nhắc ghim 1.0.0 |
+| SMTP (phân tích giao thức) | `smtp-proto` 0.2.5 | Apache-2.0 OR MIT | Parser; máy chủ SMTP vẫn tự viết |
+| SMTP gửi đi + DKIM ký | `mail-send` 0.7.0 | Apache-2.0 OR MIT | |
+| DKIM/SPF/DMARC/ARC | `mail-auth` 0.15.1 | Apache-2.0 OR MIT | Dùng ở P-11 |
+| MIME | `mail-parser` (đã dùng 0.9.4) | (đã cho phép) | |
+| iCalendar/vCard/JSCalendar/JSContact | `calcard` 0.3.14 | Apache-2.0 OR MIT | Ít người dùng hơn (≈83 nghìn lượt tải): đánh giá kỹ trước P-30/P-31 |
+| JMAP phía máy khách | `jmap-client` 0.4.3 | Apache-2.0 OR MIT | Chỉ để test/công cụ; **không có thư viện JMAP phía máy chủ được xác nhận giấy phép cho phép**: JMAP server tự viết trên các kiểu trên |
+| **Sieve** | `sieve-rs` 0.7.3 | **AGPL-3.0-only** | **KHÔNG dùng được**: AGPL buộc toàn bộ sản phẩm kết hợp phải công bố mã nguồn theo AGPL và bị `deny.toml` chặn. Phiên bản 1.0.x đã bị yanked. Phương án: tự viết bộ thông dịch Sieve nhỏ (P-23), hoặc hoãn Sieve sau MVP. Nên coi **mọi crate máy chủ của Stalwart ngoài các thư viện giao thức/phân tích ở trên là AGPL cho tới khi kiểm tra từng cái** (tôi chưa kiểm) |
+| Chống thư rác | rspamd | Apache-2.0 (trí nhớ, chưa kiểm) | Chạy container riêng |
+| Chống virus | ClamAV | GPL-2.0 (trí nhớ, chưa kiểm) | Chạy container riêng, giao tiếp qua socket nên không liên kết mã |
+| Tìm kiếm | `tantivy` | MIT (trí nhớ, chưa kiểm) | Đánh giá ở P-20 |
+
+Việc phải làm đầu mỗi dự án dùng thư viện: một **bản đánh giá ngắn** (giấy phép, bảo trì, số lượng phụ thuộc kéo theo, lịch sử lỗ hổng, kết quả chạy fuzz của ta trên điểm vào của thư viện, và ranh giới thay thế).
+
 ## 1. Phạm vi "tương đương Zimbra"
 Chưa có định nghĩa chốt, và nó quyết định khối lượng. Ghi nhận 3 mức để người dùng chọn:
 - **Mức A - Lõi mail (Zimbra FOSS tối thiểu dùng được):** nhận/gửi thư, IMAP/POP3, web mail, thư mục, tìm kiếm, bộ lọc, chống thư rác/virus, multi-tenant, quản trị.
 - **Mức B - Groupware (FOSS đầy đủ):** A + lịch, danh bạ, tác vụ, Briefcase, chia sẻ, GAL, CalDAV/CardDAV, tài nguyên.
 - **Mức C - Mở rộng giống bản thương mại:** B + đồng bộ di động (ActiveSync), sao lưu/khôi phục tích hợp, HSM, và các tính năng khác thường chỉ có ở bản trả phí. Tôi **nhớ** là các mục này thuộc bản Network Edition chứ không phải FOSS, nhưng chưa kiểm lại với tài liệu hiện hành; cần xác minh trước khi coi là chuẩn tham chiếu.
 
-Lộ trình dưới đây nhắm **mức B**, với mức A là cột mốc trung gian có giá trị; mức C để mục 6 quyết định sau.
+Lộ trình dưới đây nhắm **mức C** (quyết định 2026-11-03, mục 0c), với A (M3) và B (M4) là các cột mốc trung gian; phần mức C (ActiveSync, sao lưu tích hợp, HSM) nằm ở giai đoạn 5-6.
 
 ## 2. Các dự án con
 Ký hiệu: **Spec** = đã có spec (chờ duyệt) hay chưa; **Phụ thuộc** = phải xong trước.
@@ -103,7 +135,7 @@ Tiêu chí M2: nhiều domain độc lập, DKIM/SPF/DMARC đạt kiểm tra ngo
 ### Giai đoạn 6 - Mở rộng tùy chọn (cần quyết định riêng, mục 6)
 | ID | Dự án | Ghi chú |
 |---|---|---|
-| P-50 | Đồng bộ di động (ActiveSync/EAS) | Giao thức thuộc Microsoft; cần kiểm tra điều khoản/bằng sáng chế trước khi cam kết |
+| P-50 | Đồng bộ di động (ActiveSync/EAS) | **TRONG PHẠM VI (mức C đã chọn).** Giao thức thuộc Microsoft; kiểm tra điều khoản/bằng sáng chế/yêu cầu cấp phép TRƯỚC khi viết mã; nếu có rào cản pháp lý thì báo lại người dùng |
 | P-51 | Cơ chế mở rộng (thay Zimlets) | Chọn mô hình an toàn (ví dụ iframe sandbox + API có phạm vi); có thể không làm |
 | P-52 | Dịch vụ chat/họp | Zimbra FOSS không tích hợp sẵn theo cách thống nhất; ngoài phạm vi trừ khi người dùng muốn |
 | P-53 | Lưu trữ tuân thủ/eDiscovery, DLP, lưu giữ pháp lý | Dành cho khách hàng doanh nghiệp |
