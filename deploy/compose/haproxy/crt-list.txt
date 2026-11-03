@@ -1,0 +1,3 @@
+/run/rusty-certs/mail-a.pem mail.test imap.test pop.test smtp.test
+/run/rusty-certs/mail-b.pem other.test
+/run/rusty-certs/web.pem web.test

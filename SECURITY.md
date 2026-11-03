@@ -62,13 +62,17 @@ rejects `unsafe` in `crates/*/src`. Dependencies do use `unsafe` (SQLite, rustix
   members, else `Quota`, never a truncated list (`rusty-directory/tests/directory.rs`).
 - Protocol version negotiation picks the highest common version; non-overlapping or
   malformed ranges are `Invalid` with a fixed message (`rusty-core/tests/proto.rs`).
+- Edge (`deploy/EDGE-DECISION.md`): only the edge publishes ports; all containers non-root,
+  read-only, `cap_drop: ALL`, no runtime socket; backend links are verified mTLS plus PROXY
+  v2; client PROXY headers cannot spoof the source IP; unknown SNI refused; per-IP caps hold.
+Limits: bind-mounted test keys, 300 s idle on pass-through ports, CN fallback, no cap on  chunked bodies, plaintext at the edge on 465/993/995/443.
 
 ## Not covered yet
-- No network services, so no TLS, authentication exposure or protocol parsing.
+- No Rusty network services yet (edge fixtures only), so no auth exposure or protocol parsing.
 - No process sandbox (seccomp, privilege drop), no encryption at rest, no login rate
   limiting or lockout (Argon2 hashing exists).
 - Capability tokens are wiped best effort (no `zeroize` crate); copies may remain in memory.
-- Positive capability validations must never be cached once a cache exists (revocation).
+  Positive capability validations must never be cached once a cache exists (revocation).
 - The `_at(.., now)` clock twins are `doc(hidden)` but still public; move them behind a
   test-clock feature before any network API exists.
 - Tenant model, ACL sharing, KMS and the edge layer are specified in `docs/` but not built.
@@ -83,17 +87,13 @@ rejects `unsafe` in `crates/*/src`. Dependencies do use `unsafe` (SQLite, rustix
   `Cargo.lock` via the optional sqlx-mysql driver, never built. Re-check on sqlx upgrades.
 
 ## Running the checks
-    bash scripts/ci.sh
-
-Stages: clippy (`-D warnings`), tests, cargo-deny, cargo-audit, musl tests and release
-build, static-linking check, fuzz lockfile check, and 60 s of fuzzing per target
-(`FUZZ_SECS` overrides). Without cargo-fuzz/nightly it warns and runs proptest stand-ins.
-By hand: `cd fuzz && cargo +nightly fuzz run parse_address -- -max_total_time=300`.
-
-Tools: `cargo install cargo-deny cargo-audit cargo-fuzz --locked`, nightly toolchain
-(minimal), `sudo apt install musl-tools`, `export CC_x86_64_unknown_linux_musl=musl-gcc`.
+Run `bash scripts/ci.sh`. Stages: clippy, tests, cargo-deny, cargo-audit, musl tests/build,
+static-link check, compose hardening check, fuzz lockfile check, 60 s fuzzing per target (`FUZZ_SECS`; proptest
+stand-ins without cargo-fuzz/nightly). By hand: `cd fuzz && cargo +nightly fuzz run parse_address`.
+Tools: `cargo install cargo-deny cargo-audit cargo-fuzz --locked`, nightly, `musl-tools`
+(`CC_x86_64_unknown_linux_musl=musl-gcc`). Edge suite: `EDGE_SUITE=1 bash scripts/ci.sh`.
 
 ## Reporting a vulnerability
-Do not open a public issue for security problems. Security contact: mornngstr1@gmail.com (provided by the maintainer on 2026-11-03).
-Include the affected commit, a reproducer (for parser bugs, the input bytes), and the
-impact you expect. Fixes land with a regression test.
+Do not open a public issue for security problems. Security contact: mornngstr1@gmail.com
+(provided by the maintainer on 2026-11-03). Include the affected commit, a reproducer (for
+parser bugs, the input bytes) and the expected impact. Fixes land with a regression test.

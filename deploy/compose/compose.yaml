@@ -1,0 +1,90 @@
+name: rusty-edge-h1
+
+x-fake: &fake
+  build:
+    context: ../..
+    dockerfile: tools/fake-backend/Dockerfile
+  image: rusty-fake-backend:h1
+  user: "1000:1000"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  mem_limit: 128m
+  cpus: 0.50
+  pids_limit: 64
+  restart: "no"
+  networks: [app]
+  volumes:
+    - ./generated:/certs:ro
+  environment:
+    RUSTY_CERT: /certs/backend.crt
+    RUSTY_KEY: /certs/backend.key
+    RUSTY_CLIENT_CA: /certs/internal-ca.crt
+
+services:
+  edge:
+    image: haproxy@sha256:2caaf8b1a1ef67f3f1ea9b721f2821675d3ba4500fb518e23884fecb93e8dbaa
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 128
+    restart: "no"
+    networks: [edge-net, app]
+    ports:
+      - "25:10025"
+      - "80:10080"
+      - "110:10110"
+      - "143:10143"
+      - "443:10443"
+      - "465:10465"
+      - "587:10587"
+      - "993:10993"
+      - "995:10995"
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./haproxy/crt-list.txt:/usr/local/etc/haproxy/crt-list.txt:ro
+      - ./generated:/run/rusty-certs:ro
+    healthcheck:
+      test: [CMD, haproxy, -c, -f, /usr/local/etc/haproxy/haproxy.cfg]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      be-imap: { condition: service_healthy }
+      be-pop3: { condition: service_healthy }
+      be-smtp: { condition: service_healthy }
+      be-submission: { condition: service_healthy }
+      be-http: { condition: service_healthy }
+
+  be-imap:
+    <<: *fake
+    command: [mail, "0.0.0.0:1143", "0.0.0.0:1993", "* OK fake IMAP starttls {src}\r\n", "* OK fake IMAPS {src}\r\n"]
+    healthcheck: { test: [CMD, /fake-backend, health, "127.0.0.1:1143"] }
+
+  be-pop3:
+    <<: *fake
+    command: [mail, "0.0.0.0:1110", "0.0.0.0:1995", "+OK fake POP3 starttls {src}\r\n", "+OK fake POP3S {src}\r\n"]
+    healthcheck: { test: [CMD, /fake-backend, health, "127.0.0.1:1110"] }
+
+  be-smtp:
+    <<: *fake
+    command: [serve, starttls, "0.0.0.0:1025", "220 fake SMTP ready {src}\r\n"]
+    healthcheck: { test: [CMD, /fake-backend, health, "127.0.0.1:1025"] }
+
+  be-submission:
+    <<: *fake
+    command: [mail, "0.0.0.0:1587", "0.0.0.0:1465", "220 fake submission starttls {src}\r\n", "220 fake submission tls {src}\r\n"]
+    healthcheck: { test: [CMD, /fake-backend, health, "127.0.0.1:1587"] }
+
+  be-http:
+    <<: *fake
+    command: [serve, http-whoami, "0.0.0.0:18080"]
+    healthcheck: { test: [CMD, /fake-backend, health, "127.0.0.1:18080"] }
+
+networks:
+  edge-net:
+  app:
+    internal: true

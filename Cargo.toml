@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+members = ["crates/*", "tools/*"]
 exclude = ["fuzz"]
 
 [workspace.package]
@@ -35,3 +35,7 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 idna = "1"
 unicode-normalization = "0.1"
 unicode-general-category = "1"
+serde_yaml_ng = "0.10"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = "1"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
