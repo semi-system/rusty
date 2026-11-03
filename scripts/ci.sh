@@ -40,7 +40,10 @@ postgres_tests() {
     return 0
   fi
 
-  local url_file="$HOME/.rusty-pg-test-url" url rc=0
+  # A fresh run id per CI run: concurrent runs get their own container and URL file.
+  RUSTY_PG_RUN_ID="ci$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+  export RUSTY_PG_RUN_ID
+  local url_file="$HOME/.rusty-pg-test-url.$RUSTY_PG_RUN_ID" url rc=0
   bash scripts/pg-up.sh || return 1
   # Also clean up if CI is interrupted or exits unexpectedly during this stage.
   trap 'bash scripts/pg-down.sh >/dev/null 2>&1 || true' EXIT
