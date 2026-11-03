@@ -187,6 +187,8 @@ impl Directory {
         Ok(PlanId(id))
     }
 
+    /// Inserts the account's `mailboxes` row. Every code path that inserts a `mailboxes` row
+    /// must seed `next_folder_id` (see `rusty_store::Mailbox`).
     pub async fn create_account(
         &self,
         local: &str,

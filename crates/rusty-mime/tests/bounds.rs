@@ -269,3 +269,43 @@ fn every_field_is_clean_for_control_heavy_input() {
         assert!(!id.contains(char::is_whitespace));
     }
 }
+
+// ---------- P0 m3/m4: separators, bidi controls, format characters, oversized addresses ----------
+
+#[test]
+fn subject_line_separators_become_space() {
+    let e = p("Subject: a\u{2028}b\u{2029}c\u{85}d\u{2028}\u{2029}e\r\n\r\nx".as_bytes());
+    assert_eq!(e.subject, "a b c d e");
+}
+
+#[test]
+fn subject_bidi_overrides_and_isolates_removed() {
+    let bidi: String = ('\u{202A}'..='\u{202E}').chain('\u{2066}'..='\u{2069}').collect();
+    let e = p(format!("Subject: a{bidi}b\r\n\r\nx").as_bytes());
+    assert_eq!(e.subject, "ab");
+    // ZWJ and ZWNJ are kept: Persian/Arabic text depends on them.
+    let e = p("Subject: می\u{200C}خواهم a\u{200D}b\r\n\r\nx".as_bytes());
+    assert_eq!(e.subject, "می\u{200C}خواهم a\u{200D}b");
+    // Positive control.
+    assert_eq!(p(b"Subject: plain subject\r\n\r\nx").subject, "plain subject");
+}
+
+#[test]
+fn addresses_containing_format_or_line_separator_chars_are_dropped() {
+    for bad in ['\u{200B}', '\u{202E}', '\u{2028}', '\u{2029}', '\u{FEFF}'] {
+        let raw = format!("To: a{bad}b@x.org, ok@x.org\r\nFrom: c{bad}d@x.org\r\n\r\nx");
+        let e = p(raw.as_bytes());
+        assert_eq!(e.to, "ok@x.org", "{bad:?}");
+        assert_eq!(e.from, "", "{bad:?}");
+    }
+    // Positive control.
+    assert_eq!(p(b"To: A@X.org\r\n\r\nx").to, "a@x.org");
+}
+
+#[test]
+fn first_oversized_address_does_not_hide_later_recipients_silently() {
+    // An address that alone exceeds the field cap is skipped; later ones are kept.
+    let huge = format!("{}@x.org", "b".repeat(MAX_ADDRESS_FIELD_BYTES));
+    let e = p(format!("To: {huge}, ok@x.org, also@x.org\r\n\r\nx").as_bytes());
+    assert_eq!(e.to, "ok@x.org, also@x.org");
+}

@@ -530,3 +530,43 @@ fn put_racing_delete_if_older_never_loses_the_blob() {
         !n.ends_with(".tmp") && !n.ends_with(rusty_store::QUARANTINE_SUFFIX)
     }));
 }
+
+// ----- P0 m1: symlinked roots are refused, with or without a trailing slash -----
+
+#[tokio::test]
+async fn open_and_init_refuse_symlink_root_even_with_trailing_slash() {
+    let parent = tempfile::tempdir().unwrap();
+    let real = parent.path().join("real");
+    FsBlobStore::init(&real).await.unwrap();
+    let link = parent.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let with_slash = format!("{}/", link.display());
+    assert!(FsBlobStore::open(&with_slash).await.is_err());
+    assert!(FsBlobStore::open(&link).await.is_err());
+    assert!(FsBlobStore::init(&with_slash).await.is_err());
+    assert!(FsBlobStore::init(&link).await.is_err());
+    // The real root still opens, with or without a trailing slash.
+    FsBlobStore::open(&real).await.unwrap();
+    FsBlobStore::open(format!("{}/", real.display())).await.unwrap();
+}
+
+// ----- P0 m5: the startup heal report is kept -----
+
+#[tokio::test]
+async fn startup_heal_report_is_available() {
+    let (dir, s) = store().await;
+    assert_eq!(s.startup_heal().map(|r| r.restored), Some(0));
+    let h = s.put(Bytes::from_static(b"crashed gc")).await.unwrap();
+    let p = blob_path(dir.path(), &h);
+    let q = p.with_file_name(format!(".{}.gc1.1{}", h.as_str(), rusty_store::QUARANTINE_SUFFIX));
+    std::fs::rename(&p, &q).unwrap();
+
+    let lock = s.try_lock_gc().await.unwrap();
+    let skipped = FsBlobStore::open(dir.path()).await.unwrap();
+    assert!(skipped.startup_heal().is_none());
+    drop(lock);
+
+    let healed = FsBlobStore::open(dir.path()).await.unwrap();
+    let r = healed.startup_heal().expect("heal ran");
+    assert_eq!(r.restored, 1);
+}

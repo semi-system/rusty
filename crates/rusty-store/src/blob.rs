@@ -10,7 +10,8 @@
 //! `O_NOFOLLOW | O_NONBLOCK` and checked with `fstat` to be regular files.
 //!
 //! Blob root: created only by the explicit [`FsBlobStore::init`] (mode 0700, marker file
-//! [`BLOB_ROOT_MARKER`] 0600). [`FsBlobStore::open`] fails closed when the root is missing,
+//! [`BLOB_ROOT_MARKER`] 0600). The root path is rebuilt from its components first, so a
+//! trailing slash cannot make the kernel follow a symlink root. [`FsBlobStore::open`] fails closed when the root is missing,
 //! is not a real directory, is writable by group or others, or lacks the marker; nothing
 //! else (put, GC, the lock) ever creates the root, so a missing mount or a typo in the
 //! configuration cannot silently start an empty store.
@@ -21,7 +22,8 @@
 //!
 //! Durability: `put` fsyncs the file, renames it into place and then fsyncs the shard
 //! directory, its parent and the blob root, so a blob whose `put` returned `Ok` survives a
-//! crash (fsync of an unchanged directory is cheap). Restoring a quarantined blob
+//! crash (fsync of an unchanged directory is cheap). A `put` of content that already exists
+//! runs the same three directory fsyncs before returning `Ok`. Restoring a quarantined blob
 //! (`restore_no_clobber`, used by `delete_if_older` and `heal_quarantine`) fsyncs the
 //! directory. The rename-aside and the unlink in `delete_if_older` are not fsynced: if a crash
 //! undoes either, the blob or its quarantine copy reappears, which only resurrects garbage
@@ -158,6 +160,7 @@ pub trait BlobStore: Send + Sync {
 /// Built only by [`FsBlobStore::open`] on a root prepared once by [`FsBlobStore::init`].
 pub struct FsBlobStore {
     root: PathBuf,
+    startup_heal: Option<HealReport>,
 }
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -168,7 +171,7 @@ impl FsBlobStore {
     /// [`BLOB_ROOT_MARKER`] (0600). Idempotent on an initialized root. A symlink, a
     /// non-directory, or a non-empty directory without the marker is refused.
     pub async fn init(root: impl AsRef<Path>) -> Result<()> {
-        let root = root.as_ref().to_path_buf();
+        let root = normalize_root(root.as_ref());
         blocking(move || init_sync(&root)).await?
     }
 
@@ -177,23 +180,34 @@ impl FsBlobStore {
     /// marker file; it never creates anything. If the GC lock is free, quarantine files left
     /// by an interrupted GC are healed once (see [`BlobStore::heal_quarantine`], cutoff
     /// `now - DEFAULT_GC_GRACE`); if another process holds the lock this step is skipped.
+    /// The heal scans up to 65,536 shard directories (256 x 256), so `open` on a large store
+    /// takes proportionally long; see [`FsBlobStore::startup_heal`] for its report.
     pub async fn open(root: impl AsRef<Path>) -> Result<FsBlobStore> {
-        let root = root.as_ref().to_path_buf();
+        let root = normalize_root(root.as_ref());
         let r = root.clone();
         blocking(move || check_root(&r)).await??;
-        let store = FsBlobStore { root };
+        let mut store = FsBlobStore {
+            root,
+            startup_heal: None,
+        };
         match store.try_lock_gc().await {
             Ok(lock) => {
                 let cutoff = SystemTime::now()
                     .checked_sub(crate::gc::DEFAULT_GC_GRACE)
                     .unwrap_or(UNIX_EPOCH);
-                store.heal_quarantine(cutoff).await?;
+                store.startup_heal = Some(store.heal_quarantine(cutoff).await?);
                 drop(lock);
             }
             Err(Error::Conflict(_)) => {}
             Err(e) => return Err(e),
         }
         Ok(store)
+    }
+
+    /// The report of the quarantine heal that [`FsBlobStore::open`] ran, or `None` if it was
+    /// skipped because another process held the GC lock.
+    pub fn startup_heal(&self) -> Option<HealReport> {
+        self.startup_heal
     }
 
     /// Only a validated `BlobHash` (64 lowercase hex chars) can build a path.
@@ -262,8 +276,23 @@ fn create_temp(
     Err(io::Error::other("no free temporary file name"))
 }
 
+/// Directories passed to [`fsync_dir`], recorded for tests.
+#[cfg(test)]
+static DIR_FSYNCS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// Rebuild `root` from its components: drops a trailing slash and `.` segments, so the final
+/// path component is the one `lstat` sees (a symlink given as `link/` would otherwise be
+/// followed by the kernel).
+fn normalize_root(root: &Path) -> PathBuf {
+    root.components().collect()
+}
+
 /// fsync a directory (makes renames, links and new entries in it durable).
 fn fsync_dir(dir: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    if let Ok(mut v) = DIR_FSYNCS.lock() {
+        v.push(dir.to_path_buf());
+    }
     let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
     let fd = rustix::fs::open(dir, flags, Mode::empty())?;
     rustix::fs::fsync(&fd)?;
@@ -283,6 +312,17 @@ fn ensure_shard_dir(p: &Path) -> io::Result<()> {
     }
 }
 
+/// fsync the shard directory of the blob at `path`, its parent and the blob root. Also run on
+/// the idempotent early return of `put`: the earlier put that created the blob may have
+/// crashed before its own directory syncs, so a repeated `put` re-establishes durability.
+fn sync_shard_chain(root: &Path, path: &Path) -> io::Result<()> {
+    let l2 = path.parent().ok_or_else(|| io::Error::other("blob path has no parent"))?;
+    let l1 = l2.parent().ok_or_else(|| io::Error::other("blob path has no parent"))?;
+    fsync_dir(l2)?;
+    fsync_dir(l1)?;
+    fsync_dir(root)
+}
+
 /// Write `bytes` as the blob at `root/l1/l2/<hash>` = `path` (see the module docs for the
 /// permission and durability protocol).
 fn write_blob_sync(root: &Path, path: &Path, h: &BlobHash, bytes: &[u8]) -> io::Result<()> {
@@ -298,9 +338,7 @@ fn write_blob_sync(root: &Path, path: &Path, h: &BlobHash, bytes: &[u8]) -> io::
         fs::rename(&tmp, path)?;
         // The new entry, and (when a concurrent or earlier put created them) the shard
         // directories, must reach the disk before `put` reports success.
-        fsync_dir(l2)?;
-        fsync_dir(l1)?;
-        fsync_dir(root)
+        sync_shard_chain(root, path)
     })();
     if res.is_err() {
         let _ = fs::remove_file(&tmp);
@@ -699,7 +737,9 @@ impl BlobStore for FsBlobStore {
         let hash = BlobHash::of(&bytes);
         let path = self.path_for(&hash);
         let p = path.clone();
-        match blocking(move || refresh_mtime(&p)).await? {
+        let root = self.root.clone();
+        match blocking(move || refresh_mtime(&p).and_then(|()| sync_shard_chain(&root, &p))).await?
+        {
             Ok(()) => return Ok(hash),
             Err(e) if e.kind() == ErrorKind::NotFound => {}
             Err(e) => return Err(io_err("refresh blob", e)),
@@ -806,6 +846,25 @@ mod tests {
         let r = create_temp(d.path(), || Ok(".planted.tmp".to_string()));
         assert!(r.is_err());
         assert_eq!(fs::read(&target).unwrap(), b"untouched");
+    }
+
+    /// P0 m2: `put` of already-stored content still fsyncs l2, l1 and the root.
+    #[tokio::test]
+    async fn existing_content_put_syncs_shard_directories() {
+        let d = tempfile::tempdir().unwrap();
+        FsBlobStore::init(d.path()).await.unwrap();
+        let s = FsBlobStore::open(d.path()).await.unwrap();
+        let data = Bytes::from_static(b"already here");
+        let h = s.put(data.clone()).await.unwrap();
+        let l2 = s.path_for(&h).parent().unwrap().to_path_buf();
+        let l1 = l2.parent().unwrap().to_path_buf();
+        let root = s.root.clone();
+        DIR_FSYNCS.lock().unwrap().clear();
+        s.put(data).await.unwrap();
+        let seen = DIR_FSYNCS.lock().unwrap().clone();
+        for want in [&l2, &l1, &root] {
+            assert!(seen.contains(want), "not synced: {want:?} in {seen:?}");
+        }
     }
 
     #[test]

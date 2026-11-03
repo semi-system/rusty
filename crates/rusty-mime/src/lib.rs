@@ -11,7 +11,9 @@
 //!   nesting depth.
 //! - Every output field is sanitized and capped: no C0/C1 control characters anywhere,
 //!   [`MAX_SUBJECT_BYTES`] for the subject, [`MAX_ADDRESS_FIELD_BYTES`] and
-//!   [`MAX_ADDRESSES`] for `from`/`to`, [`MAX_ID_BYTES`] per message id, the last
+//!   [`MAX_ADDRESSES`] for `from`/`to` (an address with a format or line-separator
+//!   character, or one larger than the byte cap on its own, is dropped and later ones are
+//!   still kept), subject line separators become spaces and bidi overrides are removed, [`MAX_ID_BYTES`] per message id, the last
 //!   [`MAX_REFERENCES`] references.
 
 use mail_parser::{Address, HeaderValue, MessageParser};
@@ -81,14 +83,35 @@ fn header_end(w: &[u8]) -> Option<usize> {
     }
 }
 
-/// Drop control characters (TAB becomes a space), collapse runs of spaces, trim, and cut
+/// Bidirectional overrides (U+202A..U+202E) and isolates (U+2066..U+2069): they can reorder
+/// displayed text (spoofing). ZWJ (U+200D) and ZWNJ (U+200C) are not included: Persian,
+/// Arabic and other scripts need them.
+fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// Unicode format (Cf) characters and line/paragraph separators (Zl, Zp): none belongs in an
+/// email address. Covers the Cf code points of Unicode 15 (the standard library has no
+/// general-category lookup).
+fn is_format_or_line_separator(c: char) -> bool {
+    matches!(c,
+        '\u{AD}' | '\u{600}'..='\u{605}' | '\u{61C}' | '\u{6DD}' | '\u{70F}' | '\u{890}'..='\u{891}'
+        | '\u{8E2}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}'
+        | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}'
+        | '\u{110BD}' | '\u{110CD}' | '\u{13430}'..='\u{1343F}' | '\u{1BCA0}'..='\u{1BCA3}'
+        | '\u{1D173}'..='\u{1D17A}' | '\u{E0001}' | '\u{E0020}'..='\u{E007F}')
+}
+
+/// Drop control characters (TAB, NEL, U+2028 and U+2029 become spaces; bidi overrides and
+/// isolates are removed), collapse runs of spaces, trim, and cut
 /// to at most `max` bytes on a char boundary. Stops reading once `max` is reached.
 fn clean_text(s: &str, max: usize) -> String {
     let mut out = String::new();
     let mut space = false;
     for c in s.chars() {
-        let c = if c == '\t' { ' ' } else { c };
-        if c.is_control() {
+        // TAB and the line/paragraph separators (U+0085 NEL, U+2028, U+2029) read as spaces.
+        let c = if matches!(c, '\t' | '\u{85}' | '\u{2028}' | '\u{2029}') { ' ' } else { c };
+        if c.is_control() || is_bidi_control(c) {
             continue;
         }
         if c == ' ' {
@@ -127,9 +150,11 @@ fn raw_ids<'a>(v: &'a HeaderValue<'_>) -> Box<dyn DoubleEndedIterator<Item = &'a
 }
 
 /// Lowercase bare addresses joined with ", ". Addresses that are empty or contain a control
-/// character, whitespace or ',' are skipped; at most [`MAX_ADDRESSES`] addresses and
+/// character, whitespace, ',', a Unicode format character or a line/paragraph separator are
+/// skipped whole; so is an address that alone exceeds [`MAX_ADDRESS_FIELD_BYTES`] (later
+/// addresses are still considered). At most [`MAX_ADDRESSES`] addresses and
 /// [`MAX_ADDRESS_FIELD_BYTES`] bytes are kept, stopping before the first address that would
-/// not fit (an address is never cut).
+/// overflow the remaining room (an address is never cut).
 fn join_addresses(addr: Option<&Address<'_>>) -> String {
     let mut out = String::new();
     let Some(a) = addr else { return out };
@@ -139,7 +164,12 @@ fn join_addresses(addr: Option<&Address<'_>>) -> String {
             continue;
         };
         let s = raw.replace(['<', '>'], "").trim().to_lowercase();
-        if s.is_empty() || s.chars().any(|c| c.is_control() || c.is_whitespace() || c == ',') {
+        if s.is_empty()
+            || s.len() > MAX_ADDRESS_FIELD_BYTES
+            || s.chars().any(|c| {
+                c.is_control() || c.is_whitespace() || c == ',' || is_format_or_line_separator(c)
+            })
+        {
             continue;
         }
         let sep = if out.is_empty() { 0 } else { 2 };

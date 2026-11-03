@@ -148,6 +148,10 @@ fn page_limit(limit: u32) -> Result<i64> {
 }
 
 /// One account's mailbox. Cheap to clone; clones share the pool and blob store.
+///
+/// Invariant: every code path that inserts a row into `mailboxes` must also seed
+/// `next_folder_id` (migration 0003 column; `take_folder_id` hands out folder ids from it),
+/// or `create_folder` would produce colliding or missing ids.
 #[derive(Clone)]
 pub struct Mailbox {
     store: SqliteStore,
@@ -235,6 +239,7 @@ async fn take_uid_validity(conn: &mut SqliteConnection, mb: MailboxId) -> Result
 }
 
 /// Take the next folder id of the mailbox (`mailboxes.next_folder_id`, migration 0003).
+/// Every code path that inserts a `mailboxes` row must seed `next_folder_id`.
 async fn take_folder_id(conn: &mut SqliteConnection, mb: MailboxId) -> Result<i64> {
     sqlx::query_scalar(
         "UPDATE mailboxes SET next_folder_id = next_folder_id + 1 WHERE id = ? \
