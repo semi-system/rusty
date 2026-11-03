@@ -1,9 +1,16 @@
 # Rusty
 
-Rusty is a security-first rewrite of the Zimbra mail stack in Rust. This repository holds
-the foundation layer: shared types, a SQLite metadata store with a content-addressed blob
-store, a MIME envelope parser, and a directory of domains, accounts, aliases and lists with
-password authentication. Network services (SMTP, IMAP, HTTP) are not part of this layer.
+Rusty is a security-first rewrite of the Zimbra mail stack in Rust.
+
+## Status
+
+This is a library layer. There are no running services yet: no SMTP, IMAP, HTTP or other
+network listener, and no daemon. The libraries hold the data model, storage, parsing and
+the building blocks for a distributed deployment (idempotent delivery, a job queue,
+capabilities). Designs live in `docs/superpowers/specs/`, implementation plans in
+`docs/superpowers/plans/`, and the roadmap to feature parity with Zimbra in
+`docs/superpowers/plans/2026-11-03-roadmap-zimbra-parity.md`. Several specs (tenants, ACLs,
+KMS, edge, containers) describe things that are not implemented.
 
 ## Build and test
 
@@ -15,6 +22,15 @@ cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+The full gate runs clippy, tests (glibc and musl), cargo-deny, cargo-audit, a musl release
+build with a static-linking check, a fuzz lockfile check and 60 s of fuzzing per target:
+
+```sh
+bash scripts/ci.sh
+```
+
+See `SECURITY.md` for the tools it needs. `FUZZ_SECS` overrides the fuzz time.
 
 The toolchain is pinned to an exact version in `rust-toolchain.toml` (rustup installs it on
 first use); bump it deliberately as described there. Licensed under MIT (`LICENSE`).
@@ -37,11 +53,20 @@ cargo test -p rusty-directory --test acceptance -- --nocapture
 
 ## Crates
 
-- `rusty-core`: ids, flags, the shared `Error` type and the startup configuration loader.
-- `rusty-store`: SQLite metadata store, `Mailbox` facade, filesystem blob store, garbage collection.
+- `rusty-core`: ids, flags, the shared `Error` type, the startup configuration loader,
+  `proto` (protocol version negotiation) and `text` (shared text-hygiene helpers).
+- `rusty-store`: SQLite metadata store and the filesystem blob store.
+  - `mailbox`: `Mailbox` facade (folders, messages, change log), idempotent `deliver` with
+    delivery ids, and batch operations (`move_many`, `expunge_many`, `deliver_many`; one
+    transaction each, at most 1000 items).
+  - `jobs`: durable job queue with leases and fencing epochs (at-least-once).
+  - `blob`, `gc`: content-addressed blob store and garbage collection.
+  - `sqlite`, `traits`: schema, connection setup and storage traits.
 - `rusty-mime`: bounded parsing of message envelopes (header section only, at most 256 KiB;
   sanitized, capped subject, addresses and threading headers).
-- `rusty-directory`: domains, accounts, aliases, lists, address resolution, local authentication.
+- `rusty-directory`: domains, accounts, aliases, lists (expansion capped at 10,000
+  members), address resolution, local authentication (`auth`) and hashed, revocable,
+  short-lived capability tokens (`caps`).
 
 ## Configuration
 
