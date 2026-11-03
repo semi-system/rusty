@@ -1,10 +1,14 @@
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::str::FromStr;
+use std::time::Duration;
 
 use rusty_core::{Error, Result};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Sqlite, SqlitePool, Transaction};
+
+/// sqlx's default, stated explicitly: how long a writer waits for the SQLite write lock.
+pub const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// SQLite-backed metadata store. Every pooled connection has
 /// `PRAGMA foreign_keys = ON`; `open` verifies it.
@@ -23,9 +27,19 @@ impl SqliteStore {
     /// file keeps its mode. The directory holding it should be 0700 and owned by the service
     /// account (run with umask 077; see SECURITY.md).
     pub async fn open(url: &str) -> Result<SqliteStore> {
+        Self::open_with_busy_timeout(url, DEFAULT_BUSY_TIMEOUT).await
+    }
+
+    /// [`open`](Self::open) with an explicit `busy_timeout`: how long a connection waits for
+    /// the database write lock before the operation fails with [`Error::Busy`].
+    pub async fn open_with_busy_timeout(
+        url: &str,
+        busy_timeout: Duration,
+    ) -> Result<SqliteStore> {
         let opts = SqliteConnectOptions::from_str(url)
             .map_err(|e| Error::storage_with("invalid database url", e))?
             .foreign_keys(true)
+            .busy_timeout(busy_timeout)
             .create_if_missing(true);
         let in_memory = url.contains(":memory:") || url.contains("mode=memory");
         if !in_memory {
@@ -130,12 +144,23 @@ fn nofollow_cloexec_flags() -> i32 {
 /// `RAISE(ABORT, ..)` messages (ours) pass through: a `conflict:` prefix gives `Conflict`,
 /// anything else `Invalid`. Everything else is `Storage`.
 pub fn map_db_error(e: sqlx::Error) -> Error {
+    // Transient pool conditions first: no database error is involved.
+    if matches!(e, sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed) {
+        return busy(BUSY_POOL);
+    }
     if let sqlx::Error::Database(db) = &e {
         // Postgres trigger codes are chosen by Rusty and classified only by SQLSTATE. Never
         // inspect Postgres message text: caller data may contain strings resembling a code.
         match db.code().as_deref() {
             Some("RS001") => return Error::Conflict("database conflict".into()),
             Some("RS002") => return Error::Invalid("invalid value".into()),
+            // Transient classes (D1). 40P01/40001 reach this function only after the retry loop
+            // gave up (or outside it): the caller may retry later.
+            Some("55P03") => return busy("lock timeout"),
+            Some("57014") => return busy("statement timeout"),
+            Some("53300") => return busy("too many connections"),
+            Some("40P01") | Some("40001") => return busy("transaction conflict"),
+            Some(code) if sqlite_busy_code(code) => return busy("database locked"),
             _ => {}
         }
         use sqlx::error::ErrorKind;
@@ -159,4 +184,49 @@ pub fn map_db_error(e: sqlx::Error) -> Error {
         }
     }
     Error::storage_with("database error", e)
+}
+
+/// Fixed reason for pool-acquire timeout / closed pool.
+pub(crate) const BUSY_POOL: &str = "connection pool unavailable";
+
+/// A transient failure with a fixed, caller-data-free reason (D1).
+pub(crate) fn busy(reason: &str) -> Error {
+    Error::Busy(reason.to_owned())
+}
+
+/// SQLite result codes SQLITE_BUSY (5) and SQLITE_LOCKED (6), including extended codes
+/// (`code & 0xff`). SQLite codes are at most four digits; Postgres SQLSTATEs are five
+/// characters, so a Postgres code can never be taken for one.
+fn sqlite_busy_code(code: &str) -> bool {
+    code.len() <= 4
+        && code
+            .parse::<u32>()
+            .is_ok_and(|c| matches!(c & 0xff, 5 | 6))
+}
+
+/// SQLite write transaction (`BEGIN IMMEDIATE`).
+///
+/// Internal: used by `JobQueue::fence` / `complete_in` and their tests; it is removed in PG5
+/// when those become `JobFence` parameters of the repository operations.
+pub struct SqliteTx(Transaction<'static, Sqlite>);
+
+impl SqliteTx {
+    /// Begin a write transaction (`BEGIN IMMEDIATE`, see [`SqliteStore::begin_write`]).
+    pub async fn begin(store: &SqliteStore) -> Result<SqliteTx> {
+        Ok(SqliteTx(store.begin_write().await?))
+    }
+
+    pub fn conn(&mut self) -> &mut sqlx::SqliteConnection {
+        &mut self.0
+    }
+
+    /// Commit.
+    pub async fn commit(self) -> Result<()> {
+        self.0.commit().await.map_err(map_db_error)
+    }
+
+    /// Roll back. Dropping the transaction has the same effect.
+    pub async fn rollback(self) -> Result<()> {
+        self.0.rollback().await.map_err(map_db_error)
+    }
 }

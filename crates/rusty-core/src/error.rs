@@ -20,6 +20,15 @@ pub enum Error {
     Quota(String),
     #[error("invalid: {0}")]
     Invalid(String),
+    /// Transient storage failure: the operation did not happen (or its outcome is not known to
+    /// be committed, see the store docs) and may be retried later. Lock or statement timeout,
+    /// connection pool exhausted or closed, too many connections, or a deadlock / serialization
+    /// failure that outlived the bounded retries. The text is a fixed reason, never raw database
+    /// text, a URL or caller data. Distinct from [`Error::Storage`] (corruption, unexpected
+    /// failure): a daemon answers `Busy` with a retryable status (SMTP 451 4.3.0, HTTP 503 with
+    /// `Retry-After`, IMAP `[UNAVAILABLE]`), and `Storage` with a permanent or internal-error one.
+    #[error("busy: {0}")]
+    Busy(String),
     #[error("storage: {message}")]
     Storage {
         message: String,

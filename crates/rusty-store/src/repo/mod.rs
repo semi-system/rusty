@@ -24,8 +24,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use rusty_core::{
-    AccountId, BlobHash, DeliveryId, DomainId, Error, Flags, FolderId, MailboxId,
-    JobId, PlanId, Result,
+    AccountId, BlobHash, DeliveryId, Error, Flags, FolderId, MailboxId,
+    JobId, Result,
 };
 use rusty_mime::Envelope;
 
@@ -35,9 +35,15 @@ use crate::mailbox::{
 };
 use crate::BlobStore;
 
+mod directory;
 #[cfg(feature = "postgres")]
 pub mod pg;
 pub mod sqlite;
+
+pub use directory::{
+    AccountStatus, AuthRow, CapabilityGrant, ConfigLayers, ConfigTarget, DirectoryRepo, ListMember,
+    NewAccount, Resolution, GLOBAL_PLAN,
+};
 
 
 
@@ -54,28 +60,6 @@ pub const SYSTEM_FOLDER_TABLE: [(i64, &str, &str); 5] = [
 ];
 
 // ---------------------------------------------------------------- neutral data
-
-/// Input of `create_account`. `local` is already normalized by the caller (normalization lives
-/// in `rusty-directory` and stays backend-neutral).
-#[derive(Debug, Clone)]
-pub struct NewAccount {
-    pub local: String,
-    pub domain: DomainId,
-    pub plan: Option<PlanId>,
-    pub password_hash: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ListMember {
-    Account(AccountId),
-    External(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Resolution {
-    Account(AccountId),
-    List(Vec<ListMember>),
-}
 
 /// A message to store: metadata parsed by the facade, content already in the blob store.
 #[derive(Debug, Clone)]
@@ -100,15 +84,6 @@ pub struct Delivery {
 pub struct JobFence {
     pub id: JobId,
     pub epoch: i64,
-}
-
-#[async_trait]
-pub trait DirectoryRepo: Send + Sync {
-    async fn create_domain(&self, name: &str) -> Result<DomainId>;
-    async fn create_account(&self, new: &NewAccount) -> Result<AccountId>;
-    /// `None`: no account, alias or list with this address.
-    async fn resolve(&self, local: &str, domain: &str, max_members: usize)
-        -> Result<Option<Resolution>>;
 }
 
 #[async_trait]
@@ -154,25 +129,6 @@ pub trait MailboxRepo: Send + Sync {
 pub mod sql_text {
     pub const FOLDER_EXISTS: &str = "SELECT id FROM folders WHERE mailbox_id = $1 AND id = $2";
     pub const MAILBOX_FOR_ACCOUNT: &str = "SELECT id FROM mailboxes WHERE account_id = $1";
-    pub const INSERT_DOMAIN: &str =
-        "INSERT INTO domains (name, created_at) VALUES ($1, {NOW}) RETURNING id";
-    pub const INSERT_ACCOUNT: &str = "INSERT INTO accounts \
-        (local_part, domain_id, plan_id, password_hash, status, created_at) \
-        VALUES ($1, $2, $3, $4, 'active', {NOW}) RETURNING id";
-    /// Resolve step 1: kind 1 account, 2 alias, 3 list. `CAST(.. AS BIGINT)` because a bare
-    /// literal is int4 on Postgres and the row decoder reads i64.
-    pub const RESOLVE_KIND: &str = "SELECT kind, id FROM ( \
-          SELECT CAST(1 AS BIGINT) AS kind, a.id AS id FROM domains d JOIN accounts a \
-            ON a.domain_id = d.id WHERE d.name = $1 AND a.local_part = $2 \
-          UNION ALL \
-          SELECT 2, al.account_id FROM domains d JOIN aliases al \
-            ON al.domain_id = d.id WHERE d.name = $1 AND al.local_part = $2 \
-          UNION ALL \
-          SELECT 3, l.id FROM domains d JOIN lists l \
-            ON l.domain_id = d.id WHERE d.name = $1 AND l.local_part = $2 \
-        ) AS u ORDER BY kind LIMIT 1";
-    pub const LIST_MEMBERS: &str =
-        "SELECT account_id, external FROM list_members WHERE list_id = $1 ORDER BY seq LIMIT $2";
     pub const ANCESTORS: &str = "WITH RECURSIVE up(id, parent_id, depth) AS ( \
           SELECT id, parent_id, 1 FROM folders WHERE mailbox_id = $1 AND id = $2 \
           UNION ALL \
@@ -259,62 +215,6 @@ pub(crate) fn not_found_mailbox() -> Error {
 
 
 // ---------------------------------------------------------------- facades
-
-fn stand_in_domain_ok(name: &str) -> bool {
-    // Stand-in for `rusty_directory::normalize_domain` (IDNA lives in rusty-directory, which
-    // depends on this crate). Real wiring passes the normalized name.
-    !name.is_empty()
-        && name.len() <= 253
-        && name
-            .bytes()
-            .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-'))
-}
-
-/// Directory facade of the spike. Validation here, SQL in the repository.
-#[derive(Clone)]
-pub struct SpikeDirectory {
-    repo: Arc<dyn DirectoryRepo>,
-}
-
-impl SpikeDirectory {
-    pub fn new(repo: Arc<dyn DirectoryRepo>) -> Self {
-        Self { repo }
-    }
-
-    pub async fn create_domain(&self, name: &str) -> Result<DomainId> {
-        if !stand_in_domain_ok(name) {
-            return Err(Error::Invalid("invalid domain".into()));
-        }
-        self.repo.create_domain(name).await
-    }
-
-    pub async fn create_account(
-        &self,
-        local: &str,
-        domain: DomainId,
-        password_hash: Option<String>,
-        plan: Option<PlanId>,
-    ) -> Result<AccountId> {
-        if local.is_empty() || local.len() > 64 {
-            return Err(Error::Invalid("invalid local part".into()));
-        }
-        self.repo
-            .create_account(&NewAccount {
-                local: local.to_owned(),
-                domain,
-                plan,
-                password_hash,
-            })
-            .await
-    }
-
-    pub async fn resolve(&self, local: &str, domain: &str) -> Result<Resolution> {
-        self.repo
-            .resolve(local, domain, 10_000)
-            .await?
-            .ok_or_else(|| Error::NotFound("address".into()))
-    }
-}
 
 /// Mailbox facade of the spike.
 #[derive(Clone)]
@@ -472,13 +372,13 @@ impl SpikeMailbox {
 /// sqlx-sqlite maps `$N` to the N-th bound value (see the tripwire test
 /// `sqlite_dollar_placeholders_follow_their_number`), so no placeholder rewriting is needed.
 pub(crate) fn render_sqlite(sql: &str) -> String {
-    sql.replace("{NOW}", "unixepoch()")
+    sql.replace("{NOW}", "unixepoch()").replace("{JSONB}", "")
 }
 
 /// Postgres text: the database clock is `rs_now()` (`statement_timestamp()`).
 #[cfg(any(test, feature = "postgres"))]
 pub(crate) fn render_pg(sql: &str) -> String {
-    sql.replace("{NOW}", "rs_now()")
+    sql.replace("{NOW}", "rs_now()").replace("{JSONB}", "::jsonb")
 }
 
 // ---------------------------------------------------------------- generic reads (experiment)
@@ -539,15 +439,17 @@ mod tests {
         );
         for s in [
             sql_text::FOLDER_EXISTS,
-            sql_text::RESOLVE_KIND,
+            directory::sql::RESOLVE_KIND,
+            directory::sql::CAP_REVOKE_ONE,
+            directory::sql::INSERT_PLAN,
             sql_text::ANCESTORS,
             sql_text::TAKE_MSG_IDS_AND_SEQS,
             sql_text::LIST_FOLDER,
             sql_text::CHANGES,
-            sql_text::INSERT_ACCOUNT,
+            directory::sql::INSERT_ACCOUNT,
         ] {
             assert!(!s.contains('?'), "{s}");
-            assert!(!render_pg(s).contains("{NOW}"), "{s}");
+            assert!(!render_pg(s).contains("{NOW}") && !render_pg(s).contains("{JSONB}"), "{s}");
             assert!(!render_sqlite(s).contains("{NOW}"), "{s}");
         }
     }

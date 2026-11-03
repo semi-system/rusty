@@ -8,7 +8,7 @@ use rusty_store::{BlobStore, FsBlobStore, Mailbox, SqliteStore, BLOB_ROOT_MARKER
 
 #[cfg(feature = "postgres")]
 pub mod pg;
-pub mod spike;
+pub mod backends;
 
 /// Fresh private in-memory store with migrations applied.
 pub async fn mem() -> SqliteStore {

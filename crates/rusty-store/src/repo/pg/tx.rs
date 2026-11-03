@@ -1,0 +1,224 @@
+//! Transaction helper of the Postgres repositories: bounded retry on 40P01 / 40001, mailbox
+//! row lock first, commit/rollback classification, retry statistics and the test knobs.
+//!
+//! Transaction discipline (READ COMMITTED):
+//! 1. `tx_retry!` owns BEGIN / COMMIT and the retry loop. A unit of work is a block that is
+//!    re-run from scratch when Postgres reports a deadlock (40P01) or serialization failure
+//!    (40001); after [`MAX_ATTEMPTS`] the error becomes `Error::Busy` (transient, D1).
+//! 2. For mailbox writes the first statement is `SELECT .. FROM mailboxes WHERE id = $1 FOR
+//!    UPDATE` (`tx_retry!(self, Some(mb), ..)`), so writers of one mailbox are serialized and
+//!    writers of different mailboxes run in parallel. The lock statement runs INSIDE the retry
+//!    loop: a deadlock while waiting for it is retried like any other.
+//! 3. `blobs` rows are locked in ASCENDING hash order (`lock_blobs`) BEFORE any statement that
+//!    fires the refcount trigger, so two mailboxes storing overlapping blob sets cannot
+//!    deadlock on `blobs`. The retry loop is the safety net, not the mechanism.
+//! 4. Errors: statements return `sqlx::Error` through `TxError::Db` so the loop can look at the
+//!    SQLSTATE; everything else is mapped by `map_db_error` (SQLSTATE only, never message text).
+//! 5. NEVER retried: connection errors and a failed COMMIT with unknown outcome (the commit may
+//!    have happened); `deliver` is safe to repeat by the caller because of its `DeliveryId`.
+//!
+//! The body of `tx_retry!` may run several times: it must have no side effects outside the
+//! transaction (blob IO happens before the repository call). Post-commit hooks (cache
+//! notification, PG4) run after the macro, never inside the loop.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
+use rand_core::{OsRng, RngCore};
+use rusty_core::{Error, MailboxId};
+use sqlx::PgConnection;
+
+use super::PgRepo;
+use crate::repo::not_found_mailbox;
+use crate::sqlite::busy;
+use crate::map_db_error;
+
+/// Attempts of one unit of work (first try included).
+pub const MAX_ATTEMPTS: u32 = 5;
+
+/// Error inside a unit of work: a database error (kept raw so its SQLSTATE can be inspected by
+/// the retry loop) or an already-final domain error.
+#[derive(Debug)]
+pub enum TxError {
+    Db(sqlx::Error),
+    Domain(Error),
+}
+
+impl From<sqlx::Error> for TxError {
+    fn from(e: sqlx::Error) -> Self {
+        TxError::Db(e)
+    }
+}
+
+impl From<Error> for TxError {
+    fn from(e: Error) -> Self {
+        TxError::Domain(e)
+    }
+}
+
+pub type TxResult<T> = std::result::Result<T, TxError>;
+
+fn sqlstate(e: &sqlx::Error) -> Option<String> {
+    e.as_database_error().and_then(|d| d.code().map(|c| c.into_owned()))
+}
+
+/// 40P01 deadlock_detected, 40001 serialization_failure: the whole transaction may be re-run.
+pub fn is_retryable(e: &sqlx::Error) -> bool {
+    matches!(sqlstate(e).as_deref(), Some("40P01") | Some("40001"))
+}
+
+fn is_deadlock(e: &sqlx::Error) -> bool {
+    sqlstate(e).as_deref() == Some("40P01")
+}
+
+/// Counters of the retry loop (process-lifetime, per `PgRepo`).
+#[derive(Debug, Default)]
+pub struct PgRetryStats {
+    pub retries: AtomicU64,
+    pub deadlocks: AtomicU64,
+    pub exhausted: AtomicU64,
+}
+
+/// Test-only fault injection: lets a test force the interleaving that the ordering rule
+/// prevents. Never set in production code paths.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Knobs {
+    /// Lock blobs one by one in the order the messages are given instead of ascending.
+    pub unordered_blob_locks: bool,
+    /// `pg_sleep` this long after the first blob lock (only with `unordered_blob_locks`).
+    pub hold_after_first_blob_ms: u32,
+}
+
+pub(super) enum Step<T> {
+    Done(T),
+    Retry,
+    Fail(Error),
+}
+
+impl PgRepo {
+    /// BEGIN (READ COMMITTED). Pool exhaustion / a closed pool are `Busy` (see
+    /// `PgStore::begin_write`).
+    pub(super) async fn begin_tx(
+        &self,
+    ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, Error> {
+        self.store.begin_write().await
+    }
+
+    /// Lock the mailbox row FIRST (`SELECT .. FOR UPDATE`). `NotFound` if it does not exist.
+    pub(super) async fn lock_mailbox(
+        &self,
+        c: &mut PgConnection,
+        mb: MailboxId,
+    ) -> TxResult<()> {
+        sqlx::query_scalar::<_, i64>("SELECT id FROM mailboxes WHERE id = $1 FOR UPDATE")
+            .bind(mb.0)
+            .fetch_optional(&mut *c)
+            .await?
+            .ok_or_else(not_found_mailbox)?;
+        Ok(())
+    }
+
+    /// Test knob: raise a real 40P01 inside the transaction while the counter is positive.
+    pub(super) async fn maybe_inject_deadlock(&self, c: &mut PgConnection) -> TxResult<()> {
+        let mut armed = false;
+        let mut cur = self.inject_deadlocks.load(Ordering::SeqCst);
+        while cur > 0 {
+            match self.inject_deadlocks.compare_exchange(
+                cur,
+                cur - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => {
+                    armed = true;
+                    break;
+                }
+                Err(seen) => cur = seen,
+            }
+        }
+        if armed {
+            sqlx::query(
+                "DO $$ BEGIN RAISE EXCEPTION 'injected' USING ERRCODE = '40P01'; END $$",
+            )
+            .execute(&mut *c)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Finish one attempt: commit on success; roll back and classify on failure.
+    pub(super) async fn finish<T>(
+        &self,
+        tx: sqlx::Transaction<'static, sqlx::Postgres>,
+        res: TxResult<T>,
+        attempt: u32,
+    ) -> Step<T> {
+        let failure = match res {
+            Ok(v) => match tx.commit().await {
+                Ok(()) => return Step::Done(v),
+                Err(e) => TxError::Db(e),
+            },
+            Err(e) => {
+                // The transaction may already be aborted; the rollback result is moot.
+                let _ = tx.rollback().await;
+                e
+            }
+        };
+        match failure {
+            TxError::Db(e) if is_retryable(&e) => {
+                self.stats.retries.fetch_add(1, Ordering::Relaxed);
+                if is_deadlock(&e) {
+                    self.stats.deadlocks.fetch_add(1, Ordering::Relaxed);
+                }
+                if attempt + 1 >= MAX_ATTEMPTS {
+                    self.stats.exhausted.fetch_add(1, Ordering::Relaxed);
+                    return Step::Fail(busy("transaction conflict"));
+                }
+                backoff(attempt).await;
+                Step::Retry
+            }
+            TxError::Db(e) => Step::Fail(map_db_error(e)),
+            TxError::Domain(e) => Step::Fail(e),
+        }
+    }
+}
+
+/// Run `$body` (a block evaluating to `TxResult<T>`, with `$c: &mut PgConnection` in scope) in
+/// a READ COMMITTED transaction, optionally locking the mailbox row first, retrying the WHOLE
+/// block on 40P01/40001 up to `MAX_ATTEMPTS` times. See the module docs for the rules.
+///
+/// A macro instead of a closure-taking method: a closure `for<'c> FnMut(&'c mut PgConnection)
+/// -> Pin<Box<dyn Future + 'c>>` cannot capture borrowed arguments of the calling
+/// `async_trait` method (rustc: "returning this value requires that `'life1` must outlive
+/// `'static`"). Inlining the loop keeps every borrow in one future.
+macro_rules! tx_retry {
+    ($self:expr, $lock:expr, |$c:ident| $body:block) => {{
+        let mut attempt = 0u32;
+        loop {
+            let mut tx = $self.begin_tx().await?;
+            let res: $crate::repo::pg::tx::TxResult<_> = async {
+                let $c: &mut sqlx::PgConnection = &mut *tx;
+                let lock: Option<rusty_core::MailboxId> = $lock;
+                if let Some(mb) = lock {
+                    $self.lock_mailbox(&mut *$c, mb).await?;
+                }
+                $self.maybe_inject_deadlock(&mut *$c).await?;
+                $body
+            }
+            .await;
+            match $self.finish(tx, res, attempt).await {
+                $crate::repo::pg::tx::Step::Done(v) => break Ok::<_, rusty_core::Error>(v),
+                $crate::repo::pg::tx::Step::Retry => attempt += 1,
+                $crate::repo::pg::tx::Step::Fail(e) => break Err(e),
+            }
+        }
+    }};
+}
+pub(crate) use tx_retry;
+
+/// 5 ms * 2^attempt plus up to the same again of jitter.
+async fn backoff(attempt: u32) {
+    let base = 5u64 << attempt.min(6);
+    let jitter = u64::from(OsRng.next_u32()) % (base + 1);
+    tokio::time::sleep(Duration::from_millis(base + jitter)).await;
+}

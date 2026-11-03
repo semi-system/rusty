@@ -1,102 +1,37 @@
-//! Postgres implementation of the spike repositories.
-//!
-//! Transaction discipline (READ COMMITTED):
-//! 1. `PgRepo::run` owns BEGIN / COMMIT and the retry loop. A unit of work is a closure that is
-//!    re-run from scratch when Postgres reports a deadlock (40P01) or serialization failure
-//!    (40001); after `MAX_ATTEMPTS` the error becomes a fixed `Storage` error.
-//! 2. For mailbox writes the first statement is `SELECT .. FROM mailboxes WHERE id = $1 FOR
-//!    UPDATE` (`run(Some(mb), ..)`), so writers of one mailbox are serialized and writers of
-//!    different mailboxes run in parallel.
-//! 3. `blobs` rows are locked in ASCENDING hash order (`lock_blobs`) BEFORE any statement that
-//!    fires the refcount trigger, so two mailboxes storing overlapping blob sets cannot
-//!    deadlock on `blobs`. The retry loop is the safety net, not the mechanism.
-//! 4. Errors: statements return `sqlx::Error` through `TxError::Db` so the loop can look at the
-//!    SQLSTATE; everything else is mapped by `map_db_error` (SQLSTATE only, never message text).
+//! Postgres implementation of the repositories (directory: `directory.rs`; mailbox: spike,
+//! PG4 replaces it). Transaction helper, retry loop and test knobs: `tx.rs`.
+
+mod directory;
+pub mod tx;
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
-use rand_core::{OsRng, RngCore};
-use rusty_core::{
-    AccountId, DomainId, Error, FolderId, MailboxId, MessageId, Result, ThreadId,
-};
+use rusty_core::{AccountId, Error, FolderId, MailboxId, MessageId, Result, ThreadId};
 use sqlx::PgConnection;
 
 use super::{
     depth_verdict, hash_bytes, not_found_folder, not_found_mailbox, render_pg as r,
-    sql_text as q, thread_candidates, Delivery, DirectoryRepo, ListMember, MailboxRepo,
-    JobFence, NewAccount, NewMessage, Resolution, SYSTEM_FOLDERS, SYSTEM_FOLDER_TABLE,
+    sql_text as q, thread_candidates, Delivery, JobFence, MailboxRepo, NewMessage,
 };
 use crate::mailbox::{
     to_flags, to_uid, ChangeItem, ChangeOp, ChangePage, DeliverOutcome, MessageRef,
     MessageSummary, MAX_FOLDER_DEPTH,
 };
 use crate::{map_db_error, PgStore};
+use tx::{tx_retry, TxResult};
 
-/// Attempts of one unit of work (first try included).
-pub const MAX_ATTEMPTS: u32 = 5;
-
-/// Error inside a unit of work: a database error (kept raw so its SQLSTATE can be inspected by
-/// the retry loop) or an already-final domain error.
-#[derive(Debug)]
-pub enum TxError {
-    Db(sqlx::Error),
-    Domain(Error),
-}
-
-impl From<sqlx::Error> for TxError {
-    fn from(e: sqlx::Error) -> Self {
-        TxError::Db(e)
-    }
-}
-
-impl From<Error> for TxError {
-    fn from(e: Error) -> Self {
-        TxError::Domain(e)
-    }
-}
-
-type TxResult<T> = std::result::Result<T, TxError>;
-
-fn sqlstate(e: &sqlx::Error) -> Option<String> {
-    e.as_database_error().and_then(|d| d.code().map(|c| c.into_owned()))
-}
-
-/// 40P01 deadlock_detected, 40001 serialization_failure: the whole transaction may be re-run.
-pub fn is_retryable(e: &sqlx::Error) -> bool {
-    matches!(sqlstate(e).as_deref(), Some("40P01") | Some("40001"))
-}
-
-fn is_deadlock(e: &sqlx::Error) -> bool {
-    sqlstate(e).as_deref() == Some("40P01")
-}
-
-/// Counters of the retry loop (process-lifetime, per `PgRepo`).
-#[derive(Debug, Default)]
-pub struct RetryStats {
-    pub retries: AtomicU64,
-    pub deadlocks: AtomicU64,
-    pub exhausted: AtomicU64,
-}
-
-/// Test-only fault injection: lets a test force the interleaving that the ordering rule
-/// prevents. Never set in production code paths.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Knobs {
-    /// Lock blobs one by one in the order the messages are given instead of ascending.
-    pub unordered_blob_locks: bool,
-    /// `pg_sleep` this long after the first blob lock (only with `unordered_blob_locks`).
-    pub hold_after_first_blob_ms: u32,
-}
+pub use tx::{is_retryable, Knobs, PgRetryStats, MAX_ATTEMPTS};
 
 #[derive(Clone)]
 pub struct PgRepo {
     store: PgStore,
-    stats: Arc<RetryStats>,
+    stats: Arc<PgRetryStats>,
     knobs: Knobs,
+    /// Test knob: number of upcoming attempts that raise a real 40P01.
+    inject_deadlocks: Arc<AtomicU32>,
 }
 
 impl PgRepo {
@@ -105,6 +40,7 @@ impl PgRepo {
             store,
             stats: Arc::default(),
             knobs: Knobs::default(),
+            inject_deadlocks: Arc::default(),
         }
     }
 
@@ -114,201 +50,15 @@ impl PgRepo {
         self
     }
 
-    pub fn stats(&self) -> &RetryStats {
+    /// Test knob: the next `n` transaction attempts of `tx_retry!` operations fail with a real
+    /// 40P01 raised by the server.
+    #[doc(hidden)]
+    pub fn inject_deadlocks_for_test(&self, n: u32) {
+        self.inject_deadlocks.store(n, Ordering::SeqCst);
+    }
+
+    pub fn stats(&self) -> &PgRetryStats {
         &self.stats
-    }
-
-    /// Begin a READ COMMITTED transaction and, if asked, lock the mailbox row FIRST
-    /// (`SELECT .. FOR UPDATE`). `NotFound` if the mailbox does not exist.
-    async fn begin_locked(
-        &self,
-        lock_mailbox: Option<MailboxId>,
-    ) -> TxResult<sqlx::Transaction<'static, sqlx::Postgres>> {
-        let mut tx = self.store.begin_write().await?;
-        if let Some(mb) = lock_mailbox {
-            sqlx::query_scalar::<_, i64>("SELECT id FROM mailboxes WHERE id = $1 FOR UPDATE")
-                .bind(mb.0)
-                .fetch_optional(&mut *tx)
-                .await?
-                .ok_or_else(not_found_mailbox)?;
-        }
-        Ok(tx)
-    }
-
-    /// Finish one attempt: commit on success; roll back and classify on failure.
-    async fn finish<T>(
-        &self,
-        tx: sqlx::Transaction<'static, sqlx::Postgres>,
-        res: TxResult<T>,
-        attempt: u32,
-    ) -> Step<T> {
-        let failure = match res {
-            Ok(v) => match tx.commit().await {
-                Ok(()) => return Step::Done(v),
-                Err(e) => TxError::Db(e),
-            },
-            Err(e) => {
-                // The transaction may already be aborted; the rollback result is moot.
-                let _ = tx.rollback().await;
-                e
-            }
-        };
-        match failure {
-            TxError::Db(e) if is_retryable(&e) => {
-                self.stats.retries.fetch_add(1, Ordering::Relaxed);
-                if is_deadlock(&e) {
-                    self.stats.deadlocks.fetch_add(1, Ordering::Relaxed);
-                }
-                if attempt + 1 >= MAX_ATTEMPTS {
-                    self.stats.exhausted.fetch_add(1, Ordering::Relaxed);
-                    return Step::Fail(Error::storage("transaction retry limit exceeded"));
-                }
-                backoff(attempt).await;
-                Step::Retry
-            }
-            TxError::Db(e) => Step::Fail(map_db_error(e)),
-            TxError::Domain(e) => Step::Fail(e),
-        }
-    }
-}
-
-enum Step<T> {
-    Done(T),
-    Retry,
-    Fail(Error),
-}
-
-/// Run `$body` (a block evaluating to `TxResult<T>`, with `$c: &mut PgConnection` in scope) in
-/// a READ COMMITTED transaction, optionally locking the mailbox row first, retrying the WHOLE
-/// block on 40P01/40001 up to `MAX_ATTEMPTS` times. The body may therefore run several times:
-/// it must have no side effects outside the transaction (blob IO happens before the
-/// repository call).
-///
-/// A macro instead of a closure-taking method: a closure `for<'c> FnMut(&'c mut PgConnection)
-/// -> Pin<Box<dyn Future + 'c>>` cannot capture borrowed arguments of the calling
-/// `async_trait` method (rustc: "returning this value requires that `'life1` must outlive
-/// `'static`"). Inlining the loop keeps every borrow in one future.
-macro_rules! tx_retry {
-    ($self:expr, $lock:expr, |$c:ident| $body:block) => {{
-        let mut attempt = 0u32;
-        loop {
-            let mut tx = $self.begin_locked($lock).await.map_err(|e| match e {
-                TxError::Db(e) => map_db_error(e),
-                TxError::Domain(e) => e,
-            })?;
-            let res: TxResult<_> = async {
-                let $c: &mut PgConnection = &mut *tx;
-                $body
-            }
-            .await;
-            match $self.finish(tx, res, attempt).await {
-                Step::Done(v) => break Ok::<_, Error>(v),
-                Step::Retry => attempt += 1,
-                Step::Fail(e) => break Err(e),
-            }
-        }
-    }};
-}
-
-/// 5 ms * 2^attempt plus up to the same again of jitter.
-async fn backoff(attempt: u32) {
-    let base = 5u64 << attempt.min(6);
-    let jitter = u64::from(OsRng.next_u32()) % (base + 1);
-    tokio::time::sleep(Duration::from_millis(base + jitter)).await;
-}
-
-const UV_MAX_BASE: i64 = u32::MAX as i64 - SYSTEM_FOLDERS;
-
-#[async_trait]
-impl DirectoryRepo for PgRepo {
-    async fn create_domain(&self, name: &str) -> Result<DomainId> {
-        let id: i64 = sqlx::query_scalar(&r(q::INSERT_DOMAIN))
-            .bind(name)
-            .fetch_one(self.store.pool())
-            .await
-            .map_err(map_db_error)?;
-        Ok(DomainId(id))
-    }
-
-    async fn create_account(&self, new: &NewAccount) -> Result<AccountId> {
-        let ids: Vec<i64> = SYSTEM_FOLDER_TABLE.iter().map(|f| f.0).collect();
-        let names: Vec<&str> = SYSTEM_FOLDER_TABLE.iter().map(|f| f.1).collect();
-        let roles: Vec<&str> = SYSTEM_FOLDER_TABLE.iter().map(|f| f.2).collect();
-        let acc = tx_retry!(self, None, |c| {
-                {
-                    let acc: i64 = sqlx::query_scalar(&r(q::INSERT_ACCOUNT))
-                        .bind(&new.local)
-                        .bind(new.domain.0)
-                        .bind(new.plan.map(|p| p.0))
-                        .bind(new.password_hash.as_deref())
-                        .fetch_one(&mut *c)
-                        .await?;
-                    let (mb, uv_base): (i64, i64) = sqlx::query_as(
-                        "INSERT INTO mailboxes (account_id, uid_validity, next_folder_id) \
-                         VALUES ($1, LEAST(GREATEST(rs_now(), 1), $2) + $3, $4) \
-                         RETURNING id, uid_validity - $3",
-                    )
-                    .bind(acc)
-                    .bind(UV_MAX_BASE)
-                    .bind(SYSTEM_FOLDERS)
-                    .bind(SYSTEM_FOLDERS + 1)
-                    .fetch_one(&mut *c)
-                    .await?;
-                    sqlx::query(
-                        "INSERT INTO folders (mailbox_id, id, parent_id, name, role, uid_validity) \
-                         SELECT $1, t.id, NULL, t.name, t.role, $2 + t.id \
-                         FROM unnest($3::bigint[], $4::text[], $5::text[]) AS t(id, name, role)",
-                    )
-                    .bind(mb)
-                    .bind(uv_base)
-                    .bind(&ids)
-                    .bind(&names)
-                    .bind(&roles)
-                    .execute(&mut *c)
-                    .await?;
-                    Ok(acc)
-                }
-        })?;
-        Ok(AccountId(acc))
-    }
-
-    async fn resolve(
-        &self,
-        local: &str,
-        domain: &str,
-        max_members: usize,
-    ) -> Result<Option<Resolution>> {
-        let pool = self.store.pool();
-        let Some((kind, id)): Option<(i64, i64)> = sqlx::query_as(&r(q::RESOLVE_KIND))
-            .bind(domain)
-            .bind(local)
-            .fetch_optional(pool)
-            .await
-            .map_err(map_db_error)?
-        else {
-            return Ok(None);
-        };
-        if kind != 3 {
-            return Ok(Some(Resolution::Account(AccountId(id))));
-        }
-        let rows: Vec<(Option<i64>, Option<String>)> = sqlx::query_as(&r(q::LIST_MEMBERS))
-            .bind(id)
-            .bind(max_members as i64 + 1)
-            .fetch_all(pool)
-            .await
-            .map_err(map_db_error)?;
-        if rows.len() > max_members {
-            return Err(Error::Quota("list has too many members".into()));
-        }
-        Ok(Some(Resolution::List(
-            rows.into_iter()
-                .filter_map(|(a, e)| match (a, e) {
-                    (Some(a), _) => Some(ListMember::Account(AccountId(a))),
-                    (None, Some(e)) => Some(ListMember::External(e)),
-                    _ => None,
-                })
-                .collect(),
-        )))
     }
 }
 

@@ -21,6 +21,10 @@ pub struct PgPoolConfig {
     pub idle_in_transaction_timeout: Duration,
     pub idle_timeout: Duration,
     pub max_lifetime: Duration,
+    /// Longest wait for a row lock before the operation fails with `Error::Busy` (55P03). Applied
+    /// per transaction (`set_config(.., true)`, i.e. SET LOCAL), not per session, so it survives a
+    /// transaction-pooling proxy.
+    pub lock_timeout: Duration,
 }
 
 impl Default for PgPoolConfig {
@@ -32,6 +36,7 @@ impl Default for PgPoolConfig {
             idle_in_transaction_timeout: Duration::from_secs(30),
             idle_timeout: Duration::from_secs(5 * 60),
             max_lifetime: Duration::from_secs(30 * 60),
+            lock_timeout: Duration::from_secs(10),
         }
     }
 }
@@ -40,6 +45,7 @@ impl Default for PgPoolConfig {
 #[derive(Clone)]
 pub struct PgStore {
     pool: PgPool,
+    lock_timeout: String,
 }
 
 // `sqlx`'s pool debug representation is not part of our credential-leak contract. Keep the
@@ -72,6 +78,7 @@ impl PgStore {
 
         let statement_timeout = pg_millis(config.statement_timeout)?;
         let idle_in_transaction_timeout = pg_millis(config.idle_in_transaction_timeout)?;
+        let lock_timeout = pg_millis(config.lock_timeout)?;
         let pool = PgPoolOptions::new()
             .max_connections(config.max_connections)
             .acquire_timeout(config.acquire_timeout)
@@ -105,7 +112,7 @@ impl PgStore {
             .await
             .map_err(|_| Error::storage("Postgres migration failed"))?;
 
-        Ok(Self { pool })
+        Ok(Self { pool, lock_timeout })
     }
 
     /// The underlying pool, temporarily public for PG0 tests and the backend port.
@@ -118,10 +125,15 @@ impl PgStore {
     /// PostgreSQL's default is READ COMMITTED. PG2 will require callers to lock the target
     /// mailbox row immediately after this call, before any read-then-write operation.
     pub async fn begin_write(&self) -> Result<Transaction<'static, Postgres>> {
-        self.pool
-            .begin()
+        let mut tx = self.pool.begin().await.map_err(begin_error)?;
+        // Transaction-local (SET LOCAL semantics): no session state, safe behind a
+        // transaction-pooling proxy.
+        sqlx::query("SELECT set_config('lock_timeout', $1, true)")
+            .bind(&self.lock_timeout)
+            .execute(&mut *tx)
             .await
-            .map_err(|_| Error::storage("cannot begin Postgres transaction"))
+            .map_err(begin_error)?;
+        Ok(tx)
     }
 
     /// Close all connections and wait for checked-out connections to return.
@@ -137,6 +149,7 @@ fn validate_config(config: &PgPoolConfig) -> Result<()> {
         || config.idle_in_transaction_timeout.is_zero()
         || config.idle_timeout.is_zero()
         || config.max_lifetime.is_zero()
+        || config.lock_timeout.is_zero()
     {
         return Err(Error::Invalid("invalid Postgres pool configuration".into()));
     }
@@ -144,6 +157,7 @@ fn validate_config(config: &PgPoolConfig) -> Result<()> {
     // its signed 32-bit GUC representation instead of silently changing the requested limit.
     pg_millis(config.statement_timeout)?;
     pg_millis(config.idle_in_transaction_timeout)?;
+    pg_millis(config.lock_timeout)?;
     Ok(())
 }
 
@@ -153,4 +167,13 @@ fn pg_millis(value: Duration) -> Result<String> {
         return Err(Error::Invalid("invalid Postgres timeout".into()));
     }
     Ok(format!("{millis}ms"))
+}
+
+/// Map a BEGIN (or first statement) failure: pool exhaustion, a closed pool and "too many
+/// connections" are transient (`Busy`); anything else is a fixed `Storage` error. Never raw text.
+fn begin_error(e: sqlx::Error) -> Error {
+    match crate::map_db_error(e) {
+        busy @ Error::Busy(_) => busy,
+        _ => Error::storage("cannot begin Postgres transaction"),
+    }
 }

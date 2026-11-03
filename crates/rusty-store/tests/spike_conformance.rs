@@ -6,7 +6,7 @@
 mod common;
 
 use bytes::Bytes;
-use common::spike::*;
+use common::backends::*;
 use common::{raw, reply};
 use rusty_core::{DeliveryId, DomainId, Error, Flags, FolderId};
 use rusty_store::repo::{JobFence, ListMember, NewAccount, Resolution};

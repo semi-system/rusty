@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use rusty_core::{AccountId, DomainId, Error, FolderId};
 use rusty_store::repo::sqlite::SqliteRepo;
-use rusty_store::repo::{DirectoryRepo, MailboxRepo, SpikeDirectory, SpikeMailbox};
+use rusty_store::repo::{DirectoryRepo, MailboxRepo, NewAccount, Resolution, SpikeMailbox};
+use rusty_core::PlanId;
 use rusty_store::{BlobStore, SqliteStore};
 
 #[cfg(feature = "postgres")]
@@ -20,7 +21,7 @@ pub const INBOX: FolderId = FolderId(1);
 
 pub struct Backend {
     pub name: &'static str,
-    pub dir: SpikeDirectory,
+    pub dir: TestDir,
     pub drepo: Arc<dyn DirectoryRepo>,
     pub mrepo: Arc<dyn MailboxRepo>,
     pub blobs: Arc<dyn BlobStore>,
@@ -42,7 +43,7 @@ pub async fn sqlite_backend() -> Backend {
     let repo = Arc::new(SqliteRepo::new(store.clone()));
     Backend {
         name: "sqlite",
-        dir: SpikeDirectory::new(repo.clone()),
+        dir: TestDir::new(repo.clone()),
         drepo: repo.clone(),
         mrepo: repo,
         blobs: blob_dir(&tmp).await,
@@ -65,7 +66,7 @@ pub async fn pg_backend() -> Option<Backend> {
     let tmp = tempfile::tempdir().unwrap();
     Some(Backend {
         name: "postgres",
-        dir: SpikeDirectory::new(arc.clone()),
+        dir: TestDir::new(arc.clone()),
         drepo: arc.clone(),
         mrepo: arc,
         blobs: blob_dir(&tmp).await,
@@ -153,4 +154,57 @@ pub fn is_conflict<T: std::fmt::Debug>(r: Result<T, Error>) -> bool {
 // under the test ("attempt to write a readonly database").
 impl Drop for Backend {
     fn drop(&mut self) {}
+}
+
+/// Minimal directory facade for repository-level tests: the stand-in validation that
+/// `rusty_directory::Directory` does with IDNA and the local-part policy (rusty-store cannot
+/// depend on rusty-directory).
+#[derive(Clone)]
+pub struct TestDir {
+    repo: Arc<dyn DirectoryRepo>,
+}
+
+impl TestDir {
+    pub fn new(repo: Arc<dyn DirectoryRepo>) -> Self {
+        Self { repo }
+    }
+
+    pub async fn create_domain(&self, name: &str) -> Result<DomainId, Error> {
+        let ok = !name.is_empty()
+            && name.len() <= 253
+            && name
+                .bytes()
+                .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-'));
+        if !ok {
+            return Err(Error::Invalid("invalid domain".into()));
+        }
+        self.repo.create_domain(name).await
+    }
+
+    pub async fn create_account(
+        &self,
+        local: &str,
+        domain: DomainId,
+        password_hash: Option<String>,
+        plan: Option<PlanId>,
+    ) -> Result<AccountId, Error> {
+        if local.is_empty() || local.len() > 64 {
+            return Err(Error::Invalid("invalid local part".into()));
+        }
+        self.repo
+            .create_account(&NewAccount {
+                local: local.to_owned(),
+                domain,
+                plan,
+                password_hash,
+            })
+            .await
+    }
+
+    pub async fn resolve(&self, local: &str, domain: &str) -> Result<Resolution, Error> {
+        self.repo
+            .resolve(local, domain, 10_000)
+            .await?
+            .ok_or_else(|| Error::NotFound("address".into()))
+    }
 }

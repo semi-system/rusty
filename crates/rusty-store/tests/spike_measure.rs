@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use common::spike::{acct, backends, Backend, INBOX};
+use common::backends::{acct, backends, Backend, INBOX};
 use common::{raw, stmts};
 use rusty_core::Flags;
 use rusty_store::repo::SpikeMailbox;

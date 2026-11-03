@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use common::pg::{pg_admin_url, PgTestDb};
 use common::raw;
-use common::spike::{acct, pg_backend, Backend, INBOX};
+use common::backends::{acct, pg_backend, Backend, INBOX};
 use rusty_core::{Error, Flags};
 use rusty_store::map_db_error;
 use rusty_store::repo::pg::{is_retryable, Knobs, PgRepo};
@@ -165,9 +165,9 @@ async fn retryable_sqlstates_are_classified_from_real_errors() {
     assert_eq!(errs.len(), 1, "exactly one deadlock victim");
     assert_eq!(errs[0].as_database_error().unwrap().code().as_deref(), Some("40P01"));
     assert!(is_retryable(&errs[0]));
-    // Plain mapping (outside the retry loop) is a fixed Storage error, no server text.
+    // Plain mapping (outside the retry loop) is the transient class (D1), fixed text, no server text.
     let mapped = map_db_error(errs.into_iter().next().unwrap());
-    assert!(matches!(&mapped, Error::Storage { message, .. } if message == "database error"));
+    assert!(matches!(&mapped, Error::Busy(message) if message == "transaction conflict"));
     let _ = x.rollback().await;
     let _ = y.rollback().await;
     // A unique violation is NOT retryable.

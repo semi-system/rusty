@@ -6,7 +6,7 @@ use std::time::Duration;
 use common::*;
 use rusty_core::{AccountId, BlobHash, Error, Flags, FolderId, MessageId, ThreadId};
 use rusty_store::{
-    BlobStore, Change, ChangeItem, ChangeOp, Mailbox, MailboxLimits, MessageRef, MetadataStore,
+    BlobStore, Change, ChangeItem, ChangeOp, Mailbox, MailboxLimits, MessageRef, SqliteTx,
     MAX_PAGE,
 };
 
@@ -1066,11 +1066,11 @@ async fn cancelled_append_does_not_hold_write_lock_file_store() {
 }
 
 #[tokio::test]
-async fn metadata_store_tx_commits_and_rolls_back() {
+async fn sqlite_tx_commits_and_rolls_back() {
     let e = env().await;
-    let tx = e.store.tx().await.unwrap();
+    let tx = SqliteTx::begin(&e.store).await.unwrap();
     tx.rollback().await.unwrap();
-    let tx = e.store.tx().await.unwrap();
+    let tx = SqliteTx::begin(&e.store).await.unwrap();
     tx.commit().await.unwrap();
     // the single in-memory connection is free again
     e.mb.append(INBOX, raw("x", None), Flags::empty())

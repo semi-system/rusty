@@ -1,20 +1,22 @@
-//! SQLite implementation of the spike repositories.
+//! SQLite implementation of the repositories (directory: `directory.rs`; mailbox: spike, PG4
+//! replaces it).
 //!
 //! Locking: `begin_locked` = `BEGIN IMMEDIATE` (global write lock) then touch the mailbox row,
 //! exactly like `Mailbox::begin`. Counters are taken with one `UPDATE .. RETURNING` each.
+
+mod directory;
 
 use std::collections::HashMap;
 
 use async_trait::async_trait;
 use rusty_core::{
-    AccountId, DomainId, Error, FolderId, MailboxId, MessageId, Result, ThreadId,
+    AccountId, Error, FolderId, MailboxId, MessageId, Result, ThreadId,
 };
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
 use super::{
     depth_verdict, not_found_folder, not_found_mailbox, render_sqlite as r, sql_text as q,
-    thread_candidates, Delivery, DirectoryRepo, ListMember, MailboxRepo, NewAccount, NewMessage,
-    JobFence, Resolution, SYSTEM_FOLDERS, SYSTEM_FOLDER_TABLE,
+    thread_candidates, Delivery, MailboxRepo, NewMessage, JobFence,
 };
 use crate::mailbox::{
     to_flags, to_uid, ChangeItem, ChangeOp, ChangePage, DeliverOutcome, MessageRef,
@@ -41,100 +43,6 @@ impl SqliteRepo {
             .map_err(map_db_error)?
             .ok_or_else(not_found_mailbox)?;
         Ok(tx)
-    }
-}
-
-/// Upper clamp of the uid_validity base so that `base + SYSTEM_FOLDERS` fits in u32.
-const UV_MAX_BASE: i64 = u32::MAX as i64 - SYSTEM_FOLDERS;
-
-#[async_trait]
-impl DirectoryRepo for SqliteRepo {
-    async fn create_domain(&self, name: &str) -> Result<DomainId> {
-        let id: i64 = sqlx::query_scalar(&r(q::INSERT_DOMAIN))
-            .bind(name)
-            .fetch_one(self.store.pool())
-            .await
-            .map_err(map_db_error)?;
-        Ok(DomainId(id))
-    }
-
-    async fn create_account(&self, new: &NewAccount) -> Result<AccountId> {
-        let mut tx = self.store.begin_write().await?;
-        let acc: i64 = sqlx::query_scalar(&r(q::INSERT_ACCOUNT))
-            .bind(&new.local)
-            .bind(new.domain.0)
-            .bind(new.plan.map(|p| p.0))
-            .bind(new.password_hash.as_deref())
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(map_db_error)?;
-        // uid_validity high-water mark = clamped clock + 5 (largest value issued below).
-        let (mb, uv_base): (i64, i64) = sqlx::query_as(
-            "INSERT INTO mailboxes (account_id, uid_validity, next_folder_id) \
-             VALUES (?1, min(max(unixepoch(), 1), ?2) + ?3, ?4) RETURNING id, uid_validity - ?3",
-        )
-        .bind(acc)
-        .bind(UV_MAX_BASE)
-        .bind(SYSTEM_FOLDERS)
-        .bind(SYSTEM_FOLDERS + 1)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(map_db_error)?;
-        for (id, name, role) in SYSTEM_FOLDER_TABLE {
-            sqlx::query(
-                "INSERT INTO folders (mailbox_id, id, parent_id, name, role, uid_validity) \
-                 VALUES (?1, ?2, NULL, ?3, ?4, ?5)",
-            )
-            .bind(mb)
-            .bind(id)
-            .bind(name)
-            .bind(role)
-            .bind(uv_base + id)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_db_error)?;
-        }
-        tx.commit().await.map_err(map_db_error)?;
-        Ok(AccountId(acc))
-    }
-
-    async fn resolve(
-        &self,
-        local: &str,
-        domain: &str,
-        max_members: usize,
-    ) -> Result<Option<Resolution>> {
-        let pool = self.store.pool();
-        let Some((kind, id)): Option<(i64, i64)> = sqlx::query_as(&r(q::RESOLVE_KIND))
-            .bind(domain)
-            .bind(local)
-            .fetch_optional(pool)
-            .await
-            .map_err(map_db_error)?
-        else {
-            return Ok(None);
-        };
-        if kind != 3 {
-            return Ok(Some(Resolution::Account(AccountId(id))));
-        }
-        let rows: Vec<(Option<i64>, Option<String>)> = sqlx::query_as(&r(q::LIST_MEMBERS))
-            .bind(id)
-            .bind(max_members as i64 + 1)
-            .fetch_all(pool)
-            .await
-            .map_err(map_db_error)?;
-        if rows.len() > max_members {
-            return Err(Error::Quota("list has too many members".into()));
-        }
-        Ok(Some(Resolution::List(
-            rows.into_iter()
-                .filter_map(|(a, e)| match (a, e) {
-                    (Some(a), _) => Some(ListMember::Account(AccountId(a))),
-                    (None, Some(e)) => Some(ListMember::External(e)),
-                    _ => None,
-                })
-                .collect(),
-        )))
     }
 }
 

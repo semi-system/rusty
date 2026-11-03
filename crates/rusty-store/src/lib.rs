@@ -4,11 +4,11 @@ mod blob;
 mod gc;
 mod jobs;
 mod mailbox;
+mod store;
 pub mod repo;
 #[cfg(feature = "postgres")]
 mod pg;
 mod sqlite;
-mod traits;
 
 pub use blob::{
     BlobEntry, BlobStore, FsBlobStore, GcLock, HealReport, BLOB_ROOT_MARKER, GC_LOCK_FILE,
@@ -34,5 +34,6 @@ pub use mailbox::{
 };
 #[cfg(feature = "postgres")]
 pub use pg::{PgPoolConfig, PgStore};
-pub use sqlite::{map_db_error, SqliteStore};
-pub use traits::{MetadataStore, SqliteTx, Tx};
+pub use store::{Repos, Store, StoreConfig};
+pub use sqlite::{map_db_error, SqliteStore, SqliteTx, DEFAULT_BUSY_TIMEOUT};
+
