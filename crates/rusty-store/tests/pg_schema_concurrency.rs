@@ -105,3 +105,70 @@ async fn concurrent_reparenting_cannot_create_a_folder_cycle() {
     store.close().await;
     db.cleanup().await;
 }
+
+/// Concurrent adds to two lists must each get a dense 1..n sequence and no spurious UNIQUE
+/// violation (SQLite semantics: per-list, writers serialized).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_list_member_adds_get_dense_per_list_seq() {
+    let Some(url) = pg_admin_url() else {
+        return;
+    };
+    let db = PgTestDb::create(&url).await;
+    let store = db.connect().await;
+    let pool = store.pool();
+    let domain: i64 = sqlx::query_scalar(
+        "INSERT INTO domains(name,created_at) VALUES ('example.com',0) RETURNING id",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    let mut lists = Vec::new();
+    for name in ["one", "two"] {
+        lists.push(
+            sqlx::query_scalar::<_, i64>(
+                "INSERT INTO lists(local_part,domain_id) VALUES ($1,$2) RETURNING id",
+            )
+            .bind(name)
+            .bind(domain)
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        );
+    }
+
+    let mut tasks = Vec::new();
+    for n in 0..24 {
+        let pool = pool.clone();
+        let list = lists[n % 2];
+        tasks.push(tokio::spawn(async move {
+            sqlx::query("INSERT INTO list_members(list_id,external) VALUES ($1,$2)")
+                .bind(list)
+                .bind(format!("m{n}@outside.test"))
+                .execute(&pool)
+                .await
+        }));
+    }
+    for task in tasks {
+        task.await.unwrap().expect("no spurious seq conflict");
+    }
+
+    for list in lists {
+        let seqs: Vec<i64> =
+            sqlx::query_scalar("SELECT seq FROM list_members WHERE list_id=$1 ORDER BY seq")
+                .bind(list)
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        assert_eq!(seqs, (1..=12).collect::<Vec<i64>>());
+    }
+
+    // NULLing seq later is rejected (same as the SQLite BEFORE UPDATE trigger).
+    let error = sqlx::query("UPDATE list_members SET seq=NULL WHERE external='m0@outside.test'")
+        .execute(pool)
+        .await
+        .unwrap_err();
+    assert_eq!(sqlstate(&error).as_deref(), Some("23502"), "{error}");
+
+    store.close().await;
+    db.cleanup().await;
+}

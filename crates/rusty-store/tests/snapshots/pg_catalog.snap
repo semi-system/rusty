@@ -67,7 +67,7 @@ COLUMN keywords.keyword text nullable=NO identity=NO default=
 COLUMN list_members.list_id bigint nullable=NO identity=NO default=
 COLUMN list_members.account_id bigint nullable=YES identity=NO default=
 COLUMN list_members.external text nullable=YES identity=NO default=
-COLUMN list_members.seq bigint nullable=NO identity=YES default=
+COLUMN list_members.seq bigint nullable=NO identity=NO default=
 COLUMN lists.id bigint nullable=NO identity=YES default=
 COLUMN lists.local_part text nullable=NO identity=NO default=
 COLUMN lists.domain_id bigint nullable=NO identity=NO default=
@@ -315,6 +315,7 @@ TRIGGER aliases.aliases_addr_unique_upd CREATE TRIGGER aliases_addr_unique_upd B
 TRIGGER blobs.blobs_zero_since_ins CREATE TRIGGER blobs_zero_since_ins AFTER INSERT ON blobs FOR EACH ROW EXECUTE FUNCTION rs_blobs_zero_since()
 TRIGGER blobs.blobs_zero_since_refcount CREATE TRIGGER blobs_zero_since_refcount AFTER UPDATE OF refcount ON blobs FOR EACH ROW EXECUTE FUNCTION rs_blobs_zero_since()
 TRIGGER folders.folders_no_cycle CREATE TRIGGER folders_no_cycle BEFORE UPDATE OF parent_id ON folders FOR EACH ROW EXECUTE FUNCTION rs_folders_no_cycle()
+TRIGGER list_members.list_members_seq_ins CREATE TRIGGER list_members_seq_ins BEFORE INSERT ON list_members FOR EACH ROW WHEN (new.seq IS NULL) EXECUTE FUNCTION rs_list_members_seq()
 TRIGGER lists.lists_addr_unique_del CREATE TRIGGER lists_addr_unique_del BEFORE DELETE ON lists FOR EACH ROW EXECUTE FUNCTION rs_address_unique()
 TRIGGER lists.lists_addr_unique_ins CREATE TRIGGER lists_addr_unique_ins BEFORE INSERT ON lists FOR EACH ROW EXECUTE FUNCTION rs_address_unique()
 TRIGGER lists.lists_addr_unique_upd CREATE TRIGGER lists_addr_unique_upd BEFORE UPDATE OF local_part, domain_id ON lists FOR EACH ROW EXECUTE FUNCTION rs_address_unique()
