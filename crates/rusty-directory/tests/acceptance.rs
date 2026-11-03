@@ -11,7 +11,7 @@ use rusty_core::{BlobHash, Flags, FolderId, MessageId};
 use rusty_directory::Directory;
 use rusty_store::{
     collect_blobs_at, purge_deleted, BlobStore, Change, ChangeItem, ChangeOp, FsBlobStore,
-    Mailbox, MessageSummary, SqliteStore, MAX_PAGE,
+    Mailbox, MessageSummary, SqliteStore, MAX_BATCH, MAX_PAGE,
 };
 
 /// Every live message of `f`, paging through `list_folder` (pages of at most `MAX_PAGE`).
@@ -186,24 +186,42 @@ async fn acceptance_10k_messages() {
         .collect();
     assert_eq!(unrelated.len(), 10, "unrelated messages share thread ids");
 
-    // Flags on half (even positions).
-    for m in msgs.iter().step_by(2) {
-        mb.set_flags(m.id, Flags::SEEN).await.unwrap();
+    // Flags on half (even positions), moves and expunges: batch calls of at most MAX_BATCH ids.
+    let phase = Instant::now();
+    let even: Vec<MessageId> = msgs.iter().step_by(2).map(|m| m.id).collect();
+    for chunk in even.chunks(MAX_BATCH) {
+        let out = mb.set_flags_many(chunk, Flags::SEEN).await.unwrap();
+        assert_eq!((out.applied as usize, out.missing.len()), (chunk.len(), 0));
     }
     // Move 1,000 (i % 10 == 3) to Sent.
+    let to_move: Vec<MessageId> = (0..msgs.len())
+        .filter(|i| i % 10 == 3)
+        .map(|i| msgs[i].id)
+        .collect();
+    for chunk in to_move.chunks(MAX_BATCH) {
+        let out = mb.move_many(chunk, SENT).await.unwrap();
+        assert_eq!((out.moved.len(), out.missing.len()), (chunk.len(), 0));
+    }
     for (i, m) in msgs.iter_mut().enumerate() {
         if i % 10 == 3 {
-            mb.move_message(m.id, SENT).await.unwrap();
             m.folder = SENT;
         }
     }
     // Expunge 1,000 (i % 10 == 7).
+    let to_expunge: Vec<MessageId> = (0..msgs.len())
+        .filter(|i| i % 10 == 7)
+        .map(|i| msgs[i].id)
+        .collect();
+    for chunk in to_expunge.chunks(MAX_BATCH) {
+        let out = mb.expunge_many(chunk).await.unwrap();
+        assert_eq!((out.applied as usize, out.missing.len()), (chunk.len(), 0));
+    }
     for (i, m) in msgs.iter_mut().enumerate() {
         if i % 10 == 7 {
-            mb.expunge(m.id).await.unwrap();
             m.expunged = true;
         }
     }
+    eprintln!("acceptance_10k_messages flag+move+expunge phases: {:.2?}", phase.elapsed());
     let live = msgs.iter().filter(|m| !m.expunged).count();
     assert_eq!(live, 9000);
 
