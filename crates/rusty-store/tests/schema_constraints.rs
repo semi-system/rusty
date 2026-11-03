@@ -654,3 +654,61 @@ async fn migration_0002_backfills_zero_since() {
     assert!(z >= before);
     assert_eq!(zero_since(s.pool(), HASH_B).await, None);
 }
+
+// ---------- deliveries (migration 0004) ----------
+
+fn delivery(mailbox: i64, id_hex: &str, message: i64, hash: &str) -> String {
+    format!(
+        "INSERT INTO deliveries(mailbox_id,delivery_id,message_id,blob_hash,created_at) \
+         VALUES ({mailbox},x'{id_hex}',{message},'{hash}',0)"
+    )
+}
+
+const D1: &str = "0101010101010101010101010101010101010101010101010101010101010101";
+const D2: &str = "0202020202020202020202020202020202020202020202020202020202020202";
+
+#[tokio::test]
+async fn deliveries_accepts_valid_row_and_rejects_duplicate_key() {
+    let s = seed().await;
+    let p = s.pool();
+    ok(p, &msg(1, 1, 1, 1, HASH_A, 5, 0)).await;
+    ok(p, &delivery(1, D1, 1, HASH_A)).await;
+    bad(p, &delivery(1, D1, 1, HASH_A)).await;
+    ok(p, &delivery(1, D2, 1, HASH_A)).await;
+}
+
+#[tokio::test]
+async fn deliveries_rejects_bad_id_length_and_hash_length() {
+    let s = seed().await;
+    let p = s.pool();
+    ok(p, &msg(1, 1, 1, 1, HASH_A, 5, 0)).await;
+    bad(p, &delivery(1, "0101", 1, HASH_A)).await;
+    bad(p, &delivery(1, &format!("{D1}01"), 1, HASH_A)).await;
+    bad(p, &delivery(1, D1, 1, "abc")).await;
+    bad(p, "INSERT INTO deliveries(mailbox_id,delivery_id,message_id,blob_hash,created_at) VALUES (1,'text',1,'a',0)").await;
+}
+
+#[tokio::test]
+async fn deliveries_rejects_missing_or_foreign_message() {
+    let s = seed().await;
+    let p = s.pool();
+    ok(p, &msg(1, 1, 1, 1, HASH_A, 5, 0)).await;
+    bad(p, &delivery(1, D1, 99, HASH_A)).await;
+    // Message 1 belongs to mailbox 1, not 2.
+    bad(p, &delivery(2, D1, 1, HASH_A)).await;
+    bad(p, &delivery(3, D1, 1, HASH_A)).await;
+}
+
+#[tokio::test]
+async fn deliveries_cascade_with_message_and_mailbox() {
+    let s = seed().await;
+    let p = s.pool();
+    ok(p, &msg(1, 1, 1, 1, HASH_A, 5, 0)).await;
+    ok(p, &msg(2, 1, 1, 1, HASH_A, 5, 0)).await;
+    ok(p, &delivery(1, D1, 1, HASH_A)).await;
+    ok(p, &delivery(2, D1, 1, HASH_A)).await;
+    ok(p, "DELETE FROM messages WHERE mailbox_id = 1 AND id = 1").await;
+    assert_eq!(count(p, "SELECT count(*) FROM deliveries").await, 1);
+    ok(p, "DELETE FROM mailboxes WHERE id = 2").await;
+    assert_eq!(count(p, "SELECT count(*) FROM deliveries").await, 0);
+}

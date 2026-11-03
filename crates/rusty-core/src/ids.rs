@@ -134,3 +134,38 @@ impl FromStr for FolderRole {
         })
     }
 }
+
+/// Identifier of one delivery attempt target: SHA-256 over the length-prefixed fields
+/// (content hash, recipient, session). Retries of the same delivery derive the same id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DeliveryId(pub [u8; 32]);
+
+impl DeliveryId {
+    /// Each field is prefixed with its length (u64 big endian), so field boundaries cannot
+    /// be shifted: ("ab", "c") and ("a", "bc") derive different ids.
+    pub fn derive(content_hash: &BlobHash, recipient: &str, session: &str) -> DeliveryId {
+        let mut h = Sha256::new();
+        h.update(b"rusty.delivery.v1");
+        for field in [content_hash.as_str(), recipient, session] {
+            h.update((field.len() as u64).to_be_bytes());
+            h.update(field.as_bytes());
+        }
+        DeliveryId(h.finalize().into())
+    }
+
+    /// Lowercase hex, 64 chars.
+    pub fn to_hex(&self) -> String {
+        hex::encode(self.0)
+    }
+
+    /// Parse exactly 64 lowercase hex chars.
+    pub fn from_hex(s: &str) -> Result<DeliveryId> {
+        let bad = || Error::Invalid("invalid delivery id".into());
+        if s.len() != 64 || !s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return Err(bad());
+        }
+        let v = hex::decode(s).map_err(|_| bad())?;
+        let arr: [u8; 32] = v.try_into().map_err(|_| bad())?;
+        Ok(DeliveryId(arr))
+    }
+}
