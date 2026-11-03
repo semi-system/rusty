@@ -20,7 +20,7 @@ Mục lục của mọi spec (thiết kế) và plan (kế hoạch) trong `docs/
 |---|---|---|
 | [specs/2026-11-02-rusty-foundation-design.md](superpowers/specs/2026-11-02-rusty-foundation-design.md) | Đã triển khai | Dự án nền tảng (thư viện core/store/mime/directory); §8c là các điều chỉnh sau review cuối |
 | [specs/2026-11-03-rusty-scale-targets-design.md](superpowers/specs/2026-11-03-rusty-scale-targets-design.md) | Quyết định đã chốt | Mục tiêu 100.000 hộp thư, 1.000.000 thư/ngày; nhân bản Postgres bất đồng bộ; T3 chỉ là mở rộng; khóa phân mảnh theo mailbox |
-| [specs/2026-11-03-rusty-postgres-valkey-design.md](superpowers/specs/2026-11-03-rusty-postgres-valkey-design.md) | Chờ duyệt | Postgres 18 + Valkey + SQLite system DB + tenant; **cần sửa**: ràng buộc chéo mailbox (§3c.1) theo khóa phân mảnh mailbox |
+| [specs/2026-11-03-rusty-postgres-valkey-design.md](superpowers/specs/2026-11-03-rusty-postgres-valkey-design.md) | Chờ duyệt | Postgres 18 + Valkey + SQLite system DB + tenant; §3.2b PgBouncer (đã quyết định 2026-11-04); **cần sửa**: ràng buộc chéo mailbox (§3c.1) theo khóa phân mảnh mailbox |
 | [specs/2026-11-03-rusty-process-model-design.md](superpowers/specs/2026-11-03-rusty-process-model-design.md) | Chờ duyệt | `rustyd`, `rustyctl`, dịch vụ `store` tách riêng; §0 điều chỉnh cho container |
 | [specs/2026-11-03-rusty-container-deployment-design.md](superpowers/specs/2026-11-03-rusty-container-deployment-design.md) | Thay thế một phần | Triển khai container; **§3b (Traefik) bị thay bởi spec biên HAProxy**, các phần khác còn hiệu lực |
 | [specs/2026-11-03-rusty-edge-tls-layer-design.md](superpowers/specs/2026-11-03-rusty-edge-tls-layer-design.md) | Quyết định đã chốt | Biên = HAProxy cách A trước; `tlsd` (cách B) là dự phòng; §0 là quyết định hiện hành |
@@ -35,7 +35,7 @@ Mục lục của mọi spec (thiết kế) và plan (kế hoạch) trong `docs/
 | [plans/2026-11-02-rusty-foundation.md](superpowers/plans/2026-11-02-rusty-foundation.md) | Đã triển khai | Task 1-9 xong và qua review |
 | [plans/2026-11-03-distributed-prep.md](superpowers/plans/2026-11-03-distributed-prep.md) | Đang làm | P0-P4 xong; P6 đang sửa sau review; P5 đang chạy |
 | [plans/2026-11-03-edge-haproxy.md](superpowers/plans/2026-11-03-edge-haproxy.md) | Sẵn sàng thực thi | Biên HAProxy cách A (H1-H3), có báo cáo go/no-go |
-| [plans/2026-11-03-postgres-backend.md](superpowers/plans/2026-11-03-postgres-backend.md) | Phần 1 (PG0-PG2) xong, GO; phần 2 (PG3-PG8) sẵn sàng thực thi | Backend Postgres 18: hạ tầng test, schema + parity, spike (GO); phần 2: Busy + chính sách đồng hồ + repo Directory, repo Mailbox, Jobs/GC, chạy toàn bộ test trên 2 backend + mutation, benchmark quy mô, hardening (role, pool, hàng đợi) |
+| [plans/2026-11-03-postgres-backend.md](superpowers/plans/2026-11-03-postgres-backend.md) | Phần 1 (PG0-PG2) xong, GO; phần 2 (PG3-PG8) sẵn sàng thực thi | Backend Postgres 18: hạ tầng test, schema + parity, spike (GO); phần 2: Busy + chính sách đồng hồ + repo Directory, repo Mailbox, Jobs/GC, chạy toàn bộ test trên 2 backend + mutation, benchmark quy mô, hardening (role, pool, hàng đợi), PG8a: lớp PgBouncer (transaction pooling), kiểm kê trạng thái phiên, chạy bộ test qua bouncer |
 | [plans/2026-11-03-edge-skeleton.md](superpowers/plans/2026-11-03-edge-skeleton.md) | Đã thay thế | Kế hoạch Traefik cũ; **không thực thi** |
 
 ## Việc cần viết tiếp (chưa có tài liệu)
