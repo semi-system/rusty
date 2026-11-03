@@ -32,3 +32,5 @@ tracing.workspace = true
 proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 sqlx.workspace = true
+hex.workspace = true
+url.workspace = true

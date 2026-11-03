@@ -1,4 +1,4 @@
-  bash scripts/pg-up.sh || return 1
+XX  bash scripts/pg-up.sh || return 1
   bash scripts/tests/pg-isolation.sh || return 1
 #!/usr/bin/env bash
 # Local CI gate. Run from anywhere: bash scripts/ci.sh
@@ -58,6 +58,19 @@ rustup target list --installed | grep -qx "$MUSL" || { echo "[FAIL] missing rust
 # The repo is not rustfmt-clean yet, so formatting is not gated here; clippy is.
 # (skipped when the hook is set: ci-trap.sh runs ci.sh itself)
 [ -n "${RUSTY_CI_FORCE_FAIL:-}" ] || stage "ci scripts" bash scripts/tests/ci-trap.sh
+
+# Database access belongs to rusty-store: no crate outside it may use a raw pool or open a
+# transaction (the directory sits on DirectoryRepo). Tests are exempt until PG6.
+no_raw_pool_outside_store() {
+  local hits
+  hits="$(grep -rnE '\.pool\(\)|begin_write|SqliteTx' crates/*/src --include='*.rs' | grep -v '^crates/rusty-store/' || true)"
+  if [ -n "$hits" ]; then
+    echo "raw pool / transaction use outside rusty-store:" >&2
+    echo "$hits" >&2
+    return 1
+  fi
+}
+stage "no raw pool outside store" no_raw_pool_outside_store
 stage "clippy"       cargo clippy --workspace --all-targets -- -D warnings
 stage "test (glibc)" cargo test --workspace
 
@@ -85,11 +98,16 @@ postgres_tests() {
     RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
       cargo test -p rusty-store --features postgres \
         --test pg_schema_constraints --test pg_schema_cases --test pg_schema_concurrency \
-        --test pg_schema_parity --test spike_conformance --test spike_pg || rc=$?
+        --test pg_schema_parity --test spike_conformance --test spike_pg --test pg_guard \
+        --test error_busy --test clock_policy || rc=$?
   fi
   if [ "$rc" -eq 0 ]; then
     RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
-      cargo clippy -p rusty-store --features postgres --all-targets -- -D warnings || rc=$?
+      cargo test -p rusty-directory --features postgres --test directory_conformance || rc=$?
+  fi
+  if [ "$rc" -eq 0 ]; then
+    RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
+      cargo clippy -p rusty-store -p rusty-directory --features postgres --all-targets -- -D warnings || rc=$?
   fi
   bash scripts/pg-down.sh >/dev/null 2>&1 || true
   PG_RUN_ID=""

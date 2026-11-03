@@ -1150,6 +1150,7 @@ dependencies = [
  "argon2",
  "async-trait",
  "bytes",
+ "hex",
  "idna",
  "proptest",
  "rand_core 0.6.4",
@@ -1163,6 +1164,7 @@ dependencies = [
  "tracing",
  "unicode-general-category",
  "unicode-normalization",
+ "url",
 ]
 
 [[package]]
