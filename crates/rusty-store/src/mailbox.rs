@@ -1270,7 +1270,6 @@ impl Mailbox {
             }
         }
         log_message_changes(&mut tx, self.id, &to_move, ChangeOp::Update).await?;
-        commit(tx).await?;
         let mut next = first_uid;
         let mut moved = Vec::with_capacity(plan.len());
         for (id, existing) in plan {
@@ -1289,6 +1288,8 @@ impl Mailbox {
                 },
             ));
         }
+        // Every fallible step is done: nothing can fail after the commit.
+        commit(tx).await?;
         Ok(MoveBatch { moved, missing })
     }
 
@@ -1581,7 +1582,6 @@ impl Mailbox {
             let created_ids: Vec<i64> = (0..creates.len()).map(|c| first_id + c as i64).collect();
             log_message_changes(&mut tx, self.id, &created_ids, ChangeOp::Create).await?;
         }
-        commit(tx).await?;
 
         let new_ref = |c: usize| -> Result<MessageRef> {
             Ok(MessageRef {
@@ -1589,7 +1589,7 @@ impl Mailbox {
                 uid: to_uid(first_uid + c as i64)?,
             })
         };
-        slots
+        let outcomes = slots
             .into_iter()
             .map(|s| match s {
                 Slot::Created(c) => Ok(DeliverOutcome::Created(new_ref(c)?)),
@@ -1605,7 +1605,10 @@ impl Mailbox {
                     }))
                 }
             })
-            .collect()
+            .collect::<Result<Vec<_>>>()?;
+        // Every fallible step is done: nothing can fail after the commit.
+        commit(tx).await?;
+        Ok(outcomes)
     }
 
     // ----- reads -----

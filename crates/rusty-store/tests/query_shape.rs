@@ -119,6 +119,7 @@ async fn duplicate_message_ids_choose_the_smallest_id_and_deleted_anchor_counts(
 
 #[tokio::test]
 async fn find_thread_uses_one_query() {
+    let p = stmts::probe(); // first: serializes this test, setup included
     let e = env().await;
     let refs: Vec<String> = (0..40).map(|i| format!("ref{i}@t.test")).collect();
     e.mb.append(INBOX, raw("anchor", Some(&refs[20])), Flags::empty())
@@ -128,7 +129,7 @@ async fn find_thread_uses_one_query() {
     let many = reply("x", None, Some("irt@t.test"), &refs_s);
     let none = raw("y", None);
 
-    let p = stmts::probe();
+    p.reset();
     e.mb.append(INBOX, none, Flags::empty()).await.unwrap();
     let base = p.count();
     p.reset();
@@ -291,6 +292,7 @@ async fn depth_64_is_allowed_65_is_invalid_and_descendant_move_conflicts() {
 
 #[tokio::test]
 async fn ancestor_depth_uses_one_query() {
+    let p = stmts::probe(); // first: serializes this test, setup included
     let e = env().await;
     let shallow = e.mb.create_folder(None, "s").await.unwrap();
     let mut deep = e.mb.create_folder(None, "d1").await.unwrap();
@@ -300,7 +302,7 @@ async fn ancestor_depth_uses_one_query() {
                 .await
                 .unwrap();
     }
-    let p = stmts::probe();
+    p.reset();
     e.mb.create_folder(None, "r").await.unwrap(); // no ancestor walk at all
     let root = p.count();
     p.reset();
@@ -315,4 +317,32 @@ async fn ancestor_depth_uses_one_query() {
         "an ancestor walk costs exactly one statement"
     );
     assert_eq!(sixty, one, "and does not grow with depth");
+}
+
+#[tokio::test]
+async fn cyclic_folder_data_is_invalid_not_a_hang() {
+    let _p = stmts::probe();
+    let e = env().await;
+    let a = e.mb.create_folder(None, "a").await.unwrap();
+    let b = e.mb.create_folder(Some(a), "b").await.unwrap();
+    let c = e.mb.create_folder(None, "c").await.unwrap();
+    // Corrupt data: drop the guard trigger and close a cycle a -> b -> a by raw SQL.
+    sqlx::query("DROP TRIGGER folders_no_cycle")
+        .execute(e.store.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE folders SET parent_id = ? WHERE id = ?")
+        .bind(b.0)
+        .bind(a.0)
+        .execute(e.store.pool())
+        .await
+        .unwrap();
+    assert!(matches!(
+        e.mb.create_folder(Some(b), "x").await,
+        Err(Error::Invalid(_))
+    ));
+    assert!(matches!(
+        e.mb.move_folder(c, Some(a)).await,
+        Err(Error::Invalid(_))
+    ));
 }

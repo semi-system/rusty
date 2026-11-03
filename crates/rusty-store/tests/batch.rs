@@ -695,3 +695,124 @@ async fn batch_beats_loop() {
         );
     }
 }
+
+// ---------- deliver_many against a loop of deliver (proptest) ----------
+
+#[derive(Debug, Clone)]
+struct DItem {
+    did: u8,
+    own: Option<u8>,
+    irt: Option<u8>,
+    refs: Vec<u8>,
+    variant: bool,
+}
+
+fn ditem() -> impl Strategy<Value = DItem> {
+    (
+        0u8..6,
+        proptest::option::of(0u8..8),
+        proptest::option::of(0u8..8),
+        proptest::collection::vec(0u8..8, 0..4),
+        proptest::bool::weighted(0.15),
+    )
+        .prop_map(|(did, own, irt, refs, variant)| DItem {
+            did,
+            own,
+            irt,
+            refs,
+            variant,
+        })
+}
+
+fn mid(n: u8) -> String {
+    format!("m{n}@t.test")
+}
+
+fn build(it: &DItem) -> DeliverItem {
+    let own = it.own.map(mid);
+    let irt = it.irt.map(mid);
+    let refs: Vec<String> = it.refs.iter().map(|r| mid(*r)).collect();
+    let refs: Vec<&str> = refs.iter().map(String::as_str).collect();
+    DeliverItem {
+        raw: reply(
+            &format!("s{}", u8::from(it.variant)),
+            own.as_deref(),
+            irt.as_deref(),
+            &refs,
+        ),
+        flags: Flags::empty(),
+        delivery_id: did(u32::from(it.did)),
+    }
+}
+
+async fn threads_of(e: &Env) -> Vec<(i64, i64)> {
+    sqlx::query_as("SELECT id, thread_id FROM messages ORDER BY id")
+        .fetch_all(e.store.pool())
+        .await
+        .unwrap()
+}
+
+async fn deliver_equivalence(deleted: Vec<bool>, batches: Vec<Vec<DItem>>) {
+    let a = env().await; // deliver_many
+    let b = env().await; // loop of deliver
+    for e in [&a, &b] {
+        for (i, del) in deleted.iter().enumerate() {
+            let r =
+                e.mb.append(INBOX, raw("anchor", Some(&mid(i as u8))), Flags::empty())
+                    .await
+                    .unwrap();
+            if *del {
+                e.mb.expunge(r.id).await.unwrap();
+            }
+        }
+    }
+    let mut known: std::collections::HashMap<u32, Bytes> = Default::default();
+    for batch in batches {
+        let items: Vec<DeliverItem> = batch.iter().map(build).collect();
+        // A reused delivery id with different content makes the whole batch a Conflict.
+        let mut seen = known.clone();
+        let mut conflict = false;
+        for it in &items {
+            let k = u32::from_be_bytes(it.delivery_id.0[..4].try_into().unwrap());
+            match seen.get(&k) {
+                Some(raw) if *raw != it.raw => conflict = true,
+                Some(_) => {}
+                None => {
+                    seen.insert(k, it.raw.clone());
+                }
+            }
+        }
+        let got = a.mb.deliver_many(INBOX, items.clone()).await;
+        if conflict {
+            assert!(matches!(got, Err(Error::Conflict(_))), "{got:?}");
+            // The whole batch rolled back; the loop side is not run.
+            assert_eq!(dump(&a).await, dump(&b).await);
+            assert_eq!(threads_of(&a).await, threads_of(&b).await);
+            continue;
+        }
+        known = seen;
+        let mut want = vec![];
+        for it in items {
+            want.push(
+                b.mb.deliver(INBOX, it.raw, it.flags, it.delivery_id)
+                    .await
+                    .unwrap(),
+            );
+        }
+        assert_eq!(got.unwrap(), want);
+        assert_eq!(dump(&a).await, dump(&b).await);
+        assert_eq!(threads_of(&a).await, threads_of(&b).await);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(20))]
+    #[test]
+    fn deliver_many_matches_loop_of_deliver(
+        deleted in proptest::collection::vec(proptest::bool::ANY, 0..4),
+        batches in proptest::collection::vec(proptest::collection::vec(ditem(), 1..8), 1..4),
+    ) {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+            .block_on(deliver_equivalence(deleted, batches));
+    }
+}
