@@ -859,3 +859,31 @@ async fn concurrent_deliver_many_batches_are_consecutive() {
     ids.sort_unstable();
     assert_eq!(ids, (1..=60).collect::<Vec<_>>());
 }
+
+// ---------------------------------------------------------------- lock_blobs gives up
+
+/// A GC that wins the race against the blob insert on every round exhausts the bounded loop of
+/// `lock_blobs`: that is transient contention (`Busy`, retryable by the caller), not a storage
+/// fault, and the transaction leaves nothing behind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lock_blobs_giving_up_is_busy_and_leaves_nothing_behind() {
+    if pg_admin_url().is_none() {
+        return;
+    }
+    let b = pg_backend().await.unwrap();
+    let repo = repo_with(&b, Knobs { drop_blob_rows_after_insert: true, ..Knobs::default() });
+    let (_, acc, setup) = acct(&b, "gu").await;
+    let mb = open_on(&b, &repo, acc).await;
+    let r = mb.append(INBOX, raw("a", None), Flags::default()).await;
+    assert!(matches!(r, Err(Error::Busy(_))), "append: {r:?}");
+    let r = mb.append_many(INBOX, vec![raw("b", None), raw("c", None)], Flags::default()).await;
+    assert!(matches!(r, Err(Error::Busy(_))), "append_many: {r:?}");
+    let r = mb.deliver_many(INBOX, vec![item("d", 1)]).await;
+    assert!(matches!(r, Err(Error::Busy(_))), "deliver_many: {r:?}");
+    assert_eq!(scalar(&b, "SELECT count(*) FROM messages").await, 0);
+    assert_eq!(scalar(&b, "SELECT count(*) FROM blobs").await, 0);
+    assert_eq!(scalar(&b, "SELECT count(*) FROM deliveries").await, 0);
+    assert!(setup.changes_since(0, 10).await.unwrap().changes.is_empty());
+    // The same mailbox works through a repository without the knob.
+    setup.append(INBOX, raw("a", None), Flags::default()).await.unwrap();
+}

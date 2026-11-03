@@ -189,6 +189,13 @@ async fn lock_blobs(
         .bind(&sizes)
         .execute(&mut *c)
         .await?;
+        #[cfg(feature = "test-knobs")]
+        if knobs.drop_blob_rows_after_insert {
+            sqlx::query("DELETE FROM blobs WHERE hash = ANY($1)")
+                .bind(&hashes)
+                .execute(&mut *c)
+                .await?;
+        }
         let locked: Vec<Vec<u8>> = sqlx::query_scalar(
             "SELECT hash FROM blobs WHERE hash = ANY($1) ORDER BY hash FOR NO KEY UPDATE",
         )

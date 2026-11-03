@@ -105,6 +105,9 @@ pub struct Knobs {
     pub pause_before_commit_ms: u32,
     /// Omit the mailbox row lock (exercises the second line of defence: triggers, FKs, counters).
     pub skip_mailbox_lock: bool,
+    /// `lock_blobs` deletes the blob rows it has just inserted, every round (a GC that always wins
+    /// the race): exercises the bounded retry loop giving up.
+    pub drop_blob_rows_after_insert: bool,
 }
 
 pub(super) enum Step<T> {
