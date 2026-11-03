@@ -91,7 +91,7 @@ fn is_bidi_control(c: char) -> bool {
 }
 
 /// Unicode format (Cf) characters and line/paragraph separators (Zl, Zp): none belongs in an
-/// email address. Covers the Cf code points of Unicode 15 (the standard library has no
+/// email address. Covers the Cf code points of Unicode 15/16 (the standard library has no
 /// general-category lookup).
 fn is_format_or_line_separator(c: char) -> bool {
     matches!(c,
