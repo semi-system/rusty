@@ -11,7 +11,7 @@ REPO_WSL="$(wsl.exe -e wslpath -a "$REPO_WIN" | tr -d '\r')"
 
 # wsl_run <command> [args...]: run in the repo dir inside WSL. Arguments are passed
 # positionally to "bash -c" and expanded as "$@", so no quoting is ever re-parsed.
-export WSLENV="${WSLENV:+$WSLENV:}RUSTY_WSL_TARGET_DIR"
+export WSLENV="${WSLENV:+$WSLENV:}RUSTY_WSL_TARGET_DIR:EDGE_ONLY:EDGE_KEEP:EDGE_REPORT:EDGE_SUITE"
 
 wsl_run() {
   wsl.exe -e bash -lc '

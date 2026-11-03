@@ -105,6 +105,21 @@ fuzz_all() {
     cargo test -p rusty-mime -p rusty-directory --test fuzz_smoke
   fi
 }
+
+stage "compose hardening check" cargo run -q -p compose-check -- deploy/compose/compose.yaml
+
+edge_suite() {
+  if [ "${EDGE_SUITE:-0}" != "1" ]; then
+    echo "NOTE: edge behaviour suite NOT run (about 15 minutes, needs Docker). Run: EDGE_SUITE=1 bash scripts/ci.sh" >&2
+    return 0
+  fi
+  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+    echo "[FAIL] EDGE_SUITE=1 but Docker is unavailable" >&2
+    return 1
+  fi
+  cargo test -p edge-tests -- --ignored --nocapture
+}
+stage "edge behaviour suite" edge_suite
 stage "fuzz lockfile consistent" bash -c 'cd fuzz && cargo metadata --locked --format-version 1 >/dev/null'
 stage "fuzz smoke" fuzz_all
 

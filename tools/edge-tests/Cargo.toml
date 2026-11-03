@@ -1,0 +1,11 @@
+[package]
+name = "edge-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Product-agnostic edge (TLS/TCP front end) behaviour suite: the go/no-go test for HAProxy."
+
+[dependencies]
+rustls.workspace = true
