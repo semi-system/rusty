@@ -231,6 +231,16 @@ Rusty ưu tiên bảo mật và khả năng chịu được zero-day. Nguyên t�
 - **Giảm thiệt hại khi lọt lỗi**: ràng buộc quan hệ ở DB (đã có), không lưu bí mật dạng rõ, log không chứa mật khẩu/hash/nội dung thư, cập nhật nóng nhờ restart từng dịch vụ.
 - **Kiểm thử đối kháng**: fuzz (`cargo-fuzz`) cho `parse_envelope` và chuẩn hóa địa chỉ, test âm cho mỗi ràng buộc.
 
+## 8c. Cập nhật sau review cuối nhánh (đã thực hiện trong mã)
+- **Migration 0003:** `mailboxes.next_folder_id` (bộ đếm, id folder không bao giờ tái dùng; `create_account` gieo 6 sau năm folder hệ thống). Mọi đường chèn hàng `mailboxes` phải gieo bộ đếm này.
+- **Phân trang:** `list_folder(folder, after_uid, limit)` và `changes_since(seq, limit) -> ChangePage { changes, more }`; trần `MAX_PAGE = 1000`, `limit == 0` là `Invalid`. `Change { seq, item: ChangeItem, op }` với `ChangeItem::{Message(MessageId), Folder(FolderId)}`; `MessageSummary.thread_id` là `ThreadId`.
+- **`uid_validity`:** cập nhật bằng một câu `UPDATE ... RETURNING`; quy tắc "mọi giao dịch ghi của `Mailbox` bắt đầu bằng `BEGIN IMMEDIATE` và chạm hàng mailbox trước".
+- **Blob store:** `FsBlobStore::init(root)` (tạo gốc 0700 + tệp đánh dấu `.rusty-blobs`) và `open(root)` (yêu cầu gốc có sẵn, là thư mục thật, không symlink, không ghi được bởi nhóm/người khác, có tệp đánh dấu) thay cho `new`; `put` chỉ tạo hai cấp shard, không bao giờ tạo gốc; tệp tạm `create_new` 0600 với tên có byte ngẫu nhiên; thư mục shard 0700; blob 0600; fsync thư mục cha sau mỗi lần đổi tên; `BlobStore::delete` đã bỏ khỏi trait (xóa chỉ qua giao thức GC). Quy trình triển khai phải chạy bước cấp phát `init` trước; `open` không tự tạo thư mục. Tệp SQLite được tạo trước với quyền 0600; khuyến nghị `umask 077` cho mọi tiến trình dịch vụ.
+- **MIME:** chỉ phân tích phần header (tối đa 256 KiB; vượt thì `Invalid`, `append` từ chối thư, không lưu header bị cắt); trường được làm sạch và giới hạn: subject 2048 B, from/to 4096 B và tối đa 100 địa chỉ (bỏ cả địa chỉ chứa khoảng trắng, dấu phẩy hoặc ký tự điều khiển), `message_id`/`in_reply_to` <= 998 B, `references` giữ 32 id cuối.
+- **Thông báo lỗi:** chuỗi cố định, không chép đầu vào; chuỗi `source` của lỗi có thể chứa văn bản thô từ backend và **không bao giờ** được tuần tự hóa ra client.
+- **Kiểm thử:** test snapshot schema (`tests/snapshots/schema.sql.snap`, cập nhật bằng `RUSTY_UPDATE_SNAPSHOT=1`); các migration 0001-0003 đã đóng băng, thay đổi schema đi vào migration mới.
+- **Toolchain:** ghim `1.99.1`, `rust-version = "1.89"`.
+
 ## 9. Rủi ro đã biết
 - Ràng buộc "một địa chỉ thuộc một loại" dựa vào trigger, phải có bản Postgres tương đương.
 - `COALESCE(parent_id,0)` trong index unique yêu cầu id folder bắt đầu từ 1 (đã đảm bảo bằng `CHECK`/sinh id từ 1).

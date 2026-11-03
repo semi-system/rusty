@@ -31,6 +31,26 @@
 
 ---
 
+### Task P0: Carry-over security minors from the final fix-wave review
+
+**Files:**
+- Modify: `crates/rusty-store/src/blob.rs`, `crates/rusty-mime/src/lib.rs`, `crates/rusty-store/migrations/` (comment only if a new migration is not otherwise needed: put the m6 note in the `mailboxes` DDL comment of the schema doc and in `Mailbox` module docs instead; do NOT edit frozen migrations)
+- Test: `crates/rusty-store/tests/blob_fs.rs`, `crates/rusty-mime/tests/bounds.rs`
+
+**Interfaces:**
+- Consumes: `FsBlobStore::{open, init}`, `heal_quarantine`, `rusty_mime::{clean_text, join_addresses}` (names as they exist in the code).
+- Produces: `FsBlobStore::startup_heal(&self) -> Option<HealReport>` (the report produced by the heal that `open` ran, `None` if it was skipped because the GC lock was held); no other signature changes.
+
+- [ ] **Step 1: Write failing tests:**
+  - `open_and_init_refuse_symlink_root_even_with_trailing_slash` (m1): create a symlink to a valid initialized root and call `open("<link>/")`, `open("<link>")`, `init("<link>/")`: all `Err`.
+  - `existing_content_put_syncs_shard_directories` (m2): a `cfg(test)` counter on the directory-fsync helper proves a put of already-existing content calls it for l2, l1 and the root before returning Ok.
+  - `startup_heal_report_is_available` (m5): quarantine file present at `open` -> `startup_heal()` is `Some` with restored count 1; skipped (GC lock held) -> `None`.
+  - mime (m3): `subject_line_separators_become_space` (U+2028, U+2029, U+0085 -> single space), `subject_bidi_overrides_and_isolates_removed` (U+202A..U+202E, U+2066..U+2069 removed; ZWJ U+200D and ZWNJ U+200C KEPT; Persian/Arabic text with ZWNJ intact), `addresses_containing_format_or_line_separator_chars_are_dropped` (U+200B, U+202E, U+2028 inside an address -> that whole address dropped), plus positive controls.
+  - mime (m4): `first_oversized_address_does_not_hide_later_recipients_silently` — decide and test one behavior: skip an address that individually exceeds the cap and CONTINUE with the next ones (preferred, document it).
+- [ ] **Step 2: Run to confirm FAIL.**
+- [ ] **Step 3: Implement:** m1 rebuild the root path from `Path::components()` (drops a trailing slash) at the start of `check_root` and `init_sync` before any `lstat`; m2 run the same directory-fsync chain on the idempotent early-return path of `put` and fix the module doc; m3 map Zl/Zp/NEL to a space in subject and strip bidi overrides/isolates from the subject, drop whole from/to addresses containing Cf/Zl/Zp; m4 continue past an individually oversized address; m5 keep the heal report and expose `startup_heal`; m6 add a doc comment on `Mailbox`/`take_folder_id` and in `Directory::create_account` that every code path inserting a `mailboxes` row must seed `next_folder_id`; m8 add a doc note that the startup heal scans up to 65,536 shard directories and is skipped when the GC lock is held.
+- [ ] **Step 4: Run focused tests, then workspace tests and clippy; commit** `fix: fold in final-review minors (symlink root, dir fsync, sanitizer)`.
+
 ### Task P1: Protocol version negotiation (rusty-core)
 
 **Files:**
