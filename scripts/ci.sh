@@ -79,7 +79,7 @@ postgres_tests() {
     RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
       cargo test -p rusty-store --features postgres \
         --test pg_schema_constraints --test pg_schema_cases --test pg_schema_concurrency \
-        --test pg_schema_parity || rc=$?
+        --test pg_schema_parity --test spike_conformance --test spike_pg || rc=$?
   fi
   if [ "$rc" -eq 0 ]; then
     RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
