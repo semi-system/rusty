@@ -9,7 +9,7 @@ use bytes::Bytes;
 use common::spike::*;
 use common::{raw, reply};
 use rusty_core::{DeliveryId, DomainId, Error, Flags, FolderId};
-use rusty_store::repo::{ListMember, NewAccount, Resolution};
+use rusty_store::repo::{JobFence, ListMember, NewAccount, Resolution};
 use rusty_store::{ChangeItem, ChangeOp, DeliverOutcome};
 
 #[tokio::test]
@@ -527,4 +527,68 @@ async fn sqlite_dollar_placeholders_follow_their_number() {
         .await
         .unwrap();
     assert_eq!(v, 27);
+}
+
+// ------------------------------------------------------------------ job fence
+
+/// A `running` job leased for an hour at epoch `epoch`.
+async fn running_job(b: &Backend, epoch: i64) -> i64 {
+    exec(
+        b,
+        "INSERT INTO jobs (kind, payload, state, attempts, run_after, lease_owner, \
+         lease_expires_at, epoch, created_at, updated_at) \
+         VALUES ('deliver', '{}', 'running', 1, 0, 'w1', 4102444800, ?1, 0, 0) RETURNING id",
+        &[Bind::I(epoch)],
+    )
+    .await
+}
+
+async fn job_state(b: &Backend, id: i64) -> String {
+    let sql = "SELECT state FROM jobs WHERE id = ";
+    if let Some(s) = &b.sqlite {
+        return sqlx::query_scalar(&format!("{sql}{id}")).fetch_one(s.pool()).await.unwrap();
+    }
+    #[cfg(feature = "postgres")]
+    if let Some((p, _)) = &b.pg {
+        return sqlx::query_scalar(&format!("{sql}{id}")).fetch_one(p.pool()).await.unwrap();
+    }
+    unreachable!()
+}
+
+/// The `JobQueue::complete_in` pattern without a transaction handle: the repository effect and
+/// the job completion commit together; a stale epoch rolls the effect back.
+#[tokio::test]
+async fn deliver_completes_the_job_atomically_and_a_stale_fence_rolls_back() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let (_, _, mb) = acct(&b, "fence").await;
+        let job = running_job(&b, 3).await;
+        let did = DeliveryId([5u8; 32]);
+        let fence = |id, epoch| JobFence { id: rusty_core::JobId(id), epoch };
+        // Stale epoch: Conflict, NOTHING written, job still running.
+        let e = mb
+            .deliver_fenced(INBOX, raw("x", None), Flags::default(), did, fence(job, 2))
+            .await;
+        assert!(is_conflict(e), "{n}");
+        assert!(mb.list_folder(INBOX, 0, 10).await.unwrap().is_empty(), "{n}");
+        assert!(mb.changes_since(0, 10).await.unwrap().changes.is_empty(), "{n}");
+        assert_eq!(job_state(&b, job).await, "running", "{n}");
+        // Right epoch: message and completion together.
+        let out = mb
+            .deliver_fenced(INBOX, raw("x", None), Flags::default(), did, fence(job, 3))
+            .await
+            .unwrap();
+        assert!(matches!(out, DeliverOutcome::Created(_)), "{n}");
+        assert_eq!(job_state(&b, job).await, "done", "{n}");
+        // A retried job (new job row, same delivery id): Duplicate AND the job is completed.
+        let job2 = running_job(&b, 1).await;
+        let out = mb
+            .deliver_fenced(INBOX, raw("x", None), Flags::default(), did, fence(job2, 1))
+            .await
+            .unwrap();
+        assert!(matches!(out, DeliverOutcome::Duplicate(_)), "{n}");
+        assert_eq!(job_state(&b, job2).await, "done", "{n}");
+        assert_eq!(mb.list_folder(INBOX, 0, 10).await.unwrap().len(), 1, "{n}");
+    })
+    .await;
 }

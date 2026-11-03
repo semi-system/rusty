@@ -14,7 +14,7 @@ use sqlx::{Sqlite, SqliteConnection, Transaction};
 use super::{
     depth_verdict, not_found_folder, not_found_mailbox, render_sqlite as r, sql_text as q,
     thread_candidates, Delivery, DirectoryRepo, ListMember, MailboxRepo, NewAccount, NewMessage,
-    Resolution, SYSTEM_FOLDERS, SYSTEM_FOLDER_TABLE,
+    JobFence, Resolution, SYSTEM_FOLDERS, SYSTEM_FOLDER_TABLE,
 };
 use crate::mailbox::{
     to_flags, to_uid, Change, ChangeItem, ChangeOp, ChangePage, DeliverOutcome, MessageRef,
@@ -135,6 +135,23 @@ impl DirectoryRepo for SqliteRepo {
                 })
                 .collect(),
         )))
+    }
+}
+
+/// Fence and complete the job in the caller's transaction (the `JobQueue::complete_in` pattern):
+/// a stale epoch or expired lease is `Conflict` and the caller drops the transaction.
+async fn complete_job(c: &mut SqliteConnection, f: JobFence) -> Result<()> {
+    let n = sqlx::query(&r(q::COMPLETE_JOB))
+        .bind(f.id.0)
+        .bind(f.epoch)
+        .execute(&mut *c)
+        .await
+        .map_err(map_db_error)?
+        .rows_affected();
+    if n == 1 {
+        Ok(())
+    } else {
+        Err(Error::Conflict("stale job epoch".into()))
     }
 }
 
@@ -354,8 +371,10 @@ impl MailboxRepo for SqliteRepo {
         mb: MailboxId,
         msg: &NewMessage,
         delivery: Option<&Delivery>,
+        fence: Option<JobFence>,
     ) -> Result<DeliverOutcome> {
         let mut tx = self.begin_locked(mb).await?;
+        let mut duplicate = None;
         if let Some(d) = delivery {
             let hit: Option<(i64, String)> = sqlx::query_as(&r(q::DELIVERY_LOOKUP))
                 .bind(mb.0)
@@ -376,15 +395,21 @@ impl MailboxRepo for SqliteRepo {
                     .await
                     .map_err(map_db_error)?
                     .ok_or_else(|| Error::storage("delivery refers to a missing message"))?;
-                return Ok(DeliverOutcome::Duplicate(MessageRef {
+                duplicate = Some(MessageRef {
                     id: MessageId(msg_id),
                     uid: to_uid(uid)?,
-                }));
+                });
             }
         }
-        let created = insert_message(&mut tx, mb.0, msg, delivery).await?;
+        let outcome = match duplicate {
+            Some(r) => DeliverOutcome::Duplicate(r),
+            None => DeliverOutcome::Created(insert_message(&mut tx, mb.0, msg, delivery).await?),
+        };
+        if let Some(f) = fence {
+            complete_job(&mut tx, f).await?;
+        }
         tx.commit().await.map_err(map_db_error)?;
-        Ok(DeliverOutcome::Created(created))
+        Ok(outcome)
     }
 
     async fn append_many(&self, mb: MailboxId, msgs: &[NewMessage]) -> Result<Vec<MessageRef>> {

@@ -25,7 +25,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use rusty_core::{
     AccountId, BlobHash, DeliveryId, DomainId, Error, Flags, FolderId, MailboxId,
-    PlanId, Result,
+    JobId, PlanId, Result,
 };
 use rusty_mime::Envelope;
 
@@ -94,6 +94,14 @@ pub struct Delivery {
     pub created_at: Option<i64>,
 }
 
+/// A claimed job to fence and complete in the SAME transaction as the repository effect (the
+/// `JobQueue::complete_in` pattern without exposing a transaction handle).
+#[derive(Debug, Clone, Copy)]
+pub struct JobFence {
+    pub id: JobId,
+    pub epoch: i64,
+}
+
 #[async_trait]
 pub trait DirectoryRepo: Send + Sync {
     async fn create_domain(&self, name: &str) -> Result<DomainId>;
@@ -114,12 +122,15 @@ pub trait MailboxRepo: Send + Sync {
         parent: Option<FolderId>,
         name: &str,
     ) -> Result<FolderId>;
-    /// Store one message (plus a `deliveries` row if `delivery` is given), one transaction.
+    /// Store one message (plus a `deliveries` row if `delivery` is given), one transaction. With
+    /// `fence` the job is fenced and marked done in the same transaction, also when the delivery
+    /// turns out to be a duplicate; a stale fence rolls everything back (`Conflict`).
     async fn append(
         &self,
         mb: MailboxId,
         msg: &NewMessage,
         delivery: Option<&Delivery>,
+        fence: Option<JobFence>,
     ) -> Result<DeliverOutcome>;
     /// Store `msgs` (1..) in input order in ONE transaction: ids, uids and change seqs are
     /// consecutive in input order.
@@ -187,6 +198,7 @@ pub mod sql_text {
         WHERE id = $1 RETURNING next_change_seq - 1";
     pub const DELIVERY_LOOKUP: &str =
         "SELECT message_id, blob_hash FROM deliveries WHERE mailbox_id = $1 AND delivery_id = $2";
+    pub const COMPLETE_JOB: &str = "UPDATE jobs SET state = 'done', lease_owner = NULL, \n        lease_expires_at = NULL, updated_at = {NOW} \n        WHERE id = $1 AND epoch = $2 AND state = 'running' AND lease_expires_at > {NOW}";
     pub const MESSAGE_UID: &str = "SELECT uid FROM messages WHERE mailbox_id = $1 AND id = $2";
     pub const LIST_FOLDER: &str = "SELECT id, uid, size, internal_date, subject, from_addr, \
         flags, thread_id FROM messages WHERE mailbox_id = $1 AND folder_id = $2 AND uid > $3 \
@@ -338,7 +350,7 @@ impl SpikeMailbox {
     }
 
     pub async fn append(&self, folder: FolderId, raw: Bytes, flags: Flags) -> Result<MessageRef> {
-        match self.store(folder, raw, flags, None).await? {
+        match self.store(folder, raw, flags, None, None).await? {
             DeliverOutcome::Created(r) | DeliverOutcome::Duplicate(r) => Ok(r),
         }
     }
@@ -358,6 +370,29 @@ impl SpikeMailbox {
                 id,
                 created_at: None,
             }),
+            None,
+        )
+        .await
+    }
+
+    /// [`deliver`](Self::deliver) that also fences and completes `job` in the same transaction.
+    pub async fn deliver_fenced(
+        &self,
+        folder: FolderId,
+        raw: Bytes,
+        flags: Flags,
+        id: DeliveryId,
+        job: JobFence,
+    ) -> Result<DeliverOutcome> {
+        self.store(
+            folder,
+            raw,
+            flags,
+            Some(Delivery {
+                id,
+                created_at: None,
+            }),
+            Some(job),
         )
         .await
     }
@@ -408,10 +443,11 @@ impl SpikeMailbox {
         raw: Bytes,
         flags: Flags,
         delivery: Option<Delivery>,
+        fence: Option<JobFence>,
     ) -> Result<DeliverOutcome> {
         self.repo.folder_exists(self.id, folder).await?;
         let msg = self.prepare(folder, raw, flags).await?;
-        self.repo.append(self.id, &msg, delivery.as_ref()).await
+        self.repo.append(self.id, &msg, delivery.as_ref(), fence).await
     }
 
     pub async fn list_folder(

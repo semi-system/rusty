@@ -28,7 +28,7 @@ use sqlx::PgConnection;
 use super::{
     depth_verdict, hash_bytes, not_found_folder, not_found_mailbox, render_pg as r,
     sql_text as q, thread_candidates, Delivery, DirectoryRepo, ListMember, MailboxRepo,
-    NewAccount, NewMessage, Resolution, SYSTEM_FOLDERS, SYSTEM_FOLDER_TABLE,
+    JobFence, NewAccount, NewMessage, Resolution, SYSTEM_FOLDERS, SYSTEM_FOLDER_TABLE,
 };
 use crate::mailbox::{
     to_flags, to_uid, Change, ChangeItem, ChangeOp, ChangePage, DeliverOutcome, MessageRef,
@@ -513,6 +513,61 @@ async fn insert_messages(
     Ok(refs)
 }
 
+/// Delivery-aware single insert: duplicate detection (mailbox row already locked) then insert.
+async fn deliver_core(
+    c: &mut PgConnection,
+    mb: i64,
+    msg: &NewMessage,
+    delivery: Option<&Delivery>,
+    knobs: Knobs,
+) -> TxResult<DeliverOutcome> {
+    if let Some(d) = delivery {
+        // The mailbox row is locked: no concurrent delivery of this mailbox can
+        // slip in between this lookup and the insert below. READ COMMITTED gives
+        // this statement a fresh snapshot after the lock wait.
+        let hit: Option<(i64, Vec<u8>)> = sqlx::query_as(&r(q::DELIVERY_LOOKUP))
+            .bind(mb)
+            .bind(&d.id.0[..])
+            .fetch_optional(&mut *c)
+            .await?;
+        if let Some((msg_id, blob_hash)) = hit {
+            if blob_hash != hash_bytes(&msg.hash)? {
+                return Err(Error::Conflict(
+                    "delivery id reused with different content".into(),
+                )
+                .into());
+            }
+            let uid: i64 = sqlx::query_scalar(&r(q::MESSAGE_UID))
+                .bind(mb)
+                .bind(msg_id)
+                .fetch_optional(&mut *c)
+                .await?
+                .ok_or_else(|| Error::storage("delivery refers to a missing message"))?;
+            return Ok(DeliverOutcome::Duplicate(MessageRef {
+                id: MessageId(msg_id),
+                uid: to_uid(uid)?,
+            }));
+        }
+    }
+    let mut refs = insert_messages(c, mb, std::slice::from_ref(msg), delivery, knobs).await?;
+    Ok(DeliverOutcome::Created(refs.remove(0)))
+}
+
+/// Fence and complete the job in the caller's transaction (see `JobQueue::complete_in`).
+async fn complete_job(c: &mut PgConnection, f: JobFence) -> TxResult<()> {
+    let n = sqlx::query(&r(q::COMPLETE_JOB))
+        .bind(f.id.0)
+        .bind(f.epoch)
+        .execute(&mut *c)
+        .await?
+        .rows_affected();
+    if n == 1 {
+        Ok(())
+    } else {
+        Err(Error::Conflict("stale job epoch".into()).into())
+    }
+}
+
 #[async_trait]
 impl MailboxRepo for PgRepo {
     async fn mailbox_for_account(&self, account: AccountId) -> Result<MailboxId> {
@@ -602,41 +657,16 @@ impl MailboxRepo for PgRepo {
         mb: MailboxId,
         msg: &NewMessage,
         delivery: Option<&Delivery>,
+        fence: Option<JobFence>,
     ) -> Result<DeliverOutcome> {
         let knobs = self.knobs;
-        let one = std::slice::from_ref(msg);
         tx_retry!(self, Some(mb), |c| {
             {
-                if let Some(d) = delivery {
-                    // The mailbox row is locked: no concurrent delivery of this mailbox can
-                    // slip in between this lookup and the insert below. READ COMMITTED gives
-                    // this statement a fresh snapshot after the lock wait.
-                    let hit: Option<(i64, Vec<u8>)> = sqlx::query_as(&r(q::DELIVERY_LOOKUP))
-                        .bind(mb.0)
-                        .bind(&d.id.0[..])
-                        .fetch_optional(&mut *c)
-                        .await?;
-                    if let Some((msg_id, blob_hash)) = hit {
-                        if blob_hash != hash_bytes(&msg.hash)? {
-                            return Err(Error::Conflict(
-                                "delivery id reused with different content".into(),
-                            )
-                            .into());
-                        }
-                        let uid: i64 = sqlx::query_scalar(&r(q::MESSAGE_UID))
-                            .bind(mb.0)
-                            .bind(msg_id)
-                            .fetch_optional(&mut *c)
-                            .await?
-                            .ok_or_else(|| Error::storage("delivery refers to a missing message"))?;
-                        return Ok(DeliverOutcome::Duplicate(MessageRef {
-                            id: MessageId(msg_id),
-                            uid: to_uid(uid)?,
-                        }));
-                    }
+                let outcome = deliver_core(c, mb.0, msg, delivery, knobs).await?;
+                if let Some(f) = fence {
+                    complete_job(c, f).await?;
                 }
-                let mut refs = insert_messages(c, mb.0, one, delivery, knobs).await?;
-                Ok(DeliverOutcome::Created(refs.remove(0)))
+                Ok(outcome)
             }
         })
     }
