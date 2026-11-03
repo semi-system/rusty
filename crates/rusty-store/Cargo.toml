@@ -9,6 +9,10 @@ publish.workspace = true
 [features]
 default = []
 postgres = ["sqlx/postgres"]
+# Test-only fault injection in the Postgres repositories (lock-order, skipped locks, pauses).
+# NEVER enable outside this crate's own [dev-dependencies] (self dev-dependency below);
+# scripts/check-raw-db.sh and scripts/check-test-knobs.sh enforce that.
+test-knobs = ["tokio/sync"]
 
 [dependencies]
 rusty-core = { path = "../rusty-core" }
@@ -24,6 +28,7 @@ serde_json.workspace = true
 hex.workspace = true
 
 [dev-dependencies]
+rusty-store = { path = ".", features = ["test-knobs"] }
 proptest.workspace = true
 tempfile.workspace = true
 tracing.workspace = true

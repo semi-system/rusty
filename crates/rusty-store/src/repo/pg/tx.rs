@@ -81,7 +81,17 @@ pub struct PgRetryStats {
 }
 
 /// Test-only fault injection: lets a test force the interleaving that the ordering rule
+/// prevents. Compiled ONLY with the `test-knobs` cargo feature, which only this crate's own
+/// tests enable (self dev-dependency; `scripts/check-raw-db.sh` and the release symbol check of
+/// `scripts/check-test-knobs.sh` enforce that). Without the feature this type is zero-sized
+/// and none of the paths it controls exist in the binary.
+#[cfg(not(feature = "test-knobs"))]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Knobs;
+
+/// Test-only fault injection: lets a test force the interleaving that the ordering rule
 /// prevents. Never set in production code paths (all fields are off by default).
+#[cfg(feature = "test-knobs")]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Knobs {
     /// Lock blobs one by one in the order the caller supplies them instead of ascending.
@@ -127,6 +137,7 @@ impl PgRepo {
     }
 
     /// Test knob: raise a real 40P01 inside the transaction while the counter is positive.
+    #[cfg(feature = "test-knobs")]
     pub(super) async fn maybe_inject_deadlock(&self, c: &mut PgConnection) -> TxResult<()> {
         let mut armed = false;
         let mut cur = self.inject_deadlocks.load(Ordering::SeqCst);
@@ -152,6 +163,16 @@ impl PgRepo {
             .await?;
         }
         Ok(())
+    }
+
+    /// Test knob: tell a waiting test that this session has run its unit of work and still holds
+    /// every lock of its open transaction (the pause before COMMIT follows), so a second session
+    /// can be started without guessing with a sleep.
+    #[cfg(feature = "test-knobs")]
+    pub(super) fn signal_work_done(&self) {
+        if let Some(n) = &self.work_done {
+            n.notify_one();
+        }
     }
 
     /// Finish one attempt: commit on success; roll back and classify on failure.
@@ -208,19 +229,28 @@ macro_rules! tx_retry {
                 let $c: &mut sqlx::PgConnection = &mut *tx;
                 let lock: Option<rusty_core::MailboxId> = $lock;
                 if let Some(mb) = lock {
-                    if !$self.knobs.skip_mailbox_lock {
+                    #[cfg(feature = "test-knobs")]
+                    let skip = $self.knobs.skip_mailbox_lock;
+                    #[cfg(not(feature = "test-knobs"))]
+                    let skip = false;
+                    if !skip {
                         $self.lock_mailbox(&mut *$c, mb).await?;
                     }
                 }
+                #[cfg(feature = "test-knobs")]
                 $self.maybe_inject_deadlock(&mut *$c).await?;
                 $body
             }
             .await;
-            if res.is_ok() && $self.knobs.pause_before_commit_ms > 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(u64::from(
-                    $self.knobs.pause_before_commit_ms,
-                )))
-                .await;
+            #[cfg(feature = "test-knobs")]
+            {
+                $self.signal_work_done();
+                if res.is_ok() && $self.knobs.pause_before_commit_ms > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(u64::from(
+                        $self.knobs.pause_before_commit_ms,
+                    )))
+                    .await;
+                }
             }
             match $self.finish(tx, res, attempt).await {
                 $crate::repo::pg::tx::Step::Done(v) => break Ok::<_, rusty_core::Error>(v),
@@ -238,3 +268,7 @@ async fn backoff(attempt: u32) {
     let jitter = u64::from(OsRng.next_u32()) % (base + 1);
     tokio::time::sleep(Duration::from_millis(base + jitter)).await;
 }
+
+/// Production builds carry no knob state.
+#[cfg(not(feature = "test-knobs"))]
+const _: () = assert!(std::mem::size_of::<Knobs>() == 0);

@@ -1275,6 +1275,7 @@ dependencies = [
  "rustix",
  "rusty-core",
  "rusty-mime",
+ "rusty-store",
  "serde_json",
  "sqlx",
  "tempfile",

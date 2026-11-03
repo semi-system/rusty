@@ -17,6 +17,24 @@ use rusty_store::repo::pg::{is_retryable, Knobs, PgRepo};
 use rusty_store::Mailbox;
 use sqlx::Executor;
 
+/// Block until some session of this database waits for a heavyweight lock (row lock, transaction
+/// id): the deterministic replacement for "sleep and hope the other session got there".
+async fn wait_for_lock_waiter(pool: &sqlx::PgPool) {
+    for _ in 0..1200 {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity \n             WHERE datname = current_database() AND wait_event_type = 'Lock'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if n > 0 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("no session ever waited for a lock");
+}
+
 /// Two mailboxes, each with a `Mailbox` over a repo with the given knobs.
 async fn two_mailboxes(knobs: Knobs) -> (Backend, Mailbox, Mailbox, Arc<PgRepo>) {
     let b = pg_backend().await.expect("RUSTY_TEST_PG_URL");
@@ -158,7 +176,7 @@ async fn retryable_sqlstates_are_classified_from_real_errors() {
     sqlx::query("UPDATE t SET v = 20 WHERE id = 2").execute(&mut *y).await.unwrap();
     let fx = async { sqlx::query("UPDATE t SET v = 11 WHERE id = 2").execute(&mut *x).await };
     let fy = async {
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        wait_for_lock_waiter(pool).await;
         sqlx::query("UPDATE t SET v = 21 WHERE id = 1").execute(&mut *y).await
     };
     let (rx, ry) = tokio::join!(fx, fy);
@@ -205,7 +223,7 @@ async fn gc_delete_in_flight_does_not_lose_a_new_reference() {
     let task = tokio::spawn(async move {
         mb2.append(INBOX, raw("gc-me", None), Flags::default()).await
     });
-    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    wait_for_lock_waiter(store.pool()).await;
     assert!(!task.is_finished(), "the append must wait for the in-flight delete");
     gc.commit().await.unwrap();
     task.await.unwrap().expect("append succeeds after the delete committed");
@@ -218,9 +236,10 @@ async fn gc_delete_in_flight_does_not_lose_a_new_reference() {
 
 // ====================================================================== PG4: mailbox concurrency
 //
-// Two-session interleavings are made deterministic with test knobs instead of sleeps inside
-// statements: `pause_before_commit_ms` keeps the first session's transaction open (locks held)
-// after its work, a second session is started `STAGGER` later and has to queue behind it.
+// Two-session interleavings are made deterministic with test knobs, without guessing delays:
+// `pause_before_commit_ms` keeps the first session's transaction open (locks held) after its work
+// and the repository signals (`with_work_done_signal_for_test`) at that moment; the second session
+// is started on the signal, so it can only queue behind the first, never win the race.
 
 use std::future::Future;
 use std::time::Duration;
@@ -230,8 +249,11 @@ use bytes::Bytes;
 use rusty_core::{AccountId, DeliveryId, DomainId, FolderId};
 use rusty_store::{ChangeOp, DeliverItem, DeliverOutcome};
 
-const STAGGER: Duration = Duration::from_millis(250);
-const HOLD_MS: u32 = 900;
+/// How long the first session keeps its locks after its work. Not a synchronisation delay: the
+/// second session starts on the signal; this only has to be long enough for it to reach the lock.
+const HOLD_MS: u32 = 500;
+/// Upper bound for the signal; a missing signal fails the test instead of hanging it.
+const SIGNAL_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn store_of(b: &Backend) -> rusty_store::PgStore {
     b.pg.as_ref().expect("postgres backend").0.clone()
@@ -241,15 +263,22 @@ fn repo_with(b: &Backend, knobs: Knobs) -> Arc<PgRepo> {
     Arc::new(PgRepo::new(store_of(b)).with_knobs_for_test(knobs))
 }
 
-/// A repository whose operations keep their transaction open for `HOLD_MS` before COMMIT.
-fn slow_repo(b: &Backend) -> Arc<PgRepo> {
-    repo_with(
-        b,
-        Knobs {
+/// A repository whose operations keep their transaction open for `HOLD_MS` before COMMIT and
+/// signal the returned `Notify` when their work is done and the locks are held.
+fn slow_repo(b: &Backend) -> (Arc<PgRepo>, Arc<tokio::sync::Notify>) {
+    let held = Arc::new(tokio::sync::Notify::new());
+    let repo = PgRepo::new(store_of(b))
+        .with_knobs_for_test(Knobs {
             pause_before_commit_ms: HOLD_MS,
             ..Knobs::default()
-        },
-    )
+        })
+        .with_work_done_signal_for_test(held.clone());
+    (Arc::new(repo), held)
+}
+
+async fn slow_session(b: &Backend, acc: AccountId) -> (Mailbox, Arc<tokio::sync::Notify>) {
+    let (repo, held) = slow_repo(b);
+    (open_on(b, &repo, acc).await, held)
 }
 
 async fn open_on(b: &Backend, repo: &Arc<PgRepo>, acc: AccountId) -> Mailbox {
@@ -260,8 +289,10 @@ async fn new_account(b: &Backend, dom: DomainId, local: &str) -> AccountId {
     b.dir.create_account(local, dom, None, None).await.unwrap()
 }
 
-/// Run `first` in the background, start `second` `STAGGER` later, return both results.
+/// Run `first` in the background, start `second` once `first` signals that it holds its locks,
+/// return both results.
 async fn staggered<T1, T2>(
+    held: Arc<tokio::sync::Notify>,
     first: impl Future<Output = T1> + Send + 'static,
     second: impl Future<Output = T2>,
 ) -> (T1, T2)
@@ -269,7 +300,9 @@ where
     T1: Send + 'static,
 {
     let h = tokio::spawn(first);
-    tokio::time::sleep(STAGGER).await;
+    tokio::time::timeout(SIGNAL_TIMEOUT, held.notified())
+        .await
+        .expect("the first session never signalled that it holds its locks");
     let r2 = second.await;
     (h.await.unwrap(), r2)
 }
@@ -310,8 +343,8 @@ async fn folder_swap_race_second_session_sees_the_first_commit() {
         setup.create_folder(None, "A").await.unwrap(),
         setup.create_folder(None, "B").await.unwrap(),
     );
-    let slow = open_on(&b, &slow_repo(&b), acc).await;
-    let (r1, r2) = staggered(async move { slow.move_folder(f6, Some(f7)).await }, setup.move_folder(f7, Some(f6))).await;
+    let (slow, held) = slow_session(&b, acc).await;
+    let (r1, r2) = staggered(held, async move { slow.move_folder(f6, Some(f7)).await }, setup.move_folder(f7, Some(f6))).await;
     r1.unwrap();
     assert!(matches!(r2, Err(Error::Conflict(_))), "{r2:?}");
     let p = parents(&setup).await;
@@ -333,14 +366,14 @@ async fn folder_cycle_trigger_is_the_second_line_of_defence() {
         setup.create_folder(None, "A").await.unwrap(),
         setup.create_folder(None, "B").await.unwrap(),
     );
-    let slow = open_on(&b, &slow_repo(&b), acc).await;
+    let (slow, held) = slow_session(&b, acc).await;
     let unlocked = open_on(
         &b,
         &repo_with(&b, Knobs { skip_mailbox_lock: true, ..Knobs::default() }),
         acc,
     )
     .await;
-    let (r1, r2) = staggered(async move { slow.move_folder(f6, Some(f7)).await }, unlocked.move_folder(f7, Some(f6))).await;
+    let (r1, r2) = staggered(held, async move { slow.move_folder(f6, Some(f7)).await }, unlocked.move_folder(f7, Some(f6))).await;
     r1.unwrap();
     assert!(matches!(r2, Err(Error::Invalid(_))), "{r2:?}");
     let p = parents(&setup).await;
@@ -359,14 +392,14 @@ async fn depth_race(skip_lock: bool) {
     }
     let x = setup.create_folder(None, "X").await.unwrap();
     let y = setup.create_folder(None, "Y").await.unwrap();
-    let slow = open_on(&b, &slow_repo(&b), acc).await;
+    let (slow, held) = slow_session(&b, acc).await;
     let second = open_on(
         &b,
         &repo_with(&b, Knobs { skip_mailbox_lock: skip_lock, ..Knobs::default() }),
         acc,
     )
     .await;
-    let (r1, r2) = staggered(async move { slow.move_folder(x, Some(end)).await }, second.move_folder(y, Some(x))).await;
+    let (r1, r2) = staggered(held, async move { slow.move_folder(x, Some(end)).await }, second.move_folder(y, Some(x))).await;
     r1.unwrap();
     assert!(matches!(r2, Err(Error::Invalid(_))), "skip_lock={skip_lock}: {r2:?}");
     let p = parents(&setup).await;
@@ -400,8 +433,8 @@ async fn delete_folder_versus_append_has_one_winner_and_no_orphan() {
     let b = pg_backend().await.unwrap();
     let (_, acc, fast) = acct(&b, "dfa1").await;
     let f = fast.create_folder(None, "Tmp").await.unwrap();
-    let slow = open_on(&b, &slow_repo(&b), acc).await;
-    let (del, app) = staggered(async move { slow.delete_folder(f).await }, fast.append(f, raw("late", None), Flags::default())).await;
+    let (slow, held) = slow_session(&b, acc).await;
+    let (del, app) = staggered(held, async move { slow.delete_folder(f).await }, fast.append(f, raw("late", None), Flags::default())).await;
     del.unwrap();
     assert!(matches!(app, Err(Error::NotFound(_))), "{app:?}");
     assert_eq!(scalar(&b, "SELECT count(*) FROM messages").await, 0, "no orphan message");
@@ -412,8 +445,8 @@ async fn delete_folder_versus_append_has_one_winner_and_no_orphan() {
     // Order 2: the append holds its locks; the delete queues behind it and sees the message.
     let (_, acc, fast) = acct(&b, "dfa2").await;
     let f = fast.create_folder(None, "Tmp").await.unwrap();
-    let slow = open_on(&b, &slow_repo(&b), acc).await;
-    let (app, del) = staggered(async move { slow.append(f, raw("early", None), Flags::default()).await }, fast.delete_folder(f)).await;
+    let (slow, held) = slow_session(&b, acc).await;
+    let (app, del) = staggered(held, async move { slow.append(f, raw("early", None), Flags::default()).await }, fast.delete_folder(f)).await;
     app.unwrap();
     // The exact message proves the repository check saw the committed message; the foreign key
     // would also stop the delete (as a different, generic Conflict).
@@ -434,8 +467,8 @@ async fn move_versus_expunge_of_the_same_message_serializes() {
     // Order 1: move first, expunge second: both succeed, the message ends up expunged in Sent.
     let (_, acc, fast) = acct(&b, "mve1").await;
     let m = fast.append(INBOX, raw("m", None), Flags::default()).await.unwrap();
-    let slow = open_on(&b, &slow_repo(&b), acc).await;
-    let (mv, ex) = staggered(async move { slow.move_message(m.id, FolderId(2)).await }, fast.expunge(m.id)).await;
+    let (slow, held) = slow_session(&b, acc).await;
+    let (mv, ex) = staggered(held, async move { slow.move_message(m.id, FolderId(2)).await }, fast.expunge(m.id)).await;
     assert_eq!(mv.unwrap().uid, 1);
     ex.unwrap();
     let d = fast.get_message(m.id).await.unwrap();
@@ -446,8 +479,8 @@ async fn move_versus_expunge_of_the_same_message_serializes() {
     // Order 2: expunge first, move second: the move must NOT resurrect or move the expunged row.
     let (_, acc, fast) = acct(&b, "mve2").await;
     let m = fast.append(INBOX, raw("m", None), Flags::default()).await.unwrap();
-    let slow = open_on(&b, &slow_repo(&b), acc).await;
-    let (ex, mv) = staggered(async move { slow.expunge(m.id).await }, fast.move_message(m.id, FolderId(2))).await;
+    let (slow, held) = slow_session(&b, acc).await;
+    let (ex, mv) = staggered(held, async move { slow.expunge(m.id).await }, fast.move_message(m.id, FolderId(2))).await;
     ex.unwrap();
     assert!(matches!(mv, Err(Error::NotFound(_))), "{mv:?}");
     let d = fast.get_message(m.id).await.unwrap();
@@ -469,8 +502,8 @@ async fn purge_deleted_versus_append_of_the_same_blob() {
     let y = open_on(&b, &Arc::new(PgRepo::new(store_of(&b))), new_account(&b, dom, "bob").await).await;
     let m = fast_x.append(INBOX, raw("shared-blob", None), Flags::default()).await.unwrap();
     fast_x.expunge_many_at(&[m.id], 100).await.unwrap();
-    let slow_x = open_on(&b, &slow_repo(&b), acc).await;
-    let (purged, stored) = staggered(
+    let (slow_x, held) = slow_session(&b, acc).await;
+    let (purged, stored) = staggered(held, 
         async move { slow_x.purge_deleted(i64::MAX).await },
         y.append(INBOX, raw("shared-blob", None), Flags::default()),
     )

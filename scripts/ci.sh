@@ -61,6 +61,9 @@ rustup target list --installed | grep -qx "$MUSL" || { echo "[FAIL] missing rust
 # covers and what it cannot see). The gate has its own self-test.
 stage "raw-db gate self-test" bash scripts/tests/raw-db-gate.sh
 stage "no raw pool outside store" bash scripts/check-raw-db.sh
+# The `test-knobs` fault-injection feature of rusty-store is enabled only by its own tests.
+stage "test-knobs gate self-test" bash scripts/tests/test-knobs-gate.sh
+stage "no test knobs outside tests" bash scripts/check-test-knobs.sh static
 stage "clippy"       cargo clippy --workspace --all-targets -- -D warnings
 stage "test (glibc)" cargo test --workspace
 
@@ -120,6 +123,8 @@ stage "cargo-deny"   cargo deny check
 stage "cargo-audit"  cargo audit
 stage "test (musl)"  cargo test --workspace --target "$MUSL"
 stage "build (musl release)" cargo build --release --workspace --target "$MUSL"
+# A release build of rusty-store contains none of the knob code (positive control included).
+stage "no test knobs in release" bash scripts/check-test-knobs.sh symbols "$MUSL"
 
 check_static() {
   local found=0 f
