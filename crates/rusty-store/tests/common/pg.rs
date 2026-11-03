@@ -18,7 +18,7 @@ pub const PG_SKIP_NOTICE: &str =
 pub fn pg_admin_url() -> Option<String> {
     match env::var("RUSTY_TEST_PG_URL") {
         Ok(value) if !value.is_empty() => Some(value),
-        _ if env::var_os("RUSTY_REQUIRE_PG").is_some() => {
+        _ if matches!(env::var("RUSTY_REQUIRE_PG").as_deref(), Ok(v) if !v.is_empty() && v != "0") => {
             panic!("RUSTY_REQUIRE_PG is set but RUSTY_TEST_PG_URL is missing")
         }
         _ => {

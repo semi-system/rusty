@@ -7,12 +7,34 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 MUSL=x86_64-unknown-linux-musl
 TARGET_DIR="${CARGO_TARGET_DIR:-target}"
 FUZZ_SECS="${FUZZ_SECS:-60}"
-DEGRADED=0
+PG_SKIPPED=0
+FUZZ_DEGRADED=0
+STAGE="startup"
+PG_RUN_ID=""
+
+# One EXIT trap for the whole script, never cleared: it tears down this run's Postgres container
+# (if one is up) and reports the stage that was active when the script exited non-zero, also for
+# failures that happen outside stage() (set -e, missing tools, signals turned into exits).
+on_exit() {
+  local rc=$?
+  trap - EXIT
+  if [ -n "$PG_RUN_ID" ]; then
+    RUSTY_PG_RUN_ID="$PG_RUN_ID" bash scripts/pg-down.sh >/dev/null 2>&1 || true
+  fi
+  if [ "$rc" -ne 0 ]; then
+    echo "[FAIL] ci.sh exited with $rc during $STAGE" >&2
+  fi
+  exit "$rc"
+}
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 export CC_x86_64_unknown_linux_musl="${CC_x86_64_unknown_linux_musl:-musl-gcc}"
 
 STAGES=0
 stage() { # name, command...
   local name="$1"; shift
+  STAGE="$name"
   echo "==> $name"
   if "$@"; then
     STAGES=$((STAGES + 1))
@@ -35,39 +57,36 @@ stage "test (glibc)" cargo test --workspace
 
 postgres_tests() {
   if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
-    DEGRADED=1
+    PG_SKIPPED=1
     echo "WARNING: Docker is unavailable; PostgreSQL smoke tests were not run." >&2
     return 0
   fi
 
-  # A fresh run id per CI run: concurrent runs get their own container and URL file.
+  # A fresh run id per CI run: concurrent runs get their own container and URL file. on_exit
+  # removes exactly this run's container, even if this stage dies half-way.
   RUSTY_PG_RUN_ID="ci$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
   export RUSTY_PG_RUN_ID
+  PG_RUN_ID="$RUSTY_PG_RUN_ID"
   local url_file="$HOME/.rusty-pg-test-url.$RUSTY_PG_RUN_ID" url rc=0
   bash scripts/pg-up.sh || return 1
-  # Also clean up if CI is interrupted or exits unexpectedly during this stage.
-  trap 'bash scripts/pg-down.sh >/dev/null 2>&1 || true' EXIT
   if ! IFS= read -r url < "$url_file" || [ -z "$url" ]; then
     echo "PostgreSQL URL file is missing or empty" >&2
-    bash scripts/pg-down.sh
-    trap - EXIT
     return 1
   fi
-  for _ in 1 2 3; do
-    RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
-      cargo test -p rusty-store --features postgres --test pg_smoke || { rc=$?; break; }
-  done
+  RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
+    cargo test -p rusty-store --features postgres --test pg_smoke || rc=$?
   if [ "$rc" -eq 0 ]; then
     RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
       cargo test -p rusty-store --features postgres \
-        --test pg_schema_constraints --test pg_schema_parity || rc=$?
+        --test pg_schema_constraints --test pg_schema_cases --test pg_schema_concurrency \
+        --test pg_schema_parity || rc=$?
   fi
   if [ "$rc" -eq 0 ]; then
     RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
       cargo clippy -p rusty-store --features postgres --all-targets -- -D warnings || rc=$?
   fi
-  bash scripts/pg-down.sh
-  trap - EXIT
+  bash scripts/pg-down.sh >/dev/null 2>&1 || true
+  PG_RUN_ID=""
   return "$rc"
 }
 stage "postgres" postgres_tests
@@ -103,7 +122,7 @@ fuzz_all() {
       (cd fuzz && cargo +nightly fuzz run "$t" "corpus/$t" "seeds/$t" -- "-max_total_time=$FUZZ_SECS" -rss_limit_mb=2048) || return 1
     done
   else
-    DEGRADED=1
+    FUZZ_DEGRADED=1
     echo "WARNING: cargo-fuzz and/or the nightly toolchain are missing; running the proptest fallback only (NOT real fuzzing)." >&2
     cargo test -p rusty-mime -p rusty-directory --test fuzz_smoke
   fi
@@ -111,8 +130,12 @@ fuzz_all() {
 stage "fuzz lockfile consistent" bash -c 'cd fuzz && cargo metadata --locked --format-version 1 >/dev/null'
 stage "fuzz smoke" fuzz_all
 
-if [ "$DEGRADED" -eq 1 ]; then
-  echo "CI OK (DEGRADED: fuzz ran as proptest stand-in)"
+STAGE="done"
+if [ "$PG_SKIPPED" -eq 1 ] || [ "$FUZZ_DEGRADED" -eq 1 ]; then
+  notes=""
+  [ "$PG_SKIPPED" -eq 1 ] && notes="$notes PostgreSQL tests skipped (no Docker);"
+  [ "$FUZZ_DEGRADED" -eq 1 ] && notes="$notes fuzz ran as proptest stand-in;"
+  echo "CI OK (DEGRADED:$notes $STAGES stages passed)"
 else
   echo "CI OK: $STAGES stages passed"
 fi
