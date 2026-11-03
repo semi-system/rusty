@@ -215,3 +215,614 @@ async fn gc_delete_in_flight_does_not_lose_a_new_reference() {
         .unwrap();
     assert_eq!((rows, refcount), (1, 1));
 }
+
+// ====================================================================== PG4: mailbox concurrency
+//
+// Two-session interleavings are made deterministic with test knobs instead of sleeps inside
+// statements: `pause_before_commit_ms` keeps the first session's transaction open (locks held)
+// after its work, a second session is started `STAGGER` later and has to queue behind it.
+
+use std::future::Future;
+use std::time::Duration;
+
+use common::backends::{scalar, scalars};
+use bytes::Bytes;
+use rusty_core::{AccountId, DeliveryId, DomainId, FolderId};
+use rusty_store::{ChangeOp, DeliverItem, DeliverOutcome};
+
+const STAGGER: Duration = Duration::from_millis(250);
+const HOLD_MS: u32 = 900;
+
+fn store_of(b: &Backend) -> rusty_store::PgStore {
+    b.pg.as_ref().expect("postgres backend").0.clone()
+}
+
+fn repo_with(b: &Backend, knobs: Knobs) -> Arc<PgRepo> {
+    Arc::new(PgRepo::new(store_of(b)).with_knobs_for_test(knobs))
+}
+
+/// A repository whose operations keep their transaction open for `HOLD_MS` before COMMIT.
+fn slow_repo(b: &Backend) -> Arc<PgRepo> {
+    repo_with(
+        b,
+        Knobs {
+            pause_before_commit_ms: HOLD_MS,
+            ..Knobs::default()
+        },
+    )
+}
+
+async fn open_on(b: &Backend, repo: &Arc<PgRepo>, acc: AccountId) -> Mailbox {
+    Mailbox::open_with(repo.clone(), b.blobs.clone(), acc).await.unwrap()
+}
+
+async fn new_account(b: &Backend, dom: DomainId, local: &str) -> AccountId {
+    b.dir.create_account(local, dom, None, None).await.unwrap()
+}
+
+/// Run `first` in the background, start `second` `STAGGER` later, return both results.
+async fn staggered<T1, T2>(
+    first: impl Future<Output = T1> + Send + 'static,
+    second: impl Future<Output = T2>,
+) -> (T1, T2)
+where
+    T1: Send + 'static,
+{
+    let h = tokio::spawn(first);
+    tokio::time::sleep(STAGGER).await;
+    let r2 = second.await;
+    (h.await.unwrap(), r2)
+}
+
+fn did(n: u8) -> DeliveryId {
+    DeliveryId([n; 32])
+}
+
+fn item(subject: &str, n: u8) -> DeliverItem {
+    DeliverItem {
+        raw: raw(subject, None),
+        flags: Flags::default(),
+        delivery_id: did(n),
+    }
+}
+
+async fn parents(m: &Mailbox) -> std::collections::HashMap<i64, Option<i64>> {
+    m.list_folders()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|f| (f.id.0, f.parent.map(|p| p.0)))
+        .collect()
+}
+
+// ---------------------------------------------------------------- folder tree races (finding 1)
+
+/// Two sessions move folders 6 -> under 7 and 7 -> under 6. With the mailbox lock first, the
+/// second session waits, sees the first commit and is `Conflict`; no cycle is ever committed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn folder_swap_race_second_session_sees_the_first_commit() {
+    if pg_admin_url().is_none() {
+        return;
+    }
+    let b = pg_backend().await.unwrap();
+    let (_, acc, setup) = acct(&b, "swap").await;
+    let (f6, f7) = (
+        setup.create_folder(None, "A").await.unwrap(),
+        setup.create_folder(None, "B").await.unwrap(),
+    );
+    let slow = open_on(&b, &slow_repo(&b), acc).await;
+    let (r1, r2) = staggered(async move { slow.move_folder(f6, Some(f7)).await }, setup.move_folder(f7, Some(f6))).await;
+    r1.unwrap();
+    assert!(matches!(r2, Err(Error::Conflict(_))), "{r2:?}");
+    let p = parents(&setup).await;
+    assert_eq!((p[&f6.0], p[&f7.0]), (Some(f7.0), None), "no cycle");
+}
+
+/// The same race with the repository lock SKIPPED: the BEFORE UPDATE trigger (which takes the
+/// mailbox lock itself and walks the tree with a fresh statement snapshot) is the second line of
+/// defence and rejects the cycle with RS002 (`Invalid`). Removing the trigger's `FOR UPDATE`
+/// commits the cycle (mutation M-B).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn folder_cycle_trigger_is_the_second_line_of_defence() {
+    if pg_admin_url().is_none() {
+        return;
+    }
+    let b = pg_backend().await.unwrap();
+    let (_, acc, setup) = acct(&b, "swap2").await;
+    let (f6, f7) = (
+        setup.create_folder(None, "A").await.unwrap(),
+        setup.create_folder(None, "B").await.unwrap(),
+    );
+    let slow = open_on(&b, &slow_repo(&b), acc).await;
+    let unlocked = open_on(
+        &b,
+        &repo_with(&b, Knobs { skip_mailbox_lock: true, ..Knobs::default() }),
+        acc,
+    )
+    .await;
+    let (r1, r2) = staggered(async move { slow.move_folder(f6, Some(f7)).await }, unlocked.move_folder(f7, Some(f6))).await;
+    r1.unwrap();
+    assert!(matches!(r2, Err(Error::Invalid(_))), "{r2:?}");
+    let p = parents(&setup).await;
+    assert_eq!((p[&f6.0], p[&f7.0]), (Some(f7.0), None), "no cycle");
+}
+
+/// Depth boundary: a 63-level chain; session one moves X under its end (level 64, allowed),
+/// session two moves Y under X. Serialized, the second sees level 64 + 1 and is `Invalid`; with
+/// the repository lock skipped the trigger rejects it (also `Invalid`). Either way Y stays a root.
+async fn depth_race(skip_lock: bool) {
+    let b = pg_backend().await.unwrap();
+    let (_, acc, setup) = acct(&b, if skip_lock { "dp2" } else { "dp1" }).await;
+    let mut end = setup.create_folder(None, "c0").await.unwrap();
+    for i in 1..63 {
+        end = setup.create_folder(Some(end), &format!("c{i}")).await.unwrap();
+    }
+    let x = setup.create_folder(None, "X").await.unwrap();
+    let y = setup.create_folder(None, "Y").await.unwrap();
+    let slow = open_on(&b, &slow_repo(&b), acc).await;
+    let second = open_on(
+        &b,
+        &repo_with(&b, Knobs { skip_mailbox_lock: skip_lock, ..Knobs::default() }),
+        acc,
+    )
+    .await;
+    let (r1, r2) = staggered(async move { slow.move_folder(x, Some(end)).await }, second.move_folder(y, Some(x))).await;
+    r1.unwrap();
+    assert!(matches!(r2, Err(Error::Invalid(_))), "skip_lock={skip_lock}: {r2:?}");
+    let p = parents(&setup).await;
+    assert_eq!((p[&x.0], p[&y.0]), (Some(end.0), None));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn depth_boundary_race_is_serialized_by_the_mailbox_lock() {
+    if pg_admin_url().is_none() {
+        return;
+    }
+    depth_race(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn depth_boundary_race_is_rejected_by_the_trigger_without_the_lock() {
+    if pg_admin_url().is_none() {
+        return;
+    }
+    depth_race(true).await;
+}
+
+// ---------------------------------------------------------------- delete_folder, move, purge
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delete_folder_versus_append_has_one_winner_and_no_orphan() {
+    if pg_admin_url().is_none() {
+        return;
+    }
+    // Order 1: the delete holds its locks; the append queues behind it and finds no folder.
+    let b = pg_backend().await.unwrap();
+    let (_, acc, fast) = acct(&b, "dfa1").await;
+    let f = fast.create_folder(None, "Tmp").await.unwrap();
+    let slow = open_on(&b, &slow_repo(&b), acc).await;
+    let (del, app) = staggered(async move { slow.delete_folder(f).await }, fast.append(f, raw("late", None), Flags::default())).await;
+    del.unwrap();
+    assert!(matches!(app, Err(Error::NotFound(_))), "{app:?}");
+    assert_eq!(scalar(&b, "SELECT count(*) FROM messages").await, 0, "no orphan message");
+    assert_eq!(scalar(&b, "SELECT count(*) FROM blobs").await, 0, "the rolled back blob row is gone");
+    let again = fast.append(FolderId(1), raw("after", None), Flags::default()).await.unwrap();
+    assert_eq!((again.id.0, again.uid), (1, 1), "counters rolled back with the failed append");
+
+    // Order 2: the append holds its locks; the delete queues behind it and sees the message.
+    let (_, acc, fast) = acct(&b, "dfa2").await;
+    let f = fast.create_folder(None, "Tmp").await.unwrap();
+    let slow = open_on(&b, &slow_repo(&b), acc).await;
+    let (app, del) = staggered(async move { slow.append(f, raw("early", None), Flags::default()).await }, fast.delete_folder(f)).await;
+    app.unwrap();
+    // The exact message proves the repository check saw the committed message; the foreign key
+    // would also stop the delete (as a different, generic Conflict).
+    assert!(
+        matches!(&del, Err(Error::Conflict(m)) if m == "folder still contains messages"),
+        "{del:?}"
+    );
+    assert_eq!(scalar(&b, "SELECT count(*) FROM messages WHERE folder_id > 5").await, 1);
+    assert_eq!(scalar(&b, "SELECT count(*) FROM blobs WHERE refcount <> 1").await, 0, "no negative or doubled refcount");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn move_versus_expunge_of_the_same_message_serializes() {
+    if pg_admin_url().is_none() {
+        return;
+    }
+    let b = pg_backend().await.unwrap();
+    // Order 1: move first, expunge second: both succeed, the message ends up expunged in Sent.
+    let (_, acc, fast) = acct(&b, "mve1").await;
+    let m = fast.append(INBOX, raw("m", None), Flags::default()).await.unwrap();
+    let slow = open_on(&b, &slow_repo(&b), acc).await;
+    let (mv, ex) = staggered(async move { slow.move_message(m.id, FolderId(2)).await }, fast.expunge(m.id)).await;
+    assert_eq!(mv.unwrap().uid, 1);
+    ex.unwrap();
+    let d = fast.get_message(m.id).await.unwrap();
+    assert!(d.deleted && d.folder == FolderId(2));
+    let ops: Vec<ChangeOp> = fast.changes_since(0, 100).await.unwrap().changes.iter().map(|c| c.op).collect();
+    assert_eq!(ops, vec![ChangeOp::Create, ChangeOp::Update, ChangeOp::Destroy]);
+
+    // Order 2: expunge first, move second: the move must NOT resurrect or move the expunged row.
+    let (_, acc, fast) = acct(&b, "mve2").await;
+    let m = fast.append(INBOX, raw("m", None), Flags::default()).await.unwrap();
+    let slow = open_on(&b, &slow_repo(&b), acc).await;
+    let (ex, mv) = staggered(async move { slow.expunge(m.id).await }, fast.move_message(m.id, FolderId(2))).await;
+    ex.unwrap();
+    assert!(matches!(mv, Err(Error::NotFound(_))), "{mv:?}");
+    let d = fast.get_message(m.id).await.unwrap();
+    assert!(d.deleted && d.folder == INBOX, "the expunged message stayed where it was");
+    let ops: Vec<ChangeOp> = fast.changes_since(0, 100).await.unwrap().changes.iter().map(|c| c.op).collect();
+    assert_eq!(ops, vec![ChangeOp::Create, ChangeOp::Destroy]);
+}
+
+/// `purge_deleted` holds the blob lock and has taken the refcount to zero (uncommitted) while a
+/// second mailbox stores the same content: the store waits, then revives the row; the final
+/// refcount is exactly 1 and `zero_since` is cleared (extends the PG2 in-flight GC test).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn purge_deleted_versus_append_of_the_same_blob() {
+    if pg_admin_url().is_none() {
+        return;
+    }
+    let b = pg_backend().await.unwrap();
+    let (dom, acc, fast_x) = acct(&b, "pva").await;
+    let y = open_on(&b, &Arc::new(PgRepo::new(store_of(&b))), new_account(&b, dom, "bob").await).await;
+    let m = fast_x.append(INBOX, raw("shared-blob", None), Flags::default()).await.unwrap();
+    fast_x.expunge_many_at(&[m.id], 100).await.unwrap();
+    let slow_x = open_on(&b, &slow_repo(&b), acc).await;
+    let (purged, stored) = staggered(
+        async move { slow_x.purge_deleted(i64::MAX).await },
+        y.append(INBOX, raw("shared-blob", None), Flags::default()),
+    )
+    .await;
+    assert_eq!(purged.unwrap(), 1);
+    stored.unwrap();
+    assert_eq!(scalar(&b, "SELECT refcount FROM blobs").await, 1);
+    assert_eq!(scalar(&b, "SELECT count(*) FROM blobs WHERE zero_since IS NOT NULL").await, 0);
+    assert_eq!(scalar(&b, "SELECT count(*) FROM messages").await, 1);
+}
+
+// ---------------------------------------------------------------- deadlock matrix and controls
+
+fn rotated(docs: &[Bytes; 3], i: usize) -> Vec<Bytes> {
+    let mut v = docs.to_vec();
+    v.rotate_left(i % 3);
+    if i % 2 == 1 {
+        v.reverse();
+    }
+    v
+}
+
+/// 12 mailboxes x {delete_folder, purge_deleted, append_many, deliver_many} over the same three
+/// blobs in rotated and reversed orders, all at once on a pool of 4. The repository has the
+/// "hold after first blob lock" knob armed, which only has an effect on the (disabled) unordered
+/// path: with the ascending rule in force it is inert. Expect no deadlock, no retry, exact
+/// refcounts. (Mutation M-C / M-D: enable the unordered path.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn blob_lock_order_matrix_has_no_deadlock_and_exact_refcounts() {
+    if pg_admin_url().is_none() {
+        return;
+    }
+    let b = pg_backend().await.unwrap();
+    let repo = repo_with(&b, Knobs { hold_after_first_blob_ms: 150, ..Knobs::default() });
+    let docs = [raw("mx-a", None), raw("mx-b", None), raw("mx-c", None)];
+    let (dom, _, _) = acct(&b, "mx0").await;
+    let mut boxes = vec![];
+    for i in 0..12 {
+        let acc = new_account(&b, dom, &format!("u{i}")).await;
+        let mb = open_on(&b, &repo, acc).await;
+        // A folder with three expunged messages and an inbox with three expunged messages.
+        let old = mb.create_folder(None, "Old").await.unwrap();
+        let mut ids = vec![];
+        for d in rotated(&docs, i) {
+            ids.push(mb.append(old, d, Flags::default()).await.unwrap().id);
+        }
+        mb.expunge_many(&ids).await.unwrap();
+        let mut ids = vec![];
+        for d in rotated(&docs, i + 1) {
+            ids.push(mb.append(INBOX, d, Flags::default()).await.unwrap().id);
+        }
+        mb.expunge_many_at(&ids, 100).await.unwrap();
+        boxes.push((mb, old));
+    }
+    assert_eq!(scalar(&b, "SELECT max(refcount) FROM blobs").await, 24);
+    let mut tasks = vec![];
+    for (i, (mb, old)) in boxes.iter().enumerate() {
+        let (m1, m2, m3, m4) = (mb.clone(), mb.clone(), mb.clone(), mb.clone());
+        let old = *old;
+        let (docs1, docs2) = (rotated(&docs, i + 2), rotated(&docs, i + 3));
+        tasks.push(tokio::spawn(async move { m1.delete_folder(old).await.map(|_| ()) }));
+        tasks.push(tokio::spawn(async move { m2.purge_deleted(i64::MAX).await.map(|_| ()) }));
+        tasks.push(tokio::spawn(async move {
+            m3.append_many(INBOX, docs1, Flags::default()).await.map(|_| ())
+        }));
+        tasks.push(tokio::spawn(async move {
+            let items = docs2
+                .into_iter()
+                .enumerate()
+                .map(|(k, raw)| DeliverItem {
+                    raw,
+                    flags: Flags::default(),
+                    delivery_id: did((i * 3 + k) as u8 + 1),
+                })
+                .collect();
+            m4.deliver_many(INBOX, items).await.map(|_| ())
+        }));
+    }
+    for t in tasks {
+        t.await.unwrap().unwrap();
+    }
+    let s = repo.stats();
+    assert_eq!(s.deadlocks.load(Ordering::Relaxed), 0, "ordering must prevent every deadlock");
+    assert_eq!(s.retries.load(Ordering::Relaxed), 0);
+    assert_eq!(s.exhausted.load(Ordering::Relaxed), 0);
+    // Live messages: 12 x (3 appended + 3 delivered); every blob is referenced by exactly them.
+    assert_eq!(scalar(&b, "SELECT count(*) FROM messages WHERE deleted_at IS NULL").await, 72);
+    assert_eq!(scalar(&b, "SELECT count(*) FROM messages").await, 72, "old folders and expunged inbox rows are gone");
+    assert_eq!(
+        scalar(
+            &b,
+            "SELECT count(*) FROM blobs bl WHERE bl.refcount <> \
+             (SELECT count(*) FROM messages m WHERE m.blob_hash = bl.hash)"
+        )
+        .await,
+        0,
+        "refcount equals the number of referencing messages"
+    );
+    assert_eq!(scalars(&b, "SELECT refcount FROM blobs ORDER BY hash").await, vec![24, 24, 24]);
+}
+
+/// Two mailboxes with the same two blobs; the first repository locks them in the order the rows
+/// come (`A`, `B`), the second in the reverse order, each pausing after its first lock: a REAL
+/// deadlock. The retry loop turns the victim into a success. This is the control that proves each
+/// path takes blob locks that can deadlock when the ordering rule is not applied.
+#[derive(Clone, Copy, Debug)]
+enum Path {
+    DeleteFolder,
+    PurgeDeleted,
+    DeliverMany,
+    AppendMany,
+}
+
+async fn forced_crossing(path: Path) {
+    let b = pg_backend().await.unwrap();
+    let hold = Knobs { unordered_blob_locks: true, hold_after_first_blob_ms: 300, ..Knobs::default() };
+    let straight = repo_with(&b, hold);
+    let reversed = repo_with(&b, Knobs { reverse_blob_lock_order: true, ..hold });
+    // Inserts cross through the input order; deletes through the reverse knob.
+    let (r1, r2) = match path {
+        Path::DeleteFolder | Path::PurgeDeleted => (straight.clone(), reversed.clone()),
+        Path::DeliverMany | Path::AppendMany => (straight.clone(), straight.clone()),
+    };
+    let (dom, a1, _) = acct(&b, "frc").await;
+    let a2 = new_account(&b, dom, "bob").await;
+    let (m1, m2) = (open_on(&b, &r1, a1).await, open_on(&b, &r2, a2).await);
+    let (x, y) = (raw("fc-x", None), raw("fc-y", None));
+    let (o1, o2) = match path {
+        Path::DeleteFolder | Path::PurgeDeleted => (vec![x.clone(), y.clone()], vec![x.clone(), y.clone()]),
+        Path::DeliverMany | Path::AppendMany => (vec![x.clone(), y.clone()], vec![y.clone(), x.clone()]),
+    };
+    // Setup through the default (ordered) repository: soft-deleted messages for the delete paths.
+    let plain = repo_with(&b, Knobs::default());
+    let mut folders = (INBOX, INBOX);
+    if matches!(path, Path::DeleteFolder | Path::PurgeDeleted) {
+        for (acc, order, slot) in [(a1, &o1, 0), (a2, &o2, 1)] {
+            let mb = open_on(&b, &plain, acc).await;
+            let f = if matches!(path, Path::DeleteFolder) {
+                mb.create_folder(None, "Old").await.unwrap()
+            } else {
+                INBOX
+            };
+            let mut ids = vec![];
+            for d in order {
+                ids.push(mb.append(f, d.clone(), Flags::default()).await.unwrap().id);
+            }
+            mb.expunge_many_at(&ids, 100).await.unwrap();
+            if slot == 0 { folders.0 = f } else { folders.1 = f }
+        }
+    }
+    let run = |mb: Mailbox, order: Vec<Bytes>, f: FolderId, n: u8| async move {
+        match path {
+            Path::DeleteFolder => mb.delete_folder(f).await.map(|_| ()),
+            Path::PurgeDeleted => mb.purge_deleted(i64::MAX).await.map(|_| ()),
+            Path::AppendMany => mb.append_many(INBOX, order, Flags::default()).await.map(|_| ()),
+            Path::DeliverMany => {
+                let items = order
+                    .into_iter()
+                    .enumerate()
+                    .map(|(k, raw)| DeliverItem { raw, flags: Flags::default(), delivery_id: did(n * 10 + k as u8) })
+                    .collect();
+                mb.deliver_many(INBOX, items).await.map(|_| ())
+            }
+        }
+    };
+    let started = Instant::now();
+    let (t1, t2) = (
+        tokio::spawn(run(m1.clone(), o1, folders.0, 1)),
+        tokio::spawn(run(m2.clone(), o2, folders.1, 2)),
+    );
+    t1.await.unwrap().unwrap_or_else(|e| panic!("{path:?} session 1: {e}"));
+    t2.await.unwrap().unwrap_or_else(|e| panic!("{path:?} session 2: {e}"));
+    let deadlocks = r1.stats().deadlocks.load(Ordering::Relaxed) + r2.stats().deadlocks.load(Ordering::Relaxed);
+    let retries = r1.stats().retries.load(Ordering::Relaxed) + r2.stats().retries.load(Ordering::Relaxed);
+    let exhausted = r1.stats().exhausted.load(Ordering::Relaxed) + r2.stats().exhausted.load(Ordering::Relaxed);
+    eprintln!("{path:?}: deadlocks={deadlocks} retries={retries} elapsed={:?}", started.elapsed());
+    // r1 and r2 may be the same object for the insert paths: count once.
+    let (deadlocks, retries, exhausted) = if Arc::ptr_eq(&r1, &r2) {
+        (
+            r1.stats().deadlocks.load(Ordering::Relaxed),
+            r1.stats().retries.load(Ordering::Relaxed),
+            r1.stats().exhausted.load(Ordering::Relaxed),
+        )
+    } else {
+        (deadlocks, retries, exhausted)
+    };
+    assert!(deadlocks >= 1, "{path:?}: the crossed order must really deadlock (control)");
+    assert!(retries >= 1, "{path:?}: and be retried");
+    assert_eq!(exhausted, 0, "{path:?}");
+    match path {
+        Path::DeleteFolder | Path::PurgeDeleted => {
+            assert_eq!(scalar(&b, "SELECT count(*) FROM messages").await, 0, "{path:?}");
+            assert_eq!(scalar(&b, "SELECT count(*) FROM blobs WHERE refcount = 0 AND zero_since IS NOT NULL").await, 2, "{path:?}");
+        }
+        Path::AppendMany | Path::DeliverMany => {
+            assert_eq!(scalar(&b, "SELECT count(*) FROM messages").await, 4, "{path:?}");
+            assert_eq!(scalars(&b, "SELECT refcount FROM blobs ORDER BY hash").await, vec![2, 2], "{path:?}");
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn forced_crossed_order_deadlocks_and_retries_delete_folder() {
+    if pg_admin_url().is_none() {
+        return;
+    }
+    forced_crossing(Path::DeleteFolder).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn forced_crossed_order_deadlocks_and_retries_purge_deleted() {
+    if pg_admin_url().is_none() {
+        return;
+    }
+    forced_crossing(Path::PurgeDeleted).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn forced_crossed_order_deadlocks_and_retries_deliver_many() {
+    if pg_admin_url().is_none() {
+        return;
+    }
+    forced_crossing(Path::DeliverMany).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn forced_crossed_order_deadlocks_and_retries_append_many() {
+    if pg_admin_url().is_none() {
+        return;
+    }
+    forced_crossing(Path::AppendMany).await;
+}
+
+// ---------------------------------------------------------------- retry loop
+
+/// Five consecutive 40P01 exhaust the loop: `Busy`, `exhausted == 1`, and the attempts left no
+/// partial state (counters and rows untouched).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn five_consecutive_deadlocks_are_busy_and_leave_nothing_behind() {
+    if pg_admin_url().is_none() {
+        return;
+    }
+    let b = pg_backend().await.unwrap();
+    let repo = repo_with(&b, Knobs::default());
+    let (_, acc, setup) = acct(&b, "exh").await;
+    let mb = open_on(&b, &repo, acc).await;
+    let f = setup.create_folder(None, "Del").await.unwrap();
+    let kept = setup.append(INBOX, raw("kept", None), Flags::default()).await.unwrap();
+    setup.expunge_many_at(&[kept.id], 100).await.unwrap();
+    let state = || async {
+        (
+            scalar(&b, "SELECT next_msg_id FROM mailboxes").await,
+            scalar(&b, "SELECT next_change_seq FROM mailboxes").await,
+            scalar(&b, "SELECT next_folder_id FROM mailboxes").await,
+            scalar(&b, "SELECT count(*) FROM messages").await,
+            scalar(&b, "SELECT count(*) FROM folders").await,
+            scalar(&b, "SELECT count(*) FROM blobs").await,
+        )
+    };
+    let before = state().await;
+    let busy = |r: Result<(), Error>| matches!(r, Err(Error::Busy(_)));
+    macro_rules! exhaust {
+        ($label:expr, $call:expr) => {{
+            let exhausted_before = repo.stats().exhausted.load(Ordering::Relaxed);
+            repo.inject_deadlocks_for_test(5);
+            let r: Result<(), Error> = $call.await.map(|_| ());
+            assert!(busy(r), "{}", $label);
+            assert_eq!(repo.stats().exhausted.load(Ordering::Relaxed), exhausted_before + 1, "{}", $label);
+            assert_eq!(state().await, before, "{}: no partial state", $label);
+        }};
+    }
+    exhaust!("append_many", mb.append_many(INBOX, vec![raw("a", None), raw("b", None)], Flags::default()));
+    exhaust!("deliver_many", mb.deliver_many(INBOX, vec![item("a", 1), item("b", 2)]));
+    exhaust!("create_folder", mb.create_folder(None, "New"));
+    exhaust!("delete_folder", mb.delete_folder(f));
+    exhaust!("purge_deleted", mb.purge_deleted(i64::MAX));
+    exhaust!("move_many", mb.move_many(&[kept.id], FolderId(2)));
+    // The operation still works afterwards, with the counters where they were.
+    let ok = mb.append(INBOX, raw("after", None), Flags::default()).await.unwrap();
+    assert_eq!((ok.id.0, ok.uid), (2, 2));
+}
+
+/// Four injected deadlocks are retried and the fifth attempt succeeds, for the new paths too.
+/// (Mutation M-E: `MAX_ATTEMPTS = 1`.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn four_deadlocks_are_retried_and_the_operation_succeeds() {
+    if pg_admin_url().is_none() {
+        return;
+    }
+    let b = pg_backend().await.unwrap();
+    let repo = repo_with(&b, Knobs::default());
+    let (_, acc, setup) = acct(&b, "retry").await;
+    let mb = open_on(&b, &repo, acc).await;
+    let f = setup.create_folder(None, "Del").await.unwrap();
+    let doomed = setup.append(f, raw("doomed", None), Flags::default()).await.unwrap();
+    setup.expunge(doomed.id).await.unwrap();
+    let old = setup.append(INBOX, raw("old", None), Flags::default()).await.unwrap();
+    setup.expunge_many_at(&[old.id], 100).await.unwrap();
+    let mut expected_retries = 0;
+    macro_rules! retried {
+        ($label:expr, $call:expr) => {{
+            repo.inject_deadlocks_for_test(4);
+            let r = $call.await;
+            assert!(r.is_ok(), "{}: {:?}", $label, r.err());
+            expected_retries += 4;
+            assert_eq!(repo.stats().retries.load(Ordering::Relaxed), expected_retries, "{}", $label);
+            assert_eq!(repo.stats().exhausted.load(Ordering::Relaxed), 0, "{}", $label);
+        }};
+    }
+    retried!("append_many", mb.append_many(INBOX, vec![raw("a", None), raw("b", None)], Flags::default()));
+    retried!("deliver_many", mb.deliver_many(INBOX, vec![item("a", 1)]));
+    retried!("delete_folder", mb.delete_folder(f));
+    retried!("purge_deleted", mb.purge_deleted(i64::MAX));
+    // Exactly one copy of each effect.
+    assert_eq!(scalar(&b, "SELECT count(*) FROM messages WHERE deleted_at IS NULL").await, 3);
+    assert_eq!(scalar(&b, "SELECT count(*) FROM deliveries").await, 1);
+    let seqs = scalars(&b, "SELECT seq FROM change_log ORDER BY seq").await;
+    assert_eq!(seqs, (1..=seqs.len() as i64).collect::<Vec<_>>(), "retries leave no gap");
+}
+
+/// A reader polling during `deliver_many` writers on the real Postgres pool never sees a hole in
+/// the change log, and the per-batch ids stay consecutive (see also the both-backend suite).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_deliver_many_batches_are_consecutive() {
+    if pg_admin_url().is_none() {
+        return;
+    }
+    let b = pg_backend().await.unwrap();
+    let (_, _, mb) = acct(&b, "cdm").await;
+    let mut tasks = vec![];
+    for t in 0..12u8 {
+        let mb = mb.clone();
+        tasks.push(tokio::spawn(async move {
+            let items = (0..5u8).map(|k| item(&format!("b{t}-{k}"), t * 5 + k)).collect();
+            mb.deliver_many(INBOX, items).await.unwrap()
+        }));
+    }
+    let mut ids = vec![];
+    for t in tasks {
+        let out = t.await.unwrap();
+        let refs: Vec<_> = out
+            .iter()
+            .map(|o| match o {
+                DeliverOutcome::Created(r) => *r,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        for w in refs.windows(2) {
+            assert_eq!((w[1].id.0, w[1].uid), (w[0].id.0 + 1, w[0].uid + 1));
+        }
+        ids.extend(refs.iter().map(|r| r.id.0));
+    }
+    ids.sort_unstable();
+    assert_eq!(ids, (1..=60).collect::<Vec<_>>());
+}
