@@ -48,3 +48,33 @@ mapping. A host may still reserve or restrict public ports below 1024.
 Replace each `be-*` fake service with the corresponding Rusty service only after H2
 passes. Preserve its non-root/read-only/capability/resource constraints and the
 verified mTLS plus PROXY-v2 backend contract.
+
+## Behaviour suite and decision (H2/H3)
+
+```sh
+bash scripts/wsl-cargo.sh test -p edge-tests -- --ignored --nocapture   # ~19 min, needs Docker
+EDGE_ONLY=sni,tls_versions bash scripts/wsl-cargo.sh test -p edge-tests -- --ignored --nocapture
+EDGE_SUITE=1 bash scripts/wsl-ci.sh                                      # as a CI stage
+```
+
+The suite generates fresh test certificates, starts the project `rusty-edge-h2`, runs every
+case, and always tears the project down (`EDGE_KEEP=1` keeps it). Results and the go/no-go
+recommendation are in `EDGE-DECISION.md`; the per-behaviour outcomes are in `VERIFIED.md`.
+`scripts/ci.sh` always runs `compose-check` on the real compose file and prints a loud NOTE
+when the suite is skipped.
+
+What is not production-ready: test certificates only (7 days, CA key beside them), no ACME or
+`certd`, keys arrive by bind mount (not tmpfs), fake backends instead of Rusty services, a fixed
+host name list in `haproxy.cfg`/`crt-list.txt`. Real services replace the `be-*` fakes by
+keeping the contract the fakes enforce: PROXY v2 first, then (for 465/993/995 and HTTP) a TLS
+server that requires the edge's client certificate and presents a certificate whose SAN names
+the service; STARTTLS ports do their own TLS with their own certificate.
+
+`compose-check` rules (all fail the check with a rule id): `EDGE_ONLY_PORTS`,
+`NO_RUNTIME_SOCKET`, `NO_PRIVILEGED`, `NO_HOST_NETWORK`, `NON_ROOT_USER`, `READ_ONLY_ROOTFS`,
+`CAP_DROP_ALL`, `NO_NEW_PRIVILEGES`, `RESOURCE_LIMITS`, `IMAGE_PINNED`, `NO_STATS_PORT`.
+
+**Trade-off of option A, stated plainly:** on 465, 993, 995 and 443 the HAProxy process holds
+the private keys in memory and sees plaintext before re-encrypting to the backend. A memory
+disclosure or code execution bug in HAProxy therefore exposes keys and traffic of those ports.
+Ports 25, 587, 143 and 110 are raw pass-through (the edge sees ciphertext after STARTTLS).

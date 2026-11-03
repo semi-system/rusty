@@ -86,3 +86,20 @@ No item in this section is claimed as production-ready by H1.
 - 25/110/143/587 returned the fake backend banners through the edge; 993 with SNI `mail.test`,
   `imap.test`, `other.test`, `web.test` presented the matching certificate (chain verified
   against the test CA); an unknown SNI and no SNI got TLS alert 112 (unrecognized name).
+
+## H2 outcomes (edge behaviour suite, 3 consecutive full runs, all identical)
+
+Result: 26 PASS, 0 FAIL, 2 GAP, 2 INFO. Per-behaviour rows with measured numbers are in
+`EDGE-DECISION.md`. The items listed above under "Deliberately unverified until H2" are now
+settled as follows: PROXY v2 plus TLS to the backend work together (PROXY first, then the
+verified mTLS handshake); pass-through is byte-exact and STARTTLS ends at the backend
+certificate; client PROXY preambles cannot spoof the source; unknown and absent SNI are refused
+(alert 112); wrong-CA, wrong-name, expired and client-cert-rejecting backends never pass traffic;
+reload replaces certificates without dropping established connections.
+New facts learned: `timeout tunnel` (not `timeout client`) governs idle pass-through TCP
+connections (measured 300 s); inactivity timers do not bound a dripping handshake; HAProxy
+accepted a backend certificate whose CN matched although its SAN list did not (CN fallback);
+`no-tls-tickets` disables stateless tickets but session-ID/stateful resumption stays available
+(bounded by `tune.ssl.cachesize`/`lifetime`); `req.body_size`-style limits do not cover chunked
+bodies, only `hdr_val(content-length)` is capped.
+Not tested: runtime API certificate update (no admin socket by design), key delivery on tmpfs.
