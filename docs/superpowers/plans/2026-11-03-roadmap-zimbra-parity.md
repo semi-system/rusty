@@ -15,6 +15,15 @@ Không đưa ước lượng lịch cụ thể: chưa có dữ liệu năng su�
 | Kế hoạch đã viết: chuẩn bị phân tán, khung cổng vào (E1-E3) | Có |
 | **Dịch vụ chạy được** | **Chưa có** |
 
+## 0b. Mục tiêu quy mô (cập nhật 2026-11-03)
+Tải thực tế hiện tại nhỏ (~700-800 thư đi và đến mỗi ngày cho cả hệ thống), nhưng người dùng yêu cầu **thiết kế cho tải siêu lớn**. Spec `2026-11-03-rusty-scale-targets-design.md` định nghĩa các bậc T1/T2/T3, phát hiện rằng **khóa phân mảnh phải là mailbox chứ không phải tenant**, và đặt các cổng benchmark G1-G4. Hệ quả cho lộ trình:
+- **Postgres 18 + Valkey (P-13) là đích sản xuất** (không phải tùy chọn); SQLite chỉ cho dev/test/cài đặt nhỏ và system DB.
+- **Khôi phục** P-43 (chuyển mailbox, phân tầng lưu trữ, S3), P-44 (nhiều node, HA), P-45 (Kubernetes) và P6 (lô, tối ưu truy vấn) làm dự án chính.
+- **Thêm P-13b: cụm điều khiển và phân mảnh mailbox** (thư mục tenant ở cụm điều khiển, dữ liệu thư phân mảnh theo mailbox, định tuyến, ràng buộc chéo mảnh). Phụ thuộc P-13; cần sửa spec phân tán §9, Postgres-Valkey §3c và ACL §4 trước.
+- **Thêm P-13c: thang benchmark G1-G4** và bộ sinh tải tái lập; G1 chạy ngay trước khi viết backend Postgres.
+- Đánh giá lại hàng đợi/sự kiện (message queue) ở cổng G3; chưa cần ở T1-T2.
+- Triển khai nhỏ vẫn phải gọn (scale-targets §6): mọi thành phần phân tán tắt mặc định, cùng một mã.
+
 ## 1. Phạm vi "tương đương Zimbra"
 Chưa có định nghĩa chốt, và nó quyết định khối lượng. Ghi nhận 3 mức để người dùng chọn:
 - **Mức A - Lõi mail (Zimbra FOSS tối thiểu dùng được):** nhận/gửi thư, IMAP/POP3, web mail, thư mục, tìm kiếm, bộ lọc, chống thư rác/virus, multi-tenant, quản trị.
