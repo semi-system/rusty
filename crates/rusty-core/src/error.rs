@@ -27,6 +27,13 @@ pub enum Error {
     /// text, a URL or caller data. Distinct from [`Error::Storage`] (corruption, unexpected
     /// failure): a daemon answers `Busy` with a retryable status (SMTP 451 4.3.0, HTTP 503 with
     /// `Retry-After`, IMAP `[UNAVAILABLE]`), and `Storage` with a permanent or internal-error one.
+    ///
+    /// Mapping note (decision pending, deliberately unchanged): Postgres admin shutdown / crash
+    /// recovery (57P01, 57P02, 57P03), idle-in-transaction timeout (25P03) and connection
+    /// exceptions (08xxx) map to [`Error::Storage`], as the D1 list does not name them. For a
+    /// failover-oriented deployment `Busy` is arguably the better class for 57P0x; revisit in PG8
+    /// together with the failover tests. Single-statement pool operations run without
+    /// `lock_timeout` (only write transactions set it) and are bounded by `statement_timeout`.
     #[error("busy: {0}")]
     Busy(String),
     #[error("storage: {message}")]

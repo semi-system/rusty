@@ -53,3 +53,16 @@ share a Rust clock.
 
 Open items: GC on Postgres and `jobs` on Postgres arrive with PG5; their clock tests reuse the
 bodies above through `for_each_backend`.
+
+Caller-supplied timestamps: the `_at` twins (`Mailbox::deliver_at`, `deliver_many_at`,
+`expunge_many_at`, the capability `*_at` methods) are `#[doc(hidden)]`, store the value verbatim
+(rule 3) and reject anything outside `0..=MAX_SUPPLIED_TIME` (2100-01-01) with `Error::Invalid`.
+A future client IMAP APPEND date must go through the same bound. `collect_blobs_with_db_clock`
+exists so a test can skew the database clock and prove the GC cutoff follows it
+(`gc_cutoff_follows_a_skewed_database_clock`).
+
+Error-class note (decision pending, unchanged): Postgres 57P01/57P02/57P03 (admin shutdown,
+crash recovery), 25P03 (idle-in-transaction timeout) and 08xxx map to `Error::Storage`, not
+`Busy`, because D1 does not list them. For failover, `Busy` is probably the better class for
+57P0x; revisit in PG8. Capability eviction at the cap orders by `issued_at`, then `token_hash`,
+on both backends.
