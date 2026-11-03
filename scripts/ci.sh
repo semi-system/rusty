@@ -68,6 +68,7 @@ fuzz_all() {
     cargo test -p rusty-mime -p rusty-directory --test fuzz_smoke
   fi
 }
+stage "fuzz lockfile consistent" bash -c 'cd fuzz && cargo metadata --locked --format-version 1 >/dev/null'
 stage "fuzz smoke" fuzz_all
 
 if [ "$DEGRADED" -eq 1 ]; then
