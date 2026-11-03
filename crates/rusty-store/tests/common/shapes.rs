@@ -11,6 +11,8 @@ use super::{raw, stmts};
 
 pub struct Shape {
     pub label: &'static str,
+    /// The `MailboxRepo` method this shape measured (taken from the call expression).
+    pub method: String,
     /// A write: its first data statement after BEGIN must be the mailbox lock.
     pub write: bool,
     pub stmts: Vec<String>,
@@ -49,7 +51,7 @@ fn entries(msgs: Vec<NewMessage>, base: u8) -> Vec<DeliverEntry> {
 /// Run every operation once against a fresh mailbox and return the statements each executed
 /// (BEGIN and COMMIT included). Fixtures are built before the probe is reset for an operation.
 pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
-    let (_, _, mb) = acct(b, "shape").await;
+    let (_, acc, mb) = acct(b, "shape").await;
     let id = mb.id();
     let r = &b.mrepo;
     let mut out: Vec<Shape> = vec![];
@@ -60,6 +62,7 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
             fut.await.unwrap();
             out.push(Shape {
                 label: $label,
+                method: method_of(stringify!($call)),
                 write: $write,
                 stmts: p.statements(),
             });
@@ -76,6 +79,8 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
         }
     }
 
+    shape!("mailbox_for_account", false, r.mailbox_for_account(acc));
+    shape!("folder_exists", false, r.folder_exists(id, INBOX));
     shape!("create_folder", true, r.create_folder(id, Some(g), "Child"));
     shape!("rename_folder", true, r.rename_folder(id, f, "F2"));
     shape!("move_folder", true, r.move_folder(id, f, Some(g)));
@@ -103,9 +108,12 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
     shape!("append_many (100)", true, r.append_many(id, &m100));
     let e10 = entries(new_msgs(b, INBOX, "dm10", 10).await, 10);
     shape!("deliver_many (10, new)", true, r.deliver_many(id, &e10, None, None));
+    let e100 = entries(new_msgs(b, INBOX, "dm100", 100).await, 100);
+    shape!("deliver_many (100, new)", true, r.deliver_many(id, &e100, None, None));
     shape!("deliver_many (10, all duplicates)", true, r.deliver_many(id, &e10, None, None));
 
     shape!("set_flags", true, r.set_flags(id, rusty_core::MessageId(ids[0]), Flags::SEEN));
+    shape!("set_flags_many (10)", true, r.set_flags_many(id, &ids[0..10], Flags::SEEN));
     shape!("set_flags_many (100)", true, r.set_flags_many(id, &ids[0..100], Flags::SEEN));
     let m = rusty_core::MessageId(ids[1]);
     shape!("add_keyword", true, r.add_keyword(id, m, "kw"));
@@ -152,4 +160,73 @@ pub fn assert_lock_first(backend: &str, s: &Shape) {
         first.contains("SELECT id FROM mailboxes WHERE id = ?1")
     };
     assert!(ok, "{backend} {}: first statement after BEGIN is not the mailbox lock: {first:?}\nall: {:#?}", s.label, s.stmts);
+}
+
+/// `r.create_folder(id, ..)` -> `create_folder`.
+fn method_of(call: &str) -> String {
+    let rest = call.trim_start().strip_prefix("r.").unwrap_or_else(|| panic!("shape call must start with `r.`: {call}"));
+    rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect()
+}
+
+const TRAIT_SOURCE: &str = include_str!("../../src/repo/mailbox.rs");
+
+/// `(name, is_write)` of every method of `MailboxRepo`, read from the trait declaration itself
+/// (a method is a write when it returns `Committed<..>`).
+pub fn trait_methods() -> Vec<(String, bool)> {
+    let start = TRAIT_SOURCE
+        .find("pub trait MailboxRepo")
+        .expect("MailboxRepo declaration");
+    let body: String = TRAIT_SOURCE[start..]
+        .lines()
+        .skip(1)
+        .take_while(|l| *l != "}")
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let methods: Vec<(String, bool)> = body
+        .split(';')
+        .filter_map(|decl| {
+            let at = decl.find("fn ")?;
+            let name: String = decl[at + 3..]
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            Some((name, decl.contains("Committed<")))
+        })
+        .collect();
+    assert!(
+        methods.len() >= 24,
+        "the MailboxRepo parser found only {} methods: {methods:?}",
+        methods.len()
+    );
+    methods
+}
+
+/// Review PG4 M6: a new `MailboxRepo` method that is not added to `collect` would escape the
+/// lock-first probe and the statement budget. Every trait method needs a shape, and a method that
+/// returns `Committed` (a write) must be recorded as one.
+pub fn assert_every_trait_method_has_a_shape(all: &[Shape]) {
+    let methods = trait_methods();
+    for (name, write) in &methods {
+        let mine: Vec<&Shape> = all.iter().filter(|s| s.method == *name).collect();
+        assert!(
+            !mine.is_empty(),
+            "MailboxRepo::{name} has no entry in tests/common/shapes.rs: add a `shape!` for it \
+             (and a BUDGET line in query_shape_pg.rs) so the lock-first probe covers it"
+        );
+        if *write {
+            assert!(
+                mine.iter().all(|s| s.write),
+                "MailboxRepo::{name} returns Committed but its shape is not marked as a write"
+            );
+        }
+    }
+    for s in all {
+        assert!(
+            methods.iter().any(|(m, _)| *m == s.method),
+            "shape {:?} measures `{}` which is not a MailboxRepo method",
+            s.label,
+            s.method
+        );
+    }
 }

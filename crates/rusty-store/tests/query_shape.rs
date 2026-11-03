@@ -357,6 +357,7 @@ async fn every_write_method_takes_the_mailbox_row_first_on_sqlite() {
     let b = common::backends::sqlite_backend().await;
     let all = common::shapes::collect(&b, &p).await;
     assert!(all.iter().filter(|s| s.write).count() >= 25);
+    common::shapes::assert_every_trait_method_has_a_shape(&all);
     for s in &all {
         common::shapes::assert_lock_first("sqlite", s);
     }
