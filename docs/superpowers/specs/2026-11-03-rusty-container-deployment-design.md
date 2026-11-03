@@ -70,7 +70,15 @@ Quyết định của người dùng: dựng một container nginx hoặc Traefi
 - Duy nhất `edge` công bố cổng ra host; kiểm tra tự động (mục 10) bảo đảm không container nào khác làm vậy.
 
 ### 3b.5 Chứng chỉ TLS tự động (ACME) cho HTTPS, IMAPS, POP3S, SMTPS
-Quyết định của người dùng: Traefik tích hợp xin và gia hạn chứng chỉ SSL/TLS để dùng cho HTTPS và các giao thức thư TLS ngầm (IMAPS, POP3S, SMTPS).
+Quyết định của người dùng: xin và gia hạn chứng chỉ SSL/TLS tự động để dùng cho HTTPS và các giao thức thư TLS ngầm (IMAPS, POP3S, SMTPS).
+
+> **ĐIỀU CHỈNH (2026-11-03): việc xin chứng chỉ ACME do dịch vụ `certd` (Go) thực hiện, không phải Traefik** (spec TLS theo domain, `2026-11-03-rusty-tenant-tls-design.md` mục 6). Traefik chỉ nạp chứng chỉ từ tệp (file provider) và **không có `certificatesResolvers`**. Hệ quả cho các gạch đầu dòng bên dưới:
+> - "Một bộ cấp chứng chỉ duy nhất: `certificatesResolvers` ACME của Traefik" -> nay là `certd`; mọi router HTTP và TCP (`HostSNI`) lấy chứng chỉ từ tệp do `certd` ghi.
+> - "Loại thử thách": **HTTP-01** (router cố định của Traefik chuyển `/.well-known/acme-challenge/` tới `certd`) và **DNS-01**; **TLS-ALPN-01 bỏ**.
+> - "Lưu trữ khóa: `acme.json`" -> không còn trên `edge`; khóa tài khoản ACME và khóa chứng chỉ nằm ở `certd`/`store` (mã hóa), `edge` chỉ có chứng chỉ và khóa dùng để phục vụ trên `tmpfs` chỉ-đọc.
+> - "Một bản `edge`" (hạn chế HA) -> **đã giải quyết**: `certd` là nguồn chứng chỉ chung cho nhiều bản `edge`.
+> - Kiểm thử bằng Pebble (mục 3b.6) giữ nguyên, nhưng đối tượng được kiểm là `certd` + `edge`.
+> - Các quy tắc về danh sách tên máy tường minh, staging/Pebble cho dev và test, CA mặc định, chính sách TLS, mTLS tới backend vẫn áp dụng.
 
 - **Một bộ cấp chứng chỉ duy nhất:** `certificatesResolvers` ACME của Traefik, dùng chung cho router HTTP và router TCP (`HostSNI`) của cổng 465/993/995. Mỗi tên máy (ví dụ `mail.example.com`, `imap.example.com`) có một chứng chỉ; tên máy được khai báo **tường minh** trong cấu hình (danh sách cho phép), **không bao giờ cấp theo SNI tùy ý do máy khách gửi** (chống dùng cạn hạn mức của CA và tấn công làm tràn việc cấp).
 - **Loại thử thách (challenge):**
@@ -111,6 +119,11 @@ Quyết định của người dùng: Traefik tích hợp xin và gia hạn ch�
 - Bí mật: **tệp** gắn từ Docker secrets/tmpfs (quyền `0400`, thuộc uid dịch vụ), không bao giờ biến môi trường, không bake vào image. Có quy trình xoay vòng.
 - Log ra stdout/stderr dạng JSON một dòng, không chứa bí mật/nội dung thư; driver log có giới hạn kích thước.
 - Rootless: mục tiêu là chạy toàn bộ bằng Docker rootless hoặc Podman rootless; ghi rõ khác biệt (cổng thấp, cgroup, uid ánh xạ) và test trên cả hai.
+
+## 4b. Chính sách ngôn ngữ theo thành phần
+- **Mặc định Rust** cho mọi thành phần của Rusty (dịch vụ giao thức, `store`, công cụ).
+- **Go được phép cho `certd`** (quyết định của người dùng, 2026-11-03: hệ sinh thái ACME của Go trưởng thành hơn) và cho các công cụ vận hành nằm ngoài đường dữ liệu nếu được duyệt riêng, với toàn bộ điều kiện CI ở spec TLS theo domain mục 6b (bản dựng tĩnh `CGO_ENABLED=0`, `govulncheck` hằng ngày, `go mod verify`, `go test -race`, fuzz gốc, cấm `unsafe`/`cgo`/`os/exec`, image `scratch`, cứng hóa container như phần Rust).
+- Ngôn ngữ chỉ là chi tiết cài đặt đằng sau giao diện (API `store` mTLS và tệp cấu hình); thành phần được viết lại bằng ngôn ngữ khác không đổi hợp đồng.
 
 ## 5. Kênh nội bộ: hai chế độ truyền tải
 Unix socket qua volume chỉ chạy được trên **một host**; lên Kubernetes thì các pod nằm trên nhiều node nên không dùng chung socket được. Vì vậy API nội bộ của `store` (spec mô hình tiến trình §7b) phải có hai transport với **cùng giao thức và cùng ma trận vai trò**:

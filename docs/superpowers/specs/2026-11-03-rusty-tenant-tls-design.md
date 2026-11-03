@@ -4,10 +4,12 @@ Ngày: 2026-11-03. Trạng thái: chờ người dùng duyệt spec (sau đó m�
 
 ## 1. Mục tiêu và quyết định
 Mỗi tenant (domain) tự chọn cách có chứng chỉ TLS cho các tên máy của mình (webmail, IMAP, POP3, SMTP...):
-- **`acme`**: tự động xin và gia hạn chứng chỉ (Traefik, spec container §3b.5).
+- **`acme`**: tự động xin và gia hạn chứng chỉ, do **`certd`** thực hiện (mục 6); Traefik chỉ nạp chứng chỉ từ tệp.
 - **`custom`**: tenant tải lên chứng chỉ riêng (ví dụ chứng chỉ tổ chức, EV/OV, chứng chỉ do CA nội bộ cấp).
 
 Phụ thuộc vào các spec trước: domain = tenant (spec Postgres–Valkey §3c), cổng vào Traefik (spec container §3b), vai trò `domain-admin`/`superadmin`, khóa mã hóa theo tenant (§3c.4b).
+
+**Quyết định về ngôn ngữ (người dùng, 2026-11-03): `certd` viết bằng Go**, vì hệ sinh thái ACME của Go (`lego`, `certmagic`) trưởng thành hơn; bù lại bằng CI siết chặt (mục 6b) và biện pháp bảo vệ khóa riêng trong bộ nhớ (mục 5). Hệ quả: **việc xin chứng chỉ ACME chuyển từ Traefik sang `certd`**, Traefik không còn dùng `certificatesResolvers`.
 
 Ngoài phạm vi: chứng chỉ cho cổng STARTTLS (587/143/110) và cổng 25 (dịch vụ phía sau giữ chứng chỉ riêng, spec container §3b.5); DANE/MTA-STS; chứng chỉ client (mTLS của người dùng); HSM/KMS cho khóa riêng (giai đoạn sau).
 
@@ -65,24 +67,26 @@ CREATE UNIQUE INDEX one_active_cert ON tls_certificates (hostname_id) WHERE acti
 7. **Loại chứng chỉ:** lá phải `CA:FALSE`, có `serverAuth` trong EKU (nếu EKU có mặt) và KeyUsage phù hợp; từ chối chứng chỉ CA được dùng làm chứng chỉ máy chủ.
 8. **Tin cậy (tùy chọn, bật được):** chuỗi dẫn tới gốc nằm trong kho tin cậy cấu hình được; mặc định chỉ cảnh báo (nhiều tổ chức dùng CA nội bộ).
 9. Mọi lỗi trả thông báo cố định theo mã lý do (`key_mismatch`, `san_mismatch`, `expired`, ...), không chép lại nội dung chứng chỉ hay khóa.
-Thư viện: phân tích X.509 và PEM bằng crate Rust an toàn bộ nhớ đã được bảo trì (ví dụ `x509-parser`, `rustls-pemfile`/`rustls`), chạy trong dịch vụ `certd` đã cô lập; fuzz bộ phân tích đầu vào.
+Thư viện: phân tích X.509 và PEM bằng thư viện chuẩn của Go (`crypto/x509`, `encoding/pem`), không dùng thư viện phân tích bên thứ ba; chạy trong dịch vụ `certd` đã cô lập; fuzz bằng bộ fuzz gốc của Go (`go test -fuzz`) cho mọi hàm nhận đầu vào từ tenant.
 
 ## 5. Lưu trữ và bảo vệ khóa riêng
 - Khóa riêng của chứng chỉ tùy chỉnh **không bao giờ** nằm dạng rõ trong DB, log, sao lưu, API trả về hay nhật ký kiểm toán. Mã hóa AEAD (XChaCha20-Poly1305 hoặc AES-256-GCM) bằng khóa dẫn xuất theo tenant (`HKDF(master, "tenant:{domain_id}/tls")`); **dữ liệu liên kết (AAD) gồm `domain_id`, `hostname_id`, `fingerprint`, `key_id`** để không hoán đổi được giữa các bản ghi.
 - API **không bao giờ trả lại khóa riêng** (chỉ trả dấu vân tay, tên, thời hạn, trạng thái). Tải xuống khóa không được hỗ trợ.
 - Giải mã chỉ xảy ra trong `store` khi phục vụ yêu cầu của vai trò `certd` (mục 6) qua kênh mTLS nội bộ; không ghi ra đĩa thường.
+- **Giới hạn của Go cần biết:** bộ gom rác của Go có thể sao chép dữ liệu trong bộ nhớ nên **không thể đảm bảo xóa sạch khóa riêng khỏi bộ nhớ** như Rust. Biện pháp giảm thiểu bắt buộc cho `certd`: giữ khóa dưới dạng `[]byte` trong thời gian ngắn nhất, không chuyển sang `string`, ghi đè (`clear`) ngay sau khi dùng; tắt core dump (`RLIMIT_CORE=0`, `PR_SET_DUMPABLE=0`) và không cấp swap cho container (`memswap_limit = mem_limit`); không đưa khóa vào log, lỗi hay metric; hạn chế thời gian sống của tiến trình giữ khóa (khởi động lại định kỳ được phép vì dựng lại từ DB). Rủi ro còn lại (khóa tồn tại trong bộ nhớ tiến trình vài lần) được chấp nhận và ghi vào mô hình đe dọa; nếu không chấp nhận được thì khóa phải chuyển sang KMS/HSM.
 - Hủy khóa tenant (crypto-shredding, spec §3c.4b) làm mọi khóa TLS của tenant không đọc lại được; xóa tên máy hoặc chứng chỉ xóa hàng và dọn tệp phục vụ ngay.
 - Xoay khóa chính (`key_id`) là job nền: giải mã bằng khóa cũ, mã hóa lại bằng khóa mới, trong một giao dịch từng chứng chỉ.
 
 ## 6. Thành phần `certd` và tích hợp với Traefik
-Traefik tự xin chứng chỉ ACME cho tên máy trong danh sách cho phép, nhưng **chứng chỉ tùy chỉnh và danh sách tên máy động theo tenant** cần một mặt phẳng điều khiển. Thêm dịch vụ **`certd`** (Rust, container riêng, mạng `app`, không công bố cổng):
+Tên máy và chứng chỉ thay đổi theo tenant lúc chạy, nên cần một mặt phẳng điều khiển. Thêm dịch vụ **`certd`** (**Go**, thư viện ACME `lego` hoặc `certmagic`, container riêng, mạng `app`, không công bố cổng). `certd` **vừa xin/gia hạn chứng chỉ ACME vừa quản lý chứng chỉ tùy chỉnh**; Traefik chỉ nạp chứng chỉ từ tệp (file provider), không có `certificatesResolvers`. Lợi ích: khóa tài khoản ACME và thông tin DNS-01 nằm ở thành phần nội bộ thay vì ở `edge` hướng Internet; hạn mức theo tenant kiểm soát tập trung; nhiều bản `edge` dùng chung được một nguồn chứng chỉ (hết giới hạn HA của ACME trong Traefik OSS).
 - Đọc từ `store` (vai trò mới `certd`, chỉ đọc): danh sách `domain_hostnames` (đang `active`/`pending`), chứng chỉ tùy chỉnh đang `active` (khóa đã giải mã trong bộ nhớ qua kênh mTLS).
-- **Sinh cấu hình động cho Traefik** vào một volume `tmpfs`: với tên máy `acme`, tạo router với `certResolver`; với tên máy `custom`, ghi PEM chuỗi + khóa và khai báo `tls.certificates`; mỗi tên máy thuộc **đúng một** chế độ (không vừa có `certResolver` vừa có chứng chỉ tùy chỉnh). Ghi nguyên tử (tệp tạm rồi đổi tên), quyền `0400`, thuộc user của `certd`, gắn **chỉ-đọc** vào `edge`. Traefik dùng file provider có `watch`, nên áp dụng ngay không cần khởi động lại.
+- **Sinh cấu hình động cho Traefik** vào một volume `tmpfs`: với **cả hai** chế độ `acme` và `custom`, ghi PEM chuỗi + khóa và khai báo `tls.certificates` (chứng chỉ ACME do chính `certd` lấy được); mỗi tên máy thuộc **đúng một** chế độ.
+- **ACME trong `certd`:** loại thử thách **HTTP-01** (Traefik có một router cố định chuyển `/.well-known/acme-challenge/` của các tên máy trong danh sách cho phép tới máy chủ thử thách nội bộ của `certd`) và **DNS-01** (cho wildcard hoặc khi biên không với tới từ Internet; token DNS giới hạn theo vùng, nằm trong tệp bí mật `0400` chỉ `certd` đọc). **TLS-ALPN-01 không dùng** (đòi hỏi biên xử lý ALPN đặc biệt, phức tạp hơn lợi ích). Khóa tài khoản ACME, khóa chứng chỉ ACME và trạng thái nằm trong `store` (mã hóa như mục 5) hoặc kho riêng của `certd`, không nằm ở `edge`. Ghi nguyên tử (tệp tạm rồi đổi tên), quyền `0400`, thuộc user của `certd`, gắn **chỉ-đọc** vào `edge`. Traefik dùng file provider có `watch`, nên áp dụng ngay không cần khởi động lại.
 - **Khóa riêng chỉ tồn tại trong bộ nhớ của `store`/`certd` và trên `tmpfs` của volume chia sẻ với `edge`**, không bao giờ trên đĩa bền; `certd` khởi động lại thì dựng lại toàn bộ từ DB.
 - Giám sát hạn dùng: quét chứng chỉ tùy chỉnh và (bằng kết nối TLS thử tới chính tên máy công khai) cả chứng chỉ ACME; cảnh báo cho `domain-admin` ở còn 30, 14, 7, 1 ngày và khi hết hạn; khi chứng chỉ tùy chỉnh đã hết hạn, **không phục vụ chứng chỉ hết hạn lâu dài**: trạng thái `error`, và nếu tenant bật `fallback_to_acme` thì chuyển sang ACME (mặc định tắt, vì chuyển chế độ âm thầm có thể bất ngờ).
 - Giới hạn tốc độ xin ACME theo tenant và toàn hệ thống (hàng đợi, backoff, tôn trọng giới hạn của CA); trạng thái lỗi cấp chứng chỉ hiển thị trong console.
-- `certd` là **thành phần giá trị cao**: nắm khóa riêng của mọi tenant có chứng chỉ tùy chỉnh. Cô lập chặt (user riêng, rootfs chỉ đọc, `cap_drop ALL`, sandbox, không ra Internet, chỉ nối `store` và ghi volume tmpfs), phạm vi mã nhỏ, fuzz bộ phân tích, review bảo mật ưu tiên.
-- Khi nhiều bản `edge` (HA), `certd` giữ vai trò duy nhất phân phối chứng chỉ (và, nếu cần, tự làm ACME); xem hạn chế ACME của Traefik ở spec container §3b.5.
+- `certd` là **thành phần giá trị cao**: nắm khóa riêng của mọi tenant có chứng chỉ tùy chỉnh. Cô lập chặt (user riêng, rootfs chỉ đọc, `cap_drop ALL`, sandbox, chỉ nối `store` và ghi volume tmpfs), phạm vi mã nhỏ, fuzz bộ phân tích, review bảo mật ưu tiên. **Đường ra Internet bị giới hạn bằng danh sách cho phép:** chỉ tới các máy chủ ACME của CA đã cấu hình và (nếu dùng DNS-01) API của nhà cung cấp DNS đó, thực thi bằng mạng egress riêng/chính sách mạng; mọi đích khác bị chặn.
+- Nhiều bản `edge` (HA): `certd` là nguồn chứng chỉ duy nhất; với các `edge` cùng một máy dùng chung volume tmpfs, với `edge` khác máy thì lấy chứng chỉ qua API xác thực mTLS của `certd` (chi tiết ở giai đoạn HA).
 
 Vai trò mới cho ma trận của `store` (spec mô hình tiến trình §7b):
 | Vai trò | Được làm | Không được làm |
@@ -90,6 +94,18 @@ Vai trò mới cho ma trận của `store` (spec mô hình tiến trình §7b):
 | `certd` | đọc tên máy và chứng chỉ đang dùng (kể cả khóa giải mã, chỉ qua mTLS), ghi trạng thái cấp chứng chỉ và hạn đã quan sát | đọc thư, tài khoản, đổi cấu hình tenant |
 | `domain-admin(D)` | thêm/xóa tên máy của D, chọn chế độ, tải lên/xóa/kích hoạt chứng chỉ của D, xem trạng thái và cảnh báo | xem khóa riêng, thao tác tên máy hoặc chứng chỉ của tenant khác (trả `NotFound`) |
 | `superadmin` | mọi thứ trên mọi tenant (trừ xem khóa riêng), đặt trần và kho tin cậy, phê duyệt tên vanity | xem khóa riêng |
+
+## 6b. Ràng buộc CI và chuỗi cung ứng cho thành phần Go (siết chặt, bắt buộc)
+Vì `certd` là thành phần Go duy nhất của dự án (cho tới nay) và giữ khóa riêng của mọi tenant, CI của nó phải chặt ít nhất bằng CI của phần Rust:
+- **Phiên bản cố định:** `go.mod` khai báo `go` và `toolchain` cụ thể; image builder ghim digest; nâng cấp có chủ đích kèm chạy toàn bộ CI.
+- **Phụ thuộc:** `go mod verify` và `GOFLAGS=-mod=readonly` (hoặc `-mod=vendor` với thư mục `vendor/` được commit và kiểm tra khớp `go.sum`); không dùng `replace` tới đường dẫn ngoài; sumdb mặc định bật; danh sách phụ thuộc trực tiếp có hạn mức (mặc định tối đa 15 module trực tiếp, thêm cái mới cần lý do trong PR); chính sách giấy phép cho phép (MIT, BSD-2/3, Apache-2.0, ISC, MPL-2.0) kiểm bằng `go-licenses`.
+- **Lỗ hổng:** `govulncheck ./...` **thất bại CI nếu có lỗ hổng đến được từ mã của ta**; chạy theo lịch hằng ngày (không chỉ lúc có commit) vì lỗ hổng mới xuất hiện sau khi phát hành; cảnh báo vào kênh bảo mật.
+- **Phân tích tĩnh:** `go vet`, `staticcheck`, `golangci-lint` bật tối thiểu `errcheck` (không bỏ qua lỗi), `gosec`, `govet`, `ineffassign`, `bodyclose`, `noctx`, `forbidigo`; lint thất bại là CI thất bại, không có `//nolint` không giải thích.
+- **Kiểm thử:** `go test -race -count=1 ./...` bắt buộc; bao phủ nhánh lỗi; test thuộc tính cho kiểm tra chứng chỉ; **fuzz gốc của Go** (`go test -fuzz`) tối thiểu 60 giây cho mỗi hàm phân tích đầu vào từ tenant (PEM, X.509, kiểm tra tải lên, tên máy), corpus hạt giống được commit.
+- **Cấm có kiểm tra tự động:** import `unsafe` hoặc `cgo` trong mã của dự án (quét mã nguồn trong CI; thư viện chuẩn và phụ thuộc có `unsafe` được chấp nhận và liệt kê), `reflect` để vượt kiểm soát kiểu, `os/exec`, `net/http/pprof` hay `expvar` trong bản phát hành, biến toàn cục có thể thay đổi giữ bí mật.
+- **Bản dựng:** `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -buildid="` cho binary tĩnh, tái lập được; SBOM; chữ ký cosign; image `scratch` hoặc distroless tĩnh; cùng cứng hóa container như các dịch vụ Rust (mục 4 spec container).
+- **Chạy lúc thực thi:** tắt core dump, không swap, `GOMAXPROCS`/giới hạn bộ nhớ đặt theo cgroup, `GOGC` mặc định; tiến trình không bao giờ bật biên dịch động hay nạp plugin.
+- **Báo cáo:** mọi cảnh báo CI của `certd` hiển thị cùng bảng điều khiển với phần Rust; một bản phát hành chỉ ký khi toàn bộ cổng trên xanh.
 
 ## 7. Quản trị
 - `rustyctl tls host add|list|remove|set-mode`, `rustyctl tls cert upload|show|activate|delete|history`, `rustyctl tls status [--expiring N]`, `rustyctl tls verify <hostname>` (kết nối thử và so khớp chứng chỉ đang được phục vụ); admin console có các màn tương ứng.
@@ -118,5 +134,5 @@ Vai trò mới cho ma trận của `store` (spec mô hình tiến trình §7b):
 - `certd` và `store` cùng giữ khóa riêng của tenant; một lỗ hổng ở đó lộ khóa TLS. Giảm bằng cô lập, mã hóa lúc lưu, tmpfs và không bao giờ trả khóa qua API công khai; chấp nhận rủi ro còn lại hoặc chuyển sang KMS/HSM sau.
 - Tenant tải lên chứng chỉ do CA lạ hoặc thu hồi: chỉ cảnh báo; không kiểm tra thu hồi (OCSP/CRL) ở phiên bản đầu.
 - Hạn mức CA công cộng khi nhiều tenant dùng `acme`: cần giới hạn theo tenant và bộ nhớ đệm trạng thái; xem xét chứng chỉ wildcard (DNS-01) cho domain gốc để giảm số chứng chỉ.
-- Phụ thuộc hạn chế HA của ACME trong Traefik OSS: khi cần nhiều `edge`, chuyển việc ACME sang `certd`.
+- Hạn chế HA của ACME trong Traefik OSS đã được giải quyết bằng cách đặt ACME trong `certd`; rủi ro mới: `certd` có đường ra Internet (giới hạn bằng danh sách cho phép) và giữ khóa ACME.
 - Tên "vanity" (ngoài cây tên của tenant), chứng chỉ cho cổng STARTTLS, DANE/MTA-STS: để sau.

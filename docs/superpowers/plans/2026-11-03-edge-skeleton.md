@@ -4,7 +4,7 @@
 
 **Goal:** Build the hardened public entry container (Traefik) with static file configuration, plus a Compose skeleton with fake backends and an automated check that proves the hardening rules, so real services can be dropped in later.
 
-**Architecture:** One `edge` container (Traefik, digest-pinned, read-only, no capabilities, file provider only) is the only container that publishes ports. Certificates for HTTPS and for the implicit-TLS mail ports (465 SMTPS, 993 IMAPS, 995 POP3S) are obtained and renewed automatically by Traefik's ACME resolver; the edge terminates TLS there and re-encrypts with mTLS to backends (user decision; trade-off recorded in spec §3b.1). Port 25 and the optional STARTTLS ports (587, 143, 110; disabled by default per RFC 8314) are TCP passthrough with PROXY protocol v2. Fake backends are tiny static Rust binaries built in this repo (no third-party images except Traefik).
+**Architecture:** One `edge` container (Traefik, digest-pinned, read-only, no capabilities, file provider only) is the only container that publishes ports. Certificates for HTTPS and for the implicit-TLS mail ports (465 SMTPS, 993 IMAPS, 995 POP3S) are obtained and renewed automatically by the separate `certd` service (Go, lego/certmagic; see the tenant TLS spec) and handed to Traefik as files (file provider only, NO `certificatesResolvers` — user decision 2026-11-03 supersedes the earlier Traefik-resolver design); the edge terminates TLS there and re-encrypts with mTLS to backends (user decision; trade-off recorded in spec §3b.1). Port 25 and the optional STARTTLS ports (587, 143, 110; disabled by default per RFC 8314) are TCP passthrough with PROXY protocol v2. Fake backends are tiny static Rust binaries built in this repo (no third-party images except Traefik).
 
 **Tech Stack:** Docker/Compose (rootless where possible), Traefik v3 (resolve the latest stable tag, then pin by digest), Pebble + challtestsrv (Let's Encrypt's official test ACME server; pin by digest) for tests, Rust (backends, checker, tests), rustls.
 
@@ -61,7 +61,9 @@
 - [ ] **Step 3: Implement** the test harness (start/stop the project, wait for health, always tear down in a guard), adjust Traefik/compose config until the tests pass without weakening any rule.
 - [ ] **Step 4: Run the suite 3 times (flake check), `docker compose down -v`, and verify no containers or volumes are left; commit** `test(deploy): edge behavior suite`.
 
-### Task E2b: Automatic certificates (ACME) with Pebble
+### Task E2b: Automatic certificates (ACME) with Pebble — DEPENDS ON `certd` (separate plan, not yet written)
+
+> Until `certd` exists, E1/E2 use statically generated test certificates only. E2b below defines the ACCEPTANCE TESTS for the certd + edge integration and is executed together with the `certd` plan. Wherever it says "Traefik's resolver" read "`certd` writing certificate files that Traefik loads"; the HTTP-01 challenge is served by `certd` via a fixed Traefik router for `/.well-known/acme-challenge/`; TLS-ALPN-01 is not used.
 
 **Files:**
 - Modify: `deploy/compose/compose.yaml` (add `pebble` and `challtestsrv` to a TEST-ONLY override file `deploy/compose/compose.test-acme.yaml`, never in the base file), `deploy/compose/traefik/traefik.yaml` (certificatesResolvers: `http01`, `tlsalpn01`, `dns01` behind a test-only profile), `deploy/compose/traefik/dynamic/` (routers for 443 with `tls.certResolver`, TCP routers with `HostSNI` + `tls.certResolver` for 465/993/995), `deploy/images.lock` (Pebble and challtestsrv digests), `scripts/gen-test-certs.sh` (only the internal mTLS CA for edge-to-backend, ACME certs come from Pebble)
