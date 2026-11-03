@@ -71,6 +71,52 @@ pub async fn purge_deleted(store: &SqliteStore, older_than: i64) -> Result<u64> 
     }
 }
 
+/// How long a delivery id is remembered by default.
+pub const DELIVERY_RETENTION_SECS: i64 = 7 * 86400;
+
+/// Delete `deliveries` rows with `created_at < older_than` (unix seconds), at most
+/// [`PURGE_BATCH`] per `BEGIN IMMEDIATE` transaction. Messages are untouched; a retry
+/// arriving after its row is gone creates a new message, so `older_than` must leave the
+/// whole retry window ([`DELIVERY_RETENTION_SECS`]) intact. Returns the rows removed.
+pub async fn purge_deliveries(store: &SqliteStore, older_than: i64) -> Result<u64> {
+    let mut total = 0u64;
+    loop {
+        let mut tx = store.begin_write().await?;
+        let n = sqlx::query(
+            "DELETE FROM deliveries WHERE rowid IN (               SELECT rowid FROM deliveries WHERE created_at < ? LIMIT ?)",
+        )
+        .bind(older_than)
+        .bind(PURGE_BATCH)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_db_error)?
+        .rows_affected();
+        tx.commit().await.map_err(map_db_error)?;
+        total += n;
+        if n < PURGE_BATCH as u64 {
+            return Ok(total);
+        }
+    }
+}
+
+/// [`purge_deliveries`] for rows older than `retention_secs` before `now` (unix seconds).
+pub async fn purge_deliveries_at(
+    store: &SqliteStore,
+    now: i64,
+    retention_secs: i64,
+) -> Result<u64> {
+    purge_deliveries(store, now.saturating_sub(retention_secs.max(0))).await
+}
+
+/// [`purge_deliveries_at`] with the database clock and [`DELIVERY_RETENTION_SECS`].
+pub async fn purge_deliveries_default(store: &SqliteStore) -> Result<u64> {
+    let now: i64 = sqlx::query_scalar("SELECT CAST(strftime('%s', 'now') AS INTEGER)")
+        .fetch_one(store.pool())
+        .await
+        .map_err(map_db_error)?;
+    purge_deliveries_at(store, now, DELIVERY_RETENTION_SECS).await
+}
+
 /// Outcome of one [`collect_blobs`] run.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GcReport {

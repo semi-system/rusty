@@ -14,6 +14,8 @@
 //! - Reads are paginated: `list_folder` and `changes_since` return at most [`MAX_PAGE`]
 //!   entries per call (a larger `limit` is clamped, `0` is `Invalid`).
 //! - Every lookup is scoped by `mailbox_id`: ids of another mailbox are `NotFound`.
+//! - `deliver` is `append` plus a `deliveries` row in the same transaction (see
+//!   `store_message`); the duplicate lookup runs after `begin`, so it is race-free.
 //! - `append` writes the blob before the metadata transaction; if the transaction fails the
 //!   blob is an orphan for the cleanup job (spec §5).
 //! - Nothing here logs message content; error texts never echo caller input.
@@ -23,7 +25,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
-use rusty_core::{AccountId, Error, Flags, FolderId, MailboxId, MessageId, Result, ThreadId};
+use rusty_core::{
+    AccountId, DeliveryId, Error, Flags, FolderId, MailboxId, MessageId, Result, ThreadId,
+};
 use rusty_mime::Envelope;
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
@@ -59,6 +63,15 @@ impl Default for MailboxLimits {
 pub struct MessageRef {
     pub id: MessageId,
     pub uid: u32,
+}
+
+/// Result of [`Mailbox::deliver`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DeliverOutcome {
+    /// First delivery of this id: the message was created.
+    Created(MessageRef),
+    /// A retry: the ORIGINAL message; nothing was written.
+    Duplicate(MessageRef),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -538,7 +551,13 @@ impl Mailbox {
         .execute(&mut *tx)
         .await
         .map_err(map_db_error)?;
-        log_change(&mut tx, self.id, ChangeItem::Folder(FolderId(id)), ChangeOp::Create).await?;
+        log_change(
+            &mut tx,
+            self.id,
+            ChangeItem::Folder(FolderId(id)),
+            ChangeOp::Create,
+        )
+        .await?;
         commit(tx).await?;
         Ok(FolderId(id))
     }
@@ -628,13 +647,7 @@ impl Mailbox {
             .execute(&mut *tx)
             .await
             .map_err(map_db_error)?;
-        log_change(
-            &mut tx,
-            self.id,
-            ChangeItem::Folder(id),
-            ChangeOp::Destroy,
-        )
-        .await?;
+        log_change(&mut tx, self.id, ChangeItem::Folder(id), ChangeOp::Destroy).await?;
         commit(tx).await
     }
 
@@ -643,7 +656,58 @@ impl Mailbox {
     /// Store a raw message in `folder`. Empty input is `Invalid` and input over
     /// `max_message_bytes` is `Quota`, both before anything is written. The folder is
     /// checked before the blob write (and again inside the transaction).
+    ///
+    /// Not idempotent: every call creates a message. Use [`Mailbox::deliver`] for retried
+    /// deliveries.
     pub async fn append(&self, folder: FolderId, raw: Bytes, flags: Flags) -> Result<MessageRef> {
+        match self.store_message(folder, raw, flags, None).await? {
+            DeliverOutcome::Created(r) | DeliverOutcome::Duplicate(r) => Ok(r),
+        }
+    }
+
+    /// Idempotent [`Mailbox::append`]: the first delivery of `delivery_id` creates the
+    /// message and a `deliveries` row in one transaction; a retry with the same id and the
+    /// same content returns `Duplicate` with the ORIGINAL ref and writes nothing (no
+    /// message, uid, or change). The same id with different content is
+    /// `Conflict("delivery id reused with different content")`. A duplicate is detected by
+    /// the id alone, so the retry's folder and flags are ignored. Validation (empty, size,
+    /// folder) happens first, as in `append`. The row's `created_at` is the database clock.
+    ///
+    /// A retry rewrites its blob before the lookup (a refresh when the content exists); a
+    /// conflicting retry therefore leaves an orphan blob file for the cleanup job.
+    pub async fn deliver(
+        &self,
+        folder: FolderId,
+        raw: Bytes,
+        flags: Flags,
+        delivery_id: DeliveryId,
+    ) -> Result<DeliverOutcome> {
+        self.store_message(folder, raw, flags, Some((delivery_id, None)))
+            .await
+    }
+
+    /// [`Mailbox::deliver`] with an explicit `created_at` (unix seconds), for tests.
+    pub async fn deliver_at(
+        &self,
+        folder: FolderId,
+        raw: Bytes,
+        flags: Flags,
+        delivery_id: DeliveryId,
+        now: i64,
+    ) -> Result<DeliverOutcome> {
+        self.store_message(folder, raw, flags, Some((delivery_id, Some(now))))
+            .await
+    }
+
+    /// Shared body of `append` and `deliver`. `delivery` is the delivery id and an optional
+    /// `created_at` override (`None`: database clock).
+    async fn store_message(
+        &self,
+        folder: FolderId,
+        raw: Bytes,
+        flags: Flags,
+        delivery: Option<(DeliveryId, Option<i64>)>,
+    ) -> Result<DeliverOutcome> {
         if raw.is_empty() {
             return Err(Error::Invalid("empty message".into()));
         }
@@ -660,6 +724,37 @@ impl Mailbox {
         let hash = self.blobs.put(raw).await?;
 
         let mut tx = self.begin().await?;
+        if let Some((did, _)) = delivery {
+            // Inside BEGIN IMMEDIATE no other writer can insert between this lookup and
+            // our insert below; the primary key is the backstop.
+            let hit: Option<(i64, String)> = sqlx::query_as(
+                "SELECT message_id, blob_hash FROM deliveries                  WHERE mailbox_id = ? AND delivery_id = ?",
+            )
+            .bind(self.id.0)
+            .bind(&did.0[..])
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(map_db_error)?;
+            if let Some((msg_id, blob_hash)) = hit {
+                if blob_hash != hash.as_str() {
+                    return Err(Error::Conflict(
+                        "delivery id reused with different content".into(),
+                    ));
+                }
+                let uid: i64 =
+                    sqlx::query_scalar("SELECT uid FROM messages WHERE mailbox_id = ? AND id = ?")
+                        .bind(self.id.0)
+                        .bind(msg_id)
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .map_err(map_db_error)?
+                        .ok_or_else(|| Error::storage("delivery refers to a missing message"))?;
+                return Ok(DeliverOutcome::Duplicate(MessageRef {
+                    id: MessageId(msg_id),
+                    uid: to_uid(uid)?,
+                }));
+            }
+        }
         sqlx::query("INSERT INTO blobs (hash, size) VALUES (?, ?) ON CONFLICT (hash) DO NOTHING")
             .bind(hash.as_str())
             .bind(size)
@@ -670,9 +765,7 @@ impl Mailbox {
         let id = take_msg_id(&mut tx, self.id).await?;
         let thread_id = find_thread(&mut tx, self.id, &env).await?.unwrap_or(id);
         sqlx::query(
-            "INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, size, internal_date, \
-             subject, from_addr, to_addrs, message_id_hdr, thread_id, flags) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, size, internal_date,              subject, from_addr, to_addrs, message_id_hdr, thread_id, flags)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(self.id.0)
         .bind(id)
@@ -690,12 +783,31 @@ impl Mailbox {
         .execute(&mut *tx)
         .await
         .map_err(map_db_error)?;
-        log_change(&mut tx, self.id, ChangeItem::Message(MessageId(id)), ChangeOp::Create).await?;
+        if let Some((did, at)) = delivery {
+            sqlx::query(
+                "INSERT INTO deliveries (mailbox_id, delivery_id, message_id, blob_hash, created_at)                  VALUES (?, ?, ?, ?, COALESCE(?, CAST(strftime('%s', 'now') AS INTEGER)))",
+            )
+            .bind(self.id.0)
+            .bind(&did.0[..])
+            .bind(id)
+            .bind(hash.as_str())
+            .bind(at)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_db_error)?;
+        }
+        log_change(
+            &mut tx,
+            self.id,
+            ChangeItem::Message(MessageId(id)),
+            ChangeOp::Create,
+        )
+        .await?;
         commit(tx).await?;
-        Ok(MessageRef {
+        Ok(DeliverOutcome::Created(MessageRef {
             id: MessageId(id),
             uid,
-        })
+        }))
     }
 
     /// Replace the standard flags of a live message.
@@ -714,13 +826,7 @@ impl Mailbox {
         if n == 0 {
             return Err(not_found_message());
         }
-        log_change(
-            &mut tx,
-            self.id,
-            ChangeItem::Message(id),
-            ChangeOp::Update,
-        )
-        .await?;
+        log_change(&mut tx, self.id, ChangeItem::Message(id), ChangeOp::Update).await?;
         commit(tx).await
     }
 
@@ -759,13 +865,7 @@ impl Mailbox {
             .execute(&mut *tx)
             .await
             .map_err(map_db_error)?;
-        log_change(
-            &mut tx,
-            self.id,
-            ChangeItem::Message(id),
-            ChangeOp::Update,
-        )
-        .await?;
+        log_change(&mut tx, self.id, ChangeItem::Message(id), ChangeOp::Update).await?;
         commit(tx).await
     }
 
@@ -787,13 +887,7 @@ impl Mailbox {
         if n == 0 {
             return Ok(());
         }
-        log_change(
-            &mut tx,
-            self.id,
-            ChangeItem::Message(id),
-            ChangeOp::Update,
-        )
-        .await?;
+        log_change(&mut tx, self.id, ChangeItem::Message(id), ChangeOp::Update).await?;
         commit(tx).await
     }
 
@@ -817,13 +911,7 @@ impl Mailbox {
             .execute(&mut *tx)
             .await
             .map_err(map_db_error)?;
-        log_change(
-            &mut tx,
-            self.id,
-            ChangeItem::Message(id),
-            ChangeOp::Update,
-        )
-        .await?;
+        log_change(&mut tx, self.id, ChangeItem::Message(id), ChangeOp::Update).await?;
         commit(tx).await?;
         Ok(MessageRef { id, uid: new_uid })
     }
@@ -845,13 +933,7 @@ impl Mailbox {
         if n == 0 {
             return Err(not_found_message());
         }
-        log_change(
-            &mut tx,
-            self.id,
-            ChangeItem::Message(id),
-            ChangeOp::Destroy,
-        )
-        .await?;
+        log_change(&mut tx, self.id, ChangeItem::Message(id), ChangeOp::Destroy).await?;
         commit(tx).await
     }
 
