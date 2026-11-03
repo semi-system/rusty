@@ -546,3 +546,199 @@ async fn capability_never_validates_as_another_account() {
         .unwrap()
         .is_some());
 }
+
+// ---------- review fixes ----------
+
+fn hex_decode(s: &str) -> Vec<u8> {
+    let v = |c: u8| match c {
+        b'0'..=b'9' => c - b'0',
+        _ => c - b'a' + 10,
+    };
+    s.as_bytes()
+        .chunks(2)
+        .map(|p| (v(p[0]) << 4) | v(p[1]))
+        .collect()
+}
+
+#[tokio::test]
+async fn stored_hash_is_tagged_sha256_and_token_must_be_canonical() {
+    use sha2::{Digest, Sha256};
+    let (d, _, acc) = setup().await;
+    let r = CapabilityRole::Imap;
+    // A token with at least one letter and one digit.
+    let cap = loop {
+        let c = d.issue_capability(acc, r, 600).await.unwrap();
+        let t = c.expose_secret();
+        if t.bytes().any(|b| b.is_ascii_lowercase()) && t.bytes().any(|b| b.is_ascii_digit()) {
+            break c;
+        }
+    };
+    let t = cap.expose_secret().to_string();
+    let mut h = Sha256::new();
+    h.update(b"rusty.capability.v1");
+    h.update(hex_decode(&t));
+    let want: Vec<u8> = h.finalize().to_vec();
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM capabilities WHERE token_hash = ?")
+        .bind(&want)
+        .fetch_one(d.store().pool())
+        .await
+        .unwrap();
+    assert_eq!(n, 1, "stored hash is not SHA-256(tag || token bytes)");
+
+    let first_alpha = t.find(|c: char| c.is_ascii_lowercase()).unwrap();
+    let mut one_upper = t.clone();
+    one_upper.replace_range(
+        first_alpha..=first_alpha,
+        &t[first_alpha..=first_alpha].to_uppercase(),
+    );
+    let first_digit = t.find(|c: char| c.is_ascii_digit()).unwrap();
+    let mut fullwidth = t.clone();
+    fullwidth.replace_range(first_digit..=first_digit, "\u{ff10}");
+    let variants = [
+        t.to_uppercase(),
+        one_upper,
+        format!("{t}\n"),
+        format!(" {t}"),
+        format!("{t}\0"),
+        fullwidth,
+        format!("{}\u{ff10}", &t[..63]),
+    ];
+    for v in &variants {
+        assert!(
+            d.validate_capability(v, r).await.unwrap().is_none(),
+            "variant accepted"
+        );
+        assert!(!d.revoke_capability(v).await.unwrap());
+    }
+    assert!(d.validate_capability(&t, r).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn expired_capabilities_do_not_count_against_the_cap() {
+    let (d, _, acc) = setup().await;
+    let r = CapabilityRole::Imap;
+    let mut live = Vec::new();
+    for _ in 0..63 {
+        live.push(d.issue_capability_at(acc, r, 86_400, 1000).await.unwrap());
+    }
+    // Ten one-second tokens, each issued after the previous one has expired.
+    for i in 0..10i64 {
+        d.issue_capability_at(acc, r, 1, 1100 + 2 * i)
+            .await
+            .unwrap();
+    }
+    d.issue_capability_at(acc, r, 600, 2000).await.unwrap();
+    for (i, c) in live.iter().enumerate() {
+        assert!(
+            d.validate_capability_at(c.expose_secret(), r, 2001)
+                .await
+                .unwrap()
+                .is_some(),
+            "live token {i} was revoked"
+        );
+    }
+}
+
+#[tokio::test]
+async fn revoke_all_count_excludes_expired_rows() {
+    let (d, _, acc) = setup().await;
+    let r = CapabilityRole::Dav;
+    d.issue_capability_at(acc, r, 10, 1000).await.unwrap(); // expired, unrevoked
+    d.issue_capability_at(acc, r, 600, 1400).await.unwrap();
+    assert_eq!(d.revoke_all_capabilities_at(acc, 1500).await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn revoking_an_expired_token_is_false() {
+    let (d, _, acc) = setup().await;
+    let r = CapabilityRole::Dav;
+    let c = d.issue_capability_at(acc, r, 60, 1000).await.unwrap();
+    assert!(!d
+        .revoke_capability_at(c.expose_secret(), 1060)
+        .await
+        .unwrap());
+    assert!(!d
+        .revoke_capability_at(c.expose_secret(), 5000)
+        .await
+        .unwrap());
+    let c2 = d.issue_capability_at(acc, r, 60, 1000).await.unwrap();
+    assert!(d
+        .revoke_capability_at(c2.expose_secret(), 1059)
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn malformed_revoke_takes_no_write_lock() {
+    use std::time::Duration;
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("sqlite://{}", dir.path().join("meta.sqlite").display());
+    let d = Directory::new(SqliteStore::open(&url).await.unwrap());
+    // Hold the writer lock on another connection.
+    let held = d.store().begin_write().await.unwrap();
+    let r = tokio::time::timeout(Duration::from_millis(500), d.revoke_capability("zz")).await;
+    assert!(
+        matches!(r, Ok(Ok(false))),
+        "malformed revoke must return immediately"
+    );
+    let r = tokio::time::timeout(
+        Duration::from_millis(500),
+        d.revoke_capability(&"A".repeat(64)),
+    )
+    .await;
+    assert!(matches!(r, Ok(Ok(false))));
+    drop(held);
+}
+
+async fn active_count(d: &Directory, acc: AccountId) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM capabilities WHERE account_id = ? \
+         AND revoked_at IS NULL AND expires_at > unixepoch()",
+    )
+    .bind(acc.0)
+    .fetch_one(d.store().pool())
+    .await
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_issues_keep_exactly_64_active() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("sqlite://{}", dir.path().join("meta.sqlite").display());
+    let d = Directory::new(SqliteStore::open(&url).await.unwrap());
+    let dom = d.create_domain("example.com").await.unwrap();
+    let acc = d.create_account("alice", dom, None, None).await.unwrap();
+    let r = CapabilityRole::Imap;
+    for _ in 0..63 {
+        d.issue_capability(acc, r, 600).await.unwrap();
+    }
+    for _ in 0..5 {
+        let mut hs = Vec::new();
+        for _ in 0..16 {
+            let d = d.clone();
+            hs.push(tokio::spawn(async move {
+                d.issue_capability(acc, r, 600).await.is_ok()
+            }));
+        }
+        for h in hs {
+            assert!(h.await.unwrap());
+        }
+        assert_eq!(active_count(&d, acc).await, 64);
+    }
+    // Locking races issues: whatever interleaving, nothing stays active.
+    let mut hs = Vec::new();
+    for i in 0..16 {
+        let d = d.clone();
+        hs.push(tokio::spawn(async move {
+            if i == 8 {
+                d.set_status(acc, AccountStatus::Locked).await.unwrap();
+            } else {
+                let _ = d.issue_capability(acc, r, 600).await;
+            }
+        }));
+    }
+    for h in hs {
+        h.await.unwrap();
+    }
+    assert_eq!(active_count(&d, acc).await, 0);
+}

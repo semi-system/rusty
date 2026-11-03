@@ -33,6 +33,11 @@
 //! buffer on drop; the `&str` handed out by [`Capability::expose_secret`] and any copy the
 //! caller makes are the caller's responsibility. Compilers may elide dead stores.
 //!
+//! Timing: a *holder of a real token* can tell an unknown token from a known-but-dead one
+//! (expired, revoked, wrong role, non-active account) by timing, because the dead row is found
+//! and then filtered. This is accepted: the holder already has the token, and a caller without
+//! one cannot tell a malformed token from an unknown one.
+//!
 //! Times come from the database clock (`unixepoch()`); the `*_at` twins take an explicit
 //! `now` for tests.
 
@@ -114,6 +119,7 @@ pub struct CapabilityInfo {
 fn wipe_string(s: &mut String) {
     let mut bytes = std::mem::take(s).into_bytes();
     bytes.fill(0);
+    std::hint::black_box(&bytes);
 }
 
 fn hash_token(raw: &[u8; TOKEN_BYTES]) -> [u8; 32] {
@@ -157,16 +163,18 @@ fn encode_token(raw: &[u8; TOKEN_BYTES]) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
-/// Hash of the (possibly malformed) presented token; the constant dummy hash if malformed.
-fn lookup_hash(token: &str) -> [u8; 32] {
+/// Hash of a well-formed presented token; `None` if it is malformed.
+fn parse_hash(token: &str) -> Option<[u8; 32]> {
     let mut raw = [0u8; TOKEN_BYTES];
-    let hash = if decode_token(token, &mut raw) {
-        hash_token(&raw)
-    } else {
-        DUMMY_HASH
-    };
+    let hash = decode_token(token, &mut raw).then(|| hash_token(&raw));
     raw.fill(0);
+    std::hint::black_box(&raw);
     hash
+}
+
+/// Hash for a lookup: the constant dummy hash if the token is malformed.
+fn lookup_hash(token: &str) -> [u8; 32] {
+    parse_hash(token).unwrap_or(DUMMY_HASH)
 }
 
 fn parse_role(s: &str) -> Result<CapabilityRole> {
@@ -245,6 +253,7 @@ impl Directory {
         let hash = hash_token(&raw);
         let token = Capability(encode_token(&raw));
         raw.fill(0);
+        std::hint::black_box(&raw);
 
         let mut tx = self.store().begin_write().await?;
         let now = match now {
@@ -311,7 +320,8 @@ impl Directory {
     }
 
     /// Revoke one capability. `Ok(true)` if it was active; `Ok(false)` for a malformed,
-    /// unknown or already revoked token.
+    /// unknown, expired or already revoked token (a malformed one returns before any write
+    /// transaction is opened).
     pub async fn revoke_capability(&self, token: &str) -> Result<bool> {
         self.revoke_one(token, None).await
     }
@@ -322,11 +332,15 @@ impl Directory {
     }
 
     async fn revoke_one(&self, token: &str, now: Option<i64>) -> Result<bool> {
-        let hash = lookup_hash(token);
+        // A malformed token cannot match any row: answer without taking the writer lock.
+        let Some(hash) = parse_hash(token) else {
+            return Ok(false);
+        };
         let mut tx = self.store().begin_write().await?;
         let n = sqlx::query(
             "UPDATE capabilities SET revoked_at = MAX(COALESCE(?1, unixepoch()), issued_at) \
-             WHERE token_hash = ?2 AND revoked_at IS NULL",
+             WHERE token_hash = ?2 AND revoked_at IS NULL \
+               AND expires_at > COALESCE(?1, unixepoch())",
         )
         .bind(now)
         .bind(&hash[..])

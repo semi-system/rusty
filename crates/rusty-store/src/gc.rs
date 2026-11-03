@@ -107,6 +107,7 @@ pub async fn purge_deliveries(store: &SqliteStore, older_than: i64) -> Result<u6
 }
 
 /// [`purge_deliveries`] for rows older than `retention_secs` before `now` (unix seconds).
+#[doc(hidden)]
 pub async fn purge_deliveries_at(
     store: &SqliteStore,
     now: i64,
