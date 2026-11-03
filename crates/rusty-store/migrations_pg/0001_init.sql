@@ -11,6 +11,11 @@
 --   rowid member order               -> list_members.seq, per-list, assigned by a trigger
 --   partial/expression indexes       -> equivalent PostgreSQL indexes
 --   BEGIN IMMEDIATE                  -> BEGIN + mailbox row FOR UPDATE (repository layer)
+--
+-- ON CONFLICT: on accounts, aliases and lists a duplicate address raises RS001 from the BEFORE
+-- INSERT trigger before the arbiter index is consulted, so `ON CONFLICT DO NOTHING` does NOT
+-- suppress it; repositories must map RS001
+-- (Conflict). Plain UNIQUE violations on other tables raise 23505 and ON CONFLICT works there.
 
 CREATE FUNCTION rs_now() RETURNS bigint
 LANGUAGE sql STABLE PARALLEL SAFE
@@ -83,7 +88,8 @@ CREATE TABLE list_members (
 -- Assigns the next per-list seq. The list row is locked first (FOR NO KEY UPDATE, so it does
 -- not block the FK key-share locks of other inserts, only other seq allocators of this list):
 -- concurrent adds to one list queue up instead of computing the same MAX+1.
-CREATE FUNCTION rs_list_members_seq() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE FUNCTION rs_list_members_seq() RETURNS trigger LANGUAGE plpgsql
+SET search_path = pg_catalog, public AS $$
 BEGIN
   PERFORM 1 FROM lists WHERE id = NEW.list_id FOR NO KEY UPDATE;
   SELECT COALESCE(MAX(seq), 0) + 1 INTO NEW.seq FROM list_members WHERE list_id = NEW.list_id;
@@ -105,7 +111,8 @@ CREATE TABLE address_owners (
   UNIQUE (owner_kind, owner_id)
 );
 
-CREATE FUNCTION rs_address_unique() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE FUNCTION rs_address_unique() RETURNS trigger LANGUAGE plpgsql
+SET search_path = pg_catalog, public AS $$
 DECLARE
   kind text := CASE TG_TABLE_NAME
     WHEN 'accounts' THEN 'account'
@@ -159,11 +166,56 @@ CREATE TRIGGER lists_addr_unique_upd BEFORE UPDATE OF local_part, domain_id ON l
 CREATE TRIGGER lists_addr_unique_del BEFORE DELETE ON lists
   FOR EACH ROW EXECUTE FUNCTION rs_address_unique();
 
+-- The registry must only ever be written by rs_address_unique (trigger depth >= 2). A direct
+-- INSERT/UPDATE/DELETE/TRUNCATE would let it drift from accounts/aliases/lists (an address
+-- stuck forever, or an account and an alias sharing one). TRUNCATE of an owner table clears
+-- that kind's registry rows. A superuser can still DISABLE these triggers; the PG8 runtime
+-- role additionally gets no DML/TRUNCATE privilege on address_owners.
+CREATE FUNCTION rs_address_owners_guard() RETURNS trigger LANGUAGE plpgsql
+SET search_path = pg_catalog, public AS $$
+BEGIN
+  IF pg_trigger_depth() < 2 THEN
+    RAISE EXCEPTION 'address_owners is maintained by triggers only' USING ERRCODE = 'RS003';
+  END IF;
+  IF TG_OP = 'DELETE' THEN
+    RETURN OLD;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER address_owners_guard BEFORE INSERT OR UPDATE OR DELETE ON address_owners
+  FOR EACH ROW EXECUTE FUNCTION rs_address_owners_guard();
+CREATE FUNCTION rs_address_owners_truncate_guard() RETURNS trigger LANGUAGE plpgsql
+SET search_path = pg_catalog, public AS $$
+BEGIN
+  RAISE EXCEPTION 'address_owners is maintained by triggers only' USING ERRCODE = 'RS003';
+END;
+$$;
+CREATE TRIGGER address_owners_truncate_guard BEFORE TRUNCATE ON address_owners
+  FOR EACH STATEMENT EXECUTE FUNCTION rs_address_owners_truncate_guard();
+
+CREATE FUNCTION rs_address_truncate() RETURNS trigger LANGUAGE plpgsql
+SET search_path = pg_catalog, public AS $$
+BEGIN
+  DELETE FROM address_owners
+  WHERE owner_kind = CASE TG_TABLE_NAME
+    WHEN 'accounts' THEN 'account' WHEN 'aliases' THEN 'alias' ELSE 'list' END;
+  RETURN NULL;
+END;
+$$;
+CREATE TRIGGER accounts_addr_truncate AFTER TRUNCATE ON accounts
+  FOR EACH STATEMENT EXECUTE FUNCTION rs_address_truncate();
+CREATE TRIGGER aliases_addr_truncate AFTER TRUNCATE ON aliases
+  FOR EACH STATEMENT EXECUTE FUNCTION rs_address_truncate();
+CREATE TRIGGER lists_addr_truncate AFTER TRUNCATE ON lists
+  FOR EACH STATEMENT EXECUTE FUNCTION rs_address_truncate();
+
 CREATE TABLE blobs (
   hash        bytea PRIMARY KEY CONSTRAINT blobs_hash_length CHECK (octet_length(hash) = 32),
   size        bigint NOT NULL CONSTRAINT blobs_size_valid CHECK (size >= 0),
   refcount    bigint NOT NULL DEFAULT 0 CONSTRAINT blobs_refcount_valid CHECK (refcount >= 0),
-  zero_since  bigint CONSTRAINT blobs_zero_since_valid CHECK (zero_since IS NULL OR zero_since >= 0)
+  zero_since  bigint CONSTRAINT blobs_zero_since_valid CHECK (zero_since IS NULL OR zero_since >= 0),
+  CONSTRAINT blobs_zero_since_consistent CHECK ((refcount = 0) = (zero_since IS NOT NULL))
 );
 
 CREATE TABLE mailboxes (
@@ -191,7 +243,8 @@ CREATE TABLE folders (
 CREATE UNIQUE INDEX folders_sibling_name ON folders (mailbox_id, COALESCE(parent_id, 0), name);
 CREATE UNIQUE INDEX folders_role ON folders (mailbox_id, role) WHERE role <> 'custom';
 
-CREATE FUNCTION rs_folders_no_cycle() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE FUNCTION rs_folders_no_cycle() RETURNS trigger LANGUAGE plpgsql
+SET search_path = pg_catalog, public AS $$
 BEGIN
   IF NEW.parent_id IS NULL THEN
     RETURN NEW;
@@ -256,7 +309,8 @@ CREATE INDEX messages_thread ON messages (mailbox_id, thread_id);
 CREATE INDEX messages_msgid ON messages (mailbox_id, message_id_hdr);
 CREATE INDEX messages_deleted_at ON messages (deleted_at) WHERE deleted_at IS NOT NULL;
 
-CREATE FUNCTION rs_messages_refcount() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE FUNCTION rs_messages_refcount() RETURNS trigger LANGUAGE plpgsql
+SET search_path = pg_catalog, public AS $$
 BEGIN
   IF TG_OP = 'INSERT' THEN
     UPDATE blobs SET refcount = refcount + 1 WHERE hash = NEW.blob_hash;
@@ -278,21 +332,31 @@ CREATE TRIGGER messages_refcount_del AFTER DELETE ON messages
 CREATE TRIGGER messages_refcount_upd AFTER UPDATE OF blob_hash ON messages
   FOR EACH ROW EXECUTE FUNCTION rs_messages_refcount();
 
-CREATE FUNCTION rs_blobs_zero_since() RETURNS trigger LANGUAGE plpgsql AS $$
+-- BEFORE trigger assigning NEW.zero_since: no second row version per refcount change (the
+-- SQLite AFTER trigger re-updates the row). Together with blobs_zero_since_consistent this
+-- makes the GC invariant a real constraint: refcount = 0 <=> zero_since is set. (Stricter than
+-- SQLite, which allows `refcount>0 AND zero_since NOT NULL` and `refcount=0 AND zero_since IS NULL`
+-- by direct UPDATE; the latter would hide an unreferenced blob from GC forever.)
+CREATE FUNCTION rs_blobs_zero_since() RETURNS trigger LANGUAGE plpgsql
+SET search_path = pg_catalog, public AS $$
 BEGIN
-  IF TG_OP = 'INSERT' AND NEW.refcount = 0 THEN
-    UPDATE blobs SET zero_since = rs_now() WHERE hash = NEW.hash;
-  ELSIF TG_OP = 'UPDATE' AND NEW.refcount = 0 AND OLD.refcount <> 0 THEN
-    UPDATE blobs SET zero_since = rs_now() WHERE hash = NEW.hash;
-  ELSIF TG_OP = 'UPDATE' AND NEW.refcount > 0 THEN
-    UPDATE blobs SET zero_since = NULL WHERE hash = NEW.hash;
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.refcount = 0 THEN
+      NEW.zero_since := rs_now();
+    END IF;
+  ELSIF NEW.refcount = 0 THEN
+    IF OLD.refcount <> 0 THEN
+      NEW.zero_since := rs_now();
+    END IF;
+  ELSE
+    NEW.zero_since := NULL;
   END IF;
   RETURN NEW;
 END;
 $$;
-CREATE TRIGGER blobs_zero_since_ins AFTER INSERT ON blobs
+CREATE TRIGGER blobs_zero_since_ins BEFORE INSERT ON blobs
   FOR EACH ROW EXECUTE FUNCTION rs_blobs_zero_since();
-CREATE TRIGGER blobs_zero_since_refcount AFTER UPDATE OF refcount ON blobs
+CREATE TRIGGER blobs_zero_since_refcount BEFORE UPDATE OF refcount ON blobs
   FOR EACH ROW EXECUTE FUNCTION rs_blobs_zero_since();
 
 CREATE TABLE keywords (
