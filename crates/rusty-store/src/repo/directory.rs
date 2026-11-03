@@ -23,12 +23,23 @@ use rusty_core::{AccountId, DomainId, Error, ListId, MailboxId, PlanId, Result};
 
 /// Input of `create_account`. `local` is already normalized by the caller (normalization lives
 /// in `rusty-directory` and stays backend-neutral).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct NewAccount {
     pub local: String,
     pub domain: DomainId,
     pub plan: Option<PlanId>,
     pub password_hash: Option<String>,
+}
+
+impl std::fmt::Debug for NewAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NewAccount")
+            .field("local", &self.local)
+            .field("domain", &self.domain)
+            .field("plan", &self.plan)
+            .field("password_hash", &self.password_hash.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,10 +94,19 @@ pub struct ConfigLayers {
 }
 
 /// What `account_auth` returns: the status and the stored password hash, if any.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AuthRow {
     pub status: String,
     pub password_hash: Option<String>,
+}
+
+impl std::fmt::Debug for AuthRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthRow")
+            .field("status", &self.status)
+            .field("password_hash", &self.password_hash.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 /// A capability row that is currently valid for the requested role.

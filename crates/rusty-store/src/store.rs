@@ -15,7 +15,7 @@ use crate::repo::{DirectoryRepo, MailboxRepo};
 use crate::{SqliteStore, DEFAULT_BUSY_TIMEOUT};
 
 /// Which backend to open and how.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum StoreConfig {
     /// SQLite: `url` is a sqlx URL (`sqlite://path` or `sqlite::memory:`).
     Sqlite { url: String, busy_timeout: Duration },
@@ -26,6 +26,26 @@ pub enum StoreConfig {
         url: String,
         pool: crate::PgPoolConfig,
     },
+}
+
+// Manual Debug: the Postgres URL carries the password, so it is never printed (same contract as
+// `PgStore`). SQLite URLs are file paths and stay visible.
+impl std::fmt::Debug for StoreConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StoreConfig::Sqlite { url, busy_timeout } => f
+                .debug_struct("Sqlite")
+                .field("url", url)
+                .field("busy_timeout", busy_timeout)
+                .finish(),
+            #[cfg(feature = "postgres")]
+            StoreConfig::Postgres { pool, .. } => f
+                .debug_struct("Postgres")
+                .field("url", &"<redacted>")
+                .field("pool", pool)
+                .finish(),
+        }
+    }
 }
 
 impl StoreConfig {
