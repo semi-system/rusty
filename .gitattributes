@@ -1,0 +1,14 @@
+# Force LF line endings everywhere: scripts, SQL migrations, snapshots and
+# include_str!-embedded files are byte-sensitive, and some developers use Windows
+# git with core.autocrlf=true. An explicit attribute overrides that setting.
+* text=auto eol=lf
+
+# Binary files must never be touched by line-ending conversion.
+*.png binary
+*.jpg binary
+*.ico binary
+*.gz  binary
+*.zip binary
+*.pdf binary
+*.db  binary
+*.sqlite binary
