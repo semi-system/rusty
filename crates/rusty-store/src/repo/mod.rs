@@ -481,6 +481,48 @@ pub(crate) fn render_pg(sql: &str) -> String {
     sql.replace("{NOW}", "rs_now()")
 }
 
+// ---------------------------------------------------------------- generic reads (experiment)
+
+/// `changes_since` written ONCE over `sqlx::Database` instead of once per backend. It works,
+/// at the price of the bound list below (see the PG2 report: usable for plain read queries
+/// that only bind/decode primitive types; not worth it for the write paths).
+pub(crate) async fn changes_since_generic<'e, DB, E>(
+    ex: E,
+    sql: &str,
+    mb: MailboxId,
+    seq: i64,
+    limit: i64,
+) -> Result<ChangePage>
+where
+    DB: sqlx::Database,
+    E: sqlx::Executor<'e, Database = DB>,
+    for<'q> <DB as sqlx::Database>::Arguments<'q>: sqlx::IntoArguments<'q, DB>,
+    i64: sqlx::Type<DB> + for<'q> sqlx::Encode<'q, DB>,
+    (i64, String, i64, String): for<'r> sqlx::FromRow<'r, DB::Row>,
+{
+    use crate::mailbox::{Change, ChangeItem, ChangeOp};
+    let rows: Vec<(i64, String, i64, String)> = sqlx::query_as(sql)
+        .bind(mb.0)
+        .bind(seq)
+        .bind(limit + 1)
+        .fetch_all(ex)
+        .await
+        .map_err(crate::map_db_error)?;
+    let more = rows.len() as i64 > limit;
+    let changes = rows
+        .into_iter()
+        .take(limit as usize)
+        .map(|(seq, kind, item_id, op)| {
+            Ok(Change {
+                seq,
+                item: ChangeItem::from_row(&kind, item_id)?,
+                op: ChangeOp::parse(&op)?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(ChangePage { changes, more })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,3 +552,4 @@ mod tests {
         }
     }
 }
+

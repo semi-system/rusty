@@ -17,7 +17,7 @@ use super::{
     JobFence, Resolution, SYSTEM_FOLDERS, SYSTEM_FOLDER_TABLE,
 };
 use crate::mailbox::{
-    to_flags, to_uid, Change, ChangeItem, ChangeOp, ChangePage, DeliverOutcome, MessageRef,
+    to_flags, to_uid, ChangeItem, ChangeOp, ChangePage, DeliverOutcome, MessageRef,
     MessageSummary, MAX_FOLDER_DEPTH,
 };
 use crate::{map_db_error, SqliteStore};
@@ -456,25 +456,6 @@ impl MailboxRepo for SqliteRepo {
     }
 
     async fn changes_since(&self, mb: MailboxId, seq: i64, limit: i64) -> Result<ChangePage> {
-        let rows: Vec<(i64, String, i64, String)> = sqlx::query_as(&r(q::CHANGES))
-            .bind(mb.0)
-            .bind(seq)
-            .bind(limit + 1)
-            .fetch_all(self.store.pool())
-            .await
-            .map_err(map_db_error)?;
-        let more = rows.len() as i64 > limit;
-        let changes = rows
-            .into_iter()
-            .take(limit as usize)
-            .map(|(seq, kind, item_id, op)| {
-                Ok(Change {
-                    seq,
-                    item: ChangeItem::from_row(&kind, item_id)?,
-                    op: ChangeOp::parse(&op)?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(ChangePage { changes, more })
+        super::changes_since_generic(self.store.pool(), &r(q::CHANGES), mb, seq, limit).await
     }
 }

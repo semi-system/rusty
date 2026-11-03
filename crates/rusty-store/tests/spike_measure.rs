@@ -154,3 +154,74 @@ async fn concurrency_shapes() {
         );
     }
 }
+
+/// Latency of one append into a COLD mailbox while 12 tasks hammer ONE hot mailbox. On
+/// Postgres every waiter of the hot mailbox's row lock holds a pooled connection, so with a
+/// small pool the cold mailbox queues behind them in `acquire` (head-of-line blocking through
+/// the pool); SQLite has one global write lock and shows its own, different queueing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore]
+async fn head_of_line_blocking_through_the_pool() {
+    async fn cold_latency(hot: &SpikeMailbox, cold: &SpikeMailbox, hot_writers: usize) -> Vec<Duration> {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut tasks = vec![];
+        for t in 0..hot_writers {
+            let (hot, stop) = (hot.clone(), stop.clone());
+            tasks.push(tokio::spawn(async move {
+                let mut i = 0;
+                while !stop.load(Ordering::Relaxed) {
+                    hot.append(INBOX, raw(&format!("h{t}-{i}"), None), Flags::default())
+                        .await
+                        .unwrap();
+                    i += 1;
+                }
+            }));
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let mut lat = vec![];
+        for i in 0..40 {
+            let s = Instant::now();
+            cold.append(INBOX, raw(&format!("c{i}"), None), Flags::default()).await.unwrap();
+            lat.push(s.elapsed());
+        }
+        stop.store(true, Ordering::Relaxed);
+        for t in tasks {
+            t.await.unwrap();
+        }
+        lat
+    }
+
+    for b in backends().await {
+        let (_, hot_acc, hot) = acct(&b, &format!("hot{}", TAG.fetch_add(1, Ordering::Relaxed))).await;
+        let (_, cold_acc, cold) = acct(&b, &format!("cold{}", TAG.fetch_add(1, Ordering::Relaxed))).await;
+        let _ = (hot_acc, cold_acc);
+        for writers in [0usize, 12] {
+            let mut lat = cold_latency(&hot, &cold, writers).await;
+            println!(
+                "HOL   {:9} pool=4 hot_writers={writers:2}: cold-mailbox append p50={:?} p99={:?}",
+                b.name,
+                pct(&mut lat, 0.5),
+                pct(&mut lat, 0.99)
+            );
+        }
+        #[cfg(feature = "postgres")]
+        if let Some(db) = &b._db {
+            use rusty_store::repo::pg::PgRepo;
+            let cfg = rusty_store::PgPoolConfig {
+                max_connections: 16,
+                ..Default::default()
+            };
+            let store = rusty_store::PgStore::connect_with_config(db.url(), cfg).await.unwrap();
+            let repo = std::sync::Arc::new(PgRepo::new(store));
+            let hot16 = SpikeMailbox::open(repo.clone(), b.blobs.clone(), hot_acc).await.unwrap();
+            let cold16 = SpikeMailbox::open(repo, b.blobs.clone(), cold_acc).await.unwrap();
+            let mut lat = cold_latency(&hot16, &cold16, 12).await;
+            println!(
+                "HOL   {:9} pool=16 hot_writers=12: cold-mailbox append p50={:?} p99={:?}",
+                b.name,
+                pct(&mut lat, 0.5),
+                pct(&mut lat, 0.99)
+            );
+        }
+    }
+}

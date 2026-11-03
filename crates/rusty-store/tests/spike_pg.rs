@@ -176,3 +176,41 @@ async fn retryable_sqlstates_are_classified_from_real_errors() {
     store.close().await;
     db.cleanup().await;
 }
+
+/// GC deleting an unreferenced blob row (uncommitted) while a new message of the same content
+/// is being stored: the store waits for the delete, then re-creates the row and succeeds; the
+/// message never ends up pointing at a deleted blob. (The other interleaving, delete committed
+/// between the blob insert and the blob lock, is covered by the bounded loop in `lock_blobs`
+/// and is NOT exercised here: it needs a pause between two statements of one transaction.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gc_delete_in_flight_does_not_lose_a_new_reference() {
+    if pg_admin_url().is_none() {
+        return;
+    }
+    let b = pg_backend().await.unwrap();
+    let (store, _) = b.pg.as_ref().unwrap();
+    let (_, _, mb) = acct(&b, "gc").await;
+    mb.append(INBOX, raw("gc-me", None), Flags::default()).await.unwrap();
+    sqlx::query("DELETE FROM messages").execute(store.pool()).await.unwrap();
+    let zero: i64 = sqlx::query_scalar("SELECT count(*) FROM blobs WHERE refcount = 0 AND zero_since IS NOT NULL")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(zero, 1);
+
+    let mut gc = store.pool().begin().await.unwrap();
+    sqlx::query("DELETE FROM blobs WHERE refcount = 0").execute(&mut *gc).await.unwrap();
+    let mb2 = mb.clone();
+    let task = tokio::spawn(async move {
+        mb2.append(INBOX, raw("gc-me", None), Flags::default()).await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    assert!(!task.is_finished(), "the append must wait for the in-flight delete");
+    gc.commit().await.unwrap();
+    task.await.unwrap().expect("append succeeds after the delete committed");
+    let (rows, refcount): (i64, i64) = sqlx::query_as("SELECT count(*), max(refcount) FROM blobs")
+        .fetch_one(store.pool())
+        .await
+        .unwrap();
+    assert_eq!((rows, refcount), (1, 1));
+}
