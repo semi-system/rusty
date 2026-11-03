@@ -99,23 +99,20 @@ proptest! {
 async fn duplicate_message_ids_choose_the_smallest_id_and_deleted_anchor_counts() {
     let _p = stmts::probe();
     let e = env().await;
-    let a = e
-        .mb
-        .append(INBOX, raw("a", Some("dup@t")), Flags::empty())
-        .await
-        .unwrap();
-    let b = e
-        .mb
-        .append(INBOX, raw("b", Some("dup@t")), Flags::empty())
-        .await
-        .unwrap();
+    let a =
+        e.mb.append(INBOX, raw("a", Some("dup@t")), Flags::empty())
+            .await
+            .unwrap();
+    let b =
+        e.mb.append(INBOX, raw("b", Some("dup@t")), Flags::empty())
+            .await
+            .unwrap();
     assert_ne!(a.id, b.id);
     e.mb.expunge(a.id).await.unwrap(); // a soft-deleted anchor still anchors
-    let c = e
-        .mb
-        .append(INBOX, reply("c", None, Some("dup@t"), &[]), Flags::empty())
-        .await
-        .unwrap();
+    let c =
+        e.mb.append(INBOX, reply("c", None, Some("dup@t"), &[]), Flags::empty())
+            .await
+            .unwrap();
     let t = |id: MessageId| format!("SELECT thread_id FROM messages WHERE id = {}", id.0);
     assert_eq!(e.scalar(&t(c.id)).await, e.scalar(&t(a.id)).await);
 }
@@ -229,7 +226,9 @@ async fn folder_equivalence(ops: Vec<FOp>) {
                     Some(p) => oracle_depth(&tree, p, None).and_then(|d| too_deep(d, 1)),
                     None => Ok(()),
                 };
-                let got = e.mb.create_folder(parent.map(FolderId), &format!("f{}", order.len())).await;
+                let got =
+                    e.mb.create_folder(parent.map(FolderId), &format!("f{}", order.len()))
+                        .await;
                 assert_eq!(kind(&got), kind(&expect), "create under {parent:?}");
                 if let Ok(id) = got {
                     tree.insert(id.0, parent);
@@ -275,11 +274,10 @@ async fn depth_64_is_allowed_65_is_invalid_and_descendant_move_conflicts() {
     let mut cur = e.mb.create_folder(None, "d1").await.unwrap();
     let first = cur;
     for i in 2..=MAX_FOLDER_DEPTH {
-        cur = e
-            .mb
-            .create_folder(Some(cur), &format!("d{i}"))
-            .await
-            .unwrap();
+        cur =
+            e.mb.create_folder(Some(cur), &format!("d{i}"))
+                .await
+                .unwrap();
     }
     assert!(matches!(
         e.mb.create_folder(Some(cur), "d65").await,
@@ -297,11 +295,10 @@ async fn ancestor_depth_uses_one_query() {
     let shallow = e.mb.create_folder(None, "s").await.unwrap();
     let mut deep = e.mb.create_folder(None, "d1").await.unwrap();
     for i in 2..=60 {
-        deep = e
-            .mb
-            .create_folder(Some(deep), &format!("d{i}"))
-            .await
-            .unwrap();
+        deep =
+            e.mb.create_folder(Some(deep), &format!("d{i}"))
+                .await
+                .unwrap();
     }
     let p = stmts::probe();
     e.mb.create_folder(None, "r").await.unwrap(); // no ancestor walk at all
@@ -312,6 +309,10 @@ async fn ancestor_depth_uses_one_query() {
     p.reset();
     e.mb.create_folder(Some(deep), "b").await.unwrap(); // a 60-level walk
     let sixty = p.count();
-    assert_eq!(one, root + 1, "an ancestor walk costs exactly one statement");
+    assert_eq!(
+        one,
+        root + 1,
+        "an ancestor walk costs exactly one statement"
+    );
     assert_eq!(sixty, one, "and does not grow with depth");
 }

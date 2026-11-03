@@ -24,9 +24,10 @@ pub use jobs::{
     MAX_PENDING_JOBS_PER_DOMAIN, MAX_RETRY_AFTER_SECS, MAX_SETTLED_PER_CLAIM,
 };
 pub use mailbox::{
-    normalize_keyword, validate_folder_name, Change, ChangeItem, ChangeOp, ChangePage,
-    DeliverOutcome, Mailbox, MailboxLimits, MessageRef, MessageSummary, DEFAULT_MAX_MESSAGE_BYTES,
-    MAX_FOLDER_DEPTH, MAX_FOLDER_NAME_BYTES, MAX_KEYWORDS_PER_MESSAGE, MAX_KEYWORD_BYTES, MAX_PAGE,
+    normalize_keyword, validate_folder_name, BatchOutcome, Change, ChangeItem, ChangeOp,
+    ChangePage, DeliverItem, DeliverOutcome, Mailbox, MailboxLimits, MessageRef, MessageSummary,
+    MoveBatch, DEFAULT_MAX_MESSAGE_BYTES, MAX_BATCH, MAX_DELIVER_BATCH_BYTES, MAX_FOLDER_DEPTH,
+    MAX_FOLDER_NAME_BYTES, MAX_KEYWORDS_PER_MESSAGE, MAX_KEYWORD_BYTES, MAX_PAGE,
 };
 pub use sqlite::{map_db_error, SqliteStore};
 pub use traits::{MetadataStore, SqliteTx, Tx};
