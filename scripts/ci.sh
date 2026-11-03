@@ -7,6 +7,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 MUSL=x86_64-unknown-linux-musl
 TARGET_DIR="${CARGO_TARGET_DIR:-target}"
 FUZZ_SECS="${FUZZ_SECS:-60}"
+DEGRADED=0
 export CC_x86_64_unknown_linux_musl="${CC_x86_64_unknown_linux_musl:-musl-gcc}"
 
 STAGES=0
@@ -31,6 +32,37 @@ rustup target list --installed | grep -qx "$MUSL" || { echo "[FAIL] missing rust
 # The repo is not rustfmt-clean yet, so formatting is not gated here; clippy is.
 stage "clippy"       cargo clippy --workspace --all-targets -- -D warnings
 stage "test (glibc)" cargo test --workspace
+
+postgres_tests() {
+  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+    DEGRADED=1
+    echo "WARNING: Docker is unavailable; PostgreSQL smoke tests were not run." >&2
+    return 0
+  fi
+
+  local url_file="$HOME/.rusty-pg-test-url" url rc=0
+  bash scripts/pg-up.sh || return 1
+  # Also clean up if CI is interrupted or exits unexpectedly during this stage.
+  trap 'bash scripts/pg-down.sh >/dev/null 2>&1 || true' EXIT
+  if ! IFS= read -r url < "$url_file" || [ -z "$url" ]; then
+    echo "PostgreSQL URL file is missing or empty" >&2
+    bash scripts/pg-down.sh
+    trap - EXIT
+    return 1
+  fi
+  for _ in 1 2 3; do
+    RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
+      cargo test -p rusty-store --features postgres --test pg_smoke || { rc=$?; break; }
+  done
+  if [ "$rc" -eq 0 ]; then
+    RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
+      cargo clippy -p rusty-store --features postgres --all-targets -- -D warnings || rc=$?
+  fi
+  bash scripts/pg-down.sh
+  trap - EXIT
+  return "$rc"
+}
+stage "postgres" postgres_tests
 stage "cargo-deny"   cargo deny check
 stage "cargo-audit"  cargo audit
 stage "test (musl)"  cargo test --workspace --target "$MUSL"
@@ -54,7 +86,6 @@ check_static() {
 }
 stage "static linking" check_static
 
-DEGRADED=0
 fuzz_all() {
   if command -v cargo-fuzz >/dev/null 2>&1 && rustup toolchain list | grep -q "^nightly"; then
     local t

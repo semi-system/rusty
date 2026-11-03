@@ -1192,6 +1192,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "hex",
  "proptest",
  "rand_core 0.6.4",
  "rustix",
@@ -1202,6 +1203,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]
@@ -1445,6 +1447,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx-core",
+ "sqlx-postgres",
  "sqlx-sqlite",
  "syn 2.0.119",
  "tokio",

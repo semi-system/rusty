@@ -6,6 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+postgres = ["sqlx/postgres"]
+
 [dependencies]
 rusty-core = { path = "../rusty-core" }
 rusty-mime = { path = "../rusty-mime" }
@@ -19,7 +23,9 @@ rand_core.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+hex.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+url.workspace = true

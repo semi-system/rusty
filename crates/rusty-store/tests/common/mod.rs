@@ -6,6 +6,9 @@ use bytes::Bytes;
 use rusty_core::{AccountId, FolderId};
 use rusty_store::{BlobStore, FsBlobStore, Mailbox, SqliteStore, BLOB_ROOT_MARKER, GC_LOCK_FILE};
 
+#[cfg(feature = "postgres")]
+pub mod pg;
+
 /// Fresh private in-memory store with migrations applied.
 pub async fn mem() -> SqliteStore {
     SqliteStore::open("sqlite::memory:").await.unwrap()

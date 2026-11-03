@@ -4,6 +4,8 @@ mod blob;
 mod gc;
 mod jobs;
 mod mailbox;
+#[cfg(feature = "postgres")]
+mod pg;
 mod sqlite;
 mod traits;
 
@@ -29,5 +31,7 @@ pub use mailbox::{
     MoveBatch, DEFAULT_MAX_MESSAGE_BYTES, MAX_BATCH, MAX_DELIVER_BATCH_BYTES, MAX_FOLDER_DEPTH,
     MAX_FOLDER_NAME_BYTES, MAX_KEYWORDS_PER_MESSAGE, MAX_KEYWORD_BYTES, MAX_PAGE,
 };
+#[cfg(feature = "postgres")]
+pub use pg::{PgPoolConfig, PgStore};
 pub use sqlite::{map_db_error, SqliteStore};
 pub use traits::{MetadataStore, SqliteTx, Tx};

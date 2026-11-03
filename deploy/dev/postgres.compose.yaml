@@ -1,0 +1,43 @@
+# Throw-away PostgreSQL 18 for tests and local development ONLY. Never use this file or its
+# settings for anything holding real data.
+#
+# TEST-ONLY DURABILITY SETTINGS: `fsync=off` and `full_page_writes=off` are enabled here
+# purely for test speed; the data directory is a tmpfs and is lost on stop anyway.
+# `synchronous_commit` and every other setting stay at the server default.
+#
+# Hardening: published on 127.0.0.1 only, password supplied per run via the environment
+# (scripts/pg-up.sh generates it; it is never committed), all capabilities dropped,
+# no-new-privileges, read-only root filesystem, memory and pids limits. The container runs
+# as the image's `postgres` user (uid 999) from the start so no capability is needed.
+# The image reference is pinned by digest (deploy/images.lock).
+name: rusty-pg-test
+services:
+  postgres:
+    image: postgres@sha256:3a4264520e121176619f54ff867d12774bc81e95e7b84db58d63bccdb6144b81
+    container_name: rusty-pg-test
+    user: "999:999"
+    environment:
+      POSTGRES_PASSWORD: ${RUSTY_PG_PASSWORD:?set by scripts/pg-up.sh}
+      POSTGRES_USER: rusty
+      POSTGRES_DB: postgres
+    command: ["postgres", "-c", "fsync=off", "-c", "full_page_writes=off", "-c", "listen_addresses=*"]
+    ports:
+      # Omit `published`: Docker chooses an unused host port, avoiding a bind/launch race.
+      - target: 5432
+        host_ip: 127.0.0.1
+        protocol: tcp
+    read_only: true
+    tmpfs:
+      - /var/lib/postgresql:uid=999,gid=999,mode=0700,size=1g
+      - /var/run/postgresql:uid=999,gid=999,mode=0755,size=4m
+      - /tmp:uid=999,gid=999,mode=1777,size=64m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 2g
+    pids_limit: 256
+    shm_size: 128m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rusty -d postgres"]
+      interval: 1s
+      timeout: 3s
+      retries: 30

@@ -1,0 +1,4 @@
+# Pinned container images (name, digest, date resolved). Update deliberately, never `latest`.
+# Digest is the multi-arch index digest as reported by `docker image inspect` RepoDigests
+# after `docker pull postgres:18` (verified, not copied from a note).
+postgres:18  postgres@sha256:3a4264520e121176619f54ff867d12774bc81e95e7b84db58d63bccdb6144b81  2026-11-03  (PG 18.6)
