@@ -1134,6 +1134,7 @@ name = "rusty-core"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "proptest",
  "rustix",
  "serde",
  "sha2",
