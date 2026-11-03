@@ -199,7 +199,9 @@ impl Directory {
             Some(p) => Some(hash_password(p).await?),
             None => None,
         };
-        let mut tx = self.store.pool().begin().await.map_err(map_db_error)?;
+        // BEGIN IMMEDIATE: the write lock is taken up front (spec: every multi-statement
+        // write uses `begin_write`, never a deferred `pool.begin()`).
+        let mut tx = self.store.begin_write().await?;
         let acc: i64 = sqlx::query_scalar(
             "INSERT INTO accounts (local_part, domain_id, plan_id, password_hash, status, created_at) \
              VALUES (?, ?, ?, ?, 'active', ?) RETURNING id",
@@ -213,11 +215,14 @@ impl Directory {
         .await
         .map_err(map_db_error)?;
         let uv_base = uid_validity_base();
+        // next_folder_id (migration 0003): custom folders start after the system folders.
         let mb: i64 = sqlx::query_scalar(
-            "INSERT INTO mailboxes (account_id, uid_validity) VALUES (?, ?) RETURNING id",
+            "INSERT INTO mailboxes (account_id, uid_validity, next_folder_id) VALUES (?, ?, ?) \
+             RETURNING id",
         )
         .bind(acc)
         .bind(uv_base + SYSTEM_FOLDERS)
+        .bind(SYSTEM_FOLDERS + 1)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db_error)?;

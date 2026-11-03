@@ -14,7 +14,18 @@ macro_rules! newtype_id {
     };
 }
 
-newtype_id!(AccountId, MailboxId, FolderId, MessageId, DomainId, PlanId, ListId);
+newtype_id!(
+    AccountId,
+    MailboxId,
+    FolderId,
+    MessageId,
+    DomainId,
+    PlanId,
+    ListId,
+    /// Thread of a message, scoped to its mailbox. A message with no known parent starts a
+    /// thread whose id equals its own `MessageId` value.
+    ThreadId,
+);
 
 /// Lowercase hex SHA-256 digest (exactly 64 chars).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]

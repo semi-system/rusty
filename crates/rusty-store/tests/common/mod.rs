@@ -43,7 +43,8 @@ pub async fn account(store: &SqliteStore, local: &str) -> AccountId {
     .await
     .unwrap();
     let mb: i64 = sqlx::query_scalar(
-        "INSERT INTO mailboxes (account_id, uid_validity) VALUES (?, 7) RETURNING id",
+        "INSERT INTO mailboxes (account_id, uid_validity, next_folder_id) VALUES (?, 7, 6) \
+         RETURNING id",
     )
     .bind(acc)
     .fetch_one(p)

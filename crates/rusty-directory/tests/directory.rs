@@ -617,3 +617,42 @@ async fn local_part_allow_list_rejects_everything_else() {
         assert!(all_paths(good).await, "{good:?}");
     }
 }
+
+// ---------- folder id counter seed (migration 0003) and write transactions ----------
+
+#[tokio::test]
+async fn create_account_seeds_next_folder_id_after_system_folders() {
+    let d = dir().await;
+    let dom = d.create_domain("example.com").await.unwrap();
+    let acc = d.create_account("seed", dom, None, None).await.unwrap();
+    let mb = d.mailbox_for(acc).await.unwrap();
+    let next: i64 = sqlx::query_scalar("SELECT next_folder_id FROM mailboxes WHERE id = ?")
+        .bind(mb.0)
+        .fetch_one(d.store().pool())
+        .await
+        .unwrap();
+    assert_eq!(next, 6);
+}
+
+/// `create_account` runs in a `BEGIN IMMEDIATE` transaction: concurrent creations on a
+/// file-backed database (pool of 4 connections) all succeed and none is half-written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_create_account_on_file_db() {
+    let tmp = tempfile::tempdir().unwrap();
+    let url = format!("sqlite://{}", tmp.path().join("meta.sqlite").display());
+    let d = Directory::new(SqliteStore::open(&url).await.unwrap());
+    let dom = d.create_domain("example.com").await.unwrap();
+    let mut tasks = Vec::new();
+    for i in 0..32 {
+        let d = d.clone();
+        tasks.push(tokio::spawn(async move {
+            d.create_account(&format!("user{i}"), dom, None, None).await
+        }));
+    }
+    for t in tasks {
+        t.await.unwrap().unwrap();
+    }
+    assert_eq!(count(&d, "accounts").await, 32);
+    assert_eq!(count(&d, "mailboxes").await, 32);
+    assert_eq!(count(&d, "folders").await, 32 * 5);
+}

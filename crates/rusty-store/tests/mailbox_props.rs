@@ -6,7 +6,7 @@ use std::sync::Arc;
 use common::*;
 use proptest::prelude::*;
 use rusty_core::{Flags, FolderId, MessageId};
-use rusty_store::Mailbox;
+use rusty_store::{Mailbox, MAX_PAGE};
 
 #[derive(Debug, Clone)]
 enum Op {
@@ -100,7 +100,7 @@ async fn run(ops: Vec<Op>) {
             }
             _ => {}
         }
-        let changes = mb.changes_since(0).await.unwrap();
+        let changes = mb.changes_since(0, MAX_PAGE).await.unwrap().changes;
         assert_eq!(changes.len(), expected_changes);
         for (i, c) in changes.iter().enumerate() {
             assert_eq!(c.seq, i as i64 + 1, "seq gapless and monotonic");
@@ -108,7 +108,7 @@ async fn run(ops: Vec<Op>) {
     }
     // Each folder's live uids are strictly increasing in list order and unique.
     for f in &folders {
-        let list = mb.list_folder(*f).await.unwrap();
+        let list = mb.list_folder(*f, 0, MAX_PAGE).await.unwrap();
         assert!(list.windows(2).all(|w| w[0].uid < w[1].uid));
     }
 }
@@ -158,14 +158,15 @@ async fn concurrent_appends_no_duplicates() {
     assert_eq!(ids, (1..=50).collect::<Vec<i64>>());
 
     let seqs: Vec<i64> = mb
-        .changes_since(0)
+        .changes_since(0, MAX_PAGE)
         .await
         .unwrap()
+        .changes
         .iter()
         .map(|c| c.seq)
         .collect();
     assert_eq!(seqs, (1..=50).collect::<Vec<i64>>());
-    assert_eq!(mb.list_folder(INBOX).await.unwrap().len(), 50);
+    assert_eq!(mb.list_folder(INBOX, 0, MAX_PAGE).await.unwrap().len(), 50);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -196,9 +197,10 @@ async fn concurrent_appends_into_different_folders() {
     ids.sort_unstable();
     assert_eq!(ids, vec![1, 2]);
     let seqs: Vec<i64> = mb
-        .changes_since(0)
+        .changes_since(0, MAX_PAGE)
         .await
         .unwrap()
+        .changes
         .iter()
         .map(|c| c.seq)
         .collect();

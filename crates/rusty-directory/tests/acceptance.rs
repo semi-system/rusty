@@ -10,9 +10,39 @@ use bytes::Bytes;
 use rusty_core::{BlobHash, Flags, FolderId, MessageId};
 use rusty_directory::Directory;
 use rusty_store::{
-    collect_blobs_at, purge_deleted, BlobStore, ChangeKind, ChangeOp, FsBlobStore, Mailbox,
-    SqliteStore,
+    collect_blobs_at, purge_deleted, BlobStore, Change, ChangeItem, ChangeOp, FsBlobStore,
+    Mailbox, MessageSummary, SqliteStore, MAX_PAGE,
 };
+
+/// Every live message of `f`, paging through `list_folder` (pages of at most `MAX_PAGE`).
+async fn list_all(mb: &Mailbox, f: FolderId) -> Vec<MessageSummary> {
+    let mut out: Vec<MessageSummary> = Vec::new();
+    loop {
+        let after = out.last().map_or(0, |s| s.uid);
+        let page = mb.list_folder(f, after, MAX_PAGE).await.unwrap();
+        assert!(page.len() <= MAX_PAGE as usize);
+        if page.is_empty() {
+            return out;
+        }
+        out.extend(page);
+    }
+}
+
+/// Every change after `seq`, paging through `changes_since`.
+async fn changes_all(mb: &Mailbox, mut seq: i64) -> Vec<Change> {
+    let mut out = Vec::new();
+    loop {
+        let page = mb.changes_since(seq, MAX_PAGE).await.unwrap();
+        assert!(page.changes.len() <= MAX_PAGE as usize);
+        if let Some(last) = page.changes.last() {
+            seq = last.seq;
+        }
+        out.extend(page.changes);
+        if !page.more {
+            return out;
+        }
+    }
+}
 
 const TOTAL: usize = 10_000;
 const DUPLICATES: usize = 500;
@@ -132,9 +162,9 @@ async fn acceptance_10k_messages() {
     }
 
     // Threading: a reply lands in its parent's thread.
-    let mut thread_of: HashMap<i64, i64> = HashMap::new();
+    let mut thread_of: HashMap<i64, rusty_core::ThreadId> = HashMap::new();
     for f in targets {
-        for s in mb.list_folder(f).await.unwrap() {
+        for s in list_all(&mb, f).await {
             thread_of.insert(s.id.0, s.thread_id);
         }
     }
@@ -149,7 +179,7 @@ async fn acceptance_10k_messages() {
     }
     assert!(replies > 900);
     // Unrelated messages (no shared references) must not be merged into one thread.
-    let unrelated: HashSet<i64> = [0usize, 1, 2, 3, 4, 6, 7, 10, 11, 12]
+    let unrelated: HashSet<rusty_core::ThreadId> = [0usize, 1, 2, 3, 4, 6, 7, 10, 11, 12]
         .iter()
         .map(|&n| thread_of[&msgs[n].id.0])
         .collect();
@@ -184,7 +214,7 @@ async fn acceptance_10k_messages() {
             .filter(|m| m.folder == f && !m.expunged)
             .map(|m| m.id)
             .collect();
-        let list = mb.list_folder(f).await.unwrap();
+        let list = list_all(&mb, f).await;
         let uids: Vec<u32> = list.iter().map(|s| s.uid).collect();
         assert!(
             uids.windows(2).all(|w| w[0] < w[1]),
@@ -199,10 +229,8 @@ async fn acceptance_10k_messages() {
     // Even positions were flagged; none of them is expunged, so 5,000 live messages are seen.
     let mut seen = 0;
     for f in [INBOX, SENT, projects, y2026, q4] {
-        seen += mb
-            .list_folder(f)
+        seen += list_all(&mb, f)
             .await
-            .unwrap()
             .iter()
             .filter(|s| s.flags.contains(Flags::SEEN))
             .count();
@@ -210,23 +238,24 @@ async fn acceptance_10k_messages() {
     assert_eq!(seen, 5000);
 
     // Change log: contiguous seq and expected op counts.
-    let changes = mb.changes_since(0).await.unwrap();
+    let changes = changes_all(&mb, 0).await;
     for (k, c) in changes.iter().enumerate() {
         assert_eq!(c.seq, k as i64 + 1, "gap in change seq");
     }
-    let count = |kind, op| {
+    let count = |folder: bool, op| {
         changes
             .iter()
-            .filter(|c| c.kind == kind && c.op == op)
+            .filter(|c| matches!(c.item, ChangeItem::Folder(_)) == folder && c.op == op)
             .count()
     };
-    assert_eq!(count(ChangeKind::Folder, ChangeOp::Create), 3);
-    assert_eq!(count(ChangeKind::Message, ChangeOp::Create), TOTAL);
-    assert_eq!(count(ChangeKind::Message, ChangeOp::Update), 5000 + 1000);
-    assert_eq!(count(ChangeKind::Message, ChangeOp::Destroy), 1000);
+    assert_eq!(count(true, ChangeOp::Create), 3);
+    assert_eq!(count(false, ChangeOp::Create), TOTAL);
+    assert_eq!(count(false, ChangeOp::Update), 5000 + 1000);
+    assert_eq!(count(false, ChangeOp::Destroy), 1000);
     assert_eq!(changes.len(), 3 + TOTAL + 6000 + 1000);
     let last = changes[changes.len() - 1].seq;
-    assert!(mb.changes_since(last).await.unwrap().is_empty());
+    let tail = mb.changes_since(last, MAX_PAGE).await.unwrap();
+    assert!(tail.changes.is_empty() && !tail.more);
 
     // Blob accounting before purge: soft-deleted messages still hold references.
     let pool = store.pool();

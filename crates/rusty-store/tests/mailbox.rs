@@ -4,9 +4,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::*;
-use rusty_core::{AccountId, BlobHash, Error, Flags, FolderId, MessageId};
+use rusty_core::{AccountId, BlobHash, Error, Flags, FolderId, MessageId, ThreadId};
 use rusty_store::{
-    BlobStore, Change, ChangeKind, ChangeOp, Mailbox, MailboxLimits, MessageRef, MetadataStore,
+    BlobStore, Change, ChangeItem, ChangeOp, Mailbox, MailboxLimits, MessageRef, MetadataStore,
+    MAX_PAGE,
 };
 
 fn mref(id: i64, uid: u32) -> MessageRef {
@@ -16,13 +17,8 @@ fn mref(id: i64, uid: u32) -> MessageRef {
     }
 }
 
-fn change(seq: i64, kind: ChangeKind, item_id: i64, op: ChangeOp) -> Change {
-    Change {
-        seq,
-        kind,
-        item_id,
-        op,
-    }
+fn change(seq: i64, item: ChangeItem, op: ChangeOp) -> Change {
+    Change { seq, item, op }
 }
 
 async fn keywords(e: &Env, mb: &Mailbox, id: i64) -> Vec<String> {
@@ -78,7 +74,7 @@ async fn append_assigns_increasing_ids_and_uids() {
     assert_eq!(b, mref(2, 2));
     assert_eq!(c, mref(3, 1));
 
-    let list = e.mb.list_folder(INBOX).await.unwrap();
+    let list = e.mb.list_folder(INBOX, 0, MAX_PAGE).await.unwrap();
     assert_eq!(list.len(), 2);
     assert_eq!(list[0].id, MessageId(1));
     assert_eq!(list[0].uid, 1);
@@ -90,16 +86,16 @@ async fn append_assigns_increasing_ids_and_uids() {
     assert_eq!(list[1].uid, 2);
     assert_eq!(list[1].flags, Flags::SEEN);
 
-    let ch = e.mb.changes_since(0).await.unwrap();
+    let ch = e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes;
     assert_eq!(
         ch,
         vec![
-            change(1, ChangeKind::Message, 1, ChangeOp::Create),
-            change(2, ChangeKind::Message, 2, ChangeOp::Create),
-            change(3, ChangeKind::Message, 3, ChangeOp::Create),
+            change(1, ChangeItem::Message(MessageId(1)), ChangeOp::Create),
+            change(2, ChangeItem::Message(MessageId(2)), ChangeOp::Create),
+            change(3, ChangeItem::Message(MessageId(3)), ChangeOp::Create),
         ]
     );
-    assert_eq!(e.mb.changes_since(2).await.unwrap().len(), 1);
+    assert_eq!(e.mb.changes_since(2, MAX_PAGE).await.unwrap().changes.len(), 1);
     assert_eq!(e.scalar("SELECT refcount FROM blobs LIMIT 1").await, 1);
 }
 
@@ -125,8 +121,8 @@ async fn append_without_message_id_ok() {
             .await
             .unwrap();
     assert_eq!(r, mref(1, 1));
-    let list = e.mb.list_folder(INBOX).await.unwrap();
-    assert_eq!(list[0].thread_id, 1);
+    let list = e.mb.list_folder(INBOX, 0, MAX_PAGE).await.unwrap();
+    assert_eq!(list[0].thread_id, ThreadId(1));
     assert_eq!(
         e.scalar("SELECT COUNT(*) FROM messages WHERE message_id_hdr IS NULL")
             .await,
@@ -156,7 +152,7 @@ async fn append_empty_is_invalid() {
             .await;
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
     assert!(e.blob_files().is_empty());
-    assert!(e.mb.changes_since(0).await.unwrap().is_empty());
+    assert!(e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes.is_empty());
 }
 
 #[tokio::test]
@@ -231,7 +227,7 @@ async fn failed_transaction_leaves_orphan_blob_not_metadata() {
         e.mb.append(INBOX, body, Flags::empty()).await.unwrap(),
         mref(1, 1)
     );
-    assert_eq!(e.mb.changes_since(0).await.unwrap()[0].seq, 1);
+    assert_eq!(e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes[0].seq, 1);
 }
 
 // ---------- flags / keywords ----------
@@ -245,12 +241,12 @@ async fn set_flags_logs_update() {
     e.mb.set_flags(MessageId(1), Flags::SEEN | Flags::FLAGGED)
         .await
         .unwrap();
-    let list = e.mb.list_folder(INBOX).await.unwrap();
+    let list = e.mb.list_folder(INBOX, 0, MAX_PAGE).await.unwrap();
     assert_eq!(list[0].flags, Flags::SEEN | Flags::FLAGGED);
-    let ch = e.mb.changes_since(1).await.unwrap();
+    let ch = e.mb.changes_since(1, MAX_PAGE).await.unwrap().changes;
     assert_eq!(
         ch,
-        vec![change(2, ChangeKind::Message, 1, ChangeOp::Update)]
+        vec![change(2, ChangeItem::Message(MessageId(1)), ChangeOp::Update)]
     );
 
     let r = e.mb.set_flags(MessageId(2), Flags::SEEN).await;
@@ -268,15 +264,15 @@ async fn keyword_is_lowercased_and_idempotent() {
     e.mb.add_keyword(MessageId(1), "Work").await.unwrap();
     assert_eq!(keywords(&e, &e.mb, 1).await, vec!["$label1", "work"]);
     // create + two real additions; the duplicate logs nothing
-    assert_eq!(e.mb.changes_since(0).await.unwrap().len(), 3);
+    assert_eq!(e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes.len(), 3);
 
     e.mb.remove_keyword(MessageId(1), "WORK").await.unwrap();
     assert_eq!(keywords(&e, &e.mb, 1).await, vec!["$label1"]);
-    let last = e.mb.changes_since(0).await.unwrap().pop().unwrap();
-    assert_eq!(last, change(4, ChangeKind::Message, 1, ChangeOp::Update));
+    let last = e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes.pop().unwrap();
+    assert_eq!(last, change(4, ChangeItem::Message(MessageId(1)), ChangeOp::Update));
     // removing an absent keyword is a no-op
     e.mb.remove_keyword(MessageId(1), "absent").await.unwrap();
-    assert_eq!(e.mb.changes_since(0).await.unwrap().len(), 4);
+    assert_eq!(e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes.len(), 4);
 
     let r = e.mb.add_keyword(MessageId(9), "x").await;
     assert!(matches!(r, Err(Error::NotFound(_))), "{r:?}");
@@ -359,21 +355,21 @@ async fn move_changes_uid_and_logs_change() {
 
     let moved = e.mb.move_message(MessageId(1), SENT).await.unwrap();
     assert_eq!(moved, mref(1, 2));
-    let inbox = e.mb.list_folder(INBOX).await.unwrap();
+    let inbox = e.mb.list_folder(INBOX, 0, MAX_PAGE).await.unwrap();
     assert_eq!(inbox.len(), 1);
     assert_eq!(inbox[0].id, MessageId(2));
     let sent: Vec<(i64, u32)> =
-        e.mb.list_folder(SENT)
+        e.mb.list_folder(SENT, 0, MAX_PAGE)
             .await
             .unwrap()
             .iter()
             .map(|m| (m.id.0, m.uid))
             .collect();
     assert_eq!(sent, vec![(3, 1), (1, 2)]);
-    let ch = e.mb.changes_since(3).await.unwrap();
+    let ch = e.mb.changes_since(3, MAX_PAGE).await.unwrap().changes;
     assert_eq!(
         ch,
-        vec![change(4, ChangeKind::Message, 1, ChangeOp::Update)]
+        vec![change(4, ChangeItem::Message(MessageId(1)), ChangeOp::Update)]
     );
 
     // Moving to the folder it is already in allocates nothing.
@@ -381,7 +377,7 @@ async fn move_changes_uid_and_logs_change() {
         e.mb.move_message(MessageId(1), SENT).await.unwrap(),
         mref(1, 2)
     );
-    assert_eq!(e.mb.changes_since(0).await.unwrap().len(), 4);
+    assert_eq!(e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes.len(), 4);
     assert_eq!(
         e.scalar("SELECT next_uid FROM folders WHERE id = 2").await,
         3
@@ -408,7 +404,7 @@ async fn expunge_hides_message_but_keeps_blob() {
         .unwrap();
     e.mb.expunge(MessageId(1)).await.unwrap();
 
-    assert!(e.mb.list_folder(INBOX).await.unwrap().is_empty());
+    assert!(e.mb.list_folder(INBOX, 0, MAX_PAGE).await.unwrap().is_empty());
     assert_eq!(e.blobs.get(&BlobHash::of(&body)).await.unwrap(), body);
     assert_eq!(e.scalar("SELECT refcount FROM blobs").await, 1);
     assert_eq!(
@@ -416,10 +412,10 @@ async fn expunge_hides_message_but_keeps_blob() {
             .await,
         1
     );
-    let ch = e.mb.changes_since(1).await.unwrap();
+    let ch = e.mb.changes_since(1, MAX_PAGE).await.unwrap().changes;
     assert_eq!(
         ch,
-        vec![change(2, ChangeKind::Message, 1, ChangeOp::Destroy)]
+        vec![change(2, ChangeItem::Message(MessageId(1)), ChangeOp::Destroy)]
     );
 
     for r in [
@@ -461,15 +457,15 @@ async fn create_rename_move_folder_log_changes() {
     e.mb.rename_folder(b, "Bee").await.unwrap();
     e.mb.move_folder(b, None).await.unwrap();
     e.mb.delete_folder(b).await.unwrap();
-    let ch = e.mb.changes_since(0).await.unwrap();
+    let ch = e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes;
     assert_eq!(
         ch,
         vec![
-            change(1, ChangeKind::Folder, 6, ChangeOp::Create),
-            change(2, ChangeKind::Folder, 7, ChangeOp::Create),
-            change(3, ChangeKind::Folder, 7, ChangeOp::Update),
-            change(4, ChangeKind::Folder, 7, ChangeOp::Update),
-            change(5, ChangeKind::Folder, 7, ChangeOp::Destroy),
+            change(1, ChangeItem::Folder(FolderId(6)), ChangeOp::Create),
+            change(2, ChangeItem::Folder(FolderId(7)), ChangeOp::Create),
+            change(3, ChangeItem::Folder(FolderId(7)), ChangeOp::Update),
+            change(4, ChangeItem::Folder(FolderId(7)), ChangeOp::Update),
+            change(5, ChangeItem::Folder(FolderId(7)), ChangeOp::Destroy),
         ]
     );
     let row: (Option<i64>, String) =
@@ -479,8 +475,8 @@ async fn create_rename_move_folder_log_changes() {
             .await
             .unwrap();
     assert_eq!(row, (None, "A".to_string()));
-    // id = MAX(id) + 1: after deleting 7, the next folder is 7 again
-    assert_eq!(e.mb.create_folder(None, "C").await.unwrap(), FolderId(7));
+    // ids come from mailboxes.next_folder_id: after deleting 7, the next folder is 8
+    assert_eq!(e.mb.create_folder(None, "C").await.unwrap(), FolderId(8));
 }
 
 #[tokio::test]
@@ -509,9 +505,10 @@ async fn create_folder_with_slash_is_invalid() {
     assert!(e.mb.create_folder(None, "Ünïcødé 名前").await.is_ok());
     assert!(e
         .mb
-        .changes_since(0)
+        .changes_since(0, MAX_PAGE)
         .await
         .unwrap()
+        .changes
         .iter()
         .all(|c| c.op == ChangeOp::Create));
 }
@@ -549,10 +546,9 @@ async fn delete_folder_with_messages_conflicts() {
     e.mb.move_message(MessageId(1), TRASH).await.unwrap();
     e.mb.delete_folder(child).await.unwrap();
     e.mb.delete_folder(f).await.unwrap();
-    let last = e.mb.changes_since(0).await.unwrap().pop().unwrap();
-    assert_eq!(last.kind, ChangeKind::Folder);
+    let last = e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes.pop().unwrap();
+    assert_eq!(last.item, ChangeItem::Folder(f));
     assert_eq!(last.op, ChangeOp::Destroy);
-    assert_eq!(last.item_id, f.0);
     let r = e.mb.delete_folder(f).await;
     assert!(matches!(r, Err(Error::NotFound(_))), "{r:?}");
 }
@@ -672,12 +668,12 @@ async fn thread_id_shared_by_reply() {
     let thread_of = |list: &[rusty_store::MessageSummary], id: MessageId| {
         list.iter().find(|m| m.id == id).unwrap().thread_id
     };
-    let inbox = e.mb.list_folder(INBOX).await.unwrap();
-    let sent = e.mb.list_folder(SENT).await.unwrap();
-    assert_eq!(thread_of(&inbox, p.id), p.id.0);
-    assert_eq!(thread_of(&inbox, r1.id), p.id.0);
-    assert_eq!(thread_of(&inbox, r2.id), p.id.0);
-    assert_eq!(thread_of(&sent, r3.id), p.id.0);
+    let inbox = e.mb.list_folder(INBOX, 0, MAX_PAGE).await.unwrap();
+    let sent = e.mb.list_folder(SENT, 0, MAX_PAGE).await.unwrap();
+    assert_eq!(thread_of(&inbox, p.id), ThreadId(p.id.0));
+    assert_eq!(thread_of(&inbox, r1.id), ThreadId(p.id.0));
+    assert_eq!(thread_of(&inbox, r2.id), ThreadId(p.id.0));
+    assert_eq!(thread_of(&sent, r3.id), ThreadId(p.id.0));
 }
 
 #[tokio::test]
@@ -709,10 +705,10 @@ async fn thread_prefers_last_reference_then_in_reply_to() {
         )
         .await
         .unwrap();
-    let list = e.mb.list_folder(INBOX).await.unwrap();
+    let list = e.mb.list_folder(INBOX, 0, MAX_PAGE).await.unwrap();
     let t = |id: MessageId| list.iter().find(|m| m.id == id).unwrap().thread_id;
-    assert_eq!(t(c.id), b.id.0);
-    assert_eq!(t(d.id), a.id.0);
+    assert_eq!(t(c.id), ThreadId(b.id.0));
+    assert_eq!(t(d.id), ThreadId(a.id.0));
 }
 
 #[tokio::test]
@@ -729,10 +725,10 @@ async fn thread_id_own_id_when_no_parent() {
         )
         .await
         .unwrap();
-    let list = e.mb.list_folder(INBOX).await.unwrap();
+    let list = e.mb.list_folder(INBOX, 0, MAX_PAGE).await.unwrap();
     assert_eq!(
         list.iter().find(|m| m.id == r.id).unwrap().thread_id,
-        r.id.0
+        ThreadId(r.id.0)
     );
 }
 
@@ -753,14 +749,14 @@ async fn thread_lookup_is_scoped_to_mailbox() {
         .await
         .unwrap();
     let foreign_thread = bob
-        .list_folder(INBOX)
+        .list_folder(INBOX, 0, MAX_PAGE)
         .await
         .unwrap()
         .iter()
         .find(|m| m.id == b2.id)
         .unwrap()
         .thread_id;
-    assert_eq!(foreign_thread, 1);
+    assert_eq!(foreign_thread, ThreadId(1));
 
     // Alice: two unrelated messages first, so her reply gets id 3.
     e.mb.append(INBOX, raw("mine 1", Some("m1@x")), Flags::empty())
@@ -779,10 +775,10 @@ async fn thread_lookup_is_scoped_to_mailbox() {
         .await
         .unwrap();
     assert_eq!(r.id, MessageId(3));
-    let list = e.mb.list_folder(INBOX).await.unwrap();
+    let list = e.mb.list_folder(INBOX, 0, MAX_PAGE).await.unwrap();
     let own_thread = list.iter().find(|m| m.id == r.id).unwrap().thread_id;
     // No cross-mailbox inheritance: the reply starts its own thread...
-    assert_eq!(own_thread, r.id.0);
+    assert_eq!(own_thread, ThreadId(r.id.0));
     // ...which an unscoped lookup (Bob's thread 1) would not have produced.
     assert_ne!(own_thread, foreign_thread);
 }
@@ -809,13 +805,13 @@ async fn high_water(e: &Env, mb: &Mailbox) -> i64 {
 #[tokio::test]
 async fn recreated_folder_gets_greater_uid_validity() {
     let e = env().await;
-    // create / delete / create the same name: same folder id, same second
+    // create / delete / create the same name within the same second
     let f1 = e.mb.create_folder(None, "Projects").await.unwrap();
     let v1 = folder_uidv(&e, &e.mb, f1).await;
     e.mb.delete_folder(f1).await.unwrap();
     let f2 = e.mb.create_folder(None, "Projects").await.unwrap();
     let v2 = folder_uidv(&e, &e.mb, f2).await;
-    assert_eq!(f1, f2, "folder id is reused");
+    assert_ne!(f1, f2, "folder ids are never reused");
     assert!(v2 > v1, "{v2} must be > {v1}");
     assert_eq!(high_water(&e, &e.mb).await, v2);
 }
@@ -876,7 +872,7 @@ async fn uid_validity_over_u32_max_is_quota() {
     assert_eq!(high_water(&e, &e.mb).await, max);
 
     let folders = e.scalar("SELECT COUNT(*) FROM folders").await;
-    let changes = e.mb.changes_since(0).await.unwrap().len();
+    let changes = e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes.len();
     let r = e.mb.create_folder(None, "one-too-many").await;
     assert!(matches!(r, Err(Error::Quota(_))), "{r:?}");
     assert_eq!(e.scalar("SELECT COUNT(*) FROM folders").await, folders);
@@ -885,7 +881,7 @@ async fn uid_validity_over_u32_max_is_quota() {
         max,
         "high-water mark unchanged"
     );
-    assert_eq!(e.mb.changes_since(0).await.unwrap().len(), changes);
+    assert_eq!(e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes.len(), changes);
 }
 
 // ---------- isolation ----------
@@ -919,14 +915,14 @@ async fn cross_mailbox_ids_are_not_found() {
     nf(e.mb.move_folder(bob_folder, None).await);
     nf(e.mb.delete_folder(bob_folder).await);
     nf(e.mb.create_folder(Some(bob_folder), "x").await.map(|_| ()));
-    nf(e.mb.list_folder(bob_folder).await.map(|_| ()));
+    nf(e.mb.list_folder(bob_folder, 0, MAX_PAGE).await.map(|_| ()));
 
     // bob's data is untouched; alice's change log is separate
-    let bl = bob.list_folder(INBOX).await.unwrap();
+    let bl = bob.list_folder(INBOX, 0, MAX_PAGE).await.unwrap();
     assert_eq!(bl.len(), 3);
     assert!(bl.iter().all(|m| m.flags == Flags::empty()));
-    assert_eq!(e.mb.changes_since(0).await.unwrap().len(), 1);
-    assert_eq!(bob.changes_since(0).await.unwrap().len(), 4);
+    assert_eq!(e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes.len(), 1);
+    assert_eq!(bob.changes_since(0, MAX_PAGE).await.unwrap().changes.len(), 4);
 }
 
 // ---------- concurrency / cancellation ----------

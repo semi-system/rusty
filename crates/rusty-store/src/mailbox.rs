@@ -1,9 +1,18 @@
 //! `Mailbox`: the high-level facade over one account's folders, messages and change log.
 //!
 //! Invariants:
-//! - Every write runs in one `BEGIN IMMEDIATE` transaction; the counters
-//!   `mailboxes.next_msg_id`, `mailboxes.next_change_seq` and `folders.next_uid` are read and
-//!   incremented inside it, so ids, uids and change seqs are gapless and monotonic.
+//! - Rule: every Mailbox write transaction starts with `BEGIN IMMEDIATE` and touches the
+//!   mailbox row first (`Mailbox::begin` reads `mailboxes` by id before anything else; a
+//!   missing row is `NotFound`). With SQLite the write lock is already global; the fixed
+//!   order is the lock-ordering rule a row-locking backend (Postgres: `SELECT ... FOR
+//!   UPDATE` on the mailbox row) relies on to serialize writers of one mailbox without
+//!   deadlocks.
+//! - The counters `mailboxes.next_msg_id`, `mailboxes.next_change_seq`,
+//!   `mailboxes.next_folder_id` and `folders.next_uid` are read and incremented inside that
+//!   transaction, so message ids, uids and change seqs are gapless and monotonic, and folder
+//!   ids are never reused (a deleted folder's id is not handed out again).
+//! - Reads are paginated: `list_folder` and `changes_since` return at most [`MAX_PAGE`]
+//!   entries per call (a larger `limit` is clamped, `0` is `Invalid`).
 //! - Every lookup is scoped by `mailbox_id`: ids of another mailbox are `NotFound`.
 //! - `append` writes the blob before the metadata transaction; if the transaction fails the
 //!   blob is an orphan for the cleanup job (spec §5).
@@ -14,7 +23,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
-use rusty_core::{AccountId, Error, Flags, FolderId, MailboxId, MessageId, Result};
+use rusty_core::{AccountId, Error, Flags, FolderId, MailboxId, MessageId, Result, ThreadId};
 use rusty_mime::Envelope;
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 
@@ -28,6 +37,8 @@ pub const MAX_FOLDER_NAME_BYTES: usize = 255;
 pub const MAX_FOLDER_DEPTH: usize = 64;
 /// Bound on parent lookups per appended message (hostile `References` headers).
 const MAX_THREAD_CANDIDATES: usize = 32;
+/// Most entries returned by one `list_folder` / `changes_since` call.
+pub const MAX_PAGE: u32 = 1000;
 
 /// Resource limits enforced by a `Mailbox`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,27 +70,29 @@ pub struct MessageSummary {
     pub subject: String,
     pub from_addr: String,
     pub flags: Flags,
-    pub thread_id: i64,
+    pub thread_id: ThreadId,
 }
 
+/// The item a change-log entry is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ChangeKind {
-    Message,
-    Folder,
+pub enum ChangeItem {
+    Message(MessageId),
+    Folder(FolderId),
 }
 
-impl ChangeKind {
-    fn as_str(self) -> &'static str {
+impl ChangeItem {
+    /// `(change_log.kind, change_log.item_id)`.
+    fn to_row(self) -> (&'static str, i64) {
         match self {
-            ChangeKind::Message => "message",
-            ChangeKind::Folder => "folder",
+            ChangeItem::Message(id) => ("message", id.0),
+            ChangeItem::Folder(id) => ("folder", id.0),
         }
     }
 
-    fn parse(s: &str) -> Result<ChangeKind> {
-        match s {
-            "message" => Ok(ChangeKind::Message),
-            "folder" => Ok(ChangeKind::Folder),
+    fn from_row(kind: &str, item_id: i64) -> Result<ChangeItem> {
+        match kind {
+            "message" => Ok(ChangeItem::Message(MessageId(item_id))),
+            "folder" => Ok(ChangeItem::Folder(FolderId(item_id))),
             _ => Err(Error::storage("corrupt change_log kind")),
         }
     }
@@ -114,9 +127,24 @@ impl ChangeOp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Change {
     pub seq: i64,
-    pub kind: ChangeKind,
-    pub item_id: i64,
+    pub item: ChangeItem,
     pub op: ChangeOp,
+}
+
+/// One page of [`Mailbox::changes_since`]: entries in seq order, and whether more entries
+/// follow the last one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangePage {
+    pub changes: Vec<Change>,
+    pub more: bool,
+}
+
+/// Effective page size: `Invalid` for 0, at most [`MAX_PAGE`].
+fn page_limit(limit: u32) -> Result<i64> {
+    if limit == 0 {
+        return Err(Error::Invalid("page limit must be at least 1".into()));
+    }
+    Ok(i64::from(limit.min(MAX_PAGE)))
 }
 
 /// One account's mailbox. Cheap to clone; clones share the pool and blob store.
@@ -186,26 +214,37 @@ fn now() -> i64 {
 /// RFC 3501/9051 §2.3.1.1: a folder recreated under a reused name (and here also a reused
 /// folder id) must get a strictly greater UIDVALIDITY. `mailboxes.uid_validity` is the
 /// persisted high-water mark; the new value is `max(now_secs, high_water + 1)` and the mark
-/// is advanced to it in the same transaction. Past `u32::MAX` it is `Quota` (the caller's
-/// transaction then rolls back, leaving the mark unchanged).
+/// is advanced to it in the same transaction, in one statement. Past `u32::MAX` it is
+/// `Quota`: the caller returns the error, its transaction rolls back, and the mark is
+/// unchanged.
 async fn take_uid_validity(conn: &mut SqliteConnection, mb: MailboxId) -> Result<i64> {
-    let high_water: i64 = sqlx::query_scalar("SELECT uid_validity FROM mailboxes WHERE id = ?")
-        .bind(mb.0)
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(map_db_error)?
-        .ok_or_else(|| Error::NotFound("mailbox".into()))?;
-    let v = now().max(high_water.saturating_add(1));
+    let v: i64 = sqlx::query_scalar(
+        "UPDATE mailboxes SET uid_validity = max(?1, uid_validity + 1) WHERE id = ?2 \
+         RETURNING uid_validity",
+    )
+    .bind(now())
+    .bind(mb.0)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(map_db_error)?
+    .ok_or_else(|| Error::NotFound("mailbox".into()))?;
     if v > i64::from(u32::MAX) {
         return Err(Error::Quota("folder UIDVALIDITY space exhausted".into()));
     }
-    sqlx::query("UPDATE mailboxes SET uid_validity = ? WHERE id = ?")
-        .bind(v)
-        .bind(mb.0)
-        .execute(&mut *conn)
-        .await
-        .map_err(map_db_error)?;
     Ok(v)
+}
+
+/// Take the next folder id of the mailbox (`mailboxes.next_folder_id`, migration 0003).
+async fn take_folder_id(conn: &mut SqliteConnection, mb: MailboxId) -> Result<i64> {
+    sqlx::query_scalar(
+        "UPDATE mailboxes SET next_folder_id = next_folder_id + 1 WHERE id = ? \
+         RETURNING next_folder_id - 1",
+    )
+    .bind(mb.0)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(map_db_error)?
+    .ok_or_else(|| Error::NotFound("mailbox".into()))
 }
 
 fn to_uid(v: i64) -> Result<u32> {
@@ -238,10 +277,10 @@ fn not_found_message() -> Error {
 async fn log_change(
     conn: &mut SqliteConnection,
     mb: MailboxId,
-    kind: ChangeKind,
-    item_id: i64,
+    item: ChangeItem,
     op: ChangeOp,
 ) -> Result<i64> {
+    let (kind, item_id) = item.to_row();
     let seq: i64 = sqlx::query_scalar(
         "UPDATE mailboxes SET next_change_seq = next_change_seq + 1 WHERE id = ? \
          RETURNING next_change_seq - 1",
@@ -256,7 +295,7 @@ async fn log_change(
     )
     .bind(mb.0)
     .bind(seq)
-    .bind(kind.as_str())
+    .bind(kind)
     .bind(item_id)
     .bind(op.as_str())
     .execute(&mut *conn)
@@ -456,8 +495,17 @@ impl Mailbox {
         self.limits
     }
 
+    /// Start a write transaction (`BEGIN IMMEDIATE`) and touch the mailbox row first (see the
+    /// module docs). `NotFound` if the mailbox no longer exists.
     async fn begin(&self) -> Result<Transaction<'static, Sqlite>> {
-        self.store.begin_write().await
+        let mut tx = self.store.begin_write().await?;
+        sqlx::query_scalar::<_, i64>("SELECT id FROM mailboxes WHERE id = ?")
+            .bind(self.id.0)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(map_db_error)?
+            .ok_or_else(|| Error::NotFound("mailbox".into()))?;
+        Ok(tx)
     }
 
     // ----- folders -----
@@ -472,12 +520,7 @@ impl Mailbox {
             }
         }
         let uid_validity = take_uid_validity(&mut tx, self.id).await?;
-        let id: i64 =
-            sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) + 1 FROM folders WHERE mailbox_id = ?")
-                .bind(self.id.0)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(map_db_error)?;
+        let id = take_folder_id(&mut tx, self.id).await?;
         sqlx::query(
             "INSERT INTO folders (mailbox_id, id, parent_id, name, role, uid_validity) \
              VALUES (?, ?, ?, ?, 'custom', ?)",
@@ -490,7 +533,7 @@ impl Mailbox {
         .execute(&mut *tx)
         .await
         .map_err(map_db_error)?;
-        log_change(&mut tx, self.id, ChangeKind::Folder, id, ChangeOp::Create).await?;
+        log_change(&mut tx, self.id, ChangeItem::Folder(FolderId(id)), ChangeOp::Create).await?;
         commit(tx).await?;
         Ok(FolderId(id))
     }
@@ -507,7 +550,7 @@ impl Mailbox {
             .execute(&mut *tx)
             .await
             .map_err(map_db_error)?;
-        log_change(&mut tx, self.id, ChangeKind::Folder, id.0, ChangeOp::Update).await?;
+        log_change(&mut tx, self.id, ChangeItem::Folder(id), ChangeOp::Update).await?;
         commit(tx).await
     }
 
@@ -533,7 +576,7 @@ impl Mailbox {
             .execute(&mut *tx)
             .await
             .map_err(map_db_error)?;
-        log_change(&mut tx, self.id, ChangeKind::Folder, id.0, ChangeOp::Update).await?;
+        log_change(&mut tx, self.id, ChangeItem::Folder(id), ChangeOp::Update).await?;
         commit(tx).await
     }
 
@@ -583,8 +626,7 @@ impl Mailbox {
         log_change(
             &mut tx,
             self.id,
-            ChangeKind::Folder,
-            id.0,
+            ChangeItem::Folder(id),
             ChangeOp::Destroy,
         )
         .await?;
@@ -643,7 +685,7 @@ impl Mailbox {
         .execute(&mut *tx)
         .await
         .map_err(map_db_error)?;
-        log_change(&mut tx, self.id, ChangeKind::Message, id, ChangeOp::Create).await?;
+        log_change(&mut tx, self.id, ChangeItem::Message(MessageId(id)), ChangeOp::Create).await?;
         commit(tx).await?;
         Ok(MessageRef {
             id: MessageId(id),
@@ -670,8 +712,7 @@ impl Mailbox {
         log_change(
             &mut tx,
             self.id,
-            ChangeKind::Message,
-            id.0,
+            ChangeItem::Message(id),
             ChangeOp::Update,
         )
         .await?;
@@ -716,8 +757,7 @@ impl Mailbox {
         log_change(
             &mut tx,
             self.id,
-            ChangeKind::Message,
-            id.0,
+            ChangeItem::Message(id),
             ChangeOp::Update,
         )
         .await?;
@@ -745,8 +785,7 @@ impl Mailbox {
         log_change(
             &mut tx,
             self.id,
-            ChangeKind::Message,
-            id.0,
+            ChangeItem::Message(id),
             ChangeOp::Update,
         )
         .await?;
@@ -776,8 +815,7 @@ impl Mailbox {
         log_change(
             &mut tx,
             self.id,
-            ChangeKind::Message,
-            id.0,
+            ChangeItem::Message(id),
             ChangeOp::Update,
         )
         .await?;
@@ -805,8 +843,7 @@ impl Mailbox {
         log_change(
             &mut tx,
             self.id,
-            ChangeKind::Message,
-            id.0,
+            ChangeItem::Message(id),
             ChangeOp::Destroy,
         )
         .await?;
@@ -815,18 +852,28 @@ impl Mailbox {
 
     // ----- reads -----
 
-    /// Live messages of `folder`, ordered by uid.
-    pub async fn list_folder(&self, folder: FolderId) -> Result<Vec<MessageSummary>> {
+    /// One page of the live messages of `folder` with `uid > after_uid`, ordered by uid: at
+    /// most `limit` entries, clamped to [`MAX_PAGE`]; `limit == 0` is `Invalid`. Start with
+    /// `after_uid = 0` and continue from the last uid returned; an empty page is the end.
+    pub async fn list_folder(
+        &self,
+        folder: FolderId,
+        after_uid: u32,
+        limit: u32,
+    ) -> Result<Vec<MessageSummary>> {
+        let limit = page_limit(limit)?;
         let mut conn = self.store.pool().acquire().await.map_err(map_db_error)?;
         folder_row(&mut conn, self.id, folder).await?;
         type Row = (i64, i64, i64, i64, String, String, i64, i64);
         let rows: Vec<Row> = sqlx::query_as(
             "SELECT id, uid, size, internal_date, subject, from_addr, flags, thread_id \
-             FROM messages WHERE mailbox_id = ? AND folder_id = ? AND deleted_at IS NULL \
-             ORDER BY uid",
+             FROM messages WHERE mailbox_id = ? AND folder_id = ? AND uid > ? \
+             AND deleted_at IS NULL ORDER BY uid LIMIT ?",
         )
         .bind(self.id.0)
         .bind(folder.0)
+        .bind(i64::from(after_uid))
+        .bind(limit)
         .fetch_all(&mut *conn)
         .await
         .map_err(map_db_error)?;
@@ -841,33 +888,40 @@ impl Mailbox {
                         subject,
                         from_addr,
                         flags: to_flags(flags)?,
-                        thread_id,
+                        thread_id: ThreadId(thread_id),
                     })
                 },
             )
             .collect()
     }
 
-    /// Change-log entries with `seq > seq`, ordered by seq.
-    pub async fn changes_since(&self, seq: i64) -> Result<Vec<Change>> {
+    /// One page of change-log entries with `seq > seq`, ordered by seq: at most `limit`
+    /// entries, clamped to [`MAX_PAGE`]; `limit == 0` is `Invalid`. `more` is true if entries
+    /// follow the last one returned; continue from its `seq`.
+    pub async fn changes_since(&self, seq: i64, limit: u32) -> Result<ChangePage> {
+        let limit = page_limit(limit)?;
         let rows: Vec<(i64, String, i64, String)> = sqlx::query_as(
             "SELECT seq, kind, item_id, op FROM change_log \
-             WHERE mailbox_id = ? AND seq > ? ORDER BY seq",
+             WHERE mailbox_id = ? AND seq > ? ORDER BY seq LIMIT ?",
         )
         .bind(self.id.0)
         .bind(seq)
+        .bind(limit + 1)
         .fetch_all(self.store.pool())
         .await
         .map_err(map_db_error)?;
-        rows.into_iter()
+        let more = rows.len() as i64 > limit;
+        let changes = rows
+            .into_iter()
+            .take(limit as usize)
             .map(|(seq, kind, item_id, op)| {
                 Ok(Change {
                     seq,
-                    kind: ChangeKind::parse(&kind)?,
-                    item_id,
+                    item: ChangeItem::from_row(&kind, item_id)?,
                     op: ChangeOp::parse(&op)?,
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>>>()?;
+        Ok(ChangePage { changes, more })
     }
 }
