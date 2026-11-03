@@ -45,16 +45,40 @@ fn error_message_is_fixed() {
     assert!(!format!("{e} {e:?}").contains("61234"));
 }
 
+#[test]
+fn hand_built_invalid_ranges_are_rejected() {
+    let bad = [
+        VersionRange { min: 0, max: 0 },
+        VersionRange { min: 0, max: 3 },
+        VersionRange { min: 5, max: 4 },
+        VersionRange { min: u16::MAX, max: 1 },
+    ];
+    for b in bad {
+        assert!(matches!(negotiate(b, r(1, 9)), Err(Error::Invalid(_))));
+        assert!(matches!(negotiate(r(1, 9), b), Err(Error::Invalid(_))));
+        assert!(matches!(negotiate(b, b), Err(Error::Invalid(_))));
+    }
+}
+
+#[test]
+fn supported_is_exactly_one() {
+    assert_eq!(SUPPORTED.min, 1);
+    assert_eq!(SUPPORTED.max, 1);
+    assert_eq!(SUPPORTED, r(1, 1));
+    assert_eq!(PROTOCOL_VERSION, 1);
+}
+
 proptest! {
+    // Endpoints are arbitrary (including 0 and min > max), so invalid ranges are generated.
     #[test]
-    fn negotiation_is_symmetric(a in 1u16.., b in 1u16.., c in 1u16.., d in 1u16..) {
-        let (a, b) = (a.min(b), a.max(b));
-        let (c, d) = (c.min(d), c.max(d));
-        let (x, y) = (r(a, b), r(c, d));
+    fn negotiation_is_symmetric(a in any::<u16>(), b in any::<u16>(), c in any::<u16>(), d in any::<u16>()) {
+        let x = VersionRange { min: a, max: b };
+        let y = VersionRange { min: c, max: d };
         let (xy, yx) = (negotiate(x, y), negotiate(y, x));
         prop_assert_eq!(xy.is_ok(), yx.is_ok());
         if let (Ok(p), Ok(q)) = (xy, yx) {
             prop_assert_eq!(p, q);
+            prop_assert!(a >= 1 && a <= b && c >= 1 && c <= d);
             prop_assert!(p >= a.max(c) && p <= b.min(d));
         }
     }
