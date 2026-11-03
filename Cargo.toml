@@ -11,7 +11,9 @@ rust-version = "1.89"
 publish = false
 
 [workspace.dependencies]
-tokio = { version = "1.40", features = ["full"] }
+# No features here: each crate names the minimal set it needs (libraries: "rt"; tests add
+# "macros", "rt-multi-thread" and "time" as dev-dependencies).
+tokio = { version = "1.40", default-features = false }
 sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "macros", "migrate"] }
 async-trait = "0.1"
 thiserror = "1"

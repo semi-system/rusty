@@ -12,10 +12,12 @@ rusty-mime = { path = "../rusty-mime" }
 async-trait.workspace = true
 bytes.workspace = true
 sqlx.workspace = true
-tokio.workspace = true
+# spawn and spawn_blocking only.
+tokio = { workspace = true, features = ["rt"] }
 rustix.workspace = true
 rand_core.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

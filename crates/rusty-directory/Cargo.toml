@@ -17,9 +17,11 @@ unicode-general-category.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
-tokio.workspace = true
+# spawn_blocking only (argon2 work off the async threads).
+tokio = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
 bytes.workspace = true
 tempfile.workspace = true
 proptest.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
