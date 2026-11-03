@@ -126,7 +126,9 @@ async fn mailbox_errors_do_not_echo() {
     let dom = d.create_domain("example.com").await.unwrap();
     let acc = d.create_account("alice", dom, None, None).await.unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::new(tmp.path().join("blobs")));
+    let root = tmp.path().join("blobs");
+    FsBlobStore::init(&root).await.unwrap();
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::open(&root).await.unwrap());
     let mb = Mailbox::open(d.store().clone(), blobs, acc).await.unwrap();
     for s in hostile() {
         check("create_folder", mb.create_folder(None, &s).await);

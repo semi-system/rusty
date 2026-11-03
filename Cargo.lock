@@ -1190,6 +1190,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "proptest",
+ "rand_core 0.6.4",
  "rustix",
  "rusty-core",
  "rusty-mime",

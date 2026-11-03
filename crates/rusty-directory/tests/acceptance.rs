@@ -127,7 +127,8 @@ async fn acceptance_10k_messages() {
     let url = format!("sqlite://{}", tmp.path().join("meta.sqlite").display());
     let store = SqliteStore::open(&url).await.unwrap();
     let blob_root = tmp.path().join("blobs");
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::new(blob_root.clone()));
+    FsBlobStore::init(&blob_root).await.unwrap();
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::open(&blob_root).await.unwrap());
 
     let dir = Directory::new(store.clone());
     let dom = dir.create_domain("example.com").await.unwrap();

@@ -484,10 +484,10 @@ async fn first_custom_folder_uid_validity_exceeds_system_folders() {
     let dom = d.create_domain("example.com").await.unwrap();
     let acc = d.create_account("custom", dom, None, None).await.unwrap();
     let (_, system) = seeded(&d, acc).await;
-    // create_folder never touches the blob store; this path is never written.
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::new(
-        std::env::temp_dir().join("rusty-directory-test-unused-blobs"),
-    ));
+    // create_folder never touches the blob store.
+    let tmp = tempfile::tempdir().unwrap();
+    FsBlobStore::init(tmp.path()).await.unwrap();
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::open(tmp.path()).await.unwrap());
     let mailbox = Mailbox::open(d.store().clone(), blobs, acc).await.unwrap();
     let f = mailbox.create_folder(None, "Projects").await.unwrap();
     let v: i64 =

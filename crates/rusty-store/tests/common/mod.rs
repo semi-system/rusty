@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use rusty_core::{AccountId, FolderId};
-use rusty_store::{BlobStore, FsBlobStore, Mailbox, SqliteStore};
+use rusty_store::{
+    BlobStore, FsBlobStore, Mailbox, SqliteStore, BLOB_ROOT_MARKER, GC_LOCK_FILE,
+};
 
 /// Fresh private in-memory store with migrations applied.
 pub async fn mem() -> SqliteStore {
@@ -83,8 +85,16 @@ pub struct Env {
 }
 
 impl Env {
+    /// Files under the blob root except the root's own marker and GC lock file.
     pub fn blob_files(&self) -> Vec<PathBuf> {
-        all_files(&self.dir.path().join("blobs"))
+        let root = self.dir.path().join("blobs");
+        all_files(&root)
+            .into_iter()
+            .filter(|p| {
+                !(p.parent() == Some(root.as_path())
+                    && (p.ends_with(BLOB_ROOT_MARKER) || p.ends_with(GC_LOCK_FILE)))
+            })
+            .collect()
     }
 
     /// Open a mailbox for another account sharing this store and blob store.
@@ -108,7 +118,7 @@ impl Env {
 }
 
 pub async fn env_with(store: SqliteStore, dir: tempfile::TempDir) -> Env {
-    let blobs = Arc::new(FsBlobStore::new(dir.path().join("blobs")));
+    let blobs = Arc::new(blob_store(&dir.path().join("blobs")).await);
     let account = account(&store, "alice").await;
     let mb = Mailbox::open(store.clone(), blobs.clone() as Arc<dyn BlobStore>, account)
         .await
@@ -120,6 +130,12 @@ pub async fn env_with(store: SqliteStore, dir: tempfile::TempDir) -> Env {
         account,
         mb,
     }
+}
+
+/// `init` + `open` a blob store at `root`.
+pub async fn blob_store(root: &Path) -> FsBlobStore {
+    FsBlobStore::init(root).await.unwrap();
+    FsBlobStore::open(root).await.unwrap()
 }
 
 pub async fn env() -> Env {

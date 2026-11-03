@@ -1,10 +1,14 @@
 # Rusty startup configuration. Every key except the two paths is optional.
 # Unknown keys are rejected.
 
-# SQLite metadata database (absolute path; created if missing).
+# Run the service under its own account with umask 077; /var/lib/rusty is owned by it, 0700.
+
+# SQLite metadata database (absolute path; created with mode 0600 if missing).
 database_path = "/var/lib/rusty/meta.sqlite"
 
-# Directory holding the content-addressed message blobs (absolute path).
+# Directory holding the content-addressed message blobs (absolute path). It must be
+# initialized once (FsBlobStore::init: mode 0700 plus a .rusty-blobs marker); startup
+# refuses a missing, unmarked, symlinked or group/world-writable directory.
 blob_dir = "/var/lib/rusty/blobs"
 
 # One of: error, warn, info, debug, trace. Default: info.

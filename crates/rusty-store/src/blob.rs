@@ -8,27 +8,51 @@
 //! File names found under the blob root are untrusted: they are validated (`BlobHash::parse`,
 //! `str::get`) before any byte-index slicing, and files are opened with
 //! `O_NOFOLLOW | O_NONBLOCK` and checked with `fstat` to be regular files.
+//!
+//! Blob root: created only by the explicit [`FsBlobStore::init`] (mode 0700, marker file
+//! [`BLOB_ROOT_MARKER`] 0600). [`FsBlobStore::open`] fails closed when the root is missing,
+//! is not a real directory, is writable by group or others, or lacks the marker; nothing
+//! else (put, GC, the lock) ever creates the root, so a missing mount or a typo in the
+//! configuration cannot silently start an empty store.
+//!
+//! Permissions: shard directories are created 0700, temporary and blob files 0600 with
+//! `O_CREAT | O_EXCL | O_NOFOLLOW` (a pre-planted file or symlink at a temporary name is never
+//! opened; a new random name is tried instead).
+//!
+//! Durability: `put` fsyncs the file, renames it into place and then fsyncs the shard
+//! directory, its parent and the blob root, so a blob whose `put` returned `Ok` survives a
+//! crash (fsync of an unchanged directory is cheap). Restoring a quarantined blob
+//! (`restore_no_clobber`, used by `delete_if_older` and `heal_quarantine`) fsyncs the
+//! directory. The rename-aside and the unlink in `delete_if_older` are not fsynced: if a crash
+//! undoes either, the blob or its quarantine copy reappears, which only resurrects garbage
+//! that a later GC run removes again (never loses a referenced blob).
 
 use std::any::Any;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
-use std::io::{self, ErrorKind, Read};
+use std::io::{self, ErrorKind, Read, Write};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use rand_core::{OsRng, RngCore};
 use rustix::fs::{FileType, Mode, OFlags};
 use rusty_core::{BlobHash, Error, Result};
-use tokio::io::AsyncWriteExt;
 
 /// Suffix of a blob renamed aside by `delete_if_older` (`.<hash>.gc<pid>.<n>.gcq`). Never
 /// matched by `sweep_temp`; handled only by `heal_quarantine`.
 pub const QUARANTINE_SUFFIX: &str = ".gcq";
 /// Name of the advisory GC lock file in the blob root.
 pub const GC_LOCK_FILE: &str = ".gc.lock";
+/// Name of the marker file written by [`FsBlobStore::init`]; [`FsBlobStore::open`] requires it.
+pub const BLOB_ROOT_MARKER: &str = ".rusty-blobs";
+const MARKER_CONTENT: &[u8] = b"rusty blob store v1\n";
+/// Temporary-name collisions tolerated by `put` before it gives up.
+const TMP_ATTEMPTS: usize = 8;
 
 /// One stored blob as reported by [`BlobStore::list`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,7 +82,7 @@ pub struct GcLock {
 }
 
 impl GcLock {
-    pub fn new(held: impl Any + Send + Sync) -> GcLock {
+    pub(crate) fn new(held: impl Any + Send + Sync) -> GcLock {
         GcLock {
             _held: Box::new(held),
         }
@@ -77,7 +101,6 @@ pub trait BlobStore: Send + Sync {
     /// modification time (GC's grace window starts again).
     async fn put(&self, bytes: Bytes) -> Result<BlobHash>;
     async fn get(&self, h: &BlobHash) -> Result<Bytes>;
-    async fn delete(&self, h: &BlobHash) -> Result<()>;
 
     /// Blobs whose hash starts with the two hex digits of `shard` (1/256 of the store), so a
     /// caller can walk the store with memory bounded by one shard. Entries that are not
@@ -131,6 +154,8 @@ pub trait BlobStore: Send + Sync {
 /// O_NONBLOCK`. Directory traversal itself is path-based, so a process that can swap
 /// directories under the blob root while GC runs could still race it; the blob root must be
 /// writable only by the Rusty service account.
+///
+/// Built only by [`FsBlobStore::open`] on a root prepared once by [`FsBlobStore::init`].
 pub struct FsBlobStore {
     root: PathBuf,
 }
@@ -138,8 +163,37 @@ pub struct FsBlobStore {
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 impl FsBlobStore {
-    pub fn new(root: PathBuf) -> Self {
-        Self { root }
+    /// Prepare a blob root (an explicit administrative step, never implicit): create `root`
+    /// with mode 0700 if it is absent (its parent must exist), then write the marker
+    /// [`BLOB_ROOT_MARKER`] (0600). Idempotent on an initialized root. A symlink, a
+    /// non-directory, or a non-empty directory without the marker is refused.
+    pub async fn init(root: impl AsRef<Path>) -> Result<()> {
+        let root = root.as_ref().to_path_buf();
+        blocking(move || init_sync(&root)).await?
+    }
+
+    /// Open an initialized blob root. Fails closed (`Storage`) if `root` does not exist, is
+    /// not a real directory (symlinks are refused), is writable by group or others, or has no
+    /// marker file; it never creates anything. If the GC lock is free, quarantine files left
+    /// by an interrupted GC are healed once (see [`BlobStore::heal_quarantine`], cutoff
+    /// `now - DEFAULT_GC_GRACE`); if another process holds the lock this step is skipped.
+    pub async fn open(root: impl AsRef<Path>) -> Result<FsBlobStore> {
+        let root = root.as_ref().to_path_buf();
+        let r = root.clone();
+        blocking(move || check_root(&r)).await??;
+        let store = FsBlobStore { root };
+        match store.try_lock_gc().await {
+            Ok(lock) => {
+                let cutoff = SystemTime::now()
+                    .checked_sub(crate::gc::DEFAULT_GC_GRACE)
+                    .unwrap_or(UNIX_EPOCH);
+                store.heal_quarantine(cutoff).await?;
+                drop(lock);
+            }
+            Err(Error::Conflict(_)) => {}
+            Err(e) => return Err(e),
+        }
+        Ok(store)
     }
 
     /// Only a validated `BlobHash` (64 lowercase hex chars) can build a path.
@@ -163,8 +217,163 @@ fn next_n() -> u64 {
     TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
-fn tmp_name(h: &BlobHash) -> String {
-    format!(".{}.{}.{}.tmp", h.as_str(), std::process::id(), next_n())
+/// `.<hash>.<pid>.<n>.<16 random hex digits>.tmp`: unpredictable, so a hostile local process
+/// cannot pre-plant a file or symlink at the name `put` will use.
+fn tmp_name(h: &BlobHash) -> io::Result<String> {
+    let mut b = [0u8; 8];
+    OsRng
+        .try_fill_bytes(&mut b)
+        .map_err(|_| io::Error::other("no randomness for a temporary name"))?;
+    Ok(format!(
+        ".{}.{}.{}.{:016x}.tmp",
+        h.as_str(),
+        std::process::id(),
+        next_n(),
+        u64::from_le_bytes(b)
+    ))
+}
+
+/// `O_NOFOLLOW | O_CLOEXEC` as raw open flags for `OpenOptionsExt::custom_flags`.
+fn nofollow_cloexec() -> i32 {
+    (OFlags::NOFOLLOW | OFlags::CLOEXEC).bits() as i32
+}
+
+/// Create a new private (0600) temporary file in `dir` with `O_CREAT | O_EXCL | O_NOFOLLOW`.
+/// A name that already exists (a leftover, or a planted file or symlink) is never opened;
+/// another name from `name` is tried, at most [`TMP_ATTEMPTS`] times.
+fn create_temp(
+    dir: &Path,
+    mut name: impl FnMut() -> io::Result<String>,
+) -> io::Result<(PathBuf, fs::File)> {
+    for _ in 0..TMP_ATTEMPTS {
+        let p = dir.join(name()?);
+        let res = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(nofollow_cloexec())
+            .open(&p);
+        match res {
+            Ok(f) => return Ok((p, f)),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::other("no free temporary file name"))
+}
+
+/// fsync a directory (makes renames, links and new entries in it durable).
+fn fsync_dir(dir: &Path) -> io::Result<()> {
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let fd = rustix::fs::open(dir, flags, Mode::empty())?;
+    rustix::fs::fsync(&fd)?;
+    Ok(())
+}
+
+/// Create the shard directory `p` with mode 0700 unless it exists (its parent must exist:
+/// the blob root is never created here). An existing non-directory or symlink is an error.
+fn ensure_shard_dir(p: &Path) -> io::Result<()> {
+    match fs::DirBuilder::new().mode(0o700).create(p) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::AlreadyExists && is_real_dir(p) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+            Err(io::Error::other("blob shard path is not a directory"))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Write `bytes` as the blob at `root/l1/l2/<hash>` = `path` (see the module docs for the
+/// permission and durability protocol).
+fn write_blob_sync(root: &Path, path: &Path, h: &BlobHash, bytes: &[u8]) -> io::Result<()> {
+    let l2 = path.parent().ok_or_else(|| io::Error::other("blob path has no parent"))?;
+    let l1 = l2.parent().ok_or_else(|| io::Error::other("blob path has no parent"))?;
+    ensure_shard_dir(l1)?;
+    ensure_shard_dir(l2)?;
+    let (tmp, mut f) = create_temp(l2, || tmp_name(h))?;
+    let res = (|| {
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        fs::rename(&tmp, path)?;
+        // The new entry, and (when a concurrent or earlier put created them) the shard
+        // directories, must reach the disk before `put` reports success.
+        fsync_dir(l2)?;
+        fsync_dir(l1)?;
+        fsync_dir(root)
+    })();
+    if res.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    res
+}
+
+/// `open` precondition: `root` is a real directory, not writable by group or others, with a
+/// regular marker file.
+fn check_root(root: &Path) -> Result<()> {
+    let md = match fs::symlink_metadata(root) {
+        Ok(m) => m,
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            return Err(Error::storage("blob root does not exist (run init first)"));
+        }
+        Err(e) => return Err(io_err("stat blob root", e)),
+    };
+    if !md.file_type().is_dir() {
+        return Err(Error::storage("blob root is not a directory"));
+    }
+    if md.permissions().mode() & 0o022 != 0 {
+        return Err(Error::storage("blob root is writable by group or others"));
+    }
+    match fs::symlink_metadata(root.join(BLOB_ROOT_MARKER)) {
+        Ok(m) if m.file_type().is_file() => Ok(()),
+        Ok(_) => Err(Error::storage("blob root marker is not a regular file")),
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            Err(Error::storage("blob root is not initialized (marker missing)"))
+        }
+        Err(e) => Err(io_err("stat blob root marker", e)),
+    }
+}
+
+/// See [`FsBlobStore::init`].
+fn init_sync(root: &Path) -> Result<()> {
+    let created = match fs::DirBuilder::new().mode(0o700).create(root) {
+        Ok(()) => true,
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => false,
+        Err(e) => return Err(io_err("create blob root", e)),
+    };
+    if !is_real_dir(root) {
+        return Err(Error::storage("blob root is not a directory"));
+    }
+    let marker = root.join(BLOB_ROOT_MARKER);
+    match fs::symlink_metadata(&marker) {
+        Ok(m) if m.file_type().is_file() => return Ok(()),
+        Ok(_) => return Err(Error::storage("blob root marker is not a regular file")),
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        Err(e) => return Err(io_err("stat blob root marker", e)),
+    }
+    let mut entries = fs::read_dir(root).map_err(|e| io_err("read blob root", e))?;
+    if entries.next().is_some() {
+        return Err(Error::Invalid(
+            "blob root is not empty and has no marker".into(),
+        ));
+    }
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(nofollow_cloexec())
+        .open(&marker)
+        .map_err(|e| io_err("create blob root marker", e))?;
+    f.write_all(MARKER_CONTENT)
+        .and_then(|()| f.sync_all())
+        .map_err(|e| io_err("write blob root marker", e))?;
+    fsync_dir(root).map_err(|e| io_err("sync blob root", e))?;
+    if created {
+        if let Some(parent) = root.parent().filter(|p| !p.as_os_str().is_empty()) {
+            fsync_dir(parent).map_err(|e| io_err("sync blob root parent", e))?;
+        }
+    }
+    Ok(())
 }
 
 fn quarantine_name(h: &BlobHash) -> String {
@@ -323,10 +532,13 @@ fn list_shard_sync(root: &Path, shard: u8) -> Vec<BlobEntry> {
 
 /// Move quarantine file `q` back to `path`, never replacing a file that exists there (a
 /// fresh copy written by a concurrent `put` wins; the old copy is dropped). `Ok(true)`:
-/// restored; `Ok(false)`: a file already existed and `q` was removed.
+/// restored; `Ok(false)`: a file already existed and `q` was removed. A restore is made
+/// durable (directory fsync) before `q` is removed.
 fn restore_no_clobber(q: &Path, path: &Path) -> io::Result<bool> {
+    let dir = path.parent().ok_or_else(|| io::Error::other("blob path has no parent"))?;
     match fs::hard_link(q, path) {
         Ok(()) => {
+            fsync_dir(dir)?;
             // Restored. If removing `q` fails, a later heal removes it once it is old.
             let _ = fs::remove_file(q);
             Ok(true)
@@ -338,7 +550,11 @@ fn restore_no_clobber(q: &Path, path: &Path) -> io::Result<bool> {
         Err(e) => {
             // No hard links on this filesystem: fall back to rename, but only onto a free path.
             match fs::symlink_metadata(path) {
-                Err(m) if m.kind() == ErrorKind::NotFound => fs::rename(q, path).map(|()| true),
+                Err(m) if m.kind() == ErrorKind::NotFound => {
+                    fs::rename(q, path)?;
+                    fsync_dir(dir)?;
+                    Ok(true)
+                }
                 Ok(_) => fs::remove_file(q).map(|()| false),
                 Err(_) => Err(e),
             }
@@ -459,8 +675,8 @@ fn heal_quarantine_sync(root: &Path, cutoff: SystemTime) -> HealReport {
     r
 }
 
+/// Take the advisory GC lock. Never creates the blob root: a missing root is an error.
 fn lock_gc_sync(root: &Path) -> Result<GcLock> {
-    fs::create_dir_all(root).map_err(|e| io_err("create blob root", e))?;
     let flags =
         OFlags::WRONLY | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
     let fd = rustix::fs::open(root.join(GC_LOCK_FILE), flags, Mode::RUSR | Mode::WUSR)
@@ -488,22 +704,12 @@ impl BlobStore for FsBlobStore {
             Err(e) if e.kind() == ErrorKind::NotFound => {}
             Err(e) => return Err(io_err("refresh blob", e)),
         }
-        let dir = path.parent().ok_or_else(|| Error::storage("blob path has no parent"))?;
-        tokio::fs::create_dir_all(dir).await.map_err(|e| io_err("create blob dir", e))?;
-        let tmp = dir.join(tmp_name(&hash));
-
-        let write = async {
-            let mut f = tokio::fs::File::create(&tmp).await?;
-            f.write_all(&bytes).await?;
-            f.flush().await?;
-            f.sync_all().await?;
-            drop(f);
-            tokio::fs::rename(&tmp, &path).await
-        };
-        if let Err(e) = write.await {
-            let _ = tokio::fs::remove_file(&tmp).await;
-            return Err(io_err("write blob", e));
-        }
+        // Runs to completion on a blocking thread even if this future is dropped, so a
+        // cancelled put never leaves a half-written temporary file behind.
+        let (root, h) = (self.root.clone(), hash.clone());
+        blocking(move || write_blob_sync(&root, &path, &h, &bytes))
+            .await?
+            .map_err(|e| io_err("write blob", e))?;
         Ok(hash)
     }
 
@@ -520,14 +726,6 @@ impl BlobStore for FsBlobStore {
             Ok(v) => Ok(Bytes::from(v)),
             Err(e) if e.kind() == ErrorKind::NotFound => Err(Error::NotFound("blob".into())),
             Err(e) => Err(io_err("read blob", e)),
-        }
-    }
-
-    async fn delete(&self, h: &BlobHash) -> Result<()> {
-        match tokio::fs::remove_file(self.path_for(h)).await {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(io_err("delete blob", e)),
         }
     }
 
@@ -581,6 +779,45 @@ mod tests {
         assert!(!restore_no_clobber(&q, &p).unwrap());
         assert_eq!(fs::read(&p).unwrap(), b"fresh copy");
         assert!(!q.exists());
+    }
+
+    /// B3: a file or symlink pre-planted at the temporary name is never opened or followed;
+    /// `create_temp` moves on to the next name.
+    #[test]
+    fn create_temp_never_follows_a_planted_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("victim");
+        fs::write(&target, b"untouched").unwrap();
+        std::os::unix::fs::symlink(&target, d.path().join(".planted.tmp")).unwrap();
+        fs::write(d.path().join(".leftover.tmp"), b"old").unwrap();
+        let mut names = [".planted.tmp", ".leftover.tmp", ".fresh.tmp"].into_iter();
+        let (p, mut f) = create_temp(d.path(), || Ok(names.next().unwrap().to_string())).unwrap();
+        assert_eq!(p, d.path().join(".fresh.tmp"));
+        f.write_all(b"new").unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"untouched");
+        assert_eq!(fs::read(d.path().join(".leftover.tmp")).unwrap(), b"old");
+        assert_eq!(
+            fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        // Only planted names: give up instead of looping or following.
+        let r = create_temp(d.path(), || Ok(".planted.tmp".to_string()));
+        assert!(r.is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"untouched");
+    }
+
+    #[test]
+    fn temp_names_are_unpredictable() {
+        let h = BlobHash::of(b"x");
+        let (a, b) = (tmp_name(&h).unwrap(), tmp_name(&h).unwrap());
+        assert_ne!(a, b);
+        assert!(is_tmp_name(OsStr::new(&a)));
+        // `.<64 hex>.<pid>.<n>.<16 hex>.tmp`
+        let rand = a.trim_end_matches(".tmp").rsplit('.').next().unwrap();
+        assert_eq!(rand.len(), 16);
+        assert!(rand.bytes().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]

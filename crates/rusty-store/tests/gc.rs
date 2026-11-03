@@ -285,8 +285,9 @@ async fn delete_account_cascades_mailbox_and_decrements_refcount() {
     assert_eq!(counts(&r), (1, 1, 0));
     assert!(!has_row(&e, &hs).await);
     assert!(!blob_path(&root(&e), &hs).exists());
-    // only the GC lock file is left
-    assert_eq!(e.blob_files(), vec![root(&e).join(GC_LOCK_FILE)]);
+    // only the root's marker and GC lock file are left
+    assert!(e.blob_files().is_empty(), "{:?}", e.blob_files());
+    assert!(root(&e).join(GC_LOCK_FILE).is_file());
 }
 
 #[tokio::test]

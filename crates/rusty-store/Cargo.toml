@@ -14,6 +14,7 @@ bytes.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
 rustix.workspace = true
+rand_core.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

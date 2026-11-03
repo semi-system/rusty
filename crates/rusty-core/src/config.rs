@@ -28,10 +28,22 @@ pub enum LogLevel {
     Trace,
 }
 
+/// Startup settings.
+///
+/// Filesystem expectations (security baseline, see SECURITY.md): the service runs as its own
+/// account with umask 077. The directory holding `database_path` and the `blob_dir` itself
+/// are owned by that account with mode 0700. The database file is created 0600 when missing
+/// (`SqliteStore::open`); the blob directory must be prepared once with
+/// `FsBlobStore::init` and is refused by `FsBlobStore::open` when it is missing, unmarked,
+/// a symlink, or writable by group or others. Loading this file checks none of this.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StartupConfig {
+    /// Absolute path of the SQLite metadata database (created 0600 if missing; its directory
+    /// must exist, mode 0700).
     pub database_path: PathBuf,
+    /// Absolute path of the blob root (mode 0700, initialized with `FsBlobStore::init`;
+    /// never created implicitly).
     pub blob_dir: PathBuf,
     #[serde(default)]
     pub log_level: LogLevel,

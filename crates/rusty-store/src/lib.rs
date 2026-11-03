@@ -7,7 +7,8 @@ mod sqlite;
 mod traits;
 
 pub use blob::{
-    BlobEntry, BlobStore, FsBlobStore, GcLock, HealReport, GC_LOCK_FILE, QUARANTINE_SUFFIX,
+    BlobEntry, BlobStore, FsBlobStore, GcLock, HealReport, BLOB_ROOT_MARKER, GC_LOCK_FILE,
+    QUARANTINE_SUFFIX,
 };
 pub use gc::{
     collect_blobs, collect_blobs_at, purge_deleted, GcReport, DEFAULT_GC_GRACE, GC_BATCH,

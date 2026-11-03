@@ -1,3 +1,5 @@
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::Path;
 use std::str::FromStr;
 
 use rusty_core::{Error, Result};
@@ -15,12 +17,20 @@ impl SqliteStore {
     /// Open (and migrate) a database. `sqlite::memory:` yields a private
     /// in-memory database served by a single connection so that all queries
     /// see the same data.
+    ///
+    /// A database file that does not exist yet is created empty with mode 0600 before sqlx
+    /// opens it (SQLite gives its journal/WAL files the database file's mode). An existing
+    /// file keeps its mode. The directory holding it should be 0700 and owned by the service
+    /// account (run with umask 077; see SECURITY.md).
     pub async fn open(url: &str) -> Result<SqliteStore> {
         let opts = SqliteConnectOptions::from_str(url)
             .map_err(|e| Error::storage_with("invalid database url", e))?
             .foreign_keys(true)
             .create_if_missing(true);
         let in_memory = url.contains(":memory:") || url.contains("mode=memory");
+        if !in_memory {
+            precreate_private(opts.get_filename())?;
+        }
         let pool = SqlitePoolOptions::new()
             .max_connections(if in_memory { 1 } else { 4 })
             .min_connections(if in_memory { 1 } else { 0 })
@@ -42,12 +52,20 @@ impl SqliteStore {
         Ok(store)
     }
 
+    /// The underlying connection pool.
+    ///
+    /// Internal: public only because `rusty-directory` and tests issue queries directly. It
+    /// will be removed once the store service owns all database access; do not build new
+    /// callers on it.
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
     }
 
     /// Begin a write transaction with `BEGIN IMMEDIATE`, taking SQLite's write lock up
     /// front so concurrent writers serialize instead of failing on lock upgrade.
+    ///
+    /// Internal: public only for `rusty-directory`, GC and tests; it will be removed once the
+    /// store service owns all database access.
     ///
     /// Dropping the returned transaction without committing (an early `?` return or a
     /// cancelled future) queues a rollback on the connection's worker, which runs before the
@@ -78,6 +96,32 @@ impl SqliteStore {
         }
         Ok(())
     }
+}
+
+/// Create `path` as an empty file with mode 0600 if it does not exist (an empty file is a
+/// valid, empty SQLite database). Losing a creation race to another process is fine.
+fn precreate_private(path: &Path) -> Result<()> {
+    if path.as_os_str().is_empty() {
+        return Ok(());
+    }
+    let res = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(nofollow_cloexec_flags())
+        .open(path);
+    match res {
+        Ok(f) => f
+            .sync_all()
+            .map_err(|e| Error::storage_with("cannot create database file", e)),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(Error::storage_with("cannot create database file", e)),
+    }
+}
+
+/// `O_NOFOLLOW | O_CLOEXEC` as raw open flags (via rustix, no libc dependency).
+fn nofollow_cloexec_flags() -> i32 {
+    (rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC).bits() as i32
 }
 
 /// Map a database error to a domain error without leaking raw SQLite text.
