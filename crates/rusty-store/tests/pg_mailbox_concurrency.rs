@@ -14,23 +14,23 @@ use common::backends::{acct, pg_backend, Backend, INBOX};
 use rusty_core::{Error, Flags};
 use rusty_store::map_db_error;
 use rusty_store::repo::pg::{is_retryable, Knobs, PgRepo};
-use rusty_store::repo::SpikeMailbox;
+use rusty_store::Mailbox;
 use sqlx::Executor;
 
-/// Two mailboxes, each with a `SpikeMailbox` over a repo with the given knobs.
-async fn two_mailboxes(knobs: Knobs) -> (Backend, SpikeMailbox, SpikeMailbox, Arc<PgRepo>) {
+/// Two mailboxes, each with a `Mailbox` over a repo with the given knobs.
+async fn two_mailboxes(knobs: Knobs) -> (Backend, Mailbox, Mailbox, Arc<PgRepo>) {
     let b = pg_backend().await.expect("RUSTY_TEST_PG_URL");
     let (store, _) = b.pg.as_ref().unwrap();
     let repo = Arc::new(PgRepo::new(store.clone()).with_knobs_for_test(knobs));
     let (_, acc1, _) = acct(&b, "one").await;
     let (_, acc2, _) = acct(&b, "two").await;
-    let m1 = SpikeMailbox::open(repo.clone(), b.blobs.clone(), acc1).await.unwrap();
-    let m2 = SpikeMailbox::open(repo.clone(), b.blobs.clone(), acc2).await.unwrap();
+    let m1 = Mailbox::open_with(repo.clone(), b.blobs.clone(), acc1).await.unwrap();
+    let m2 = Mailbox::open_with(repo.clone(), b.blobs.clone(), acc2).await.unwrap();
     (b, m1, m2, repo)
 }
 
 /// Mailbox 1 stores [A, B], mailbox 2 stores [B, A] at the same time (fresh blobs).
-async fn crossed_batches(m1: &SpikeMailbox, m2: &SpikeMailbox, round: usize) {
+async fn crossed_batches(m1: &Mailbox, m2: &Mailbox, round: usize) {
     let a = raw(&format!("A{round}"), None);
     let b = raw(&format!("B{round}"), None);
     let (m1, m2) = (m1.clone(), m2.clone());
@@ -55,6 +55,7 @@ async fn unordered_blob_locks_deadlock_and_the_retry_loop_recovers() {
     let (b, m1, m2, repo) = two_mailboxes(Knobs {
         unordered_blob_locks: true,
         hold_after_first_blob_ms: 300,
+        ..Knobs::default()
     })
     .await;
     let started = Instant::now();
@@ -101,7 +102,7 @@ async fn shared_hot_blobs_across_many_mailboxes_do_not_deadlock() {
     let mut boxes = vec![];
     for i in 0..12 {
         let (_, acc, _) = acct(&b, &format!("hot{i}")).await;
-        boxes.push(SpikeMailbox::open(repo.clone(), b.blobs.clone(), acc).await.unwrap());
+        boxes.push(Mailbox::open_with(repo.clone(), b.blobs.clone(), acc).await.unwrap());
     }
     let docs = [raw("hot-a", None), raw("hot-b", None), raw("hot-c", None)];
     let mut tasks = vec![];

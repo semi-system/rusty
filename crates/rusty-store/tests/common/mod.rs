@@ -211,10 +211,27 @@ pub mod stmts {
     use tracing::{Event, Metadata, Subscriber};
 
     static COUNT: AtomicUsize = AtomicUsize::new(0);
+    static TEXTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
     static LOCK: Mutex<()> = Mutex::new(());
     static INIT: Once = Once::new();
 
     struct Counter;
+
+    /// Reads the executed statement text from the `db.statement` field of a sqlx query event.
+    struct Text(Option<String>);
+
+    impl tracing::field::Visit for Text {
+        fn record_str(&mut self, f: &tracing::field::Field, v: &str) {
+            if f.name() == "db.statement" {
+                self.0 = Some(v.to_owned());
+            }
+        }
+        fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
+            if f.name() == "db.statement" {
+                self.0 = Some(format!("{v:?}").trim_matches('"').to_owned());
+            }
+        }
+    }
 
     impl Subscriber for Counter {
         fn enabled(&self, m: &Metadata<'_>) -> bool {
@@ -228,6 +245,11 @@ pub mod stmts {
         fn event(&self, e: &Event<'_>) {
             if e.metadata().target() == "sqlx::query" {
                 COUNT.fetch_add(1, Ordering::SeqCst);
+                let mut v = Text(None);
+                e.record(&mut v);
+                if let Some(t) = v.0 {
+                    TEXTS.lock().unwrap_or_else(|p| p.into_inner()).push(t);
+                }
             }
         }
         fn enter(&self, _: &Id) {}
@@ -245,6 +267,7 @@ pub mod stmts {
             tracing::subscriber::set_global_default(Counter).expect("global subscriber");
         });
         COUNT.store(0, Ordering::SeqCst);
+        TEXTS.lock().unwrap_or_else(|p| p.into_inner()).clear();
         Probe { _lock: lock }
     }
 
@@ -254,6 +277,11 @@ pub mod stmts {
         }
         pub fn reset(&self) {
             COUNT.store(0, Ordering::SeqCst);
+            TEXTS.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        }
+        /// Statement texts executed since the last reset, in order (BEGIN and COMMIT included).
+        pub fn statements(&self) -> Vec<String> {
+            TEXTS.lock().unwrap_or_else(|p| p.into_inner()).clone()
         }
     }
 }

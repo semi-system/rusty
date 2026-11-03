@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use rusty_core::{AccountId, DomainId, Error, FolderId};
 use rusty_store::repo::sqlite::SqliteRepo;
-use rusty_store::repo::{DirectoryRepo, MailboxRepo, NewAccount, Resolution, SpikeMailbox};
+use rusty_store::repo::{DirectoryRepo, MailboxRepo, NewAccount, Resolution};
+use rusty_store::Mailbox;
 use rusty_core::PlanId;
 use rusty_store::{BlobStore, SqliteStore};
 
@@ -99,10 +100,10 @@ where
 }
 
 /// Domain `<tag>.test` plus account `alice` in it, and the opened mailbox.
-pub async fn acct(b: &Backend, tag: &str) -> (DomainId, AccountId, SpikeMailbox) {
+pub async fn acct(b: &Backend, tag: &str) -> (DomainId, AccountId, Mailbox) {
     let dom = b.dir.create_domain(&format!("{tag}.test")).await.unwrap();
     let acc = b.dir.create_account("alice", dom, None, None).await.unwrap();
-    let mb = SpikeMailbox::open(b.mrepo.clone(), b.blobs.clone(), acc)
+    let mb = Mailbox::open_with(b.mrepo.clone(), b.blobs.clone(), acc)
         .await
         .unwrap();
     (dom, acc, mb)
@@ -137,6 +138,38 @@ pub async fn exec(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> i64 {
             };
         }
         return q.fetch_one(p.pool()).await.unwrap();
+    }
+    unreachable!()
+}
+
+/// A further account in an existing domain, with its mailbox.
+pub async fn acct_in(b: &Backend, dom: DomainId, local: &str) -> Mailbox {
+    let acc = b.dir.create_account(local, dom, None, None).await.unwrap();
+    Mailbox::open_with(b.mrepo.clone(), b.blobs.clone(), acc)
+        .await
+        .unwrap()
+}
+
+/// One `bigint` from a fixture query (no parameters; use `count(*)`, never `sum`).
+pub async fn scalar(b: &Backend, sql: &str) -> i64 {
+    if let Some(s) = &b.sqlite {
+        return sqlx::query_scalar::<_, i64>(sql).fetch_one(s.pool()).await.unwrap();
+    }
+    #[cfg(feature = "postgres")]
+    if let Some((p, _)) = &b.pg {
+        return sqlx::query_scalar::<_, i64>(sql).fetch_one(p.pool()).await.unwrap();
+    }
+    unreachable!()
+}
+
+/// All rows of a one-column `bigint` fixture query.
+pub async fn scalars(b: &Backend, sql: &str) -> Vec<i64> {
+    if let Some(s) = &b.sqlite {
+        return sqlx::query_scalar::<_, i64>(sql).fetch_all(s.pool()).await.unwrap();
+    }
+    #[cfg(feature = "postgres")]
+    if let Some((p, _)) = &b.pg {
+        return sqlx::query_scalar::<_, i64>(sql).fetch_all(p.pool()).await.unwrap();
     }
     unreachable!()
 }

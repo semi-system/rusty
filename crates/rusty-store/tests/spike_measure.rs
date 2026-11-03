@@ -17,7 +17,7 @@ use bytes::Bytes;
 use common::backends::{acct, backends, Backend, INBOX};
 use common::{raw, stmts};
 use rusty_core::Flags;
-use rusty_store::repo::SpikeMailbox;
+use rusty_store::Mailbox;
 
 static TAG: AtomicUsize = AtomicUsize::new(0);
 
@@ -36,7 +36,7 @@ async fn statements_per_operation() {
         probe.reset();
         let acc = b.dir.create_account("alice", dom, None, None).await.unwrap();
         let create_account = probe.count();
-        let mb = SpikeMailbox::open(b.mrepo.clone(), b.blobs.clone(), acc).await.unwrap();
+        let mb = Mailbox::open_with(b.mrepo.clone(), b.blobs.clone(), acc).await.unwrap();
         probe.reset();
         mb.create_folder(None, "F").await.unwrap();
         let create_folder = probe.count();
@@ -79,7 +79,7 @@ async fn statements_per_operation() {
 }
 
 async fn run_workload(b: &Backend, label: &str, mailboxes: usize, conc: usize, per_task: usize, same_blob: bool) {
-    let mut boxes: Vec<SpikeMailbox> = vec![];
+    let mut boxes: Vec<Mailbox> = vec![];
     for _ in 0..mailboxes {
         let (_, _, mb) = acct(b, &format!("w{}", TAG.fetch_add(1, Ordering::Relaxed))).await;
         boxes.push(mb);
@@ -162,7 +162,7 @@ async fn concurrency_shapes() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore]
 async fn head_of_line_blocking_through_the_pool() {
-    async fn cold_latency(hot: &SpikeMailbox, cold: &SpikeMailbox, hot_writers: usize) -> Vec<Duration> {
+    async fn cold_latency(hot: &Mailbox, cold: &Mailbox, hot_writers: usize) -> Vec<Duration> {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut tasks = vec![];
         for t in 0..hot_writers {
@@ -213,8 +213,8 @@ async fn head_of_line_blocking_through_the_pool() {
             };
             let store = rusty_store::PgStore::connect_with_config(db.url(), cfg).await.unwrap();
             let repo = std::sync::Arc::new(PgRepo::new(store));
-            let hot16 = SpikeMailbox::open(repo.clone(), b.blobs.clone(), hot_acc).await.unwrap();
-            let cold16 = SpikeMailbox::open(repo, b.blobs.clone(), cold_acc).await.unwrap();
+            let hot16 = Mailbox::open_with(repo.clone(), b.blobs.clone(), hot_acc).await.unwrap();
+            let cold16 = Mailbox::open_with(repo, b.blobs.clone(), cold_acc).await.unwrap();
             let mut lat = cold_latency(&hot16, &cold16, 12).await;
             println!(
                 "HOL   {:9} pool=16 hot_writers=12: cold-mailbox append p50={:?} p99={:?}",
