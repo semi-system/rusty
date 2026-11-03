@@ -2,6 +2,7 @@
 
 mod blob;
 mod gc;
+mod jobs;
 mod mailbox;
 mod sqlite;
 mod traits;
@@ -14,6 +15,11 @@ pub use gc::{
     collect_blobs, collect_blobs_at, purge_deleted, purge_deliveries, purge_deliveries_at,
     purge_deliveries_default, GcReport, DEFAULT_GC_GRACE, DELIVERY_RETENTION_SECS, GC_BATCH,
     MAX_GC_ERRORS, MIN_GC_GRACE, PURGE_BATCH,
+};
+pub use jobs::{
+    ClaimedJob, JobQueue, DEFAULT_JOB_ATTEMPTS, MAX_CLAIM_KINDS, MAX_JOB_ATTEMPTS,
+    MAX_JOB_KIND_BYTES, MAX_JOB_PAYLOAD_BYTES, MAX_LAST_ERROR_BYTES, MAX_LEASE_SECS,
+    MAX_RETRY_AFTER_SECS,
 };
 pub use mailbox::{
     normalize_keyword, validate_folder_name, Change, ChangeItem, ChangeOp, ChangePage,

@@ -16,6 +16,7 @@ sqlx.workspace = true
 tokio = { workspace = true, features = ["rt"] }
 rustix.workspace = true
 rand_core.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

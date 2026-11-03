@@ -26,8 +26,23 @@ pub trait MetadataStore: Send + Sync {
 pub struct SqliteTx(Transaction<'static, Sqlite>);
 
 impl SqliteTx {
+    /// Begin a write transaction (`BEGIN IMMEDIATE`, see [`SqliteStore::begin_write`]).
+    pub async fn begin(store: &SqliteStore) -> Result<SqliteTx> {
+        Ok(SqliteTx(store.begin_write().await?))
+    }
+
     pub fn conn(&mut self) -> &mut SqliteConnection {
         &mut self.0
+    }
+
+    /// Commit. (An inherent twin of [`Tx::commit`] for callers that hold a plain `SqliteTx`.)
+    pub async fn commit(self) -> Result<()> {
+        self.0.commit().await.map_err(map_db_error)
+    }
+
+    /// Roll back. Dropping the transaction has the same effect.
+    pub async fn rollback(self) -> Result<()> {
+        self.0.rollback().await.map_err(map_db_error)
     }
 }
 

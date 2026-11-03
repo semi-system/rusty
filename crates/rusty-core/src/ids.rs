@@ -20,6 +20,7 @@ newtype_id!(
     FolderId,
     MessageId,
     DomainId,
+    JobId,
     PlanId,
     ListId,
     /// Thread of a message, scoped to its mailbox. A message with no known parent starts a
