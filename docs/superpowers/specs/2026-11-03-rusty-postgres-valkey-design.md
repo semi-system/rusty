@@ -171,9 +171,10 @@ Vai trò mới trong ma trận quyền của `store` (spec mô hình tiến trì
 - **Hàng xóm ồn ào:** giới hạn đồng thời và tốc độ theo tenant tại `store` (số kết nối, số yêu cầu mỗi giây, hàng đợi công bằng giữa tenant); `statement_timeout` theo vai trò; một tenant không thể làm nghẽn tenant khác ở mức tài nguyên cấu hình.
 - **Xóa tenant (offboarding):** xóa domain yêu cầu đã xóa hết tài khoản (`RESTRICT`), thao tác ghi kiểm toán, GC dọn blob; xuất dữ liệu tenant là lệnh riêng.
 
-### 3c.4b Đặt tên blob theo tenant (cần quyết định TRƯỚC khi có dữ liệu)
+### 3c.4b Đặt tên blob theo tenant (ĐÃ QUYẾT ĐỊNH: hash có khóa theo tenant)
 Hiện blob đặt tên theo SHA-256 của nội dung, dùng chung toàn hệ thống. Review cuối chỉ ra hai hệ quả khi domain = tenant: (1) **kênh phụ giữa tenant**: hai tenant gửi cùng nội dung thì dùng chung một blob, nên thời gian `put` (có sẵn hay chưa) cho biết "nội dung này đã tồn tại ở đâu đó"; (2) không thể hủy dữ liệu của một tenant bằng cách hủy khóa (crypto-shredding) nếu blob dùng chung.
-Đề xuất (cần người dùng duyệt): **tên blob = HMAC-SHA256 với khóa theo tenant** (`blob_key = HMAC(tenant_key, nội dung)`), lưu dưới tiền tố `t/{domain_id}/...`. Dedupe vẫn hoạt động *trong* một tenant; mất dedupe giữa các tenant (tốn thêm dung lượng khi nhiều tenant nhận cùng tệp đính kèm lớn). `BlobStore::put` nhận thêm tham số tenant/khóa. Đổi cách đặt tên sau khi đã có dữ liệu là di chuyển toàn bộ blob, nên quyết định trước.
+**Quyết định của người dùng (2026-11-03): chọn phương án này (b), không chọn bố cục thư mục theo mailbox (c).** Tên blob = HMAC-SHA256 với khóa theo tenant** (`blob_key = HMAC(tenant_key, nội dung)`), lưu dưới tiền tố `t/{domain_id}/...`. Dedupe vẫn hoạt động *trong* một tenant; mất dedupe giữa các tenant (tốn thêm dung lượng khi nhiều tenant nhận cùng tệp đính kèm lớn). `BlobStore::put` nhận thêm tham số tenant/khóa. Đổi cách đặt tên sau khi đã có dữ liệu là di chuyển toàn bộ blob, nên quyết định này phải được thực hiện trước khi có dữ liệu thật.
+Hệ quả đã chấp nhận: (1) không có thư mục theo mailbox, nên di chuyển/xóa một mailbox là thao tác **do DB dẫn đường** (liệt kê blob qua các thư của mailbox đó) chứ không phải chép/xóa một thư mục; (2) khóa tenant là bí mật quan trọng: lưu trong kho khóa (tệp `0400` ban đầu, KMS/HSM sau), có `key_id` trong metadata để xoay vòng, mất khóa là mất dữ liệu của tenant (có chủ ý, đây là cơ chế crypto-shredding); (3) xoay khóa HMAC đổi tên blob nên được thiết kế như thao tác di chuyển nền (đọc blob cũ, ghi tên mới, đổi tham chiếu, GC), không thực hiện trong yêu cầu thường.
 
 ### 3c.5 Kiểm thử cô lập chéo tenant (bắt buộc)
 - Tạo hai tenant A và B với dữ liệu đầy đủ. Với **mỗi** thao tác của `store`, chạy với quyền của A nhắm vào đối tượng của B: kết quả phải là `NotFound`/rỗng, không thay đổi dữ liệu, không khác biệt quan sát được giữa "không tồn tại" và "thuộc tenant khác" (kể cả thông báo lỗi và mã lỗi).
@@ -196,6 +197,21 @@ Các việc cần làm ở "phase 00" hoặc ngay đầu dự án, vì đổi sa
 - **Chế độ journal SQLite và đồng bộ:** hiện dùng mặc định (rollback journal, synchronous FULL, busy timeout 5 s); quyết định WAL + `synchronous` sau khi có benchmark; ghi rõ vì spec mô hình tiến trình từng nhắc WAL.
 - **Chuyển `GC` sang bảo vệ bằng DB** khi thêm backend đối tượng (spec triển khai container §7.3).
 - **Trigger độ sâu folder** hiện chỉ kiểm tra folder được di chuyển, không phải cả cây con; ứng dụng đã chặn, Postgres phải sao chép quy tắc ở cả hai nơi.
+
+## 3e. Quản lý mailbox và admin console (định hướng)
+Mọi thao tác quản lý mailbox đi qua API quản trị của `store` (vai trò `superadmin` hoặc `domain-admin(D)`, có kiểm toán), do `rustyctl` và sau này **admin console** (web, Svelte 5, gọi `admin-api`) sử dụng. Admin console không có đường tắt vào DB hay blob.
+
+| Thao tác | Ghi chú thiết kế |
+|---|---|
+| Tạo, khóa, mở khóa, xóa tài khoản; đổi mật khẩu; alias; danh sách | đã có ở `Directory`; xóa tài khoản kích hoạt cascade và GC |
+| Xem sử dụng và đặt quota (mailbox/domain) | dùng bộ đếm sử dụng (§3c.1) và trần hệ thống (§3c.2) |
+| Xóa/làm rỗng mailbox | do DB dẫn: xóa hàng thư, `refcount` giảm, GC dọn blob sau hạn ân hạn |
+| **Chuyển mailbox giữa các node `store`** (khi có nhiều node) | **công việc nền, idempotent, có thể tiếp tục**: liệt kê blob của mailbox qua DB, chép sang node đích kèm kiểm tra băm, chuyển quyền sở hữu (đổi định tuyến) trong một bước nguyên tử, chỉ xóa nguồn sau khi xác minh và qua hạn ân hạn; mailbox ở trạng thái `moving` (chỉ đọc hoặc xếp hàng ghi) trong lúc chuyển |
+| Xuất mailbox (mbox/EML/zip) và nhập | công việc nền tạo tệp mã hóa cho chính chủ/pháp lý; phục vụ cả công cụ import Zimbra |
+| Đánh chỉ mục lại (khi có tìm kiếm) | công việc nền theo mailbox |
+| Xem nội dung thư của người dùng | **không có** trong console; nếu cần hỗ trợ thì là quy trình riêng có phê duyệt và kiểm toán (ngoài phạm vi) |
+
+Nguyên tắc: thao tác dài là **job** có trạng thái (đang chạy, tạm dừng, lỗi, xong) hiển thị trong console và `rustyctl`, không phải một yêu cầu HTTP treo; mỗi job ghi `admin_audit`; `domain-admin` chỉ thấy job của tenant mình (trả `NotFound` ngoài phạm vi). Chi tiết giao diện và danh sách job là việc của dự án admin console, không nằm trong phạm vi hiện tại.
 
 ## 4. Cache Valkey: những gì được cache
 Chỉ metadata, không bao giờ cache nội dung thư (đã ở file blob) hay hash mật khẩu.
