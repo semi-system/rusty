@@ -39,7 +39,8 @@ Quyết định của người dùng: dựng một container nginx hoặc Traefi
 
 ### 3b.1 Vì sao Traefik và vì sao không cần hiểu giao thức thư ở biên
 - Các dịch vụ giao thức của Rusty **không giữ trạng thái** và phục vụ được mọi người dùng (spec phân tán §2), nên biên **không cần định tuyến theo người dùng** như `zimbra-proxy` (nginx mail module tra mailbox server theo user). Cân bằng tải L4 là đủ.
-- **Thư (SMTP, IMAP, POP3): chuyển tiếp TCP nguyên vẹn (TCP router, TLS passthrough)**. Dịch vụ phía sau tự làm TLS/STARTTLS bằng rustls. Biên không phân tích, không giải mã, không thấy nội dung hay mật khẩu; một biên bị chiếm không đọc được thư. Traefik không hiểu STARTTLS, nhưng điều đó không ảnh hưởng vì biên chỉ chuyển byte (cổng 25/587/143 STARTTLS và 465/993/995 TLS ngầm đều đi qua được).
+- **Thư (SMTP, IMAP, POP3) — QUYẾT ĐỊNH ĐÃ SỬA (2026-11-03, theo yêu cầu của người dùng): biên kết thúc TLS cho các cổng TLS ngầm (465 SMTPS, 993 IMAPS, 995 POP3S) bằng chứng chỉ ACME do chính Traefik xin và gia hạn, rồi mã hóa lại bằng mTLS tới dịch vụ phía sau** (mục 3b.5). Điều này thay cho đề xuất ban đầu là chuyển TCP nguyên vẹn. **Đánh đổi phải chấp nhận:** với các cổng này, biên thấy nội dung và mật khẩu dạng rõ trong bộ nhớ; một biên bị chiếm có thể đọc luồng thư và mật khẩu của các kết nối đi qua nó. Giảm thiểu: biên tối giản và cứng hóa (mục 3b.3), không ghi nội dung, không có quyền tới DB/blob, mTLS tới backend, và có công tắc từng cổng `tls_mode = terminate | passthrough` để chuyển lại sang chuyển nguyên vẹn (khi đó dịch vụ tự giữ chứng chỉ) mà không đổi kiến trúc.
+- **Cổng STARTTLS** (25, 587, 143, 110) Traefik không kết thúc được vì không hiểu STARTTLS; chúng (nếu bật) luôn là chuyển TCP nguyên vẹn và dịch vụ phía sau phải giữ chứng chỉ riêng. Theo **RFC 8314** ("Cleartext Considered Obsolete") giao thức người dùng cuối nên dùng TLS ngầm, nên **mặc định chỉ mở 465, 993, 995 (và 25 cho thư giữa các máy chủ)**; 587, 143 và 110 mặc định **tắt** (có thể bật bằng cấu hình cho máy khách cũ, kèm cảnh báo).
 - **HTTP (JMAP, CalDAV/CardDAV, webmail, admin console): kết thúc TLS ở biên**, áp dụng giới hạn, rồi **mã hóa lại bằng mTLS** tới dịch vụ phía sau (spec container §5).
 - Traefik viết bằng Go (an toàn bộ nhớ, giảm lớp lỗi RCE do tràn bộ nhớ so với C); nginx viết bằng C. Đổi lại Traefik có nhiều tính năng cần tắt (mục 3b.3).
 - **Lựa chọn thay thế sau này:** biên viết bằng Rust (`rusty-edge`), hiểu giao thức thư và có thể định tuyến theo người dùng, nếu nhu cầu vượt Traefik. Ngoài phạm vi hiện tại.
@@ -48,11 +49,11 @@ Quyết định của người dùng: dựng một container nginx hoặc Traefi
 | Cổng | Chế độ | Đích |
 |---|---|---|
 | 25 | TCP, chuyển nguyên vẹn | `smtp-in` |
-| 587 | TCP, chuyển nguyên vẹn (STARTTLS bắt buộc ở dịch vụ) | `smtp-submit` |
-| 465 | TCP, chuyển nguyên vẹn (TLS ngầm) | `smtp-submit` |
-| 143 | TCP, chuyển nguyên vẹn (STARTTLS bắt buộc, cấm đăng nhập trước TLS) | `imap` |
-| 993 | TCP, chuyển nguyên vẹn (TLS ngầm) | `imap` |
-| 110/995 | chỉ nếu POP3 được bật | `pop3` |
+| 465 | TLS ngầm, **kết thúc ở biên (ACME)**, mTLS tới đích | `smtp-submit` |
+| 993 | TLS ngầm, **kết thúc ở biên (ACME)**, mTLS tới đích | `imap` |
+| 995 | TLS ngầm, **kết thúc ở biên (ACME)**, mTLS tới đích; chỉ nếu POP3 được bật | `pop3` |
+| 587 | mặc định **tắt**; nếu bật: TCP chuyển nguyên vẹn (STARTTLS bắt buộc ở dịch vụ) | `smtp-submit` |
+| 143, 110 | mặc định **tắt**; nếu bật: TCP chuyển nguyên vẹn (STARTTLS bắt buộc, cấm đăng nhập trước TLS) | `imap`, `pop3` |
 | 443 | HTTPS, kết thúc TLS, định tuyến theo `Host` và đường dẫn | `jmap`, `dav`, `webmail`, `admin-console` (host riêng) |
 | 80 | chỉ chuyển hướng sang HTTPS và thử thách ACME HTTP-01 | `edge` |
 - **PROXY protocol v2** gửi tới các đích TCP để dịch vụ thấy IP thật của máy khách (giới hạn tốc độ, nhật ký, chống dò mật khẩu). Dịch vụ chỉ chấp nhận PROXY protocol từ địa chỉ của `edge` và từ chối kết nối thiếu/giả; HTTP dùng `X-Forwarded-*` chỉ từ `edge`, không tin giá trị do máy khách tự gửi.
@@ -67,6 +68,33 @@ Quyết định của người dùng: dựng một container nginx hoặc Traefi
 - Chống dò mật khẩu **không** làm ở biên (biên không thấy xác thực thư): là bộ đếm thất bại theo IP/tài khoản trong dịch vụ giao thức và `store`, dựa trên IP thật từ PROXY protocol, với khóa tạm và độ trễ lũy tiến.
 - Nhật ký truy cập JSON, không ghi chuỗi truy vấn, `Authorization`, cookie hay token; ghi IP, cổng, kết quả, thời gian.
 - Duy nhất `edge` công bố cổng ra host; kiểm tra tự động (mục 10) bảo đảm không container nào khác làm vậy.
+
+### 3b.5 Chứng chỉ TLS tự động (ACME) cho HTTPS, IMAPS, POP3S, SMTPS
+Quyết định của người dùng: Traefik tích hợp xin và gia hạn chứng chỉ SSL/TLS để dùng cho HTTPS và các giao thức thư TLS ngầm (IMAPS, POP3S, SMTPS).
+
+- **Một bộ cấp chứng chỉ duy nhất:** `certificatesResolvers` ACME của Traefik, dùng chung cho router HTTP và router TCP (`HostSNI`) của cổng 465/993/995. Mỗi tên máy (ví dụ `mail.example.com`, `imap.example.com`) có một chứng chỉ; tên máy được khai báo **tường minh** trong cấu hình (danh sách cho phép), **không bao giờ cấp theo SNI tùy ý do máy khách gửi** (chống dùng cạn hạn mức của CA và tấn công làm tràn việc cấp).
+- **Loại thử thách (challenge):**
+  - `HTTP-01` qua cổng 80 (mặc định, đơn giản, không cần bí mật DNS).
+  - `TLS-ALPN-01` qua cổng 443 (không cần cổng 80).
+  - `DNS-01` khi cần chứng chỉ wildcard hoặc biên không với tới từ Internet. **Thông tin xác thực API DNS là bí mật giá trị cao:** token giới hạn phạm vi theo vùng (chỉ ghi bản ghi TXT thử thách), nằm trong tệp bí mật `0400` chỉ `edge` đọc được, không đưa vào biến môi trường hay image.
+- **CA và hạn mức:** CA mặc định cấu hình được (`caServer`); mặc định production dùng CA công cộng, còn dev/test **bắt buộc** dùng môi trường staging hoặc máy chủ ACME thử nghiệm để không dùng cạn hạn mức thật. Khuyến nghị bản ghi DNS `CAA` chỉ cho CA đã chọn.
+- **Lưu trữ khóa:** tệp lưu chứng chỉ ACME (`acme.json` hoặc tương đương) chứa khóa riêng và khóa tài khoản ACME; nằm trên volume riêng chỉ `edge` gắn, quyền `0600`, thuộc user của `edge`; sao lưu phải mã hóa; không bao giờ nằm trong image hay kho mã. Mất tệp này chỉ buộc cấp lại chứng chỉ (không mất dữ liệu thư), nhưng khóa bị lộ phải được thu hồi và cấp lại.
+- **Gia hạn:** tự động trước hạn (Traefik mặc định gia hạn khi còn khoảng 30 ngày; kiểm tra đúng ngưỡng ở phiên bản ghim); cảnh báo khi chứng chỉ còn dưới 14 ngày mà chưa gia hạn được (`rustyctl check` đọc hạn chứng chỉ qua một kết nối TLS thử tới chính cổng công khai, không đọc tệp khóa).
+- **Một bản `edge`:** Traefik bản mã nguồn mở không chia sẻ trạng thái ACME an toàn giữa nhiều bản sao. Khi cần nhiều bản `edge` (HA), phải chuyển việc cấp chứng chỉ ra ngoài (một dịch vụ cấp chứng chỉ riêng hoặc `cert-manager` trên Kubernetes) và cho `edge` chỉ nạp chứng chỉ từ bí mật chỉ đọc. Ghi nhận như hạn chế đã biết của lựa chọn hiện tại.
+- **Chứng chỉ cho cổng STARTTLS (nếu bật) và cổng 25:** dịch vụ phía sau cần chứng chỉ riêng. Hai cách, chọn khi bật: (a) xuất chứng chỉ từ kho ACME của `edge` bằng một bộ xuất nhỏ, chỉ-đọc, chạy tách biệt và ghi PEM ra volume chỉ-đọc cho dịch vụ (thêm một thành phần phải cứng hóa); hoặc (b) dịch vụ tự xin chứng chỉ bằng thư viện ACME của chính nó. Cổng 25 giữa các máy chủ thư dùng TLS cơ hội nên có thể chấp nhận chứng chỉ tự ký nội bộ trong giai đoạn đầu; quyết định DANE/MTA-STS để sau.
+- **Chính sách TLS cho tất cả cổng kết thúc ở biên:** tối thiểu TLS 1.2 (ưu tiên 1.3), chỉ bộ mã hóa hiện đại, không SSLv3/TLS 1.0/1.1; ALPN `imap`/`pop3`/`smtp` không bắt buộc; HSTS cho HTTP; cùng một `tls.options` dùng cho cả HTTP và TCP.
+- **Mã hóa lại tới backend (mTLS):** biên giữ chứng chỉ client ngắn hạn do CA nội bộ cấp và xác minh chứng chỉ máy chủ của backend (cấu hình `serversTransport` có kiểm tra tên); **phải xác minh bằng tài liệu và test của đúng phiên bản Traefik đã ghim rằng router TCP hỗ trợ TLS tới backend cùng với PROXY protocol v2** (thứ tự: tiêu đề PROXY gửi trước, rồi bắt tay TLS). Nếu phiên bản đó không hỗ trợ, không được hạ xuống plaintext âm thầm: dừng lại, ghi rõ trong báo cáo, và chọn một trong hai cách: dùng đường plaintext trên mạng `app` biệt lập kèm chấp nhận rủi ro bằng văn bản, hoặc chuyển cổng đó sang `passthrough`.
+- **Kiểm thử bằng máy chủ ACME thử nghiệm:** môi trường test dùng **Pebble** (máy chủ ACME thử nghiệm chính thức của Let's Encrypt, image ghim digest) và `challtestsrv`; không gọi CA thật trong test (mục 3b.6).
+
+### 3b.6 Kiểm thử chứng chỉ
+- `edge` xin được chứng chỉ từ Pebble cho từng tên máy khai báo (HTTP-01 và TLS-ALPN-01; DNS-01 qua `challtestsrv`), và trình bày đúng chứng chỉ đó trên 443, 993, 995, 465 (kiểm tra bằng máy khách TLS thật: tên, chuỗi, ngày hết hạn, phiên bản TLS tối thiểu).
+- Tên máy lạ (SNI không có trong danh sách) **không** kích hoạt việc cấp chứng chỉ và bị từ chối bắt tay hoặc nhận chứng chỉ mặc định không khớp.
+- Gia hạn: rút ngắn hạn chứng chỉ ở Pebble, chứng minh `edge` gia hạn tự động và máy khách nhận chứng chỉ mới mà không đứt kết nối đang có.
+- CA ngừng hoạt động: `edge` tiếp tục phục vụ chứng chỉ hiện có, không crash, ghi cảnh báo; khi CA trở lại thì gia hạn thành công.
+- Mất tệp lưu trữ ACME: `edge` cấp lại, không phục vụ chứng chỉ hỏng.
+- Bí mật: `acme.json` quyền `0600`, thuộc đúng user, không nằm trong image; thông tin DNS-01 chỉ ở tệp bí mật `0400`; nhật ký không chứa khóa hay token.
+- Cổng 587/143/110 mặc định đóng (kiểm tra bằng kết nối thật); bật bằng cấu hình thì chuyển nguyên vẹn.
+- Cấm giao thức cũ: máy khách TLS 1.0/1.1/SSLv3 bị từ chối trên mọi cổng kết thúc ở biên.
 
 ### 3b.4 Kiểm thử cổng vào
 - Khung `deploy/compose/` dựng `edge` cùng backend giả (Rust, tĩnh) cho TCP và HTTP; kiểm tra: chuyển nguyên vẹn các luồng nhị phân (không đổi byte), STARTTLS đi qua nguyên vẹn, PROXY protocol v2 đến đích với IP đúng và bị từ chối khi giả mạo, định tuyến theo `Host`/đường dẫn, kết thúc và mã hóa lại TLS, giới hạn kích thước/thời gian/số kết nối bị áp dụng, dashboard và API không truy cập được từ ngoài, không có Docker provider, rootfs chỉ đọc, không `docker.sock`.
