@@ -1067,6 +1067,7 @@ dependencies = [
  "rustix",
  "rusty-core",
  "rusty-mime",
+ "serde_json",
  "sqlx",
  "tokio",
 ]
