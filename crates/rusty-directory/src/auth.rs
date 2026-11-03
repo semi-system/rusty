@@ -44,15 +44,20 @@ fn verify_blocking(hash: &str, password: &str) -> bool {
 impl Directory {
     pub async fn set_password(&self, account: AccountId, password: &str) -> Result<()> {
         let hash = hash_password(password).await?;
+        // One transaction: a new password and the revocation of every capability issued under
+        // the old one become visible together.
+        let mut tx = self.store().begin_write().await?;
         let res = sqlx::query("UPDATE accounts SET password_hash = ? WHERE id = ?")
             .bind(hash)
             .bind(account.0)
-            .execute(self.store().pool())
+            .execute(&mut *tx)
             .await
             .map_err(map_db_error)?;
         if res.rows_affected() == 0 {
             return Err(Error::NotFound("account".into()));
         }
+        crate::caps::revoke_all_in(&mut tx, account, None).await?;
+        tx.commit().await.map_err(map_db_error)?;
         Ok(())
     }
 }

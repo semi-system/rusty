@@ -89,15 +89,21 @@ impl Directory {
     }
 
     pub async fn set_status(&self, account: AccountId, status: AccountStatus) -> Result<()> {
+        let mut tx = self.store().begin_write().await?;
         let res = sqlx::query("UPDATE accounts SET status = ? WHERE id = ?")
             .bind(status.as_str())
             .bind(account.0)
-            .execute(self.store().pool())
+            .execute(&mut *tx)
             .await
             .map_err(map_db_error)?;
         if res.rows_affected() == 0 {
             return Err(Error::NotFound("account".into()));
         }
+        // Locking or disabling an account kills its capabilities in the same transaction.
+        if status != AccountStatus::Active {
+            crate::caps::revoke_all_in(&mut tx, account, None).await?;
+        }
+        tx.commit().await.map_err(map_db_error)?;
         Ok(())
     }
 

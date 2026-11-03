@@ -12,9 +12,10 @@ pub use blob::{
     QUARANTINE_SUFFIX,
 };
 pub use gc::{
-    collect_blobs, collect_blobs_at, purge_deleted, purge_deliveries, purge_deliveries_at,
-    purge_deliveries_default, GcReport, DEFAULT_GC_GRACE, DELIVERY_RETENTION_SECS, GC_BATCH,
-    MAX_GC_ERRORS, MIN_GC_GRACE, PURGE_BATCH,
+    collect_blobs, collect_blobs_at, purge_capabilities, purge_capabilities_at,
+    purge_capabilities_default, purge_deleted, purge_deliveries, purge_deliveries_at,
+    purge_deliveries_default, GcReport, CAPABILITY_RETENTION_SECS, DEFAULT_GC_GRACE,
+    DELIVERY_RETENTION_SECS, GC_BATCH, MAX_GC_ERRORS, MIN_GC_GRACE, PURGE_BATCH,
 };
 pub use jobs::{
     ClaimedJob, JobQueue, DEFAULT_JOB_ATTEMPTS, JOB_RETENTION_SECS, MAX_CLAIM_KINDS,

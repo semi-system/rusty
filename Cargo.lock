@@ -1156,6 +1156,7 @@ dependencies = [
  "rusty-core",
  "rusty-store",
  "serde_json",
+ "sha2",
  "sqlx",
  "tempfile",
  "tokio",

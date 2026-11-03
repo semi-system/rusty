@@ -124,6 +124,55 @@ pub async fn purge_deliveries_default(store: &SqliteStore) -> Result<u64> {
     purge_deliveries_at(store, now, DELIVERY_RETENTION_SECS).await
 }
 
+/// How long a dead (expired or revoked) capability row is kept by default.
+pub const CAPABILITY_RETENTION_SECS: i64 = 86400;
+
+/// Delete `capabilities` rows that are dead before `older_than` (unix seconds): `expires_at <
+/// older_than` or `revoked_at < older_than`. At most [`PURGE_BATCH`] per `BEGIN IMMEDIATE`
+/// transaction. A live row (unexpired, unrevoked) is never touched while `older_than` is not
+/// in the future. Returns the rows removed.
+pub async fn purge_capabilities(store: &SqliteStore, older_than: i64) -> Result<u64> {
+    let mut total = 0u64;
+    loop {
+        let mut tx = store.begin_write().await?;
+        let n = sqlx::query(
+            "DELETE FROM capabilities WHERE rowid IN (\
+               SELECT rowid FROM capabilities \
+               WHERE expires_at < ?1 OR revoked_at < ?1 LIMIT ?2)",
+        )
+        .bind(older_than)
+        .bind(PURGE_BATCH)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_db_error)?
+        .rows_affected();
+        tx.commit().await.map_err(map_db_error)?;
+        total += n;
+        if n < PURGE_BATCH as u64 {
+            return Ok(total);
+        }
+    }
+}
+
+/// [`purge_capabilities`] for rows dead for more than `retention_secs` before `now`.
+#[doc(hidden)]
+pub async fn purge_capabilities_at(
+    store: &SqliteStore,
+    now: i64,
+    retention_secs: i64,
+) -> Result<u64> {
+    purge_capabilities(store, now.saturating_sub(retention_secs.max(0))).await
+}
+
+/// [`purge_capabilities_at`] with the database clock and [`CAPABILITY_RETENTION_SECS`].
+pub async fn purge_capabilities_default(store: &SqliteStore) -> Result<u64> {
+    let now: i64 = sqlx::query_scalar("SELECT unixepoch()")
+        .fetch_one(store.pool())
+        .await
+        .map_err(map_db_error)?;
+    purge_capabilities_at(store, now, CAPABILITY_RETENTION_SECS).await
+}
+
 /// Outcome of one [`collect_blobs`] run.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GcReport {
