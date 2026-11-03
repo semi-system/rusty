@@ -22,7 +22,7 @@ use crate::mailbox::{
     MessageSummary, MoveBatch, MAX_FOLDER_DEPTH, MAX_KEYWORDS_PER_MESSAGE,
 };
 use crate::repo::{
-    changes_since_generic, check_batch_len, depth_verdict, hash_bytes, moved_refs,
+    changes_since_generic, check_batch_len, check_distinct_ids, check_purge_limit, depth_verdict, hash_bytes, moved_refs,
     not_found_folder, not_found_mailbox, not_found_message, plan_deliveries, plan_move,
     render_pg as r, split_hits, sql_text as q, summary_from_row, thread_candidates, Committed,
     DeliverEntry, Delivery, FolderInfo, JobFence, MailboxRepo, MessageDetail, NewMessage, RawRef,
@@ -833,6 +833,7 @@ impl MailboxRepo for PgRepo {
         to: FolderId,
     ) -> Result<Committed<MoveBatch>> {
         check_batch_len(ids.len())?;
+        check_distinct_ids(ids)?;
         let (batch, seq) = tx_retry!(self, Some(mb), |c| {
             {
                 folder_row(c, mb.0, to.0).await?;
@@ -945,6 +946,7 @@ impl MailboxRepo for PgRepo {
         older_than: i64,
         limit: i64,
     ) -> Result<Committed<u64>> {
+        check_purge_limit(limit)?;
         let knobs = self.knobs;
         let n = tx_retry!(self, Some(mb), |c| {
             {

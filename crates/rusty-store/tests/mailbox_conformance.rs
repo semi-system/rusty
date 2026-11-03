@@ -1739,3 +1739,43 @@ async fn uid_validity_high_water_survives_delete_and_recreate() {
     })
     .await;
 }
+
+// ====================================================================== PG4 review: repository contract edges
+
+/// Review M3: direct repository callers get the same verdicts on both backends. The facade
+/// dedups ids and always passes a non-negative purge limit, so only the repository is exposed.
+#[tokio::test]
+async fn repository_rejects_duplicate_move_ids_and_negative_purge_limits() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let (_, _, mb) = acct(&b, "edge").await;
+        let id = mb.id();
+        let m1 = mb.append(INBOX, raw("m1", None), Flags::default()).await.unwrap();
+        let m2 = mb.append(INBOX, raw("m2", None), Flags::default()).await.unwrap();
+        let changes = change_count(&mb).await;
+        // Duplicate ids: Invalid, nothing moved, no uid allocated, nothing logged.
+        let r = b.mrepo.move_many(id, &[m1.id.0, m2.id.0, m1.id.0], FolderId(2)).await;
+        assert!(matches!(r, Err(Error::Invalid(_))), "{n}: {r:?}");
+        let r = b.mrepo.move_many(id, &[m1.id.0, m1.id.0], FolderId(2)).await;
+        assert!(matches!(r, Err(Error::Invalid(_))), "{n}: {r:?}");
+        assert_eq!(change_count(&mb).await, changes, "{n}");
+        assert_eq!(mb.list_folder(INBOX, 0, 10).await.unwrap().len(), 2, "{n}");
+        let next = mb.move_message(m1.id, FolderId(2)).await.unwrap();
+        assert_eq!(next.uid, 1, "{n}: no uid was burnt by the rejected batch");
+        // The facade still dedups for its callers.
+        let moved = mb.move_many(&[m2.id, m2.id], FolderId(2)).await.unwrap();
+        assert_eq!(moved.moved.len(), 1, "{n}: {moved:?}");
+
+        // Negative purge limit: Invalid, never "unlimited".
+        mb.expunge(m1.id).await.unwrap();
+        for limit in [-1, i64::MIN] {
+            let r = b.mrepo.purge_deleted(id, i64::MAX, limit).await;
+            assert!(matches!(r, Err(Error::Invalid(_))), "{n}: limit {limit}: {r:?}");
+        }
+        assert_eq!(scalar(&b, "SELECT count(*) FROM messages").await, 2, "{n}: nothing purged");
+        // Zero and positive limits keep working.
+        assert_eq!(b.mrepo.purge_deleted(id, i64::MAX, 0).await.unwrap().value, 0, "{n}");
+        assert_eq!(b.mrepo.purge_deleted(id, i64::MAX, 1).await.unwrap().value, 1, "{n}");
+    })
+    .await;
+}

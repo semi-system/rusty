@@ -20,7 +20,7 @@ use crate::mailbox::{
     MessageSummary, MoveBatch, MAX_FOLDER_DEPTH, MAX_KEYWORDS_PER_MESSAGE,
 };
 use crate::repo::{
-    changes_since_generic, check_batch_len, depth_verdict, moved_refs, not_found_folder,
+    changes_since_generic, check_batch_len, check_distinct_ids, check_purge_limit, depth_verdict, moved_refs, not_found_folder,
     not_found_mailbox, not_found_message, plan_deliveries, plan_move, render_sqlite as r,
     split_hits, sql_text as q, summary_from_row, thread_candidates, Committed, DeliverEntry,
     Delivery, FolderInfo, JobFence, MailboxRepo, MessageDetail, NewMessage, RawRef, Slot,
@@ -938,6 +938,7 @@ impl MailboxRepo for SqliteRepo {
         to: FolderId,
     ) -> Result<Committed<MoveBatch>> {
         check_batch_len(ids.len())?;
+        check_distinct_ids(ids)?;
         let mut tx = self.begin_locked(mb).await?;
         folder_row(&mut tx, mb.0, to.0).await?;
         let mut live: HashMap<i64, (i64, i64)> = HashMap::with_capacity(ids.len());
@@ -1053,6 +1054,7 @@ impl MailboxRepo for SqliteRepo {
         older_than: i64,
         limit: i64,
     ) -> Result<Committed<u64>> {
+        check_purge_limit(limit)?;
         let mut tx = self.begin_locked(mb).await?;
         let n = sqlx::query(
             "DELETE FROM messages WHERE rowid IN (\

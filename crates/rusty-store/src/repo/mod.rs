@@ -31,7 +31,7 @@ pub use mailbox::{
     NewMessage, RawRef,
 };
 pub(crate) use mailbox::{
-    changes_since_generic, check_batch_len, depth_verdict, moved_refs, not_found_folder,
+    changes_since_generic, check_batch_len, check_distinct_ids, check_purge_limit, depth_verdict, moved_refs, not_found_folder,
     not_found_mailbox, not_found_message, plan_deliveries, plan_move, split_hits,
     summary_from_row, thread_candidates, Slot, SummaryRow,
 };

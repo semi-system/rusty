@@ -40,7 +40,7 @@
 //! plan) runs after the final commit, outside the retry loop, with that seq. No hook is
 //! implemented here.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use rusty_core::{
@@ -230,7 +230,7 @@ pub trait MailboxRepo: Send + Sync {
         ids: &[i64],
         at: Option<i64>,
     ) -> Result<Committed<BatchOutcome>>;
-    /// Hard-delete up to `limit` soft-deleted messages of THIS mailbox with `deleted_at <
+    /// `limit` must not be negative (`Invalid`). Hard-delete up to `limit` soft-deleted messages of THIS mailbox with `deleted_at <
     /// older_than` that have no `deliveries` row; returns how many. Blob refcounts follow; the
     /// blobs are locked in ascending hash order before the delete.
     async fn purge_deleted(
@@ -395,6 +395,25 @@ pub(crate) fn not_found_message() -> Error {
 pub(crate) fn check_batch_len(n: usize) -> Result<()> {
     if n == 0 || n > crate::mailbox::MAX_BATCH {
         return Err(Error::Invalid("a batch holds between 1 and 1000 items".into()));
+    }
+    Ok(())
+}
+
+/// `Invalid` when `ids` holds a duplicate: a batch move would allocate and log twice for one row.
+/// The facade dedups; this is the repository's second line of defence, identical on both backends.
+pub(crate) fn check_distinct_ids(ids: &[i64]) -> Result<()> {
+    let mut seen = HashSet::with_capacity(ids.len());
+    if ids.iter().all(|id| seen.insert(*id)) {
+        Ok(())
+    } else {
+        Err(Error::Invalid("duplicate ids in a batch".into()))
+    }
+}
+
+/// `Invalid` for a negative purge limit (Postgres rejects it, SQLite used to read it as unlimited).
+pub(crate) fn check_purge_limit(limit: i64) -> Result<()> {
+    if limit < 0 {
+        return Err(Error::Invalid("purge limit must not be negative".into()));
     }
     Ok(())
 }
