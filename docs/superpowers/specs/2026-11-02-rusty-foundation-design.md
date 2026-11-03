@@ -192,8 +192,10 @@ Ràng buộc kèm theo (trigger, kiểm tra bằng test):
 #[async_trait] pub trait MetadataStore {
     async fn tx(&self) -> Result<Box<dyn Tx>>;               // mọi thao tác ghi qua Tx
 }
-// Tx: create_account, create_folder, append_message, set_flags, move_message,
-//     expunge, list_folder, changes_since(seq), commit()
+// Tx (đã thu gọn theo quyết định lúc triển khai): chỉ `commit()` và `rollback()`.
+// Các thao tác nghiệp vụ (create_folder, append, set_flags, move_message, expunge,
+// list_folder, changes_since) nằm ở `Mailbox`/`Directory`. Ranh giới backend mức phương thức
+// (trait cho Mailbox và Directory) sẽ làm ở dự án Postgres (spec Postgres-Valkey §3d).
 ```
 `Mailbox::append` ghi blob trước, rồi metadata trong transaction. Nếu transaction hỏng thì blob mồ côi, job dọn xử lý (blob chưa có `blobs` row hoặc `refcount = 0`).
 
@@ -207,13 +209,13 @@ Ràng buộc kèm theo (trigger, kiểm tra bằng test):
 - `FsBlobStore` mở file bằng `O_NOFOLLOW | O_NONBLOCK` (qua `rustix`, không `unsafe`) và kiểm tra `fstat` là file thường; duyệt thư mục không theo symlink; tên file không hợp lệ (kể cả UTF-8 nhiều byte) bị bỏ qua, không panic.
 
 ## 6. Directory và cấu hình
-- Cấu hình phân cấp: global → domain → plan → account; ưu tiên account > plan > domain > global. Mỗi cấp là JSON có schema serde, validate khi ghi.
+- Cấu hình phân cấp: global → domain → plan → account; ưu tiên account > plan > domain > global. Mỗi cấp là một JSON object; hiện mới kiểm tra "là object" khi ghi (chưa có schema theo khóa). Schema theo khóa, giới hạn kích thước và trần hệ thống sẽ do registry cài đặt đảm nhiệm (spec Postgres-Valkey §3b và §3c.2).
 - Password hash argon2id. Trait `Authenticator` cho phép cắm LDAP/OIDC sau.
 - `rusty.toml` chỉ chứa thứ cần lúc khởi động (đường dẫn DB, thư mục blob, log).
 
 ## 7. Lỗi và test
 - `rusty_core::Error` (thiserror): `NotFound, Conflict, Quota, Invalid, Storage`, giữ `source`. Vi phạm ràng buộc DB được ánh xạ sang `Conflict`/`Invalid`, không lộ lỗi SQL thô.
-- Test: property test cho tính đơn điệu của id/uid/seq; integration trên SQLite in-memory; test vi phạm ràng buộc (mỗi FK, CHECK, trigger có ít nhất một test âm); test crash giữa blob và metadata; round-trip MIME trên bộ thư mẫu thật.
+- Test: property test cho tính đơn điệu của id/uid/seq; integration trên SQLite in-memory; test vi phạm ràng buộc (mỗi FK, CHECK, trigger có ít nhất một test âm); test crash giữa blob và metadata; round-trip MIME (hiện có 4 mẫu tổng hợp; cần bổ sung một corpus thư thật đã ẩn danh trước khi coi là đủ).
 
 ## 8. Tiêu chí hoàn thành
 Tạo domain/account; cây folder; append 10.000 thư; đổi flag; move; expunge; đọc `changes_since`; mọi test xanh với `cargo test --workspace`; `cargo clippy -- -D warnings` sạch; test âm xác nhận DB từ chối dữ liệu sai quan hệ.

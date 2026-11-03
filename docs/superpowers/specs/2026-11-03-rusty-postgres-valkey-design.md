@@ -142,6 +142,10 @@ Quyết định của người dùng: **một domain là một tenant**. Mô hì
 - `UNIQUE (id, domain_id)` trên `accounts` để các bảng khác dùng khóa ngoại tổng hợp `(account_id, domain_id)`.
 - `plans.domain_id bigint NULL REFERENCES domains(id)`: `NULL` = **plan hệ thống** (chỉ superadmin tạo/sửa, mọi tenant dùng được); khác `NULL` = **plan của tenant** (chỉ tenant đó dùng). Ràng buộc: `accounts.plan_id` phải trỏ plan hệ thống hoặc plan cùng `domain_id` (khóa ngoại tổng hợp hoặc trigger, cùng cách kiểm thử như các ràng buộc khác).
 - `domain_admins (account_id, domain_id, PRIMARY KEY (account_id, domain_id), FOREIGN KEY (account_id, domain_id) REFERENCES accounts(id, domain_id))`: quản trị viên ủy quyền chỉ có thể là tài khoản **thuộc chính tenant đó**.
+- **Alias và thành viên danh sách không được trỏ sang tenant khác** (phát hiện ở review cuối: hiện `aliases.account_id` và `list_members.account_id` có thể trỏ tới tài khoản của domain khác, nên domain-admin của B có thể tạo `x@B` chuyển thư vào mailbox của A và cho phép đăng nhập A bằng địa chỉ do B kiểm soát):
+  - `aliases`: thêm `domain_id` của tài khoản đích vào khóa ngoại tổng hợp `FOREIGN KEY (account_id, target_domain_id) REFERENCES accounts(id, domain_id)` với `target_domain_id = domain_id` (CHECK), tức alias chỉ trỏ tới tài khoản **cùng domain**.
+  - `list_members`: thêm `list_domain_id` và khóa ngoại tổng hợp `(account_id, list_domain_id) -> accounts(id, domain_id)`; thành viên ngoài (`external`) vẫn là địa chỉ tự do. Quyết định riêng nếu muốn cho phép danh sách chứa tài khoản của domain khác (mặc định: không).
+  - Test âm cho cả hai, và test `LocalAuthenticator::verify` không chấp nhận mật khẩu của A qua địa chỉ thuộc B.
 - Bộ đếm sử dụng: `mailbox_usage (mailbox_id PK, bytes, messages)` và `domain_usage (domain_id PK, bytes, messages, accounts)` do trigger cập nhật cùng transaction với `messages`/`accounts`; `CHECK (>= 0)`. Dung lượng tính cho tới khi thư bị xóa thật (thư đã expunge và Thùng rác vẫn tính, giống Zimbra).
 
 ### 3c.2 Quota và giới hạn theo tenant
@@ -167,6 +171,10 @@ Vai trò mới trong ma trận quyền của `store` (spec mô hình tiến trì
 - **Hàng xóm ồn ào:** giới hạn đồng thời và tốc độ theo tenant tại `store` (số kết nối, số yêu cầu mỗi giây, hàng đợi công bằng giữa tenant); `statement_timeout` theo vai trò; một tenant không thể làm nghẽn tenant khác ở mức tài nguyên cấu hình.
 - **Xóa tenant (offboarding):** xóa domain yêu cầu đã xóa hết tài khoản (`RESTRICT`), thao tác ghi kiểm toán, GC dọn blob; xuất dữ liệu tenant là lệnh riêng.
 
+### 3c.4b Đặt tên blob theo tenant (cần quyết định TRƯỚC khi có dữ liệu)
+Hiện blob đặt tên theo SHA-256 của nội dung, dùng chung toàn hệ thống. Review cuối chỉ ra hai hệ quả khi domain = tenant: (1) **kênh phụ giữa tenant**: hai tenant gửi cùng nội dung thì dùng chung một blob, nên thời gian `put` (có sẵn hay chưa) cho biết "nội dung này đã tồn tại ở đâu đó"; (2) không thể hủy dữ liệu của một tenant bằng cách hủy khóa (crypto-shredding) nếu blob dùng chung.
+Đề xuất (cần người dùng duyệt): **tên blob = HMAC-SHA256 với khóa theo tenant** (`blob_key = HMAC(tenant_key, nội dung)`), lưu dưới tiền tố `t/{domain_id}/...`. Dedupe vẫn hoạt động *trong* một tenant; mất dedupe giữa các tenant (tốn thêm dung lượng khi nhiều tenant nhận cùng tệp đính kèm lớn). `BlobStore::put` nhận thêm tham số tenant/khóa. Đổi cách đặt tên sau khi đã có dữ liệu là di chuyển toàn bộ blob, nên quyết định trước.
+
 ### 3c.5 Kiểm thử cô lập chéo tenant (bắt buộc)
 - Tạo hai tenant A và B với dữ liệu đầy đủ. Với **mỗi** thao tác của `store`, chạy với quyền của A nhắm vào đối tượng của B: kết quả phải là `NotFound`/rỗng, không thay đổi dữ liệu, không khác biệt quan sát được giữa "không tồn tại" và "thuộc tenant khác" (kể cả thông báo lỗi và mã lỗi).
 - Test thuộc tính (proptest): chuỗi thao tác ngẫu nhiên của A không bao giờ làm thay đổi hàm băm trạng thái dữ liệu của B.
@@ -177,6 +185,17 @@ Vai trò mới trong ma trận quyền của `store` (spec mô hình tiến trì
 ### 3c.6 Ghi chú
 - Không có "tổ chức" chứa nhiều domain trong phạm vi này; nếu cần sau này sẽ thêm lớp `organizations` phía trên domain (không đổi ranh giới bảo mật hiện tại).
 - Cài đặt riêng của tenant nằm trong `domains.config` (Postgres), không trong system DB, vì có khóa ngoại và ranh giới tenant.
+
+## 3d. Chuẩn bị trước dự án tenant/Postgres (từ review cuối nhánh nền tảng)
+Các việc cần làm ở "phase 00" hoặc ngay đầu dự án, vì đổi sau khi có dữ liệu hoặc sau khi có client sẽ đắt:
+- **Ranh giới backend mức phương thức:** trait cho `Mailbox` và `Directory` (hiện `Directory` gắn cứng SQL SQLite và `Tx` quá mỏng); ánh xạ lỗi theo SQLSTATE; bỏ `pool()` khỏi API công khai; chuyển hàng `__global__` khỏi `plans`.
+- **Mẫu khóa đọc-rồi-ghi:** mọi thao tác ghi của `Mailbox` khóa hàng mailbox trước (`SELECT ... FOR UPDATE` hoặc `UPDATE ... RETURNING` đầu tiên). Trên Postgres `READ COMMITTED`, các chỗ đọc-rồi-ghi hiện chỉ an toàn nhờ `BEGIN IMMEDIATE` của SQLite (ví dụ đếm keyword trước khi chèn) sẽ đọc dữ liệu cũ nếu không khóa.
+- **Nguồn đồng hồ cho `zero_since`:** trigger SQLite dùng đồng hồ DB, GC dùng đồng hồ máy `store`. Với Postgres ở máy khác, dùng thời điểm do ứng dụng truyền vào (trigger `BEFORE` đặt `NEW.zero_since`) hoặc chấp nhận lệch đồng hồ và ghi rõ trong hạn ân hạn.
+- **Nén `change_log`:** thêm `min_retained_seq` mỗi mailbox để trả "cannotCalculateChanges" thay vì tải toàn bộ lịch sử; job nén theo hạn lưu.
+- **Truyền luồng cho append/get:** hiện cả thư nằm trong một `Bytes` trong bộ nhớ cho mỗi yêu cầu đang chạy; API `store` cần truyền luồng theo khối (spec mô hình tiến trình §7b).
+- **Chế độ journal SQLite và đồng bộ:** hiện dùng mặc định (rollback journal, synchronous FULL, busy timeout 5 s); quyết định WAL + `synchronous` sau khi có benchmark; ghi rõ vì spec mô hình tiến trình từng nhắc WAL.
+- **Chuyển `GC` sang bảo vệ bằng DB** khi thêm backend đối tượng (spec triển khai container §7.3).
+- **Trigger độ sâu folder** hiện chỉ kiểm tra folder được di chuyển, không phải cả cây con; ứng dụng đã chặn, Postgres phải sao chép quy tắc ở cả hai nơi.
 
 ## 4. Cache Valkey: những gì được cache
 Chỉ metadata, không bao giờ cache nội dung thư (đã ở file blob) hay hash mật khẩu.

@@ -95,7 +95,7 @@ Chỉ khai báo những gì đang có; còn lại là chỗ giữ chỗ (`planne
 Mỗi dịch vụ khai báo: user riêng (`rusty-gc`, `rusty-imap`...), thư mục dữ liệu được phép (Landlock), danh sách syscall (seccomp), cổng, rlimit, restart, heartbeat.
 
 ## 7b. Dịch vụ `store` (tách riêng)
-`rusty store` là tiến trình duy nhất có quyền mở file DB (SQLite WAL, sau này kết nối Postgres) và thư mục blob. Nó chạy lại nguyên thư viện đã có (`Mailbox`, `Directory`, GC) phía sau một API hẹp.
+`rusty store` là tiến trình duy nhất có quyền mở file DB (SQLite (journal mặc định hiện tại; WAL sau benchmark), sau này kết nối Postgres) và thư mục blob. Nó chạy lại nguyên thư viện đã có (`Mailbox`, `Directory`, GC) phía sau một API hẹp.
 
 **Kênh:** Unix socket `/run/rusty/store.sock`, quyền `0660` thuộc nhóm `rusty-store-clients`; nhận diện peer bằng `SO_PEERCRED` -> **vai trò** theo uid dịch vụ (bảng cấp quyền biên dịch sẵn, không đọc từ tệp cấu hình). Khung 4 byte + mã hóa nhị phân/JSON có phiên bản, mỗi khung tối đa 1 MiB, thư lớn truyền theo luồng nhiều khung (mỗi khối <= 256 KiB, kèm tổng kích thước đã khai báo và kiểm tra giới hạn 50 MiB), hạn chót đọc/ghi, giới hạn kết nối đồng thời theo vai trò.
 
