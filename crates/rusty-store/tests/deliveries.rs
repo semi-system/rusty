@@ -121,9 +121,10 @@ async fn different_mailboxes_same_id_are_independent() {
         .unwrap();
     assert!(matches!(a, DeliverOutcome::Created(_)));
     assert!(matches!(b, DeliverOutcome::Created(_)));
-    // Same id, different content in the other mailbox is not a conflict there either.
-    let c = other
-        .deliver(INBOX, raw("different", None), Flags::empty(), did(2))
+    // Same id with DIFFERENT content in a fresh third mailbox is not a conflict there either.
+    let third = e.other("carol").await;
+    let c = third
+        .deliver(INBOX, raw("different", None), Flags::empty(), did(1))
         .await
         .unwrap();
     assert!(matches!(c, DeliverOutcome::Created(_)));
@@ -262,7 +263,8 @@ async fn purge_deliveries_batches_beyond_1000() {
     .unwrap();
     // The real delivery row (created now) survives; the 2500 synthetic ones go.
     let total = e.scalar("SELECT count(*) FROM deliveries").await;
-    assert!(total >= 2400);
+    // 2500 synthetic rows + the one real delivery row.
+    assert_eq!(total, 2501);
     assert_eq!(
         i64::try_from(purge_deliveries(&e.store, 100).await.unwrap()).unwrap(),
         total - 1
