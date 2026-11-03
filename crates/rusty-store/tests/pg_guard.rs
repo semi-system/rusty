@@ -67,3 +67,21 @@ fn require_pg_accepts_only_one_zero_or_unset() {
         );
     }
 }
+
+#[test]
+fn bad_require_pg_is_rejected_even_when_the_url_is_set() {
+    use common::pg::admin_url_from;
+    let url = Some("postgres://u:p@127.0.0.1/db".to_string());
+    for bad in ["true", "yes", "2", "01", " 1"] {
+        let u = url.clone();
+        assert!(
+            std::panic::catch_unwind(|| admin_url_from(u, Some(bad))).is_err(),
+            "RUSTY_REQUIRE_PG={bad:?} must be rejected although the URL is set"
+        );
+    }
+    assert!(admin_url_from(url.clone(), Some("1")).is_some());
+    assert!(admin_url_from(url, None).is_some());
+    assert!(admin_url_from(None, None).is_none());
+    assert!(admin_url_from(Some(String::new()), Some("0")).is_none());
+    assert!(std::panic::catch_unwind(|| admin_url_from(None, Some("1"))).is_err());
+}

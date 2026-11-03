@@ -16,9 +16,19 @@ pub const PG_SKIP_NOTICE: &str =
 
 /// Read the admin URL without ever printing its value.
 pub fn pg_admin_url() -> Option<String> {
-    match env::var("RUSTY_TEST_PG_URL") {
-        Ok(value) if !value.is_empty() => Some(value),
-        _ if require_pg() => {
+    admin_url_from(
+        env::var("RUSTY_TEST_PG_URL").ok(),
+        env::var("RUSTY_REQUIRE_PG").ok().as_deref(),
+    )
+}
+
+/// Pure core of [`pg_admin_url`]. `RUSTY_REQUIRE_PG` is parsed first (a bad value panics), whether
+/// or not a URL is present.
+pub fn admin_url_from(url: Option<String>, require: Option<&str>) -> Option<String> {
+    let required = parse_require_pg(require);
+    match url {
+        Some(value) if !value.is_empty() => Some(value),
+        _ if required => {
             panic!("RUSTY_REQUIRE_PG is set but RUSTY_TEST_PG_URL is missing")
         }
         _ => {
