@@ -138,6 +138,7 @@ Quyết định của người dùng: **một domain là một tenant**. Mô hì
 
 ### 3c.1 Thay đổi lược đồ (cả Postgres và SQLite)
 - `mailboxes.domain_id bigint NOT NULL REFERENCES domains(id)`: sao chép tenant xuống mailbox để ràng buộc, RLS và truy vấn quota không cần nối nhiều bảng. Trigger giữ `mailboxes.domain_id = accounts.domain_id`, bất biến sau khi tạo.
+- Các khóa ngoại tổng hợp `(mailbox_id, domain_id)` hợp lệ trong một cụm đơn (single cluster) và trở thành các tham chiếu control plane nếu hệ thống được phân mảnh theo mailbox.
 - `accounts.domain_id` **bất biến** (trigger chặn `UPDATE`). Chuyển tài khoản sang tenant khác là thao tác xuất/nhập có kiểm toán, không phải đổi cột.
 - `UNIQUE (id, domain_id)` trên `accounts` để các bảng khác dùng khóa ngoại tổng hợp `(account_id, domain_id)`.
 - `plans.domain_id bigint NULL REFERENCES domains(id)`: `NULL` = **plan hệ thống** (chỉ superadmin tạo/sửa, mọi tenant dùng được); khác `NULL` = **plan của tenant** (chỉ tenant đó dùng). Ràng buộc: `accounts.plan_id` phải trỏ plan hệ thống hoặc plan cùng `domain_id` (khóa ngoại tổng hợp hoặc trigger, cùng cách kiểm thử như các ràng buộc khác).
