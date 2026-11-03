@@ -405,20 +405,26 @@ async fn fail_requeues_with_backoff_then_dead_at_max_attempts() {
 #[tokio::test]
 async fn poisoned_stored_payload_cannot_block_claim() {
     let (s, jq) = q().await;
-    // Valid JSON for SQLite (depth limit 1000) but beyond serde_json's recursion limit.
-    let deep = format!("{}1{}", "[".repeat(300), "]".repeat(300));
-    let bad: i64 = sqlx::query_scalar(
-        "INSERT INTO jobs (kind, state, payload, attempts, max_attempts, run_after, created_at, updated_at) \
-         VALUES ('t', 'queued', ?, 0, 5, 0, 0, 0) RETURNING id",
-    )
-    .bind(&deep)
-    .fetch_one(s.pool())
-    .await
-    .unwrap();
+    // Valid JSON for SQLite (depth limit 1000) but deeper than the 64 the queue accepts.
+    let mut bad = Vec::new();
+    for n in [65usize, 300] {
+        let deep = format!("{}1{}", "[".repeat(n), "]".repeat(n));
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO jobs (kind, state, payload, attempts, max_attempts, run_after, created_at, updated_at) \
+             VALUES ('t', 'queued', ?, 0, 5, 0, 0, 0) RETURNING id",
+        )
+        .bind(&deep)
+        .fetch_one(s.pool())
+        .await
+        .unwrap();
+        bad.push(id);
+    }
     let good = enq(&jq, "t", Some(5), 1000).await;
     let got = jq.claim_at("w", &["t"], 30, 1000).await.unwrap().unwrap();
     assert_eq!(got.id, good);
-    assert_eq!(state(&s, JobId(bad)).await, "dead");
+    for id in bad {
+        assert_eq!(state(&s, JobId(id)).await, "dead");
+    }
 }
 
 #[tokio::test]
@@ -649,16 +655,16 @@ async fn schema_rejects_inconsistent_rows() {
 // ---------- review fixes: caps, bounded claim, complete_in, depth, clamps ----------
 
 #[tokio::test]
-async fn nesting_depth_limit_is_128_and_never_recurses() {
+async fn nesting_depth_limit_is_64_and_never_recurses() {
     let (_s, jq) = q().await;
-    let ok = nested(128);
+    let ok = nested(64);
     let id = jq.enqueue_at("p", None, &ok, None, 10).await.unwrap();
     teardown(ok);
     // What was accepted can be claimed (it parses back).
     let j = jq.claim_at("w", &["p"], 30, 10).await.unwrap().unwrap();
     assert_eq!(j.id, id);
     teardown(j.payload);
-    let too_deep = nested(129);
+    let too_deep = nested(65);
     assert!(matches!(
         jq.enqueue("p", None, &too_deep, None).await,
         Err(Error::Invalid(_))
@@ -672,7 +678,7 @@ async fn nesting_depth_limit_is_128_and_never_recurses() {
     teardown(huge);
     // Objects count too.
     let mut v = json!(1);
-    for _ in 0..129 {
+    for _ in 0..65 {
         let mut m = serde_json::Map::new();
         m.insert("a".into(), v);
         v = Value::Object(m);

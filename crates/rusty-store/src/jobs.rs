@@ -45,10 +45,12 @@
 //! # Limits and hostile input
 //!
 //! `kind` is `[a-z0-9._-]`, 1..=64 bytes. The payload is at most 64 KiB serialized and nested
-//! at most [`MAX_JOB_PAYLOAD_DEPTH`] containers deep (checked iteratively before serializing, so
-//! a hostile deeply nested value cannot overflow the stack; the depth equals the JSON parser's
-//! recursion limit, so every accepted payload can be read back by `claim`; if a row nevertheless
-//! holds an unparseable payload, `claim` marks it `dead` and carries on). The `last_error` a
+//! at most [`MAX_PAYLOAD_DEPTH`] containers deep (checked iteratively before serializing, so
+//! a hostile deeply nested value cannot overflow the stack; 64 is well inside the JSON parser's
+//! default recursion limit, which stays in force, so every accepted payload reads back in
+//! `claim`. A stored row that is unparseable or nested deeper than 64 (corrupt or legacy; found
+//! by an iterative bracket scan before any recursive parse) is marked `dead` by `claim`, which
+//! carries on with the next job). The `last_error` a
 //! worker supplies is data: control, format and line-separator characters are removed and it
 //! is cut to 512 bytes. Error messages are fixed strings and never contain caller input.
 //!
@@ -81,8 +83,8 @@ use crate::{map_db_error, SqliteStore, SqliteTx};
 
 /// Largest serialized job payload, in bytes.
 pub const MAX_JOB_PAYLOAD_BYTES: usize = 65536;
-/// Deepest container nesting of a job payload (the JSON parser's recursion limit).
-pub const MAX_JOB_PAYLOAD_DEPTH: usize = 128;
+/// Deepest container nesting of a job payload (well below the JSON parser recursion limit).
+pub const MAX_PAYLOAD_DEPTH: usize = 64;
 /// Longest job kind, in bytes.
 pub const MAX_JOB_KIND_BYTES: usize = 64;
 /// Largest `max_attempts`.
@@ -157,20 +159,20 @@ fn valid_lease(secs: u32) -> bool {
     (1..=MAX_LEASE_SECS).contains(&secs)
 }
 
-/// Container nesting depth of `v` is at most [`MAX_JOB_PAYLOAD_DEPTH`]. Iterative: constant
+/// Container nesting depth of `v` is at most [`MAX_PAYLOAD_DEPTH`]. Iterative: constant
 /// call-stack use whatever the shape of `v`.
 fn depth_ok(v: &Value) -> bool {
     let mut stack: Vec<(&Value, usize)> = vec![(v, 0)];
     while let Some((v, depth)) = stack.pop() {
         match v {
             Value::Array(items) => {
-                if depth + 1 > MAX_JOB_PAYLOAD_DEPTH {
+                if depth + 1 > MAX_PAYLOAD_DEPTH {
                     return false;
                 }
                 stack.extend(items.iter().map(|c| (c, depth + 1)));
             }
             Value::Object(map) => {
-                if depth + 1 > MAX_JOB_PAYLOAD_DEPTH {
+                if depth + 1 > MAX_PAYLOAD_DEPTH {
                     return false;
                 }
                 stack.extend(map.values().map(|c| (c, depth + 1)));
@@ -182,7 +184,7 @@ fn depth_ok(v: &Value) -> bool {
 }
 
 /// Nesting depth of the JSON text `t` (brackets outside strings) is at most
-/// [`MAX_JOB_PAYLOAD_DEPTH`]. Iterative; `t` is already known to be valid JSON.
+/// [`MAX_PAYLOAD_DEPTH`]. Iterative; `t` is already known to be valid JSON.
 fn text_depth_ok(t: &str) -> bool {
     let (mut depth, mut in_str, mut esc) = (0usize, false, false);
     for b in t.bytes() {
@@ -199,7 +201,7 @@ fn text_depth_ok(t: &str) -> bool {
             b'"' => in_str = true,
             b'[' | b'{' => {
                 depth += 1;
-                if depth > MAX_JOB_PAYLOAD_DEPTH {
+                if depth > MAX_PAYLOAD_DEPTH {
                     return false;
                 }
             }
@@ -210,18 +212,14 @@ fn text_depth_ok(t: &str) -> bool {
     true
 }
 
-/// Parse stored payload text. The parser's own recursion limit (127 containers) is lifted
-/// after [`text_depth_ok`] bounded the nesting at [`MAX_JOB_PAYLOAD_DEPTH`] (128), so every
-/// payload `enqueue` accepts reads back and a deeper stored row is refused without recursion.
+/// Parse stored payload text with the default parser limits. The iterative [`text_depth_ok`]
+/// scan runs first, so a corrupt or legacy row nested deeper than [`MAX_PAYLOAD_DEPTH`] is
+/// refused without any recursion.
 fn parse_payload(t: &str) -> Option<Value> {
     if !text_depth_ok(t) {
         return None;
     }
-    let mut de = serde_json::Deserializer::from_str(t);
-    de.disable_recursion_limit();
-    let v = <Value as serde::Deserialize>::deserialize(&mut de).ok()?;
-    de.end().ok()?;
-    Some(v)
+    serde_json::from_str(t).ok()
 }
 
 /// Remove control, format, line-separator and tag characters, then cut to
