@@ -15,7 +15,7 @@ pub use blob::{
     QUARANTINE_SUFFIX,
 };
 pub use gc::{
-    collect_blobs, collect_blobs_at, purge_capabilities, purge_capabilities_at,
+    collect_blobs, collect_blobs_at, collect_blobs_with_db_clock, purge_capabilities, purge_capabilities_at,
     purge_capabilities_default, purge_deleted, purge_deliveries, purge_deliveries_at,
     purge_deliveries_default, GcReport, CAPABILITY_RETENTION_SECS, DEFAULT_GC_GRACE,
     DELIVERY_RETENTION_SECS, GC_BATCH, MAX_GC_ERRORS, MIN_GC_GRACE, PURGE_BATCH,

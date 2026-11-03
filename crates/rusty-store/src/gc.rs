@@ -219,6 +219,19 @@ pub async fn collect_blobs(
     blobs: &dyn BlobStore,
     grace: Duration,
 ) -> Result<GcReport> {
+    collect_blobs_with_db_clock(store, blobs, grace, "SELECT unixepoch()").await
+}
+
+/// [`collect_blobs`] reading "now" from `clock_sql` (a statement returning one integer, unix
+/// seconds) instead of the real database clock. Tests pass a skewed clock to prove that the
+/// cutoff follows the DATABASE and not the process clock.
+#[doc(hidden)]
+pub async fn collect_blobs_with_db_clock(
+    store: &SqliteStore,
+    blobs: &dyn BlobStore,
+    grace: Duration,
+    clock_sql: &str,
+) -> Result<GcReport> {
     if grace < MIN_GC_GRACE {
         return Err(Error::Invalid("gc grace must be at least one hour".into()));
     }
@@ -226,7 +239,7 @@ pub async fn collect_blobs(
     // stamped `blobs.zero_since`. Blob file mtimes are compared against the same cutoff; the
     // minimum grace of one hour bounds the effect of any skew between the database and the
     // filesystem clock.
-    let db_now: i64 = sqlx::query_scalar("SELECT unixepoch()")
+    let db_now: i64 = sqlx::query_scalar(clock_sql)
         .fetch_one(store.pool())
         .await
         .map_err(map_db_error)?;

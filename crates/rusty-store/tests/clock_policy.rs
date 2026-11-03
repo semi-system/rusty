@@ -218,7 +218,15 @@ fn no_rust_clock_in_correctness_paths() {
                 let text = std::fs::read_to_string(&path).unwrap();
                 for (i, line) in text.lines().enumerate() {
                     let code = line.split("//").next().unwrap_or("");
-                    if code.contains("SystemTime::now") || code.contains("Instant::now") {
+                    const CLOCK_READS: &[&str] = &[
+                        "SystemTime::now",
+                        "Instant::now",
+                        ".elapsed()",
+                        "Utc::now",
+                        "Local::now",
+                        "OffsetDateTime::now",
+                    ];
+                    if CLOCK_READS.iter().any(|p| code.contains(p)) {
                         offenders.push(format!("{rel}:{}: {}", i + 1, line.trim()));
                     }
                 }
@@ -299,5 +307,45 @@ async fn supplied_timestamps_are_bounded() {
             )
             .await
             .unwrap();
+    }
+}
+
+/// Behavioural proof that the GC cutoff follows the DATABASE clock: the database clock is skewed
+/// (by a query that returns a different "now" than the process sees) while rows are aged relative
+/// to the real time. A cutoff taken from the process clock would give the opposite answers.
+#[tokio::test]
+async fn gc_cutoff_follows_a_skewed_database_clock() {
+    use std::time::Duration;
+    for (skew, expect_deleted, label) in [
+        // DB clock a year ahead: even a 30-minute-old zero_since is past the 1h grace -> deleted.
+        ("SELECT unixepoch() + 31536000", 2, "database clock ahead"),
+        // DB clock a year behind: a 3h-old row is not older than the grace window -> kept.
+        ("SELECT unixepoch() - 31536000", 0, "database clock behind"),
+    ] {
+        let e = env().await;
+        let now = e.scalar("SELECT unixepoch()").await;
+        for (name, age) in [("old", 3 * 3600), ("young", 1800)] {
+            let h = format!("{:0>64}", name.bytes().map(|b| format!("{b:02x}")).collect::<String>());
+            sqlx::query("INSERT INTO blobs (hash, size) VALUES (?, 1)")
+                .bind(&h)
+                .execute(e.store.pool())
+                .await
+                .unwrap();
+            sqlx::query("UPDATE blobs SET zero_since = ? WHERE hash = ?")
+                .bind(now - age)
+                .bind(&h)
+                .execute(e.store.pool())
+                .await
+                .unwrap();
+        }
+        let rep = rusty_store::collect_blobs_with_db_clock(
+            &e.store,
+            e.blobs.as_ref(),
+            Duration::from_secs(3600),
+            skew,
+        )
+        .await
+        .unwrap();
+        assert_eq!(rep.rows_deleted, expect_deleted, "{label}: {rep:?}");
     }
 }
