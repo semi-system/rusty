@@ -865,7 +865,7 @@ async fn capability_eviction_tie_break_is_token_hash_order_on_both_backends() {
                     &[Bind::I(acc.0)],
                 )
                 .await;
-            assert_eq!(active, MAX_ACTIVE_CAPABILITIES_PER_ACCOUNT as i64, "account {n}");
+            assert_eq!(active, MAX_ACTIVE_CAPABILITIES_PER_ACCOUNT, "account {n}");
             // Exactly one victim, and it has the smallest hash among the originals: at most one
             // active row (the new token) may sort below it.
             let victims = b
