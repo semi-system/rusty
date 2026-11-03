@@ -26,13 +26,51 @@ Ngoài phạm vi: điều phối đa node, HA của Postgres, chọn nhà cung c
 |---|---|---|---|---|
 | `store` | duy nhất chạm Postgres/Valkey/blob/system.db | `app`, `data` | volume `blobs`, `sysdb` | mục tiêu giá trị cao nhất; sandbox chặt nhất |
 | `imap`, `jmap`, `dav`, `smtp-in`, `smtp-submit`, `lmtp`, `filter`, `gc`, `admin-api` | dịch vụ giao thức/chức năng | `app` (và `edge` cho cổng công khai) | không có | chỉ nói chuyện với `store` |
-| `proxy` | cổng công khai duy nhất (25/465/587/993/443...) | `edge`, `app` | không | kết thúc TLS, định tuyến |
+| `edge` (Traefik, mục 3b) | **cổng công khai duy nhất** (25/465/587/993/995/443/80) | `edge`, `app` | không | chuyển tiếp TCP nguyên vẹn cho thư; kết thúc TLS cho HTTP |
 | `postgres` | nguồn sự thật | `data` | volume `pgdata` | không công bố cổng ra host |
 | `valkey` | cache | `data` | không (không persistence) | chỉ nghe socket/mạng `data` |
 | `backup` | job (pgBackRest hoặc tương đương) + sao lưu system.db thống nhất | `data` | volume `backups` hoặc kho ngoài | chạy theo lịch, vai trò DB sao lưu riêng |
 | `dbadmin` | job vận hành: cấp vai trò DB, sinh ACL Valkey, xoay chứng chỉ, điều phối migration | `data` | không | bằng Rust, cùng workspace, nằm ngoài đường dữ liệu |
 
-Mạng Docker: `edge` (ra ngoài), `app` (nội bộ, dịch vụ với `store`), `data` (nội bộ, chỉ `store`, `dbadmin`, `backup`, `postgres`, `valkey`). Postgres và Valkey **không** gắn vào `app` hay `edge`.
+Mạng Docker (`edge` ở đây là tên mạng, khác với container `edge`): `edge` (ra ngoài), `app` (nội bộ, dịch vụ với `store`), `data` (nội bộ, chỉ `store`, `dbadmin`, `backup`, `postgres`, `valkey`). Postgres và Valkey **không** gắn vào `app` hay `edge`.
+
+## 3b. Cổng vào (`edge`): Traefik
+Quyết định của người dùng: dựng một container nginx hoặc Traefik ở phía trước làm điểm mở cổng ra ngoài. **Chọn Traefik**, với lý do dưới đây; nginx là phương án thay thế nếu sau này cần kết thúc STARTTLS ở biên.
+
+### 3b.1 Vì sao Traefik và vì sao không cần hiểu giao thức thư ở biên
+- Các dịch vụ giao thức của Rusty **không giữ trạng thái** và phục vụ được mọi người dùng (spec phân tán §2), nên biên **không cần định tuyến theo người dùng** như `zimbra-proxy` (nginx mail module tra mailbox server theo user). Cân bằng tải L4 là đủ.
+- **Thư (SMTP, IMAP, POP3): chuyển tiếp TCP nguyên vẹn (TCP router, TLS passthrough)**. Dịch vụ phía sau tự làm TLS/STARTTLS bằng rustls. Biên không phân tích, không giải mã, không thấy nội dung hay mật khẩu; một biên bị chiếm không đọc được thư. Traefik không hiểu STARTTLS, nhưng điều đó không ảnh hưởng vì biên chỉ chuyển byte (cổng 25/587/143 STARTTLS và 465/993/995 TLS ngầm đều đi qua được).
+- **HTTP (JMAP, CalDAV/CardDAV, webmail, admin console): kết thúc TLS ở biên**, áp dụng giới hạn, rồi **mã hóa lại bằng mTLS** tới dịch vụ phía sau (spec container §5).
+- Traefik viết bằng Go (an toàn bộ nhớ, giảm lớp lỗi RCE do tràn bộ nhớ so với C); nginx viết bằng C. Đổi lại Traefik có nhiều tính năng cần tắt (mục 3b.3).
+- **Lựa chọn thay thế sau này:** biên viết bằng Rust (`rusty-edge`), hiểu giao thức thư và có thể định tuyến theo người dùng, nếu nhu cầu vượt Traefik. Ngoài phạm vi hiện tại.
+
+### 3b.2 Cổng và định tuyến
+| Cổng | Chế độ | Đích |
+|---|---|---|
+| 25 | TCP, chuyển nguyên vẹn | `smtp-in` |
+| 587 | TCP, chuyển nguyên vẹn (STARTTLS bắt buộc ở dịch vụ) | `smtp-submit` |
+| 465 | TCP, chuyển nguyên vẹn (TLS ngầm) | `smtp-submit` |
+| 143 | TCP, chuyển nguyên vẹn (STARTTLS bắt buộc, cấm đăng nhập trước TLS) | `imap` |
+| 993 | TCP, chuyển nguyên vẹn (TLS ngầm) | `imap` |
+| 110/995 | chỉ nếu POP3 được bật | `pop3` |
+| 443 | HTTPS, kết thúc TLS, định tuyến theo `Host` và đường dẫn | `jmap`, `dav`, `webmail`, `admin-console` (host riêng) |
+| 80 | chỉ chuyển hướng sang HTTPS và thử thách ACME HTTP-01 | `edge` |
+- **PROXY protocol v2** gửi tới các đích TCP để dịch vụ thấy IP thật của máy khách (giới hạn tốc độ, nhật ký, chống dò mật khẩu). Dịch vụ chỉ chấp nhận PROXY protocol từ địa chỉ của `edge` và từ chối kết nối thiếu/giả; HTTP dùng `X-Forwarded-*` chỉ từ `edge`, không tin giá trị do máy khách tự gửi.
+- Admin console nằm ở host riêng, giới hạn theo danh sách IP cho phép và bật 2FA khi có; không dùng cùng host với webmail.
+- Thư mục hóa theo tenant (host riêng của từng domain, chứng chỉ riêng): định tuyến theo `Host` và SNI; việc cấp chứng chỉ theo domain (ACME DNS-01 hoặc TLS-ALPN-01) được định nghĩa ở bước sau.
+
+### 3b.3 Cứng hóa Traefik (bắt buộc)
+- Cấu hình **tĩnh từ tệp** (file provider) gắn chỉ-đọc; **tắt Docker provider** và mọi provider cần socket runtime (vi phạm quy tắc không mount `docker.sock`); không bật `--api.insecure`; dashboard/API tắt, hoặc chỉ nghe trên mạng quản trị nội bộ sau xác thực.
+- Không có plugin hay mã nạp lúc chạy; image ghim digest, `scratch`/distroless, chạy user không phải root, `read_only: true`, `cap_drop: [ALL]` (+ `NET_BIND_SERVICE` nếu bind cổng <1024), `no-new-privileges`, seccomp mặc định hoặc riêng, giới hạn tài nguyên.
+- TLS: tối thiểu TLS 1.2 (ưu tiên 1.3), bộ mã hóa hiện đại, HSTS cho HTTP, không hỗ trợ giao thức cũ; mTLS tới backend với CA nội bộ; chứng chỉ của biên lấy từ bí mật dạng tệp (hoặc ACME với lưu trữ trên volume riêng, quyền `0600`).
+- Chống lạm dụng ở biên: giới hạn số kết nối đồng thời mỗi IP và tổng (TCP in-flight), thời gian chờ đọc/ghi/nhàn rỗi ngắn (chống slowloris), giới hạn kích thước header và thân yêu cầu HTTP (khớp trần tải lên của JMAP), giới hạn tốc độ HTTP theo IP; cập nhật Go/Traefik nhanh khi có advisory (rapid-reset HTTP/2 và loại tương tự).
+- Chống dò mật khẩu **không** làm ở biên (biên không thấy xác thực thư): là bộ đếm thất bại theo IP/tài khoản trong dịch vụ giao thức và `store`, dựa trên IP thật từ PROXY protocol, với khóa tạm và độ trễ lũy tiến.
+- Nhật ký truy cập JSON, không ghi chuỗi truy vấn, `Authorization`, cookie hay token; ghi IP, cổng, kết quả, thời gian.
+- Duy nhất `edge` công bố cổng ra host; kiểm tra tự động (mục 10) bảo đảm không container nào khác làm vậy.
+
+### 3b.4 Kiểm thử cổng vào
+- Khung `deploy/compose/` dựng `edge` cùng backend giả (Rust, tĩnh) cho TCP và HTTP; kiểm tra: chuyển nguyên vẹn các luồng nhị phân (không đổi byte), STARTTLS đi qua nguyên vẹn, PROXY protocol v2 đến đích với IP đúng và bị từ chối khi giả mạo, định tuyến theo `Host`/đường dẫn, kết thúc và mã hóa lại TLS, giới hạn kích thước/thời gian/số kết nối bị áp dụng, dashboard và API không truy cập được từ ngoài, không có Docker provider, rootfs chỉ đọc, không `docker.sock`.
+- Tập lệnh kiểm tra cấu hình (`rustyctl check`/`scripts/check-compose.sh`) từ chối mọi compose mà dịch vụ ngoài `edge` công bố cổng.
 
 ## 4. Cứng hóa mỗi container (nền tảng bắt buộc)
 - Chạy bằng user không phải root, **uid/gid cố định theo dịch vụ** (bảng uid trong repo, ví dụ `store`=10001, `imap`=10002...), không có shell.
