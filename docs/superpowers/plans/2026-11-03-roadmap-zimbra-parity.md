@@ -34,6 +34,29 @@ Tải thực tế hiện tại nhỏ (~700-800 thư đi và đến mỗi ngày c
 | 5 | **Nhân bản Postgres bất đồng bộ** | RPO > 0; hệ quả và giảm thiểu ở scale-targets §1c |
 | 6 | **Backend Postgres trước** | P-13 đứng trước IMAP trên đường găng; M1 chạy trên Postgres |
 
+### Trả lời bổ sung của người dùng (2026-11-03, lượt hai)
+| Mục | Quyết định | Hệ quả |
+|---|---|---|
+| Zimbra hiện có để chuyển | Có nhưng **không gấp** | P-41 giữ nhưng không nằm trên đường găng; cần phiên bản và số liệu Zimbra khi tới lượt |
+| Tải | 700-800 thư/ngày là **toàn hệ thống** | Đã tính trong scale-targets |
+| IP gửi thư | **IP riêng**; cần thêm chức năng **nhập cấu hình SMTP relay** | Thêm vào P-06/P-10: smarthost cấu hình được (host, cổng, TLS, xác thực) theo hệ thống và theo tenant; thông tin xác thực relay là bí mật, lưu mã hóa qua KMS, không bao giờ trả lại qua API; kiểm tra kết nối khi lưu; định tuyến theo domain gửi/địa chỉ; dự phòng khi relay hỏng; hạn mức và nhật ký |
+| Ngôn ngữ giao diện | **Chỉ tiếng Anh** | Web client và admin console chỉ tiếng Anh (vẫn xử lý Unicode đúng trong dữ liệu) |
+| ActiveSync | **Không cần: dùng giao thức tiêu chuẩn là đủ** | **P-50 ra khỏi phạm vi.** Mức C nay = B + sao lưu/khôi phục tích hợp + HSM/phân tầng lưu trữ + các tính năng vận hành khác, không có ActiveSync. Hết điều kiện kiểm tra pháp lý ActiveSync. Di động dùng IMAP, CalDAV, CardDAV, JMAP |
+| Zimlets | Chưa cần | P-51 ngoài phạm vi hiện tại |
+| LDAP/AD ngoài | Chưa cần | Chỉ SSO qua OIDC/SAML ở P-28 nếu cần |
+| Chat, eDiscovery/DLP | Để sau | P-52, P-53 hoãn |
+| Chia sẻ giữa tenant, danh sách chứa tài khoản domain khác | **Không cho** | Khóa ngoại tổng hợp "cùng tenant" giữ làm quy tắc; không cần thiết kế quan hệ tin cậy giữa tenant |
+| Cổng STARTTLS/SSL | **Mở tại cổng vào (edge), không mở trực tiếp ở dịch vụ** | Ghi đè mặc định "đóng 587/143/110" của tôi: nay mở ở `edge`; xem container spec §3b.2 |
+| CA production | **Let's Encrypt** | Cấu hình sẵn ở `certd` (staging cho dev/test) |
+| Xác minh domain bằng DNS TXT | Đồng ý | Điều kiện để domain hoạt động |
+| Tên máy mỗi tenant | Giữ trần mặc định 20 | "Tên máy" là tên DNS máy khách dùng để kết nối (xem tenant-tls) |
+| Chứng chỉ sắp hết hạn | **Hiển thị trên dashboard của admin tenant và super admin; nút bật/tắt failover ACME** | Thêm vào P-17 và tenant-tls §6/§7 |
+| KMS | **Dựng sẵn như một microservice** | Dự án mới P-60 (KMS); cần quyết định "tự viết hay triển khai OpenBao" (đã hỏi) |
+| Runtime container | **Docker** | Khuyến nghị Docker rootless; ghi nhận khác biệt khi test |
+| Liên hệ báo lỗ hổng | mornngstr1@gmail.com | Đã đưa vào SECURITY.md |
+| Cách review | Đồng ý đề xuất | Review mạnh cho bảo mật và đồng thời; nhẹ hơn cho phần còn lại |
+| Môi trường test | **Chạy ngay trên máy này** | Benchmark G1-G2 chạy cục bộ (máy 12 nhân, ~16 GB RAM, ext4); G3-G4 chưa có môi trường nhiều máy nên vẫn hoãn |
+
 Hệ quả thứ tự: P-01 (hoàn tất chuẩn bị) -> benchmark G1 (SQLite làm đường cơ sở) -> **P-13 (Postgres + Valkey)** song song với P-02 (`store`) -> P-04/P-05/P-06 (M1). P-13b (phân mảnh) hoãn; P-43/P-44/P-45 hạ xuống sau M3, trừ HA đơn giản (replica bất đồng bộ + WAL) vào P-40.
 
 ## 0d. Chính sách thư viện: dùng có sẵn trước, viết lại sau MVP
@@ -135,7 +158,7 @@ Tiêu chí M2: nhiều domain độc lập, DKIM/SPF/DMARC đạt kiểm tra ngo
 ### Giai đoạn 6 - Mở rộng tùy chọn (cần quyết định riêng, mục 6)
 | ID | Dự án | Ghi chú |
 |---|---|---|
-| P-50 | Đồng bộ di động (ActiveSync/EAS) | **TRONG PHẠM VI (mức C đã chọn).** Giao thức thuộc Microsoft; kiểm tra điều khoản/bằng sáng chế/yêu cầu cấp phép TRƯỚC khi viết mã; nếu có rào cản pháp lý thì báo lại người dùng |
+| P-50 | ~~Đồng bộ di động (ActiveSync/EAS)~~ | **RA KHỎI PHẠM VI (người dùng: dùng giao thức tiêu chuẩn là đủ).** Ghi chú cũ:  Giao thức thuộc Microsoft; kiểm tra điều khoản/bằng sáng chế/yêu cầu cấp phép TRƯỚC khi viết mã; nếu có rào cản pháp lý thì báo lại người dùng |
 | P-51 | Cơ chế mở rộng (thay Zimlets) | Chọn mô hình an toàn (ví dụ iframe sandbox + API có phạm vi); có thể không làm |
 | P-52 | Dịch vụ chat/họp | Zimbra FOSS không tích hợp sẵn theo cách thống nhất; ngoài phạm vi trừ khi người dùng muốn |
 | P-53 | Lưu trữ tuân thủ/eDiscovery, DLP, lưu giữ pháp lý | Dành cho khách hàng doanh nghiệp |

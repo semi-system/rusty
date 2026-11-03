@@ -107,6 +107,15 @@ Vì `certd` là thành phần Go duy nhất của dự án (cho tới nay) và g
 - **Chạy lúc thực thi:** tắt core dump, không swap, `GOMAXPROCS`/giới hạn bộ nhớ đặt theo cgroup, `GOGC` mặc định; tiến trình không bao giờ bật biên dịch động hay nạp plugin.
 - **Báo cáo:** mọi cảnh báo CI của `certd` hiển thị cùng bảng điều khiển với phần Rust; một bản phát hành chỉ ký khi toàn bộ cổng trên xanh.
 
+## 6c. Dashboard hạn chứng chỉ và công tắc failover ACME (yêu cầu của người dùng, 2026-11-03)
+- **Dashboard của admin tenant** (chỉ tenant của họ) và **của super admin** (toàn hệ thống, lọc theo tenant) hiển thị mọi tên máy cùng: chế độ (`acme`/`custom`), nhà cấp, ngày hết hạn, số ngày còn lại, trạng thái (`active/pending/error`), lỗi cấp gần nhất (đã làm sạch); sắp xếp mặc định theo hạn tăng dần; làm nổi bật mức cảnh báo 30/14/7/1 ngày và đã hết hạn; có bộ lọc "sắp hết hạn trong N ngày".
+- **Nút bật/tắt failover ACME** (`fallback_to_acme`) cho từng tên máy `custom`: bật thì khi chứng chỉ tùy chỉnh hết hạn hoặc sắp hết hạn (ngưỡng cấu hình, mặc định 7 ngày) `certd` tự xin chứng chỉ ACME cho tên máy đó và chuyển sang phục vụ nó, ghi `admin_audit` và gửi thông báo; **mặc định vẫn là TẮT**. Chuyển về chứng chỉ tùy chỉnh khi tenant tải lên chứng chỉ mới hợp lệ (có tùy chọn tự quay lại). Tenant admin bật/tắt cho tên máy của mình; super admin có thể đặt **chính sách tối thiểu** (cho phép hoặc cấm failover ACME theo toàn hệ thống hoặc theo tenant).
+- Dữ liệu cho dashboard lấy từ `store` (hạn đã quan sát bởi `certd`), API theo vai trò; không bao giờ trả khóa riêng.
+- Kiểm thử: dashboard chỉ thấy tên máy của tenant (chéo tenant trả NotFound), thứ tự theo hạn, mốc cảnh báo, công tắc đổi trạng thái có kiểm toán, failover chạy đúng bằng Pebble (chứng chỉ tùy chỉnh hết hạn -> chuyển ACME; tắt công tắc -> không chuyển, trạng thái `error`).
+
+## 6d. KMS (yêu cầu của người dùng: dựng sẵn như một microservice)
+Khóa chính của tenant, khóa mã hóa giá trị bí mật (khóa riêng TLS, thông tin xác thực SMTP relay, khóa tài khoản ACME) và khóa dẫn xuất cho cache **không còn nằm trong tệp**: được bảo vệ bởi dịch vụ `kms`. Thiết kế chi tiết sẽ viết thành spec riêng (đang chờ quyết định: tự viết `kms` tối thiểu bằng Rust hay triển khai OpenBao). Yêu cầu chung: mã hóa phong bì (envelope), khóa dữ liệu bọc theo tenant và phiên bản, API `wrap/unwrap/derive/rotate` có xác thực mTLS và vai trò, kiểm toán mọi lần dùng, khóa gốc được niêm phong và mở bằng thủ tục có kiểm soát, không bao giờ xuất khóa gốc.
+
 ## 7. Quản trị
 - `rustyctl tls host add|list|remove|set-mode`, `rustyctl tls cert upload|show|activate|delete|history`, `rustyctl tls status [--expiring N]`, `rustyctl tls verify <hostname>` (kết nối thử và so khớp chứng chỉ đang được phục vụ); admin console có các màn tương ứng.
 - Mọi thao tác ghi `admin_audit` (ai, tenant, tên máy, hành động, dấu vân tay; **không bao giờ khóa hay PEM**).

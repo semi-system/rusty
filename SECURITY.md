@@ -91,6 +91,6 @@ install nightly --profile minimal`, `sudo apt install musl-tools`, and
 
 ## Reporting a vulnerability
 
-Do not open a public issue for security problems. Security contact: TODO(maintainer): set contact.
+Do not open a public issue for security problems. Security contact: mornngstr1@gmail.com (provided by the maintainer on 2026-11-03).
 Include the affected commit, a reproducer (for parser bugs, the input bytes), and the
 impact you expect. Fixes land with a regression test.
