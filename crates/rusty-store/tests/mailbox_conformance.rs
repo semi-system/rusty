@@ -1503,7 +1503,7 @@ async fn different_mailboxes_same_id_are_independent() {
             .iter()
             .map(|o| match o {
                 DeliverOutcome::Created(r) => DeliverOutcome::Duplicate(*r),
-                x => x.clone(),
+                x => *x,
             })
             .collect();
         assert_eq!(again, expected, "{n}");
