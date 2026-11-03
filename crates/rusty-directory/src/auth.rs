@@ -29,7 +29,7 @@ fn hash_blocking(password: &str) -> Result<String> {
     Argon2::default()
         .hash_password(password.as_bytes(), &salt)
         .map(|h| h.to_string())
-        .map_err(|e| Error::storage(format!("password hashing failed: {e}")))
+        .map_err(|_| Error::storage("password hashing failed"))
 }
 
 fn verify_blocking(hash: &str, password: &str) -> bool {
@@ -51,7 +51,7 @@ impl Directory {
             .await
             .map_err(map_db_error)?;
         if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("account {}", account.0)));
+            return Err(Error::NotFound("account".into()));
         }
         Ok(())
     }

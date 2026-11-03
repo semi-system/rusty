@@ -30,7 +30,7 @@ impl BlobHash {
         if ok {
             Ok(BlobHash(s.to_owned()))
         } else {
-            Err(Error::Invalid(format!("invalid blob hash: {s:?}")))
+            Err(Error::Invalid("invalid blob hash".into()))
         }
     }
 
@@ -119,7 +119,7 @@ impl FromStr for FolderRole {
             "spam" => FolderRole::Spam,
             "archive" => FolderRole::Archive,
             "custom" => FolderRole::Custom,
-            _ => return Err(Error::Invalid(format!("unknown folder role: {s:?}"))),
+            _ => return Err(Error::Invalid("unknown folder role".into())),
         })
     }
 }

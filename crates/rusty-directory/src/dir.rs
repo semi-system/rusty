@@ -54,7 +54,7 @@ pub(crate) fn normalize_domain(domain: &str) -> Result<String> {
         return Err(Error::Invalid("invalid character in domain".into()));
     }
     let ascii = idna::domain_to_ascii_strict(d)
-        .map_err(|_| Error::Invalid(format!("invalid domain {d:?}")))?;
+        .map_err(|_| Error::Invalid("invalid domain".into()))?;
     if ascii.is_empty()
         || ascii.len() > 253
         || ascii.split('.').any(|l| l.is_empty() || l.len() > 63)
@@ -303,7 +303,7 @@ impl Directory {
     pub async fn resolve(&self, addr: &str) -> Result<Resolved> {
         let (local, domain) = parse_address(addr)?;
         let pool = self.store.pool();
-        let not_found = || Error::NotFound(format!("address {local}@{domain}"));
+        let not_found = || Error::NotFound("address".into());
         let dom: i64 = sqlx::query_scalar("SELECT id FROM domains WHERE name = ?")
             .bind(&domain)
             .fetch_optional(pool)
@@ -365,6 +365,6 @@ impl Directory {
             .await
             .map_err(map_db_error)?
             .map(MailboxId)
-            .ok_or_else(|| Error::NotFound(format!("mailbox for account {}", account.0)))
+            .ok_or_else(|| Error::NotFound("mailbox for account".into()))
     }
 }

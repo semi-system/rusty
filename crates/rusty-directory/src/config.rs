@@ -38,30 +38,40 @@ fn lookup(json: &str, key: &str) -> Result<Option<Value>> {
 }
 
 impl Directory {
-    async fn update_config(&self, table: &str, id: i64, config: Value) -> Result<()> {
+    /// `sql` is one of the constant UPDATE statements below; `what` is the fixed NotFound text.
+    async fn update_config(
+        &self,
+        sql: &'static str,
+        what: &'static str,
+        id: i64,
+        config: Value,
+    ) -> Result<()> {
         ensure_object(&config)?;
-        let res = sqlx::query(&format!("UPDATE {table} SET config = ? WHERE id = ?"))
+        let res = sqlx::query(sql)
             .bind(config.to_string())
             .bind(id)
             .execute(self.store().pool())
             .await
             .map_err(map_db_error)?;
         if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("{table} row {id}")));
+            return Err(Error::NotFound(what.into()));
         }
         Ok(())
     }
 
     pub async fn set_domain_config(&self, domain: DomainId, config: Value) -> Result<()> {
-        self.update_config("domains", domain.0, config).await
+        const SQL: &str = "UPDATE domains SET config = ? WHERE id = ?";
+        self.update_config(SQL, "domain", domain.0, config).await
     }
 
     pub async fn set_account_config(&self, account: AccountId, config: Value) -> Result<()> {
-        self.update_config("accounts", account.0, config).await
+        const SQL: &str = "UPDATE accounts SET config = ? WHERE id = ?";
+        self.update_config(SQL, "account", account.0, config).await
     }
 
     pub async fn set_plan_config(&self, plan: PlanId, config: Value) -> Result<()> {
-        self.update_config("plans", plan.0, config).await
+        const SQL: &str = "UPDATE plans SET config = ? WHERE id = ?";
+        self.update_config(SQL, "plan", plan.0, config).await
     }
 
     pub async fn set_global_config(&self, config: Value) -> Result<()> {
@@ -86,7 +96,7 @@ impl Directory {
             .await
             .map_err(map_db_error)?;
         if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("account {}", account.0)));
+            return Err(Error::NotFound("account".into()));
         }
         Ok(())
     }
@@ -102,7 +112,7 @@ impl Directory {
                 .fetch_optional(pool)
                 .await
                 .map_err(map_db_error)?
-                .ok_or_else(|| Error::NotFound(format!("account {}", account.0)))?;
+                .ok_or_else(|| Error::NotFound("account".into()))?;
         if let Some(v) = lookup(&acfg, key)? {
             return Ok(Some(v));
         }

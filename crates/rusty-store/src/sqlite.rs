@@ -17,7 +17,7 @@ impl SqliteStore {
     /// see the same data.
     pub async fn open(url: &str) -> Result<SqliteStore> {
         let opts = SqliteConnectOptions::from_str(url)
-            .map_err(|e| Error::storage_with(format!("invalid database url {url:?}"), e))?
+            .map_err(|e| Error::storage_with("invalid database url", e))?
             .foreign_keys(true)
             .create_if_missing(true);
         let in_memory = url.contains(":memory:") || url.contains("mode=memory");

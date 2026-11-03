@@ -1,3 +1,13 @@
+//! The shared error type.
+//!
+//! Rules (spec §8b):
+//! - The message of every variant is a short, fixed reason. It never echoes caller input
+//!   (addresses, domains, names, URLs, paths, hashes, ids, header text), so `Display` of an
+//!   `Error` is safe to log and to map to a protocol-level status.
+//! - The `source()` chain of `Error::Storage` may contain raw backend text (SQLite
+//!   messages, OS errors with paths, parser details). It is for operator diagnostics only and
+//!   must never be serialized to clients.
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]

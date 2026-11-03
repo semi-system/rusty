@@ -518,9 +518,7 @@ impl BlobStore for FsBlobStore {
         let path = self.path_for(h);
         match blocking(move || read_blob(&path)).await? {
             Ok(v) => Ok(Bytes::from(v)),
-            Err(e) if e.kind() == ErrorKind::NotFound => {
-                Err(Error::NotFound(format!("blob {}", h.as_str())))
-            }
+            Err(e) if e.kind() == ErrorKind::NotFound => Err(Error::NotFound("blob".into())),
             Err(e) => Err(io_err("read blob", e)),
         }
     }
