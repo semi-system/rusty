@@ -2,6 +2,13 @@
 
 Ngày: 2026-11-03. Trạng thái: chờ người dùng duyệt spec. **Thay thế** phần lớn mục 3b (Traefik) của spec container; những yêu cầu không phụ thuộc sản phẩm trong 3b vẫn áp dụng (xem mục 9).
 
+## 0. CẬP NHẬT QUYẾT ĐỊNH (người dùng, 2026-11-03, sau khi xem cấu hình nginx stream tham khảo)
+**Triển khai trước: HAProxy làm biên theo cách A** (HAProxy kết thúc TLS ngầm 465/993/995 bằng chứng chỉ nạp từ tệp, mã hóa lại bằng mTLS đã xác minh tới dịch vụ; các cổng STARTTLS 25/587/143/110 chuyển nguyên vẹn, dịch vụ tự làm STARTTLS bằng chứng chỉ riêng; PROXY v2 tới dịch vụ). **Nếu không ổn thì quay lại cách B với `tlsd` (mục 1-10 dưới đây) sau.** Mục 1-10 giữ nguyên làm thiết kế dự phòng.
+- Kế hoạch triển khai cách A: `docs/superpowers/plans/2026-11-03-edge-haproxy.md` (thay `2026-11-03-edge-skeleton.md`, không được chạy kế hoạch Traefik cũ).
+- "Không ổn" được định nghĩa cụ thể trong Task H3 của kế hoạch đó: báo cáo go/no-go dựa trên bộ test hành vi (PROXY v2 cùng TLS tới backend, xác minh backend bằng mTLS, chống giả mạo PROXY, giới hạn kết nối theo IP, thay chứng chỉ không làm đứt kết nối). Người dùng quyết định cuối cùng.
+- Cái giá đã chấp nhận của cách A: HAProxy (C) giữ khóa riêng TLS thư trong bộ nhớ và thấy dạng rõ ở 465/993/995; dịch vụ phải giữ chứng chỉ cho STARTTLS (do `certd` cấp) và chính sách TLS nằm ở hai nơi (đồng bộ bằng một nguồn cấu hình và test phiên bản TLS trên mọi cổng).
+- Cấu hình nginx stream mà người dùng dán làm tham chiếu **không** được sao chép nguyên: nó không xác minh chứng chỉ backend, không mTLS, không PROXY, không giới hạn kết nối (xem phân tích trong sổ SDD).
+
 ## 1. Quyết định của người dùng
 - **HAProxy làm biên** (điểm duy nhất công bố cổng ra host).
 - **Một lớp riêng xử lý TLS** (cách "B"): HAProxy chỉ làm tầng 4 cho thư và **không giải mã**; lớp TLS giữ mọi chứng chỉ và xử lý cả TLS ngầm lẫn STARTTLS.
