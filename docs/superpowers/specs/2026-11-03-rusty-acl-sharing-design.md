@@ -70,6 +70,7 @@ CREATE UNIQUE INDEX folder_grants_uq ON folder_grants
   (mailbox_id, folder_id, grantee_kind, COALESCE(grantee_account, 0), COALESCE(grantee_list, 0));
 ```
 - Cần `UNIQUE (id, domain_id)` trên `mailboxes` và `lists` (như đã đề ra cho `accounts` ở spec tenant) để các khóa ngoại tổng hợp ép **cùng tenant**: không thể cấp quyền cho người ở tenant khác ngay từ DB.
+- Các khóa ngoại tổng hợp `(mailbox_id, domain_id)` hợp lệ trong một cụm đơn (single cluster) và trở thành các tham chiếu control plane nếu hệ thống được phân mảnh theo mailbox.
 - `folders.inherit_grants boolean NOT NULL DEFAULT true`: folder con **thừa hưởng** grant của tổ tiên (cộng dồn). Đặt `false` thì chỉ dùng grant của chính folder đó (cắt kế thừa).
 - Bảng `acl_version(mailbox_id PRIMARY KEY, version bigint)` tăng mỗi khi grant hoặc `inherit_grants` đổi; dùng làm khóa vô hiệu hóa cache.
 - Nhật ký bất biến `grant_log(id, mailbox_id, folder_id, actor, action, grantee, old_rights, new_rights, at)` chỉ thêm, trigger chặn sửa/xóa; bổ sung cho `admin_audit` (admin) và dành cho cả thao tác của chủ mailbox.

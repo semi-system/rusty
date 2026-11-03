@@ -59,7 +59,7 @@ Ngày: 2026-11-03. Trạng thái: chờ người dùng duyệt spec. Đây là *
 |---|---|
 | Nút dịch vụ/`store` chết | yêu cầu đang chạy lỗi tạm thời; client gửi lại an toàn nhờ idempotency; không cần phục hồi trạng thái |
 | `store` mất kết nối Postgres | từ chối ghi và đọc quyền uy với lỗi tạm thời (SMTP 451, IMAP `NO [UNAVAILABLE]`); **không** phục vụ dữ liệu cũ cho quyết định phân quyền |
-| Postgres failover | giao dịch đang chạy bị hủy, client thử lại; không mất giao dịch đã commit (đồng bộ) hoặc chấp nhận mất tối đa theo cấu hình nhân bản (phải ghi rõ khi chọn async); cửa sổ nhiễu của hạn ân hạn GC được tính |
+| Postgres failover | giao dịch đang chạy bị hủy, client thử lại; mục tiêu là nhân bản bất đồng bộ (async replication) nên RPO > 0: thư đã xác nhận (acknowledged) CÓ THỂ bị mất khi failover. Biện pháp giảm thiểu: commit đồng bộ theo từng giao dịch (`synchronous_commit=remote_apply` hoặc `on`) riêng cho luồng giao nhận (delivery path), lưu trữ WAL liên tục (continuous WAL archiving), và job đối soát so sánh hàng đợi/nhật ký MTA với store; cửa sổ nhiễu của hạn ân hạn GC được tính |
 | Phân vùng mạng giữa `store` và kho blob | từ chối append/get tạm thời; metadata không bao giờ trỏ tới blob chưa ghi |
 | Valkey chết/chậm/hỏng | bỏ qua cache (spec Postgres–Valkey §5 và §6); không lỗi người dùng |
 | Worker chết giữa job | lease hết hạn, worker khác tiếp tục nhờ idempotent; `epoch` chặn worker cũ |
@@ -73,10 +73,10 @@ Ngày: 2026-11-03. Trạng thái: chờ người dùng duyệt spec. Đây là *
 - Di chuyển CSDL theo kiểu **mở rộng rồi thu hẹp** (expand/contract): bước 1 thêm cột/bảng tương thích ngược, bước 2 triển khai mã mới, bước 3 mới bỏ phần cũ. Không migration nào khiến mã phiên bản N-1 hỏng.
 - Cờ tính năng trong cài đặt hệ thống để bật dần.
 
-## 9. Phân mảnh theo tenant (chuẩn bị, chưa làm)
-- Mọi bảng dữ liệu người dùng có `domain_id` hoặc truy ra được qua `mailbox_id`; khóa chính/chỉ mục bắt đầu bằng khóa phân mảnh khi thích hợp.
-- **Cấm khóa ngoại hay join giữa tenant**, trừ tham chiếu tới dữ liệu tham chiếu toàn cục nhỏ (plan hệ thống, trần hệ thống) được nhân bản cho mọi mảnh.
-- Nhờ đó có thể chia sau này: mỗi mảnh = một cụm Postgres (và một tập tiền tố blob); `store` định tuyến theo `domain_id` qua bảng ánh xạ tenant -> mảnh (nằm ở cơ sở điều khiển nhỏ). Di chuyển tenant giữa mảnh là job (mục 5).
+## 9. Phân mảnh theo mailbox (chuẩn bị, hoãn lại)
+- Khóa phân mảnh là **mailbox** (`mailbox_id`), không phải tenant; việc phân mảnh hiện được hoãn lại. `domain_id` (tenant) thuần túy giữ vai trò là ranh giới bảo mật và cô lập. Mọi bảng dữ liệu mailbox gắn với `mailbox_id`; khóa chính/chỉ mục bắt đầu bằng khóa phân mảnh khi thích hợp.
+- **Cấm khóa ngoại hay join giữa tenant**, trừ tham chiếu tới dữ liệu tham chiếu toàn cục nhỏ (plan hệ thống, trần hệ thống) được nhân bản cho mọi mảnh. Trong phạm vi một cụm đơn (single cluster), các khóa ngoại hiện hữu vẫn hoàn toàn hợp lệ; khi phân mảnh được đưa vào, các khóa ngoại giữa các bảng control plane (`domains`, `accounts`, `plans`) và dữ liệu theo từng mailbox sẽ trở thành các tham chiếu control plane do tầng ứng dụng đảm bảo.
+- Nhờ đó có thể chia sau này: mỗi mảnh = một cụm Postgres (và một tập tiền tố blob); `store` định tuyến theo mailbox qua bảng ánh xạ mailbox -> mảnh trong một control-plane DB nhỏ. Di chuyển mailbox giữa mảnh là job (mục 5).
 - Chưa chọn công cụ (Citus, phân mảnh ở tầng ứng dụng...). Quyết định khi benchmark chứng minh một primary không đủ.
 
 ## 10. Bảo mật trong môi trường phân tán
@@ -94,7 +94,7 @@ Ngày: 2026-11-03. Trạng thái: chờ người dùng duyệt spec. Đây là *
 | I3 Không bao giờ mất blob đang được tham chiếu khi GC chạy cùng put/append trên nhiều nút | stress put/GC đa nút, chèn lỗi ở mọi bước, kiểm tra mọi thư đọc được |
 | I4 Một job chỉ có một chủ hiệu lực; worker hết lease không ghi đè được | ép hết lease giữa chừng, hai worker cùng chạy, kiểm tra `epoch` |
 | I5 Cô lập tenant giữ nguyên với nhiều nút và cache chung | ma trận chéo tenant (spec Postgres–Valkey §3c.5) chạy ở cụm nhiều nút |
-| I6 Postgres failover không làm mất giao dịch đã trả thành công | giết primary giữa tải ghi; so sánh số đã xác nhận và số có trong DB |
+| I6 Postgres failover: số thư đã xác nhận bị mất (acked-and-lost) phải bằng 0 khi bật sync commit trên delivery path; nếu không thì phải đo lường và báo cáo được | giết primary giữa tải ghi; so sánh số đã xác nhận và số có trong DB |
 | I7 Phân vùng store<->blob/Postgres chỉ gây lỗi tạm thời, không dữ liệu hỏng | chèn phân vùng bằng công cụ mạng, kiểm tra tính toàn vẹn sau khi nối lại |
 | I8 Nâng cấp cuốn chiếu N -> N+1 không mất yêu cầu | chạy tải liên tục trong lúc thay từng nút |
 
