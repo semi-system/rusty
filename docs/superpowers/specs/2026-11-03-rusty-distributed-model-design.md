@@ -29,7 +29,7 @@ Ngày: 2026-11-03. Trạng thái: chờ người dùng duyệt spec. Đây là *
 | Cài đặt hệ thống | Postgres (schema hệ thống) khi nhiều nút; SQLite `system.db` khi một nút | cache |
 | Hàng đợi thư đi (MTA) | Postgres (`outbound_queue` + lease) | không |
 | Công việc nền | Postgres (`jobs`) | không |
-| Capability phiên | Postgres (băm + hạn + trạng thái thu hồi) | cache trong tiến trình ngắn hạn |
+| Capability phiên | Postgres (băm + hạn + trạng thái thu hồi) | **không cache kết quả hợp lệ** (đã sửa theo review P4 và SECURITY.md: cache kết quả dương làm token còn dùng được sau khi bị thu hồi). Nếu sau này cần cache vì hiệu năng: chỉ vài giây, kèm kênh phát thu hồi, và mọi thu hồi (đổi mật khẩu, đổi trạng thái) phải vô hiệu hóa cache; cache kết quả âm cũng phải có hạn ngắn |
 | Chỉ mục tìm kiếm | dựng lại từ Postgres + blob | thư mục chỉ mục cục bộ |
 | Khóa tenant | kho khóa (KMS/HSM; tệp `0400` ban đầu) | không (nhưng sao lưu riêng) |
 
