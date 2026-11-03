@@ -1,3 +1,5 @@
+  bash scripts/pg-up.sh || return 1
+  bash scripts/tests/pg-isolation.sh || return 1
 #!/usr/bin/env bash
 # Local CI gate. Run from anywhere: bash scripts/ci.sh
 # Exits non-zero on the first failing stage. See SECURITY.md for tool installation.
@@ -36,6 +38,8 @@ stage() { # name, command...
   local name="$1"; shift
   STAGE="$name"
   echo "==> $name"
+  # Test hook for scripts/tests/ci-trap.sh only: force this stage to fail.
+  if [ "${RUSTY_CI_FORCE_FAIL:-}" = "$name" ]; then set -- false; fi
   if "$@"; then
     STAGES=$((STAGES + 1))
     echo "[ OK ] $name"
@@ -52,6 +56,8 @@ cargo audit --version >/dev/null 2>&1 || { echo "[FAIL] missing tool: cargo-audi
 rustup target list --installed | grep -qx "$MUSL" || { echo "[FAIL] missing rustup target $MUSL" >&2; exit 1; }
 
 # The repo is not rustfmt-clean yet, so formatting is not gated here; clippy is.
+# (skipped when the hook is set: ci-trap.sh runs ci.sh itself)
+[ -n "${RUSTY_CI_FORCE_FAIL:-}" ] || stage "ci scripts" bash scripts/tests/ci-trap.sh
 stage "clippy"       cargo clippy --workspace --all-targets -- -D warnings
 stage "test (glibc)" cargo test --workspace
 

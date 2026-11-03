@@ -8,3 +8,4 @@ PG_NAME="rusty-pg-test-$RUN_ID"
 URL_FILE="$HOME/.rusty-pg-test-url.$RUN_ID"
 COMPOSE=(docker compose -p "$PG_NAME" -f deploy/dev/postgres.compose.yaml)
 export RUSTY_PG_NAME="$PG_NAME"
+export RUSTY_PG_RUN_ID="$RUN_ID"

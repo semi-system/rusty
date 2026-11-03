@@ -16,12 +16,15 @@ services:
   postgres:
     image: postgres@sha256:3a4264520e121176619f54ff867d12774bc81e95e7b84db58d63bccdb6144b81
     container_name: ${RUSTY_PG_NAME:-rusty-pg-test-dev}
+    labels:
+      # Ownership marker: pg-down removes a container only if it carries its own run id.
+      rusty.test-pg-run: "${RUSTY_PG_RUN_ID:-dev}"
     user: "999:999"
     environment:
       POSTGRES_PASSWORD: ${RUSTY_PG_PASSWORD:?set by scripts/pg-up.sh}
       POSTGRES_USER: rusty
       POSTGRES_DB: postgres
-    command: ["postgres", "-c", "fsync=off", "-c", "full_page_writes=off", "-c", "listen_addresses=*", "-c", "wal_level=minimal", "-c", "max_wal_senders=0", "-c", "min_wal_size=32MB", "-c", "max_wal_size=192MB"]
+    command: ["postgres", "-c", "fsync=off", "-c", "full_page_writes=off", "-c", "listen_addresses=*", "-c", "wal_level=minimal", "-c", "max_wal_senders=0", "-c", "min_wal_size=32MB", "-c", "max_wal_size=256MB"]
     ports:
       # Omit `published`: Docker chooses an unused host port, avoiding a bind/launch race.
       - target: 5432

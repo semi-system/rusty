@@ -18,7 +18,7 @@ pub const PG_SKIP_NOTICE: &str =
 pub fn pg_admin_url() -> Option<String> {
     match env::var("RUSTY_TEST_PG_URL") {
         Ok(value) if !value.is_empty() => Some(value),
-        _ if matches!(env::var("RUSTY_REQUIRE_PG").as_deref(), Ok(v) if !v.is_empty() && v != "0") => {
+        _ if require_pg() => {
             panic!("RUSTY_REQUIRE_PG is set but RUSTY_TEST_PG_URL is missing")
         }
         _ => {
@@ -169,4 +169,18 @@ async fn cleanup_database(admin_url: &str, name: &str) {
     };
     drop_database(&admin, name).await;
     admin.close().await;
+}
+
+/// `RUSTY_REQUIRE_PG` accepts exactly `1` (required), or unset / empty / `0` (not required).
+/// Any other value is a configuration error and fails loudly instead of silently skipping.
+pub fn require_pg() -> bool {
+    parse_require_pg(env::var("RUSTY_REQUIRE_PG").ok().as_deref())
+}
+
+pub fn parse_require_pg(value: Option<&str>) -> bool {
+    match value {
+        None | Some("") | Some("0") => false,
+        Some("1") => true,
+        Some(_) => panic!("RUSTY_REQUIRE_PG must be 1 (or unset / 0)"),
+    }
 }
