@@ -45,8 +45,11 @@ pub const MIN_GC_GRACE: Duration = Duration::from_secs(3600);
 
 /// Hard-delete soft-deleted messages with `deleted_at < older_than` (unix seconds), at most
 /// [`PURGE_BATCH`] per `BEGIN IMMEDIATE` transaction, until none are left. Keywords cascade,
-/// blob refcounts follow via triggers, `change_log` is untouched. Returns how many messages
-/// were removed.
+/// blob refcounts follow via triggers, `change_log` is untouched. A message that still has a
+/// `deliveries` row is kept (so a replayed delivery id stays a `Duplicate` and never
+/// resurrects an expunged message); it is purged by a later run once [`purge_deliveries`]
+/// has removed the row (<= [`DELIVERY_RETENTION_SECS`]). Returns how many messages were
+/// removed.
 pub async fn purge_deleted(store: &SqliteStore, older_than: i64) -> Result<u64> {
     let mut total = 0u64;
     loop {
@@ -54,7 +57,10 @@ pub async fn purge_deleted(store: &SqliteStore, older_than: i64) -> Result<u64> 
         let n = sqlx::query(
             "DELETE FROM messages WHERE rowid IN (\
                SELECT rowid FROM messages \
-               WHERE deleted_at IS NOT NULL AND deleted_at < ? LIMIT ?)",
+               WHERE deleted_at IS NOT NULL AND deleted_at < ? \
+               AND NOT EXISTS (SELECT 1 FROM deliveries d \
+                 WHERE d.mailbox_id = messages.mailbox_id AND d.message_id = messages.id) \
+               LIMIT ?)",
         )
         .bind(older_than)
         .bind(PURGE_BATCH)

@@ -170,7 +170,7 @@ async fn failed_deliver_leaves_no_delivery_row_so_retry_creates() {
 }
 
 #[tokio::test]
-async fn delivery_row_cascades_with_message_purge() {
+async fn purge_deleted_holds_delivered_message_until_delivery_row_is_purged() {
     let e = env().await;
     let m =
         e.mb.deliver(INBOX, raw("gone", None), Flags::empty(), did(1))
@@ -179,10 +179,33 @@ async fn delivery_row_cascades_with_message_purge() {
     let DeliverOutcome::Created(r) = m else {
         panic!()
     };
+    // A message without a delivery row is purged exactly as before.
+    e.mb.append(INBOX, raw("plain", None), Flags::empty())
+        .await
+        .unwrap();
+    let plain = e.scalar("SELECT max(id) FROM messages").await;
+    e.mb.expunge(rusty_core::MessageId(plain)).await.unwrap();
     e.mb.expunge(r.id).await.unwrap();
     // Soft-deleted: the row is still there, so a retry is still a duplicate.
-    assert_eq!(e.scalar("SELECT count(*) FROM deliveries").await, 1);
+    let again =
+        e.mb.deliver(INBOX, raw("gone", None), Flags::empty(), did(1))
+            .await
+            .unwrap();
+    assert_eq!(again, DeliverOutcome::Duplicate(r));
+    // Only the undelivered message goes; the delivered one is held.
     assert_eq!(purge_deleted(&e.store, i64::MAX).await.unwrap(), 1);
+    assert_eq!(e.scalar("SELECT count(*) FROM messages").await, 1);
+    assert_eq!(e.scalar("SELECT count(*) FROM deliveries").await, 1);
+    // The replay is still a Duplicate after the purge attempt (never a second Created).
+    let again =
+        e.mb.deliver(INBOX, raw("gone", None), Flags::empty(), did(1))
+            .await
+            .unwrap();
+    assert_eq!(again, DeliverOutcome::Duplicate(r));
+    // Once the delivery row is purged, the next purge_deleted removes the message.
+    assert_eq!(purge_deliveries(&e.store, i64::MAX).await.unwrap(), 1);
+    assert_eq!(purge_deleted(&e.store, i64::MAX).await.unwrap(), 1);
+    assert_eq!(e.scalar("SELECT count(*) FROM messages").await, 0);
     assert_eq!(e.scalar("SELECT count(*) FROM deliveries").await, 0);
 }
 
