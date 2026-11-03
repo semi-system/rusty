@@ -199,8 +199,8 @@ impl Directory {
             Some(p) => Some(hash_password(p).await?),
             None => None,
         };
-        // BEGIN IMMEDIATE: the write lock is taken up front (spec: every multi-statement
-        // write uses `begin_write`, never a deferred `pool.begin()`).
+        // BEGIN IMMEDIATE: the write lock is taken up front. Every multi-statement directory
+        // write uses `begin_write`, never a deferred `pool.begin()`.
         let mut tx = self.store.begin_write().await?;
         let acc: i64 = sqlx::query_scalar(
             "INSERT INTO accounts (local_part, domain_id, plan_id, password_hash, status, created_at) \
