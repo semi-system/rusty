@@ -27,6 +27,8 @@ mail-parser = "0.9"
 argon2 = "0.5"
 proptest = "1"
 tempfile = "3"
+# Dev-only: tests count executed statements through sqlx query events.
+tracing = "0.1"
 rustix = { version = "1", features = ["fs"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 idna = "1"

@@ -1160,6 +1160,7 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
+ "tracing",
  "unicode-general-category",
  "unicode-normalization",
 ]
@@ -1200,6 +1201,7 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

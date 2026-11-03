@@ -194,3 +194,62 @@ pub fn sized(len: usize) -> Bytes {
     v.resize(len, b'x');
     Bytes::from(v)
 }
+
+/// Counts the SQL statements sqlx executes (test-only; production code carries no counter).
+/// sqlx emits one sqlx::query tracing event per executed statement (including BEGIN and
+/// COMMIT), from its connection worker thread, so the counter is process-global. probe()
+/// therefore also takes a process-wide lock: every test in a binary that uses it must call
+/// probe() first, which serializes them.
+pub mod stmts {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Mutex, MutexGuard, Once};
+    use tracing::span::{Attributes, Id, Record};
+    use tracing::{Event, Metadata, Subscriber};
+
+    static COUNT: AtomicUsize = AtomicUsize::new(0);
+    static LOCK: Mutex<()> = Mutex::new(());
+    static INIT: Once = Once::new();
+
+    struct Counter;
+
+    impl Subscriber for Counter {
+        fn enabled(&self, m: &Metadata<'_>) -> bool {
+            m.target() == "sqlx::query"
+        }
+        fn new_span(&self, _: &Attributes<'_>) -> Id {
+            Id::from_u64(1)
+        }
+        fn record(&self, _: &Id, _: &Record<'_>) {}
+        fn record_follows_from(&self, _: &Id, _: &Id) {}
+        fn event(&self, e: &Event<'_>) {
+            if e.metadata().target() == "sqlx::query" {
+                COUNT.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        fn enter(&self, _: &Id) {}
+        fn exit(&self, _: &Id) {}
+    }
+
+    pub struct Probe {
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    /// Take the lock, install the counter (once) and start from zero.
+    pub fn probe() -> Probe {
+        let lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        INIT.call_once(|| {
+            tracing::subscriber::set_global_default(Counter).expect("global subscriber");
+        });
+        COUNT.store(0, Ordering::SeqCst);
+        Probe { _lock: lock }
+    }
+
+    impl Probe {
+        pub fn count(&self) -> usize {
+            COUNT.load(Ordering::SeqCst)
+        }
+        pub fn reset(&self) {
+            COUNT.store(0, Ordering::SeqCst);
+        }
+    }
+}

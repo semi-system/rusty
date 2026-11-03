@@ -20,6 +20,7 @@
 //!   blob is an orphan for the cleanup job (spec §5).
 //! - Nothing here logs message content; error texts never echo caller input.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -385,9 +386,28 @@ async fn ancestor_depth(
     start: FolderId,
     forbidden: Option<FolderId>,
 ) -> Result<usize> {
-    let mut cur = Some(start.0);
+    // One recursive CTE walks up from `start`, bounded by MAX_FOLDER_DEPTH + 1 rows (the
+    // extra row is what proves "too deep"; it also stops on cyclic data). The verdict is
+    // then read off the rows in depth order, with the same checks in the same order as a
+    // step-by-step walk. Portable SQL (WITH RECURSIVE, numbered parameters).
+    let rows: Vec<(i64, Option<i64>)> = sqlx::query_as(
+        "WITH RECURSIVE up(id, parent_id, depth) AS ( \
+           SELECT id, parent_id, 1 FROM folders WHERE mailbox_id = ?1 AND id = ?2 \
+           UNION ALL \
+           SELECT f.id, f.parent_id, u.depth + 1 FROM folders f JOIN up u \
+             ON f.mailbox_id = ?1 AND f.id = u.parent_id \
+           WHERE u.depth <= ?3 \
+         ) SELECT id, parent_id FROM up ORDER BY depth",
+    )
+    .bind(mb.0)
+    .bind(start.0)
+    .bind(MAX_FOLDER_DEPTH as i64)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(map_db_error)?;
     let mut depth = 0usize;
-    while let Some(id) = cur {
+    let mut parent = None;
+    for (id, p) in rows {
         if forbidden.is_some_and(|f| f.0 == id) {
             return Err(Error::Conflict(
                 "cannot move a folder into itself or a descendant".into(),
@@ -397,7 +417,12 @@ async fn ancestor_depth(
         if depth > MAX_FOLDER_DEPTH {
             return Err(Error::Invalid("folder tree too deep".into()));
         }
-        cur = folder_row(conn, mb, FolderId(id)).await?.0;
+        parent = p;
+    }
+    // No rows: `start` is not in this mailbox. A parent that is not there either (corrupt
+    // data) ends the walk early with the same answer.
+    if depth == 0 || parent.is_some() {
+        return Err(not_found_folder());
     }
     Ok(depth)
 }
@@ -450,27 +475,56 @@ async fn find_thread(
     mb: MailboxId,
     env: &Envelope,
 ) -> Result<Option<i64>> {
-    let candidates = env
+    let candidates: Vec<&str> = env
         .references
         .iter()
         .rev()
         .chain(env.in_reply_to.iter())
-        .take(MAX_THREAD_CANDIDATES);
-    for mid in candidates {
-        let t: Option<i64> = sqlx::query_scalar(
-            "SELECT thread_id FROM messages WHERE mailbox_id = ? AND message_id_hdr = ? \
-             ORDER BY id LIMIT 1",
-        )
-        .bind(mb.0)
-        .bind(mid)
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(map_db_error)?;
-        if t.is_some() {
-            return Ok(t);
-        }
+        .take(MAX_THREAD_CANDIDATES)
+        .map(String::as_str)
+        .collect();
+    if candidates.is_empty() {
+        return Ok(None);
     }
-    Ok(None)
+    let known = lookup_threads(conn, mb, &candidates).await?;
+    Ok(candidates.iter().find_map(|c| known.get(*c).copied()))
+}
+
+/// Thread of the oldest message (smallest id) for each of the given Message-IDs, in one
+/// statement per `SQL_CHUNK` ids (one for the at most 32 thread candidates). Soft-deleted
+/// messages count. Portable SQL: a grouped subquery and numbered parameters.
+async fn lookup_threads(
+    conn: &mut SqliteConnection,
+    mb: MailboxId,
+    hdrs: &[&str],
+) -> Result<HashMap<String, i64>> {
+    let mut out = HashMap::new();
+    for chunk in hdrs.chunks(SQL_CHUNK) {
+        let sql = format!(
+            "SELECT message_id_hdr, thread_id FROM messages WHERE mailbox_id = ?1 AND id IN ( \
+               SELECT MIN(id) FROM messages WHERE mailbox_id = ?1 AND message_id_hdr IN ({}) \
+               GROUP BY message_id_hdr)",
+            placeholders(2, chunk.len())
+        );
+        let mut q = sqlx::query_as::<_, (String, i64)>(&sql).bind(mb.0);
+        for h in chunk {
+            q = q.bind(*h);
+        }
+        out.extend(q.fetch_all(&mut *conn).await.map_err(map_db_error)?);
+    }
+    Ok(out)
+}
+
+/// Most bound ids per statement in the set-based queries (SQLite's default limit is 32,766
+/// variables, Postgres's 65,535; this stays far below both).
+const SQL_CHUNK: usize = 500;
+
+/// `?first,?first+1,..` for `n` numbered parameters. Only numbers are formatted into SQL text.
+fn placeholders(first: usize, n: usize) -> String {
+    (first..first + n)
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 async fn commit(tx: Transaction<'static, Sqlite>) -> Result<()> {
