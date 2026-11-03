@@ -16,14 +16,14 @@ rusty-mime = { path = "../rusty-mime" }
 async-trait.workspace = true
 bytes.workspace = true
 sqlx.workspace = true
-# spawn and spawn_blocking only.
-tokio = { workspace = true, features = ["rt"] }
+# spawn and spawn_blocking; "time" for the Postgres retry backoff sleep.
+tokio = { workspace = true, features = ["rt", "time"] }
 rustix.workspace = true
 rand_core.workspace = true
 serde_json.workspace = true
+hex.workspace = true
 
 [dev-dependencies]
-hex.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 tracing.workspace = true

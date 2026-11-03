@@ -152,3 +152,37 @@ fn skip_notice_is_stable_and_contains_no_secret() {
     );
     assert!(!PG_SKIP_NOTICE.contains("postgres://"));
 }
+
+#[tokio::test]
+async fn database_is_dropped_even_when_the_test_panics() {
+    let Some(admin_url) = pg_admin_url() else {
+        return;
+    };
+    let url = admin_url.clone();
+    let worker = std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let db = PgTestDb::create(&url).await;
+            let _ = NAME.set(db.name().to_owned());
+            panic!("simulated test failure");
+        });
+    });
+    assert!(worker.join().is_err(), "the worker must have panicked");
+    let name = NAME.get().expect("name recorded").clone();
+    let admin = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&admin_url)
+        .await
+        .unwrap();
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_database WHERE datname = $1")
+        .bind(&name)
+        .fetch_one(&admin)
+        .await
+        .unwrap();
+    assert_eq!(left, 0, "the panicking test leaked its database");
+}
+
+static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();

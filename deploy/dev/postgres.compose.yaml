@@ -3,6 +3,7 @@
 #
 # TEST-ONLY DURABILITY SETTINGS: `fsync=off` and `full_page_writes=off` are enabled here
 # purely for test speed; the data directory is a tmpfs and is lost on stop anyway.
+# wal_level=minimal and a small max_wal_size keep CREATE DATABASE churn from filling the 1g tmpfs.
 # `synchronous_commit` and every other setting stay at the server default.
 #
 # Hardening: published on 127.0.0.1 only, password supplied per run via the environment
@@ -14,13 +15,13 @@ name: rusty-pg-test
 services:
   postgres:
     image: postgres@sha256:3a4264520e121176619f54ff867d12774bc81e95e7b84db58d63bccdb6144b81
-    container_name: rusty-pg-test
+    container_name: ${RUSTY_PG_NAME:-rusty-pg-test-dev}
     user: "999:999"
     environment:
       POSTGRES_PASSWORD: ${RUSTY_PG_PASSWORD:?set by scripts/pg-up.sh}
       POSTGRES_USER: rusty
       POSTGRES_DB: postgres
-    command: ["postgres", "-c", "fsync=off", "-c", "full_page_writes=off", "-c", "listen_addresses=*"]
+    command: ["postgres", "-c", "fsync=off", "-c", "full_page_writes=off", "-c", "listen_addresses=*", "-c", "wal_level=minimal", "-c", "max_wal_senders=0", "-c", "min_wal_size=32MB", "-c", "max_wal_size=192MB"]
     ports:
       # Omit `published`: Docker chooses an unused host port, avoiding a bind/launch race.
       - target: 5432
@@ -37,7 +38,7 @@ services:
     pids_limit: 256
     shm_size: 128m
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U rusty -d postgres"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U rusty -d postgres"]
       interval: 1s
       timeout: 3s
       retries: 30

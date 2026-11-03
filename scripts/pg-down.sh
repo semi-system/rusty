@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Remove the test Postgres container and its tmpfs data, and the URL file. Idempotent.
+# Remove this run's test Postgres container, its tmpfs data and its URL file. Idempotent.
+# Only touches the run named by RUSTY_PG_RUN_ID (default "dev"); other runs are left alone.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-RUSTY_PG_PASSWORD=unused docker compose -f deploy/dev/postgres.compose.yaml down -v >/dev/null 2>&1 || true
-docker rm -f rusty-pg-test >/dev/null 2>&1 || true
-rm -f "$HOME/.rusty-pg-test-url"
-echo "pg-down: done"
+# shellcheck source=/dev/null
+. scripts/pg-lib.sh
+RUSTY_PG_PASSWORD=unused "${COMPOSE[@]}" down -v >/dev/null 2>&1 || true
+docker rm -f "$PG_NAME" >/dev/null 2>&1 || true
+rm -f "$URL_FILE"
+echo "pg-down: done ($PG_NAME)"
 exit 0

@@ -4,6 +4,7 @@ mod blob;
 mod gc;
 mod jobs;
 mod mailbox;
+pub mod repo;
 #[cfg(feature = "postgres")]
 mod pg;
 mod sqlite;

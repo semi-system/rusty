@@ -50,7 +50,7 @@ pub const MAX_FOLDER_NAME_BYTES: usize = 255;
 /// Maximum number of levels in the folder tree (a root folder is level 1).
 pub const MAX_FOLDER_DEPTH: usize = 64;
 /// Bound on parent lookups per appended message (hostile `References` headers).
-const MAX_THREAD_CANDIDATES: usize = 32;
+pub(crate) const MAX_THREAD_CANDIDATES: usize = 32;
 /// Most entries returned by one `list_folder` / `changes_since` call.
 pub const MAX_PAGE: u32 = 1000;
 
@@ -138,14 +138,14 @@ pub enum ChangeItem {
 
 impl ChangeItem {
     /// `(change_log.kind, change_log.item_id)`.
-    fn to_row(self) -> (&'static str, i64) {
+    pub(crate) fn to_row(self) -> (&'static str, i64) {
         match self {
             ChangeItem::Message(id) => ("message", id.0),
             ChangeItem::Folder(id) => ("folder", id.0),
         }
     }
 
-    fn from_row(kind: &str, item_id: i64) -> Result<ChangeItem> {
+    pub(crate) fn from_row(kind: &str, item_id: i64) -> Result<ChangeItem> {
         match kind {
             "message" => Ok(ChangeItem::Message(MessageId(item_id))),
             "folder" => Ok(ChangeItem::Folder(FolderId(item_id))),
@@ -162,7 +162,7 @@ pub enum ChangeOp {
 }
 
 impl ChangeOp {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             ChangeOp::Create => "create",
             ChangeOp::Update => "update",
@@ -170,7 +170,7 @@ impl ChangeOp {
         }
     }
 
-    fn parse(s: &str) -> Result<ChangeOp> {
+    pub(crate) fn parse(s: &str) -> Result<ChangeOp> {
         match s {
             "create" => Ok(ChangeOp::Create),
             "update" => Ok(ChangeOp::Update),
@@ -196,7 +196,7 @@ pub struct ChangePage {
 }
 
 /// Effective page size: `Invalid` for 0, at most [`MAX_PAGE`].
-fn page_limit(limit: u32) -> Result<i64> {
+pub(crate) fn page_limit(limit: u32) -> Result<i64> {
     if limit == 0 {
         return Err(Error::Invalid("page limit must be at least 1".into()));
     }
@@ -308,7 +308,7 @@ async fn take_folder_id(conn: &mut SqliteConnection, mb: MailboxId) -> Result<i6
     .ok_or_else(|| Error::NotFound("mailbox".into()))
 }
 
-fn to_uid(v: i64) -> Result<u32> {
+pub(crate) fn to_uid(v: i64) -> Result<u32> {
     match u32::try_from(v) {
         Ok(0) => Err(Error::storage("corrupt uid")),
         Ok(u) => Ok(u),
@@ -317,7 +317,7 @@ fn to_uid(v: i64) -> Result<u32> {
     }
 }
 
-fn to_flags(v: i64) -> Result<Flags> {
+pub(crate) fn to_flags(v: i64) -> Result<Flags> {
     u8::try_from(v)
         .ok()
         .and_then(Flags::from_bits)

@@ -1,28 +1,29 @@
 #!/usr/bin/env bash
 # Start the throw-away test Postgres (deploy/dev/postgres.compose.yaml). Run inside WSL/Linux
-# with Docker. Writes the admin connection URL to $HOME/.rusty-pg-test-url (mode 0600) and
-# prints only a success line. Idempotent: if the container is already running it is reused.
+# with Docker. Writes the admin connection URL to $HOME/.rusty-pg-test-url.<run id> (mode 0600) and
+# prints only a success line. Idempotent per run id (RUSTY_PG_RUN_ID, default "dev"): if that
+# run's container is already running it is reused. Other runs' containers are never touched.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 umask 077
-URL_FILE="$HOME/.rusty-pg-test-url"
-COMPOSE=(docker compose -f deploy/dev/postgres.compose.yaml)
+# shellcheck source=/dev/null
+. scripts/pg-lib.sh
 IMAGE_REF="$(awk '$1 == "postgres:18" { print $2 }' deploy/images.lock)"
 
 cleanup() {
   RUSTY_PG_PASSWORD=unused "${COMPOSE[@]}" down -v >/dev/null 2>&1 || true
-  docker rm -f rusty-pg-test >/dev/null 2>&1 || true
+  docker rm -f "$PG_NAME" >/dev/null 2>&1 || true
   rm -f "$URL_FILE"
 }
 
 verify_server() {
   local version image
-  version="$(docker exec rusty-pg-test psql -U rusty -d postgres -Atqc 'SHOW server_version_num' 2>/dev/null || true)"
-  image="$(docker inspect -f '{{.Config.Image}}' rusty-pg-test 2>/dev/null || true)"
+  version="$(docker exec "$PG_NAME" psql -h 127.0.0.1 -U rusty -d postgres -Atqc 'SHOW server_version_num' 2>/dev/null || true)"
+  image="$(docker inspect -f '{{.Config.Image}}' "$PG_NAME" 2>/dev/null || true)"
   [[ "$version" =~ ^18[0-9]{4}$ ]] && [ "$image" = "$IMAGE_REF" ]
 }
 
-if [ "$(docker inspect -f '{{.State.Running}}' rusty-pg-test 2>/dev/null || true)" = "true" ] && [ -s "$URL_FILE" ] && verify_server; then
+if [ "$(docker inspect -f '{{.State.Running}}' "$PG_NAME" 2>/dev/null || true)" = "true" ] && [ -s "$URL_FILE" ] && verify_server; then
   echo "pg-up: already running; URL in $URL_FILE"
   exit 0
 fi
@@ -35,7 +36,7 @@ PASSWORD="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
 
 export RUSTY_PG_PASSWORD="$PASSWORD"
 if ! "${COMPOSE[@]}" up -d --wait --wait-timeout 90 >/dev/null 2>&1; then
-  echo "pg-up: FAILED to start (inspect: docker logs rusty-pg-test)" >&2
+  echo "pg-up: FAILED to start (inspect: docker logs $PG_NAME)" >&2
   cleanup
   exit 1
 fi
