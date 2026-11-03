@@ -2,6 +2,16 @@
 
 Ngày: 2026-11-03. Trạng thái: chờ người dùng duyệt spec (sau đó mới lập kế hoạch triển khai chi tiết). Quyết định của người dùng (2026-11-03): **tách `store` thành dịch vụ riêng ngay từ đầu** (mục 7b).
 
+## 0. Điều chỉnh (2026-11-03, container-per-service)
+Người dùng quyết định triển khai bằng Docker/OCI, **mỗi dịch vụ một container, `rustyctl` chạy trên host** (spec `2026-11-03-rusty-container-deployment-design.md`). Điều chỉnh đối với tài liệu này:
+
+- **Trong triển khai container:** runtime (Docker Compose, sau này Kubernetes) làm việc giám sát, khởi động lại và thứ tự phụ thuộc. `rustyd` (mục 4) **chỉ còn dùng cho chế độ dev/không container**. Máy trạng thái, circuit breaker và drain mô tả ở mục 4 vẫn là yêu cầu cho chế độ đó, và nguyên tắc (restart có backoff, dừng crash-loop, drain) được ánh xạ sang cấu hình runtime (restart policy, healthcheck, giới hạn số lần khởi động lại).
+- **`rustyctl` (mục 6):** là CLI trên host; nhóm lệnh hạ tầng gọi runtime container, nhóm lệnh ứng dụng (`config`, `backup`, `db`) gọi API quản trị qua `store`/`dbadmin`. **Không container nào được mount socket của runtime.**
+- **Kênh điều khiển (mục 5) và API `store` (mục 7b):** có hai transport cùng giao thức và cùng ma trận vai trò: Unix socket + `SO_PEERCRED` (một host, uid cố định theo dịch vụ) và **mTLS qua TCP** (mặc định cho Kubernetes, vai trò lấy từ định danh trong chứng chỉ).
+- **Binary:** triển khai container dùng binary riêng cho từng dịch vụ (cargo feature) để mỗi container chỉ chứa mã của mình; binary multi-call `rusty` còn dùng cho dev/không container.
+- **Sandbox (mục 2, `rusty-sandbox`):** vẫn áp dụng bên trong container (Landlock/seccomp tiến trình) như lớp bổ sung cho cứng hóa của runtime; các container chạy user không phải root với uid cố định.
+- Các mục 7, 7b, 8-11 của tài liệu này (bảng dịch vụ, vai trò, capability, mô hình đe dọa) vẫn đúng; "tiến trình" trong đó nay hiểu là "container" khi triển khai bằng container.
+
 ## 1. Bối cảnh và mục tiêu
 Zimbra vận hành bằng nhiều daemon, điều khiển bởi `zmcontrol` (start/stop/status theo dịch vụ và thứ tự phụ thuộc). Rusty giữ ý tưởng đó nhưng làm lại theo định hướng **bảo mật trước, chịu zero-day** (spec nền tảng §8b):
 
