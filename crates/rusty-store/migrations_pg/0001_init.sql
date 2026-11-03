@@ -182,6 +182,11 @@ BEGIN
   IF NEW.parent_id IS NULL THEN
     RETURN NEW;
   END IF;
+  -- Serialize every tree mutation of this mailbox. The walk below only sees committed rows, so
+  -- two concurrent reparentings (1 under 2 and 2 under 1) would otherwise both pass and commit
+  -- a cycle. Lock ordering rule: the mailbox row is always locked FIRST. Statements in plpgsql
+  -- take a fresh snapshot after the lock wait, so the walk sees the other session's commit.
+  PERFORM 1 FROM mailboxes WHERE id = NEW.mailbox_id FOR UPDATE;
   IF EXISTS (
     WITH RECURSIVE chain(id, depth) AS (
       SELECT NEW.parent_id, 1
