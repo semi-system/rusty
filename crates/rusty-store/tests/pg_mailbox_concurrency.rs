@@ -887,3 +887,208 @@ async fn lock_blobs_giving_up_is_busy_and_leaves_nothing_behind() {
     // The same mailbox works through a repository without the knob.
     setup.append(INBOX, raw("a", None), Flags::default()).await.unwrap();
 }
+
+// ---------------------------------------------------------------- future cancellation
+
+use rusty_store::PgPoolConfig;
+
+/// A database whose pool has ONE connection, so a connection that came back dirty (an open
+/// transaction, a held lock) poisons every later operation.
+struct OneConn {
+    _db: PgTestDb,
+    store: rusty_store::PgStore,
+    dir: common::backends::TestDir,
+    blobs: Arc<dyn rusty_store::BlobStore>,
+    _tmp: tempfile::TempDir,
+}
+
+async fn one_conn() -> Option<OneConn> {
+    let url = pg_admin_url()?;
+    let db = PgTestDb::create(&url).await;
+    let cfg = PgPoolConfig {
+        max_connections: 1,
+        acquire_timeout: Duration::from_secs(10),
+        ..PgPoolConfig::default()
+    };
+    let store = rusty_store::PgStore::connect_with_config(db.url(), cfg).await.unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let blobs = common::backends::blob_dir(&tmp).await;
+    let dir = common::backends::TestDir::new(Arc::new(PgRepo::new(store.clone())));
+    Some(OneConn { _db: db, store, dir, blobs, _tmp: tmp })
+}
+
+impl OneConn {
+    async fn mailbox_on(&self, repo: Arc<PgRepo>, local: &str, dom: DomainId) -> Mailbox {
+        let acc = self.dir.create_account(local, dom, None, None).await.unwrap();
+        Mailbox::open_with(repo, self.blobs.clone(), acc).await.unwrap()
+    }
+
+    /// The (only) pooled connection is outside any transaction block and holds no transaction id.
+    async fn assert_connection_clean(&self, what: &str) {
+        let mut c = tokio::time::timeout(Duration::from_secs(10), self.store.pool().acquire())
+            .await
+            .unwrap_or_else(|_| panic!("{what}: the connection never came back to the pool"))
+            .unwrap();
+        // `now()` is frozen inside a transaction block and moves between autocommit statements.
+        let mut stamps = vec![];
+        for _ in 0..2 {
+            let t: f64 = sqlx::query_scalar("SELECT extract(epoch FROM now())::float8")
+                .fetch_one(&mut *c)
+                .await
+                .unwrap();
+            stamps.push(t);
+        }
+        assert!(
+            stamps[0] != stamps[1],
+            "{what}: the pooled connection is still inside a transaction"
+        );
+        let n: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_locks WHERE pid = pg_backend_pid() AND locktype = 'transactionid'",
+        )
+        .fetch_one(&mut *c)
+        .await
+        .unwrap();
+        assert_eq!(n, 0, "{what}: the connection still holds a transaction id lock");
+    }
+
+    async fn scalar(&self, sql: &str) -> i64 {
+        sqlx::query_scalar(sql).fetch_one(self.store.pool()).await.unwrap()
+    }
+}
+
+/// Dropping the operation future while its transaction is open (work done, locks held, COMMIT
+/// not yet sent) commits nothing and returns the connection to the pool clean: the next
+/// operations succeed on the same single connection and see unchanged counters.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dropping_the_future_mid_transaction_commits_nothing() {
+    let Some(o) = one_conn().await else { return };
+    let dom = o.dir.create_domain("cancel.test").await.unwrap();
+    let plain = Arc::new(PgRepo::new(o.store.clone()));
+    let setup = o.mailbox_on(plain.clone(), "alice", dom).await;
+    let f = setup.create_folder(None, "F").await.unwrap();
+    let seeded = setup.append(f, raw("seed", None), Flags::default()).await.unwrap();
+    let changes_before = setup.changes_since(0, 100).await.unwrap().changes.len();
+
+    let held = Arc::new(tokio::sync::Notify::new());
+    let slow_repo = Arc::new(
+        PgRepo::new(o.store.clone())
+            .with_knobs_for_test(Knobs { pause_before_commit_ms: 60_000, ..Knobs::default() })
+            .with_work_done_signal_for_test(held.clone()),
+    );
+    let resolved = o.dir.resolve("alice", "cancel.test").await.unwrap();
+    let rusty_store::repo::Resolution::Account(acc) = resolved else { panic!("{resolved:?}") };
+    let slow = Mailbox::open_with(slow_repo, o.blobs.clone(), acc).await.unwrap();
+
+    macro_rules! cancel_mid_tx {
+        ($label:expr, $op:expr) => {{
+            let slow = slow.clone();
+            let h = tokio::spawn(async move { $op(slow).await.map(|_| ()) });
+            tokio::time::timeout(Duration::from_secs(30), held.notified())
+                .await
+                .unwrap_or_else(|_| panic!("{}: the operation never reached the pause", $label));
+            // The transaction is open and holds every lock; drop the future right here.
+            h.abort();
+            assert!(h.await.unwrap_err().is_cancelled(), "{}", $label);
+            o.assert_connection_clean($label).await;
+            // Nothing of the cancelled work is visible.
+            assert_eq!(
+                setup.changes_since(0, 100).await.unwrap().changes.len(),
+                changes_before,
+                "{}: change log",
+                $label
+            );
+        }};
+    }
+
+    cancel_mid_tx!("append", |m: Mailbox| async move {
+        m.append(f, raw("lost-1", None), Flags::default()).await
+    });
+    cancel_mid_tx!("append_many", |m: Mailbox| async move {
+        m.append_many(f, vec![raw("lost-2", None), raw("lost-3", None)], Flags::default()).await
+    });
+    cancel_mid_tx!("deliver_many", |m: Mailbox| async move {
+        m.deliver_many(f, vec![item("lost-4", 77)]).await
+    });
+    cancel_mid_tx!("create_folder", |m: Mailbox| async move { m.create_folder(None, "Lost").await });
+    cancel_mid_tx!("expunge", |m: Mailbox| async move { m.expunge(seeded.id).await });
+
+    assert_eq!(o.scalar("SELECT count(*) FROM messages").await, 1);
+    assert_eq!(o.scalar("SELECT count(*) FROM deliveries").await, 0);
+    assert_eq!(o.scalar("SELECT count(*) FROM folders WHERE name = 'Lost'").await, 0);
+    assert_eq!(o.scalar("SELECT count(*) FROM blobs").await, 1, "only the seed's blob");
+    assert_eq!(o.scalar("SELECT count(*) FROM messages WHERE deleted_at IS NOT NULL").await, 0);
+    // Counters did not move: the next write gets the very next id, uid and seq, and the mailbox
+    // lock is free.
+    let next = tokio::time::timeout(
+        Duration::from_secs(10),
+        setup.append(f, raw("after", None), Flags::default()),
+    )
+    .await
+    .expect("the mailbox lock must be free after the cancellations")
+    .unwrap();
+    assert_eq!((next.id.0, next.uid), (seeded.id.0 + 1, seeded.uid + 1));
+    let last = setup.changes_since(0, 100).await.unwrap().changes;
+    assert_eq!(last.len(), changes_before + 1);
+    assert_eq!(last.last().unwrap().seq, changes_before as i64 + 1, "no seq was burnt");
+}
+
+/// Poll `fut` at most `n` times (sleeping between polls), then drop it. True if it completed.
+async fn poll_n_then_drop<F: Future>(fut: F, n: usize) -> bool {
+    let mut fut = std::pin::pin!(fut);
+    for _ in 0..n {
+        let ready =
+            std::future::poll_fn(|cx| std::task::Poll::Ready(fut.as_mut().poll(cx).is_ready())).await;
+        if ready {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    false
+}
+
+/// Mirror of the SQLite sweeps: drop `begin_write` and appends at every await point and with
+/// short timeouts. Afterwards the single connection is clean, an append works, and whatever
+/// committed is gapless.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelled_postgres_operations_leave_a_clean_connection_and_gapless_counters() {
+    let Some(o) = one_conn().await else { return };
+    let dom = o.dir.create_domain("sweep.test").await.unwrap();
+    let repo = Arc::new(PgRepo::new(o.store.clone()));
+    let mb = o.mailbox_on(repo, "alice", dom).await;
+
+    for n in 1..=12usize {
+        let _ = poll_n_then_drop(o.store.begin_write(), n).await;
+        let tx = tokio::time::timeout(Duration::from_secs(10), o.store.begin_write())
+            .await
+            .unwrap_or_else(|_| panic!("n={n}: begin timed out"))
+            .unwrap_or_else(|e| panic!("n={n}: {e:?}"));
+        tx.commit().await.unwrap();
+    }
+    let mut completed = 0;
+    for n in 1..=60usize {
+        let fut = mb.append(INBOX, raw(&format!("c{n}"), None), Flags::default());
+        if poll_n_then_drop(fut, n).await {
+            completed += 1;
+        }
+    }
+    assert!(completed > 0, "some appends must have run to completion");
+    for k in 0..200u64 {
+        let fut = mb.append(INBOX, raw(&format!("t{k}"), None), Flags::default());
+        let _ = tokio::time::timeout(Duration::from_micros((k % 50) * 20), fut).await;
+    }
+    let after = tokio::time::timeout(
+        Duration::from_secs(10),
+        mb.append(INBOX, raw("after", None), Flags::default()),
+    )
+    .await;
+    assert!(matches!(after, Ok(Ok(_))), "{after:?}");
+    o.assert_connection_clean("after the sweep").await;
+
+    let n = o.scalar("SELECT count(*) FROM messages").await;
+    assert_eq!(o.scalar("SELECT max(id) FROM messages").await, n);
+    assert_eq!(o.scalar("SELECT next_msg_id FROM mailboxes").await, n + 1);
+    assert_eq!(o.scalar("SELECT max(uid) FROM messages").await, n);
+    assert_eq!(o.scalar("SELECT count(*) FROM change_log").await, n);
+    assert_eq!(o.scalar("SELECT max(seq) FROM change_log").await, n);
+    assert_eq!(o.scalar("SELECT next_change_seq FROM mailboxes").await, n + 1);
+}
