@@ -246,7 +246,8 @@ mod pg {
 /// folders, conflicts and quota errors are exercised as often as successes.
 #[derive(Debug, Clone)]
 enum DOp {
-    Append(u8, u8, u8),
+    /// folder, own Message-ID number, flags, parent (0 = none, 1..=6 reply to m{p-1}, 7 = References chain)
+    Append(u8, u8, u8, u8),
     AppendMany(u8, u8),
     Deliver(u8, u8, u8),
     DeliverMany(u8, u8, u8),
@@ -268,7 +269,7 @@ enum DOp {
 
 fn dop() -> impl Strategy<Value = DOp> {
     prop_oneof![
-        4 => (0u8..7, 0u8..6, 0u8..32).prop_map(|(f, s, fl)| DOp::Append(f, s, fl)),
+        4 => (0u8..7, 0u8..6, 0u8..32, 0u8..8).prop_map(|(f, s, fl, p)| DOp::Append(f, s, fl, p)),
         2 => (0u8..7, 1u8..4).prop_map(|(f, n)| DOp::AppendMany(f, n)),
         2 => (0u8..7, 0u8..4, 0u8..4).prop_map(|(f, d, c)| DOp::Deliver(f, d, c)),
         2 => (0u8..7, 0u8..4, 1u8..4).prop_map(|(f, d, n)| DOp::DeliverMany(f, d, n)),
@@ -313,9 +314,25 @@ fn ids(m: u8, n: u8) -> Vec<MessageId> {
     (0..n).map(|k| MessageId(i64::from(m) + i64::from(k) + 1)).collect()
 }
 
+/// A message with Message-ID `m{mid}@x` (if any) and a parent: 0 none, 1..=6 In-Reply-To
+/// `m{p-1}@x`, 7 a References chain (`m0@x m1@x m2@x`, nearest ancestor last) plus an In-Reply-To.
+fn threaded(subject: &str, mid: Option<u8>, parent: u8) -> bytes::Bytes {
+    let id = mid.map(|m| format!("m{m}@x"));
+    let irt = (1..=6).contains(&parent).then(|| format!("m{}@x", parent - 1));
+    match parent {
+        7 => reply(subject, id.as_deref(), Some("m5@x"), &["m0@x", "m1@x", "m2@x"]),
+        _ => reply(subject, id.as_deref(), irt.as_deref(), &[]),
+    }
+}
+
+/// Content of delivery payload number `c` (the same `c` is always the same bytes).
+fn content(c: u8) -> bytes::Bytes {
+    threaded(&format!("content-{c}"), Some(c % 6), (c + 2) % 8)
+}
+
 fn item(d: u8, c: u8) -> rusty_store::DeliverItem {
     rusty_store::DeliverItem {
-        raw: raw(&format!("content-{c}"), None),
+        raw: content(c),
         flags: Flags::empty(),
         delivery_id: rusty_core::DeliveryId([d; 32]),
     }
@@ -327,18 +344,25 @@ async fn exec(mb: &Mailbox, ops: &[DOp]) -> Vec<String> {
     let mut out = vec![];
     for (step, o) in ops.iter().enumerate() {
         let line = match o {
-            DOp::Append(f, s, fl) => {
+            DOp::Append(f, s, fl, p) => {
                 let r = mb
-                    .append(folder_id(*f), raw(&format!("subj{s}"), Some(&format!("m{s}@x"))), Flags::from_bits(*fl).unwrap())
+                    .append(folder_id(*f), threaded(&format!("subj{s}"), Some(*s), *p), Flags::from_bits(*fl).unwrap())
                     .await;
                 kind(&r)
             }
             DOp::AppendMany(f, n) => {
-                let raws = (0..*n).map(|i| raw(&format!("am{step}-{i}"), None)).collect();
+                // Message-IDs and parents drawn from the same small space as `Append`, so replies
+                // find anchors in the database AND earlier in the same batch.
+                let raws = (0..*n)
+                    .map(|i| {
+                        let k = step as u8 + i;
+                        threaded(&format!("am{step}-{i}"), Some(k % 6), (k.wrapping_mul(3)) % 8)
+                    })
+                    .collect();
                 kind(&mb.append_many(folder_id(*f), raws, Flags::empty()).await)
             }
             DOp::Deliver(f, d, c) => {
-                kind(&mb.deliver(folder_id(*f), raw(&format!("content-{c}"), None), Flags::empty(), rusty_core::DeliveryId([*d; 32])).await)
+                kind(&mb.deliver(folder_id(*f), content(*c), Flags::empty(), rusty_core::DeliveryId([*d; 32])).await)
             }
             DOp::DeliverMany(f, d, n) => {
                 let items = (0..*n).map(|i| item(d.wrapping_add(i) % 4, (d + i) % 3)).collect();

@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 691aed75bfe5aa27d3b1df295e56365d58647feffe3de48b8729a19fd7a4e64c # shrinks to ops = [AppendMany(0, 2), Expunge(1), SetFlagsMany(0, 2, 0)]
+cc e797589759ae11f657226499291951f9814e553e940664febcbe069a62af1225 # shrinks to ops = [Append(0, 0, 0, 0), AppendMany(0, 2), Append(0, 0, 0, 0), AppendMany(0, 1), Append(0, 0, 0, 0), Append(0, 0, 0, 0), Append(0, 0, 0, 0), Append(0, 0, 14, 7)]

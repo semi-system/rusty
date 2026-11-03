@@ -1459,3 +1459,283 @@ async fn reader_never_sees_a_seq_hole_during_deliver_many() {
     })
     .await;
 }
+
+// ====================================================================== PG4 review: tenant scoping
+
+/// Review I1: the delivery lookup (single `append`/`deliver` and `deliver_many`) is scoped to the
+/// mailbox. The same DeliveryId in two mailboxes is two independent deliveries.
+#[tokio::test]
+async fn different_mailboxes_same_id_are_independent() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let (_, _, a) = acct(&b, "dla").await;
+        let (_, _, other) = acct(&b, "dlb").await;
+        let (_, _, third) = acct(&b, "dlc").await;
+        // Single deliver.
+        let m = raw("one", None);
+        let ra = a.deliver(INBOX, m.clone(), Flags::default(), did(1)).await.unwrap();
+        let rb = other.deliver(INBOX, m.clone(), Flags::default(), did(1)).await.unwrap();
+        assert!(matches!(ra, DeliverOutcome::Created(_)), "{n}: {ra:?}");
+        assert!(matches!(rb, DeliverOutcome::Created(_)), "{n}: {rb:?}");
+        // Same id with DIFFERENT content in a third mailbox is no conflict either.
+        let rc = third
+            .deliver(INBOX, raw("different", None), Flags::default(), did(1))
+            .await
+            .unwrap();
+        assert!(matches!(rc, DeliverOutcome::Created(_)), "{n}: {rc:?}");
+        assert_eq!(scalar(&b, "SELECT count(*) FROM deliveries").await, 3, "{n}");
+        // Inside each mailbox the retry is still a Duplicate of its OWN message.
+        let DeliverOutcome::Created(own) = rb else { unreachable!() };
+        assert_eq!(
+            other.deliver(INBOX, m.clone(), Flags::default(), did(1)).await.unwrap(),
+            DeliverOutcome::Duplicate(own),
+            "{n}"
+        );
+
+        // Batch deliver: ids 10 and 11 in both mailboxes.
+        let items = || vec![item("b1", 10), item("b2", 11)];
+        let oa = a.deliver_many(INBOX, items()).await.unwrap();
+        let ob = other.deliver_many(INBOX, items()).await.unwrap();
+        assert!(oa.iter().all(|o| matches!(o, DeliverOutcome::Created(_))), "{n}: {oa:?}");
+        assert!(ob.iter().all(|o| matches!(o, DeliverOutcome::Created(_))), "{n}: {ob:?}");
+        let again = other.deliver_many(INBOX, items()).await.unwrap();
+        let expected: Vec<DeliverOutcome> = ob
+            .iter()
+            .map(|o| match o {
+                DeliverOutcome::Created(r) => DeliverOutcome::Duplicate(*r),
+                x => x.clone(),
+            })
+            .collect();
+        assert_eq!(again, expected, "{n}");
+        assert_eq!(scalar(&b, "SELECT count(*) FROM deliveries").await, 7, "{n}");
+    })
+    .await;
+}
+
+async fn thread_of(mb: &Mailbox, id: MessageId) -> i64 {
+    mb.get_message(id).await.unwrap().summary.thread_id.0
+}
+
+/// Review I1: thread lookup never joins a thread of another mailbox, neither through the outer
+/// mailbox filter nor through the MIN(id) subquery.
+#[tokio::test]
+async fn thread_lookup_is_scoped_to_mailbox() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let (_, _, alice) = acct(&b, "tla").await;
+        let (_, _, bob) = acct(&b, "tlb").await;
+        // Bob: thread 1 = { p@x (1), b2@x (2, reply to p@x) }.
+        bob.append(INBOX, raw("bob root", Some("p@x")), Flags::default()).await.unwrap();
+        let b2 = bob
+            .append(INBOX, reply("bob reply", Some("b2@x"), Some("p@x"), &[]), Flags::default())
+            .await
+            .unwrap();
+        assert_eq!(thread_of(&bob, b2.id).await, 1, "{n}");
+
+        // Alice: 1 and 2 unrelated, so her replies get ids >= 3.
+        alice.append(INBOX, raw("mine 1", Some("m1@x")), Flags::default()).await.unwrap();
+        let m2 = alice.append(INBOX, raw("mine 2", Some("m2@x")), Flags::default()).await.unwrap();
+        assert_eq!((m2.id.0, thread_of(&alice, m2.id).await), (2, 2), "{n}");
+        // Reply to Bob's b2@x, which exists only in Bob's mailbox: own thread (= own id).
+        let r = alice
+            .append(
+                INBOX,
+                reply("re", Some("re@x"), Some("b2@x"), &["p@x", "b2@x"]),
+                Flags::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.id.0, 3, "{n}");
+        assert_eq!(thread_of(&alice, r.id).await, 3, "{n}: joined a foreign thread");
+        // Nearest ancestor b2@x is foreign (Bob's id 2, thread 1), the next one m2@x is Alice's
+        // own id 2 (thread 2): Alice's thread wins and no foreign row is consulted.
+        let r2 = alice
+            .append(INBOX, reply("re2", None, None, &["m2@x", "b2@x"]), Flags::default())
+            .await
+            .unwrap();
+        assert_eq!(thread_of(&alice, r2.id).await, 2, "{n}: foreign ancestor chosen");
+        // Same through the batch path.
+        let rs = alice
+            .append_many(
+                INBOX,
+                vec![reply("re3", None, None, &["m2@x", "b2@x"]), reply("re4", None, Some("b2@x"), &["p@x"])],
+                Flags::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(thread_of(&alice, rs[0].id).await, 2, "{n}: batch, foreign ancestor chosen");
+        assert_eq!(thread_of(&alice, rs[1].id).await, rs[1].id.0, "{n}: batch joined a foreign thread");
+
+        // The MIN(id) subquery must not be fed by another mailbox: Dave's shared@x has the
+        // smaller id (2) than Carol's (3); a subquery over all mailboxes would pick Dave's row.
+        let (_, _, carol) = acct(&b, "tlc").await;
+        let (_, _, dave) = acct(&b, "tld").await;
+        dave.append(INBOX, raw("d1", Some("d1@x")), Flags::default()).await.unwrap();
+        carol.append(INBOX, raw("c1", Some("c1@x")), Flags::default()).await.unwrap();
+        carol.append(INBOX, raw("c2", Some("c2@x")), Flags::default()).await.unwrap();
+        let anchor = carol
+            .append(INBOX, raw("anchor", Some("shared@x")), Flags::default())
+            .await
+            .unwrap();
+        dave.append(INBOX, raw("d-shared", Some("shared@x")), Flags::default()).await.unwrap();
+        let rep = carol
+            .append(INBOX, reply("rep", None, Some("shared@x"), &[]), Flags::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            thread_of(&carol, rep.id).await,
+            thread_of(&carol, anchor.id).await,
+            "{n}: lookup lost the mailbox's own anchor"
+        );
+        assert_ne!(thread_of(&carol, rep.id).await, rep.id.0, "{n}");
+    })
+    .await;
+}
+
+/// Review I1 (ported from the SQLite query_shape suite): with duplicate Message-IDs the smallest
+/// id is the anchor, and a soft-deleted anchor still counts.
+#[tokio::test]
+async fn duplicate_message_ids_choose_the_smallest_id_and_deleted_anchor_counts() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let (_, _, mb) = acct(&b, "dup").await;
+        let a = mb.append(INBOX, raw("a", Some("dup@t")), Flags::default()).await.unwrap();
+        let second = mb.append(INBOX, raw("b", Some("dup@t")), Flags::default()).await.unwrap();
+        assert_ne!(a.id, second.id, "{n}");
+        assert_ne!(thread_of(&mb, a.id).await, thread_of(&mb, second.id).await, "{n}");
+        mb.expunge(a.id).await.unwrap(); // a soft-deleted anchor still anchors
+        let c = mb
+            .append(INBOX, reply("c", None, Some("dup@t"), &[]), Flags::default())
+            .await
+            .unwrap();
+        let ta = thread_of(&mb, a.id).await;
+        assert_eq!(thread_of(&mb, c.id).await, ta, "{n}: single append");
+        // And through the batch path.
+        let d = mb
+            .append_many(INBOX, vec![reply("d", None, Some("dup@t"), &[])], Flags::default())
+            .await
+            .unwrap();
+        assert_eq!(thread_of(&mb, d[0].id).await, ta, "{n}: batch");
+    })
+    .await;
+}
+
+// ====================================================================== PG4 review: fence lease, UIDVALIDITY
+
+async fn job_with_lease(b: &Backend, epoch: i64, lease_expires_at: i64) -> i64 {
+    exec(
+        b,
+        "INSERT INTO jobs (kind, payload, state, attempts, run_after, lease_owner, \
+         lease_expires_at, epoch, created_at, updated_at) \
+         VALUES ('deliver', '{}', 'running', 1, 0, 'w1', ?1, ?2, 0, 0) RETURNING id",
+        &[Bind::I(lease_expires_at), Bind::I(epoch)],
+    )
+    .await
+}
+
+/// Review I2: a fence whose lease has expired (database clock) cannot commit, although the epoch
+/// still matches and nobody reclaimed the job yet.
+#[tokio::test]
+async fn an_expired_lease_fails_the_fence_and_rolls_everything_back() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let (_, _, mb) = acct(&b, "lease").await;
+        let job = job_with_lease(&b, 3, 1).await; // expired in 1970
+        let fence = JobFence { id: rusty_core::JobId(job), epoch: 3 };
+        let r = mb
+            .deliver_fenced(INBOX, raw("x", None), Flags::default(), did(5), fence)
+            .await;
+        assert!(is_conflict(r), "{n}: deliver_fenced");
+        let r = mb.deliver_many_fenced(INBOX, vec![item("y", 6)], fence).await;
+        assert!(is_conflict(r), "{n}: deliver_many_fenced");
+        assert_eq!(change_count(&mb).await, 0, "{n}");
+        assert_eq!(scalar(&b, "SELECT count(*) FROM deliveries").await, 0, "{n}");
+        assert_eq!(job_state(&b, job).await, "running", "{n}");
+        // The same fence with a live lease commits.
+        let live = job_with_lease(&b, 3, 4102444800).await;
+        let ok = mb
+            .deliver_fenced(
+                INBOX,
+                raw("x", None),
+                Flags::default(),
+                did(5),
+                JobFence { id: rusty_core::JobId(live), epoch: 3 },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(ok, DeliverOutcome::Created(_)), "{n}");
+        assert_eq!(job_state(&b, live).await, "done", "{n}");
+    })
+    .await;
+}
+
+async fn set_high_water(b: &Backend, mb: &Mailbox, v: i64) {
+    exec(
+        b,
+        "UPDATE mailboxes SET uid_validity = ?1 WHERE id = ?2 RETURNING id",
+        &[Bind::I(v), Bind::I(mb.id().0)],
+    )
+    .await;
+}
+
+async fn high_water(b: &Backend, mb: &Mailbox) -> i64 {
+    scalar(b, &format!("SELECT uid_validity FROM mailboxes WHERE id = {}", mb.id().0)).await
+}
+
+async fn folder_uidv(b: &Backend, mb: &Mailbox, f: FolderId) -> i64 {
+    scalar(
+        b,
+        &format!(
+            "SELECT uid_validity FROM folders WHERE mailbox_id = {} AND id = {}",
+            mb.id().0,
+            f.0
+        ),
+    )
+    .await
+}
+
+/// Review I2: the last representable UIDVALIDITY is issued; the next folder is `Quota` and
+/// leaves no trace.
+#[tokio::test]
+async fn uid_validity_over_u32_max_is_quota() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let (_, _, mb) = acct(&b, "uvq").await;
+        let max = i64::from(u32::MAX);
+        set_high_water(&b, &mb, max - 1).await;
+        let f = mb.create_folder(None, "last").await.unwrap();
+        assert_eq!(folder_uidv(&b, &mb, f).await, max, "{n}");
+        assert_eq!(high_water(&b, &mb).await, max, "{n}");
+        let folders = scalar(&b, "SELECT count(*) FROM folders").await;
+        let changes = change_count(&mb).await;
+        let r = mb.create_folder(None, "one-too-many").await;
+        assert!(matches!(r, Err(Error::Quota(_))), "{n}: {r:?}");
+        assert_eq!(scalar(&b, "SELECT count(*) FROM folders").await, folders, "{n}");
+        assert_eq!(high_water(&b, &mb).await, max, "{n}: high-water mark unchanged");
+        assert_eq!(change_count(&mb).await, changes, "{n}");
+    })
+    .await;
+}
+
+/// Review I2: the folder UIDVALIDITY never goes backwards, across delete and re-create and when
+/// the clock is behind the high-water mark.
+#[tokio::test]
+async fn uid_validity_high_water_survives_delete_and_recreate() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let (_, _, mb) = acct(&b, "uvh").await;
+        let far = 4_000_000_000i64; // ahead of any clock, below u32::MAX
+        set_high_water(&b, &mb, far).await;
+        let f1 = mb.create_folder(None, "Projects").await.unwrap();
+        let v1 = folder_uidv(&b, &mb, f1).await;
+        assert_eq!(v1, far + 1, "{n}");
+        mb.delete_folder(f1).await.unwrap();
+        assert_eq!(high_water(&b, &mb).await, v1, "{n}: delete keeps the mark");
+        let f2 = mb.create_folder(None, "Projects").await.unwrap();
+        let v2 = folder_uidv(&b, &mb, f2).await;
+        assert_ne!(f1, f2, "{n}: folder ids are never reused");
+        assert!(v2 > v1, "{n}: {v2} must be > {v1}");
+        assert_eq!(high_water(&b, &mb).await, v2, "{n}");
+    })
+    .await;
+}
