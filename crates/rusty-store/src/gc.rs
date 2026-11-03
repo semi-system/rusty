@@ -83,7 +83,8 @@ pub async fn purge_deliveries(store: &SqliteStore, older_than: i64) -> Result<u6
     loop {
         let mut tx = store.begin_write().await?;
         let n = sqlx::query(
-            "DELETE FROM deliveries WHERE rowid IN (               SELECT rowid FROM deliveries WHERE created_at < ? LIMIT ?)",
+            "DELETE FROM deliveries WHERE rowid IN (\
+               SELECT rowid FROM deliveries WHERE created_at < ? LIMIT ?)",
         )
         .bind(older_than)
         .bind(PURGE_BATCH)

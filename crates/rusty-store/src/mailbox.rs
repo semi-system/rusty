@@ -728,7 +728,8 @@ impl Mailbox {
             // Inside BEGIN IMMEDIATE no other writer can insert between this lookup and
             // our insert below; the primary key is the backstop.
             let hit: Option<(i64, String)> = sqlx::query_as(
-                "SELECT message_id, blob_hash FROM deliveries                  WHERE mailbox_id = ? AND delivery_id = ?",
+                "SELECT message_id, blob_hash FROM deliveries \
+                 WHERE mailbox_id = ? AND delivery_id = ?",
             )
             .bind(self.id.0)
             .bind(&did.0[..])
@@ -765,7 +766,9 @@ impl Mailbox {
         let id = take_msg_id(&mut tx, self.id).await?;
         let thread_id = find_thread(&mut tx, self.id, &env).await?.unwrap_or(id);
         sqlx::query(
-            "INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, size, internal_date,              subject, from_addr, to_addrs, message_id_hdr, thread_id, flags)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, size, internal_date, \
+             subject, from_addr, to_addrs, message_id_hdr, thread_id, flags) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(self.id.0)
         .bind(id)
@@ -785,7 +788,8 @@ impl Mailbox {
         .map_err(map_db_error)?;
         if let Some((did, at)) = delivery {
             sqlx::query(
-                "INSERT INTO deliveries (mailbox_id, delivery_id, message_id, blob_hash, created_at)                  VALUES (?, ?, ?, ?, COALESCE(?, CAST(strftime('%s', 'now') AS INTEGER)))",
+                "INSERT INTO deliveries (mailbox_id, delivery_id, message_id, blob_hash, created_at) \
+                 VALUES (?, ?, ?, ?, COALESCE(?, CAST(strftime('%s', 'now') AS INTEGER)))",
             )
             .bind(self.id.0)
             .bind(&did.0[..])
