@@ -5,6 +5,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 MUSL=x86_64-unknown-linux-musl
+TARGET_DIR="${CARGO_TARGET_DIR:-target}"
 FUZZ_SECS="${FUZZ_SECS:-60}"
 export CC_x86_64_unknown_linux_musl="${CC_x86_64_unknown_linux_musl:-musl-gcc}"
 
@@ -38,7 +39,7 @@ stage "build (musl release)" cargo build --release --workspace --target "$MUSL"
 check_static() {
   local found=0 f
   shopt -s nullglob
-  for f in target/"$MUSL"/release/*; do
+  for f in "$TARGET_DIR/$MUSL"/release/*; do
     [ -f "$f" ] && [ -x "$f" ] || continue
     case "$f" in *.d|*.rlib|*.so|*.a) continue ;; esac
     file -L "$f" | grep -q "ELF" || continue
