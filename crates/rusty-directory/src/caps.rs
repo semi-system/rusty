@@ -115,6 +115,15 @@ pub struct CapabilityInfo {
     pub expires_at: i64,
 }
 
+/// A caller-supplied clock value (the `*_at` test twins) must be a plausible unix time.
+fn check_clock(now: i64) -> Result<()> {
+    if (0..=rusty_store::MAX_SUPPLIED_TIME).contains(&now) {
+        Ok(())
+    } else {
+        Err(Error::Invalid("timestamp out of range".into()))
+    }
+}
+
 /// Overwrite a string's bytes with zeros (safe code: take, convert to bytes, fill, drop).
 fn wipe_string(s: &mut String) {
     let mut bytes = std::mem::take(s).into_bytes();
@@ -208,6 +217,7 @@ impl Directory {
         ttl_secs: u32,
         now: i64,
     ) -> Result<Capability> {
+        check_clock(now)?;
         self.issue_inner(account, role, ttl_secs, Some(now)).await
     }
 
@@ -259,6 +269,7 @@ impl Directory {
         role: CapabilityRole,
         now: i64,
     ) -> Result<Option<CapabilityInfo>> {
+        check_clock(now)?;
         self.validate_inner(token, role, Some(now)).await
     }
 
@@ -294,6 +305,7 @@ impl Directory {
 
     #[doc(hidden)]
     pub async fn revoke_capability_at(&self, token: &str, now: i64) -> Result<bool> {
+        check_clock(now)?;
         self.revoke_one(token, Some(now)).await
     }
 
@@ -312,6 +324,7 @@ impl Directory {
 
     #[doc(hidden)]
     pub async fn revoke_all_capabilities_at(&self, account: AccountId, now: i64) -> Result<u64> {
+        check_clock(now)?;
         self.repo().revoke_all_capabilities(account, Some(now)).await
     }
 }

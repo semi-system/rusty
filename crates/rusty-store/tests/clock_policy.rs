@@ -260,3 +260,44 @@ async fn job_lease_and_schedule_use_the_database_clock() {
         .unwrap();
     within(lease, lo + 120, hi + 120 + 2, "jobs.lease_expires_at after heartbeat");
 }
+
+// ---------------------------------------------------------------- supplied timestamps are bounded
+
+/// The `_at(now)` twins store caller data verbatim, so they must reject absurd values instead of
+/// writing them (negative, or beyond `MAX_SUPPLIED_TIME`, the year 2100).
+#[tokio::test]
+async fn supplied_timestamps_are_bounded() {
+    use rusty_store::{DeliverItem, MAX_SUPPLIED_TIME};
+    let e = env().await;
+    for (i, bad) in [-1i64, i64::MIN, MAX_SUPPLIED_TIME + 1, i64::MAX].into_iter().enumerate() {
+        let did = DeliveryId([i as u8 + 40; 32]);
+        let r = e
+            .mb
+            .deliver_at(common::INBOX, raw("x", Some("x@x")), Flags::empty(), did, bad)
+            .await;
+        assert!(matches!(r, Err(rusty_core::Error::Invalid(_))), "deliver_at({bad}): {r:?}");
+        let item = DeliverItem {
+            raw: raw("y", Some("y@x")),
+            flags: Flags::empty(),
+            delivery_id: DeliveryId([i as u8 + 60; 32]),
+        };
+        let r = e.mb.deliver_many_at(common::INBOX, vec![item], bad).await;
+        assert!(matches!(r, Err(rusty_core::Error::Invalid(_))), "deliver_many_at({bad}): {r:?}");
+        let r = e.mb.expunge_many_at(&[rusty_core::MessageId(1)], bad).await;
+        assert!(matches!(r, Err(rusty_core::Error::Invalid(_))), "expunge_many_at({bad}): {r:?}");
+    }
+    // Nothing was written by the rejected calls, and the bounds themselves are accepted.
+    assert_eq!(e.scalar("SELECT COUNT(*) FROM messages").await, 0);
+    for (i, ok) in [0i64, MAX_SUPPLIED_TIME].into_iter().enumerate() {
+        e.mb
+            .deliver_at(
+                common::INBOX,
+                raw("z", Some("z@x")),
+                Flags::empty(),
+                DeliveryId([i as u8 + 80; 32]),
+                ok,
+            )
+            .await
+            .unwrap();
+    }
+}

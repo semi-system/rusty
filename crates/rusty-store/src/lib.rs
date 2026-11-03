@@ -31,6 +31,7 @@ pub use mailbox::{
     ChangePage, DeliverItem, DeliverOutcome, Mailbox, MailboxLimits, MessageRef, MessageSummary,
     MoveBatch, DEFAULT_MAX_MESSAGE_BYTES, MAX_BATCH, MAX_DELIVER_BATCH_BYTES, MAX_FOLDER_DEPTH,
     MAX_FOLDER_NAME_BYTES, MAX_KEYWORDS_PER_MESSAGE, MAX_KEYWORD_BYTES, MAX_PAGE,
+    MAX_SUPPLIED_TIME,
 };
 #[cfg(feature = "postgres")]
 pub use pg::{PgPoolConfig, PgStore};

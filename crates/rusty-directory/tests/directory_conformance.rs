@@ -826,3 +826,21 @@ async fn concurrent_adders_at_the_list_cap_boundary_admit_exactly_one() {
     })
     .await;
 }
+
+/// The `*_capability_at` twins take a caller-supplied clock; absurd values are `Invalid`.
+#[tokio::test]
+async fn capability_at_twins_reject_absurd_clock_values() {
+    for_each_backend(|b| async move {
+        let (_, acc) = domain_account(&b, "bound").await;
+        let tok = b.dir.issue_capability_at(acc, CapabilityRole::Imap, 60, 1_000).await.unwrap();
+        for bad in [-1i64, i64::MIN, 4_102_444_801, i64::MAX] {
+            kind!(b.dir.issue_capability_at(acc, CapabilityRole::Imap, 60, bad).await, Error::Invalid(_));
+            kind!(b.dir.validate_capability_at(tok.expose_secret(), CapabilityRole::Imap, bad).await, Error::Invalid(_));
+            kind!(b.dir.revoke_capability_at(tok.expose_secret(), bad).await, Error::Invalid(_));
+            kind!(b.dir.revoke_all_capabilities_at(acc, bad).await, Error::Invalid(_));
+        }
+        // Still valid: nothing above revoked it.
+        assert!(b.dir.validate_capability_at(tok.expose_secret(), CapabilityRole::Imap, 1_001).await.unwrap().is_some());
+    })
+    .await;
+}

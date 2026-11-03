@@ -46,6 +46,18 @@ pub const DEFAULT_MAX_MESSAGE_BYTES: usize = 50 * 1024 * 1024;
 pub const MAX_KEYWORDS_PER_MESSAGE: usize = 32;
 pub const MAX_KEYWORD_BYTES: usize = 255;
 pub const MAX_FOLDER_NAME_BYTES: usize = 255;
+/// Upper bound (unix seconds, 2100-01-01T00:00:00Z) for a caller-supplied timestamp: the `_at`
+/// twins and, later, a client IMAP APPEND date. Stored verbatim (clock policy D2), so absurd
+/// values are rejected with `Error::Invalid` rather than written. The lower bound is 0.
+pub const MAX_SUPPLIED_TIME: i64 = 4_102_444_800;
+
+fn check_supplied_time(t: i64) -> Result<()> {
+    if (0..=MAX_SUPPLIED_TIME).contains(&t) {
+        Ok(())
+    } else {
+        Err(Error::Invalid("timestamp out of range".into()))
+    }
+}
 /// Maximum number of levels in the folder tree (a root folder is level 1).
 pub const MAX_FOLDER_DEPTH: usize = 64;
 /// Bound on parent lookups per appended message (hostile `References` headers).
@@ -860,7 +872,9 @@ impl Mailbox {
             .await
     }
 
-    /// [`Mailbox::deliver`] with an explicit `created_at` (unix seconds), for tests.
+    /// [`Mailbox::deliver`] with an explicit `created_at` / `internal_date` (unix seconds, stored
+    /// verbatim), for tests. `now` must lie in `0..=MAX_SUPPLIED_TIME`, else `Error::Invalid`.
+    #[doc(hidden)]
     pub async fn deliver_at(
         &self,
         folder: FolderId,
@@ -869,6 +883,7 @@ impl Mailbox {
         delivery_id: DeliveryId,
         now: i64,
     ) -> Result<DeliverOutcome> {
+        check_supplied_time(now)?;
         self.store_message(folder, raw, flags, Some((delivery_id, Some(now))))
             .await
     }
@@ -1162,6 +1177,7 @@ impl Mailbox {
     /// [`Mailbox::expunge_many`] with an explicit `deleted_at` (unix seconds), for tests.
     #[doc(hidden)]
     pub async fn expunge_many_at(&self, ids: &[MessageId], now: i64) -> Result<BatchOutcome> {
+        check_supplied_time(now)?;
         self.expunge_many_inner(ids, Some(now)).await
     }
 
@@ -1313,6 +1329,7 @@ impl Mailbox {
         items: Vec<DeliverItem>,
         now: i64,
     ) -> Result<Vec<DeliverOutcome>> {
+        check_supplied_time(now)?;
         self.deliver_many_inner(folder, items, Some(now)).await
     }
 
