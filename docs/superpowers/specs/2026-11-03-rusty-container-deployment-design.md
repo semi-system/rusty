@@ -35,6 +35,8 @@ Ngoài phạm vi: điều phối đa node, HA của Postgres, chọn nhà cung c
 Mạng Docker (`edge` ở đây là tên mạng, khác với container `edge`): `edge` (ra ngoài), `app` (nội bộ, dịch vụ với `store`), `data` (nội bộ, chỉ `store`, `dbadmin`, `backup`, `postgres`, `valkey`). Postgres và Valkey **không** gắn vào `app` hay `edge`.
 
 ## 3b. Cổng vào (`edge`): Traefik
+
+> **ĐÃ THAY THẾ MỘT PHẦN (người dùng, 2026-11-03):** biên nay là **HAProxy (tầng 4, không giải mã thư) + lớp TLS riêng `tlsd` (Rust)**. Thiết kế mới: `2026-11-03-rusty-edge-tls-layer-design.md`. Trong mục 3b dưới đây, mọi chỗ nói về **Traefik, file provider, `certificatesResolvers`, ACME của Traefik, kết thúc TLS ngầm ở biên cho 465/993/995, và việc dịch vụ tự làm STARTTLS** đều **không còn hiệu lực** và sẽ được viết lại khi lập kế hoạch triển khai. Còn hiệu lực (không phụ thuộc sản phẩm): chỉ biên công bố cổng; cứng hóa container; PROXY v2; chính sách TLS tối thiểu; chứng chỉ do `certd` cấp theo tên máy tường minh; phân vai chống lạm dụng 3b.3b; kiểm thử theo hành vi. HTTPS (443) chưa quyết, xem mục 8 của spec biên mới.
 Quyết định của người dùng: dựng một container nginx hoặc Traefik ở phía trước làm điểm mở cổng ra ngoài. **Chọn Traefik**, với lý do dưới đây; nginx là phương án thay thế nếu sau này cần kết thúc STARTTLS ở biên.
 
 ### 3b.1 Vì sao Traefik và vì sao không cần hiểu giao thức thư ở biên

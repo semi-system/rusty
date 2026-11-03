@@ -95,7 +95,8 @@ Ký hiệu: **Spec** = đã có spec (chờ duyệt) hay chưa; **Phụ thuộc*
 |---|---|---|---|---|---|
 | P-01 | Hoàn tất chuẩn bị phân tán | P3, P4 (capability), P6 (truy vấn/lô), P5 (tài liệu) | nền tảng | M | Plan có |
 | P-02 | Dịch vụ `store` + giao thức nội bộ | API theo vai trò, capability, truyền luồng, phân trang, UDS + mTLS, `rusty-storeapi`, `RemoteMailbox` | P-01 | L | Có (process-model §7b) |
-| P-03 | Khung container + cổng vào | Compose, Traefik, checker cứng hóa, backend giả | P-02 (tùy) | M | Plan có (E1-E3) |
+| P-03 | Khung container + cổng vào | Compose, **HAProxy (tầng 4)**, checker cứng hóa, backend giả; kế hoạch E1-E3 phải viết lại cho HAProxy | P-02 (tùy) | M | Spec biên mới có; plan cần viết lại |
+| P-03b | **`tlsd`: lớp TLS (TLS ngầm + STARTTLS) bằng Rust** | máy trạng thái STARTTLS cho IMAP/POP3/SMTP, mTLS + PROXY v2/TLV SSL tới dịch vụ, chính sách TLS duy nhất, nạp chứng chỉ từ `certd`, fuzz và test tấn công | P-03, P-15 (chứng chỉ thật) | L | Spec có (edge-tls-layer) |
 | P-04 | IMAP server | IMAP4rev2, TLS, SASL, IDLE, UIDPLUS, CONDSTORE/QRESYNC, NAMESPACE, ACL ánh xạ sau | P-02 | XL | **Chưa** |
 | P-05 | Nhận thư (LMTP + SMTP vào cơ bản) | nhận từ MTA ngoài, giao qua `deliver`, kiểm tra người nhận, giới hạn | P-02 | L | **Chưa** |
 | P-06 | Gửi thư cơ bản (submission) | SMTP submission, xác thực, hàng đợi đơn giản, relay ra ngoài | P-02, P-05 | L | **Chưa** |

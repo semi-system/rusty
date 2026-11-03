@@ -1,5 +1,7 @@
 # Edge (Traefik) Skeleton Implementation Plan
 
+> **SUPERSEDED IN PART (user decision 2026-11-03):** the edge is now **HAProxy (L4, no decryption of mail) + a dedicated TLS layer `tlsd` (Rust)**, see `docs/superpowers/specs/2026-11-03-rusty-edge-tls-layer-design.md`. This plan MUST be rewritten before execution: replace every Traefik-specific item with HAProxy configuration, add the `tlsd` service (separate plan) and keep the PRODUCT-AGNOSTIC parts (compose hardening checker, only-edge-publishes-ports rule, fake backends, behaviour tests, Pebble-based certificate tests). Do not execute E1-E3 as written.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the hardened public entry container (Traefik) with static file configuration, plus a Compose skeleton with fake backends and an automated check that proves the hardening rules, so real services can be dropped in later.
