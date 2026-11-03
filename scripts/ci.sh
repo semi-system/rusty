@@ -57,18 +57,10 @@ rustup target list --installed | grep -qx "$MUSL" || { echo "[FAIL] missing rust
 # (skipped when the hook is set: ci-trap.sh runs ci.sh itself)
 [ -n "${RUSTY_CI_FORCE_FAIL:-}" ] || stage "ci scripts" bash scripts/tests/ci-trap.sh
 
-# Database access belongs to rusty-store: no crate outside it may use a raw pool or open a
-# transaction (the directory sits on DirectoryRepo). Tests are exempt until PG6.
-no_raw_pool_outside_store() {
-  local hits
-  hits="$(grep -rnE '\.pool\(\)|begin_write|SqliteTx' crates/*/src --include='*.rs' | grep -v '^crates/rusty-store/' || true)"
-  if [ -n "$hits" ]; then
-    echo "raw pool / transaction use outside rusty-store:" >&2
-    echo "$hits" >&2
-    return 1
-  fi
-}
-stage "no raw pool outside store" no_raw_pool_outside_store
+# Database access belongs to rusty-store (scripts/check-raw-db.sh documents what the text scan
+# covers and what it cannot see). The gate has its own self-test.
+stage "raw-db gate self-test" bash scripts/tests/raw-db-gate.sh
+stage "no raw pool outside store" bash scripts/check-raw-db.sh
 stage "clippy"       cargo clippy --workspace --all-targets -- -D warnings
 stage "test (glibc)" cargo test --workspace
 
