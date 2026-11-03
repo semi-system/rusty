@@ -131,6 +131,13 @@ fn nofollow_cloexec_flags() -> i32 {
 /// anything else `Invalid`. Everything else is `Storage`.
 pub fn map_db_error(e: sqlx::Error) -> Error {
     if let sqlx::Error::Database(db) = &e {
+        // Postgres trigger codes are chosen by Rusty and classified only by SQLSTATE. Never
+        // inspect Postgres message text: caller data may contain strings resembling a code.
+        match db.code().as_deref() {
+            Some("RS001") => return Error::Conflict("database conflict".into()),
+            Some("RS002") => return Error::Invalid("invalid value".into()),
+            _ => {}
+        }
         use sqlx::error::ErrorKind;
         match db.kind() {
             ErrorKind::UniqueViolation => return Error::Conflict("already exists".into()),

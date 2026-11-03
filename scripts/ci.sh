@@ -56,6 +56,11 @@ postgres_tests() {
   done
   if [ "$rc" -eq 0 ]; then
     RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
+      cargo test -p rusty-store --features postgres \
+        --test pg_schema_constraints --test pg_schema_parity || rc=$?
+  fi
+  if [ "$rc" -eq 0 ]; then
+    RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
       cargo clippy -p rusty-store --features postgres --all-targets -- -D warnings || rc=$?
   fi
   bash scripts/pg-down.sh

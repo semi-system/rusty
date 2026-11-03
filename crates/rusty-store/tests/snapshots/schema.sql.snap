@@ -31,6 +31,9 @@ CREATE INDEX jobs_domain_state ON jobs (domain_id, state);
 -- index jobs_state_run_after on jobs
 CREATE INDEX jobs_state_run_after ON jobs (state, run_after);
 
+-- index list_members_seq on list_members
+CREATE UNIQUE INDEX list_members_seq ON list_members (list_id, seq);
+
 -- index messages_deleted_at on messages
 CREATE INDEX messages_deleted_at ON messages (deleted_at) WHERE deleted_at IS NOT NULL;
 
@@ -71,7 +74,7 @@ CREATE TABLE jobs ( id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK (length(kin
 CREATE TABLE keywords ( mailbox_id INTEGER NOT NULL, message_id INTEGER NOT NULL, keyword TEXT NOT NULL CHECK (length(keyword) BETWEEN 1 AND 255 AND keyword = lower(keyword)), PRIMARY KEY (mailbox_id, message_id, keyword), FOREIGN KEY (mailbox_id, message_id) REFERENCES messages(mailbox_id, id) ON DELETE CASCADE ) STRICT;
 
 -- table list_members on list_members
-CREATE TABLE list_members ( list_id INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE, account_id INTEGER REFERENCES accounts(id) ON DELETE CASCADE, external TEXT, CHECK ((account_id IS NULL) <> (external IS NULL)), UNIQUE (list_id, account_id), UNIQUE (list_id, external) ) STRICT;
+CREATE TABLE list_members ( list_id INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE, account_id INTEGER REFERENCES accounts(id) ON DELETE CASCADE, external TEXT, seq INTEGER, CHECK ((account_id IS NULL) <> (external IS NULL)), UNIQUE (list_id, account_id), UNIQUE (list_id, external) ) STRICT;
 
 -- table lists on lists
 CREATE TABLE lists ( id INTEGER PRIMARY KEY, local_part TEXT NOT NULL CHECK (length(local_part) > 0 AND local_part = lower(local_part)), domain_id INTEGER NOT NULL REFERENCES domains(id) ON DELETE RESTRICT, UNIQUE (local_part, domain_id) ) STRICT;
@@ -108,6 +111,12 @@ CREATE TRIGGER blobs_zero_since_released AFTER UPDATE OF refcount ON blobs WHEN 
 
 -- trigger folders_no_cycle on folders
 CREATE TRIGGER folders_no_cycle BEFORE UPDATE OF parent_id ON folders WHEN NEW.parent_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'folder cycle') WHERE EXISTS ( WITH RECURSIVE chain(id, depth) AS ( SELECT NEW.parent_id, 1 UNION ALL SELECT f.parent_id, c.depth + 1 FROM folders f JOIN chain c ON f.mailbox_id = NEW.mailbox_id AND f.id = c.id WHERE f.parent_id IS NOT NULL AND c.depth < 65 ) SELECT 1 FROM chain WHERE id = NEW.id ); SELECT RAISE(ABORT, 'folder tree too deep') WHERE EXISTS ( WITH RECURSIVE chain(id, depth) AS ( SELECT NEW.parent_id, 1 UNION ALL SELECT f.parent_id, c.depth + 1 FROM folders f JOIN chain c ON f.mailbox_id = NEW.mailbox_id AND f.id = c.id WHERE f.parent_id IS NOT NULL AND c.depth < 65 ) SELECT 1 FROM chain WHERE depth >= 64 ); END;
+
+-- trigger list_members_seq_ins on list_members
+CREATE TRIGGER list_members_seq_ins AFTER INSERT ON list_members WHEN NEW.seq IS NULL BEGIN UPDATE list_members SET seq = ( SELECT COALESCE(MAX(seq), 0) + 1 FROM list_members WHERE list_id = NEW.list_id AND rowid <> NEW.rowid ) WHERE rowid = NEW.rowid; END;
+
+-- trigger list_members_seq_upd on list_members
+CREATE TRIGGER list_members_seq_upd BEFORE UPDATE OF seq ON list_members WHEN NEW.seq IS NULL BEGIN SELECT RAISE(ABORT, 'list member seq must not be null'); END;
 
 -- trigger lists_addr_unique_ins on lists
 CREATE TRIGGER lists_addr_unique_ins BEFORE INSERT ON lists BEGIN SELECT RAISE(ABORT, 'conflict: address already used by an account or alias') WHERE EXISTS (SELECT 1 FROM accounts WHERE local_part = NEW.local_part AND domain_id = NEW.domain_id) OR EXISTS (SELECT 1 FROM aliases WHERE local_part = NEW.local_part AND domain_id = NEW.domain_id); END;

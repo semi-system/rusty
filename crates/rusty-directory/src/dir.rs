@@ -313,10 +313,14 @@ impl Directory {
         if usize::try_from(members).map_or(true, |m| m >= MAX_LIST_MEMBERS) {
             return Err(Error::Quota("list has too many members".into()));
         }
-        sqlx::query("INSERT INTO list_members (list_id, account_id, external) VALUES (?, ?, ?)")
+        sqlx::query(
+            "INSERT INTO list_members (list_id, account_id, external, seq) \
+             SELECT ?, ?, ?, COALESCE(MAX(seq), 0) + 1 FROM list_members WHERE list_id = ?",
+        )
             .bind(list.0)
             .bind(account.map(|a| a.0))
             .bind(external)
+            .bind(list.0)
             .execute(&mut *tx)
             .await
             .map_err(map_db_error)?;
@@ -329,9 +333,8 @@ impl Directory {
     /// A list expands to at most [`MAX_LIST_MEMBERS`] members; a larger one is
     /// `Error::Quota`, never a truncated list.
     ///
-    /// Portability: plain joins and `UNION ALL` with `ORDER BY ... LIMIT 1`; the member
-    /// order uses SQLite's `rowid` (insertion order), which Postgres would replace with a
-    /// sequence column.
+    /// Portability: plain joins and `UNION ALL` with `ORDER BY ... LIMIT 1`; distribution-list
+    /// members use the explicit insertion-order `seq` column on every backend.
     pub async fn resolve(&self, addr: &str) -> Result<Resolved> {
         let (local, domain) = parse_address(addr)?;
         let pool = self.store.pool();
@@ -358,7 +361,7 @@ impl Directory {
             return Ok(Resolved::Account(AccountId(id)));
         }
         let rows: Vec<(Option<i64>, Option<String>)> = sqlx::query_as(
-            "SELECT account_id, external FROM list_members WHERE list_id = ? ORDER BY rowid LIMIT ?",
+            "SELECT account_id, external FROM list_members WHERE list_id = ? ORDER BY seq LIMIT ?",
         )
         .bind(id)
         .bind(MAX_LIST_MEMBERS as i64 + 1)
