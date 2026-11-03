@@ -656,3 +656,104 @@ async fn concurrent_create_account_on_file_db() {
     assert_eq!(count(&d, "mailboxes").await, 32);
     assert_eq!(count(&d, "folders").await, 32 * 5);
 }
+
+/// Insert `n` external members straight into the table (bypassing the cap), as old data or
+/// another writer could have.
+async fn bulk_members(d: &Directory, list: rusty_core::ListId, n: usize) {
+    sqlx::query(
+        "WITH RECURSIVE s(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM s WHERE i < ?) \
+         INSERT INTO list_members (list_id, account_id, external) \
+         SELECT ?, NULL, 'user' || i || '@other.org' FROM s",
+    )
+    .bind(n as i64)
+    .bind(list.0)
+    .execute(d.store().pool())
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn list_expansion_cap_enforced_on_add_and_resolve() {
+    use rusty_directory::MAX_LIST_MEMBERS;
+    let d = dir().await;
+    let dom = d.create_domain("example.com").await.unwrap();
+    let list = d.create_list("big", dom).await.unwrap();
+    bulk_members(&d, list, MAX_LIST_MEMBERS - 1).await;
+    // One below the cap: the last slot can still be filled, and the list still resolves.
+    d.add_list_member(list, None, Some("last@other.org"))
+        .await
+        .unwrap();
+    let Resolved::List(m) = d.resolve("big@example.com").await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(m.len(), MAX_LIST_MEMBERS);
+    // At the cap: adding refuses and nothing is written.
+    assert!(matches!(
+        d.add_list_member(list, None, Some("one-more@other.org"))
+            .await,
+        Err(Error::Quota(_))
+    ));
+    assert_eq!(count(&d, "list_members").await as usize, MAX_LIST_MEMBERS);
+    // A list that already exceeds the cap (inserted behind our back) is Quota, never a
+    // truncated list.
+    sqlx::query(
+        "INSERT INTO list_members (list_id, account_id, external) VALUES (?, NULL, 'x@y.z')",
+    )
+    .bind(list.0)
+    .execute(d.store().pool())
+    .await
+    .unwrap();
+    assert!(matches!(
+        d.resolve("big@example.com").await,
+        Err(Error::Quota(_))
+    ));
+    // Other lists are unaffected.
+    let small = d.create_list("small", dom).await.unwrap();
+    d.add_list_member(small, None, Some("a@b.c")).await.unwrap();
+    assert!(d.resolve("small@example.com").await.is_ok());
+}
+
+#[tokio::test]
+async fn resolve_semantics_unchanged() {
+    let d = dir().await;
+    let one = d.create_domain("one.test").await.unwrap();
+    let two = d.create_domain("two.test").await.unwrap();
+    let a1 = d.create_account("pat", one, None, None).await.unwrap();
+    let a2 = d.create_account("pat", two, None, None).await.unwrap();
+    d.add_alias("al", one, a1).await.unwrap();
+    let list = d.create_list("team", one).await.unwrap();
+    d.add_list_member(list, Some(a2), None).await.unwrap();
+    d.add_list_member(list, None, Some("x@ext.test"))
+        .await
+        .unwrap();
+    // account, alias and list kinds
+    assert_eq!(d.resolve("pat@one.test").await.unwrap(), Resolved::Account(a1));
+    assert_eq!(d.resolve("pat@two.test").await.unwrap(), Resolved::Account(a2));
+    assert_eq!(d.resolve("AL@One.test").await.unwrap(), Resolved::Account(a1));
+    assert_eq!(
+        d.resolve("team@one.test").await.unwrap(),
+        Resolved::List(vec![
+            Resolved::Account(a2),
+            Resolved::External("x@ext.test".into())
+        ]),
+        "members in insertion order"
+    );
+    // Cross-domain isolation: a name that exists only in the other domain is not found.
+    for addr in [
+        "al@two.test",
+        "team@two.test",
+        "nobody@one.test",
+        "pat@three.test",
+    ] {
+        assert!(
+            matches!(d.resolve(addr).await, Err(Error::NotFound(_))),
+            "{addr}"
+        );
+    }
+    // An empty list resolves to an empty expansion.
+    d.create_list("empty", one).await.unwrap();
+    assert_eq!(
+        d.resolve("empty@one.test").await.unwrap(),
+        Resolved::List(vec![])
+    );
+}

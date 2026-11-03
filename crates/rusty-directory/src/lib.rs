@@ -15,4 +15,5 @@ pub use caps::{
 pub use config::AccountStatus;
 pub use dir::{
     allowed_local_char, display_domain, normalize_address, parse_address, Directory, Resolved,
+    MAX_LIST_MEMBERS,
 };

@@ -6,6 +6,9 @@ use rusty_store::{map_db_error, SqliteStore};
 use crate::auth::hash_password;
 use crate::config::ensure_object;
 
+/// Most members a mailing list may have, and the most one `resolve` expands.
+pub const MAX_LIST_MEMBERS: usize = 10_000;
+
 /// Result of resolving an address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolved {
@@ -278,7 +281,8 @@ impl Directory {
         Ok(ListId(id))
     }
 
-    /// Exactly one of `account` / `external` must be given.
+    /// Exactly one of `account` / `external` must be given. A list holds at most
+    /// [`MAX_LIST_MEMBERS`] members; adding beyond that is `Error::Quota`.
     pub async fn add_list_member(
         &self,
         list: ListId,
@@ -297,63 +301,73 @@ impl Directory {
                 ))
             }
         };
+        // The count and the insert share one write transaction, so concurrent adds cannot
+        // both take the last slot.
+        let mut tx = self.store.begin_write().await?;
+        let members: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM list_members WHERE list_id = ?")
+                .bind(list.0)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(map_db_error)?;
+        if usize::try_from(members).map_or(true, |m| m >= MAX_LIST_MEMBERS) {
+            return Err(Error::Quota("list has too many members".into()));
+        }
         sqlx::query("INSERT INTO list_members (list_id, account_id, external) VALUES (?, ?, ?)")
             .bind(list.0)
             .bind(account.map(|a| a.0))
             .bind(external)
-            .execute(self.store.pool())
+            .execute(&mut *tx)
             .await
             .map_err(map_db_error)?;
+        tx.commit().await.map_err(map_db_error)?;
         Ok(())
     }
 
+    /// Resolve an address to an account (account, then alias, then list). At most two
+    /// statements: the domain and the kind of the name in one, then the members of a list.
+    /// A list expands to at most [`MAX_LIST_MEMBERS`] members; a larger one is
+    /// `Error::Quota`, never a truncated list.
+    ///
+    /// Portability: plain joins and `UNION ALL` with `ORDER BY ... LIMIT 1`; the member
+    /// order uses SQLite's `rowid` (insertion order), which Postgres would replace with a
+    /// sequence column.
     pub async fn resolve(&self, addr: &str) -> Result<Resolved> {
         let (local, domain) = parse_address(addr)?;
         let pool = self.store.pool();
         let not_found = || Error::NotFound("address".into());
-        let dom: i64 = sqlx::query_scalar("SELECT id FROM domains WHERE name = ?")
-            .bind(&domain)
-            .fetch_optional(pool)
-            .await
-            .map_err(map_db_error)?
-            .ok_or_else(not_found)?;
-        if let Some(id) = sqlx::query_scalar::<_, i64>(
-            "SELECT id FROM accounts WHERE local_part = ? AND domain_id = ?",
+        let (kind, id): (i64, i64) = sqlx::query_as(
+            "SELECT kind, id FROM ( \
+               SELECT 1 AS kind, a.id AS id FROM domains d JOIN accounts a \
+                 ON a.domain_id = d.id WHERE d.name = ?1 AND a.local_part = ?2 \
+               UNION ALL \
+               SELECT 2, al.account_id FROM domains d JOIN aliases al \
+                 ON al.domain_id = d.id WHERE d.name = ?1 AND al.local_part = ?2 \
+               UNION ALL \
+               SELECT 3, l.id FROM domains d JOIN lists l \
+                 ON l.domain_id = d.id WHERE d.name = ?1 AND l.local_part = ?2 \
+             ) ORDER BY kind LIMIT 1",
         )
+        .bind(&domain)
         .bind(&local)
-        .bind(dom)
         .fetch_optional(pool)
         .await
         .map_err(map_db_error)?
-        {
+        .ok_or_else(not_found)?;
+        if kind != 3 {
             return Ok(Resolved::Account(AccountId(id)));
         }
-        if let Some(id) = sqlx::query_scalar::<_, i64>(
-            "SELECT account_id FROM aliases WHERE local_part = ? AND domain_id = ?",
-        )
-        .bind(&local)
-        .bind(dom)
-        .fetch_optional(pool)
-        .await
-        .map_err(map_db_error)?
-        {
-            return Ok(Resolved::Account(AccountId(id)));
-        }
-        let list: i64 =
-            sqlx::query_scalar("SELECT id FROM lists WHERE local_part = ? AND domain_id = ?")
-                .bind(&local)
-                .bind(dom)
-                .fetch_optional(pool)
-                .await
-                .map_err(map_db_error)?
-                .ok_or_else(not_found)?;
         let rows: Vec<(Option<i64>, Option<String>)> = sqlx::query_as(
-            "SELECT account_id, external FROM list_members WHERE list_id = ? ORDER BY rowid",
+            "SELECT account_id, external FROM list_members WHERE list_id = ? ORDER BY rowid LIMIT ?",
         )
-        .bind(list)
+        .bind(id)
+        .bind(MAX_LIST_MEMBERS as i64 + 1)
         .fetch_all(pool)
         .await
         .map_err(map_db_error)?;
+        if rows.len() > MAX_LIST_MEMBERS {
+            return Err(Error::Quota("list has too many members".into()));
+        }
         Ok(Resolved::List(
             rows.into_iter()
                 .filter_map(|(a, e)| match (a, e) {
