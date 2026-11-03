@@ -51,7 +51,7 @@ Tải thực tế hiện tại nhỏ (~700-800 thư đi và đến mỗi ngày c
 | Xác minh domain bằng DNS TXT | Đồng ý | Điều kiện để domain hoạt động |
 | Tên máy mỗi tenant | Giữ trần mặc định 20 | "Tên máy" là tên DNS máy khách dùng để kết nối (xem tenant-tls) |
 | Chứng chỉ sắp hết hạn | **Hiển thị trên dashboard của admin tenant và super admin; nút bật/tắt failover ACME** | Thêm vào P-17 và tenant-tls §6/§7 |
-| KMS | **Dựng sẵn như một microservice** | Dự án mới P-60 (KMS); cần quyết định "tự viết hay triển khai OpenBao" (đã hỏi) |
+| KMS | **OpenBao + một wrapper Rust chuẩn hóa kiến trúc** (quyết định 2026-11-03) | Dự án P-60, spec `2026-11-03-rusty-kms-design.md`; OpenBao MPL-2.0 (đã kiểm), engine Transit; phải xong **trước** khi `certd`, SMTP relay và tên blob theo tenant dùng khóa thật |
 | Runtime container | **Docker** | Khuyến nghị Docker rootless; ghi nhận khác biệt khi test |
 | Liên hệ báo lỗ hổng | mornngstr1@gmail.com | Đã đưa vào SECURITY.md |
 | Cách review | Đồng ý đề xuất | Review mạnh cho bảo mật và đồng thời; nhẹ hơn cho phần còn lại |
