@@ -311,8 +311,8 @@ impl DirectoryRepo for PgRepo {
                 return Err(TxError::Domain(Error::NotFound("account".into())));
             }
             // Keep at most `max_active`: revoke the oldest beyond that. The new row is never a
-            // candidate (ties on `issued_at` within one second are broken by hash; SQLite
-            // breaks them by insertion order).
+            // candidate. Ties on `issued_at` (second granularity) are broken by `token_hash`, the
+            // same order as on SQLite.
             sqlx::query(
                 "UPDATE capabilities SET revoked_at = GREATEST($1, issued_at) WHERE token_hash IN (\
                    SELECT token_hash FROM capabilities \

@@ -306,18 +306,22 @@ impl DirectoryRepo for SqliteRepo {
         if inserted == 0 {
             return Err(Error::NotFound("account".into()));
         }
-        // Keep at most `max_active`: revoke the oldest beyond that (the new row is the newest).
+        // Keep at most `max_active`: revoke the oldest beyond that. Ties on `issued_at` (second
+        // granularity) are broken by `token_hash`, exactly as on Postgres, and the new row is
+        // never a candidate.
         sqlx::query(
             "UPDATE capabilities SET revoked_at = MAX(?1, issued_at) WHERE rowid IN (\
                SELECT rowid FROM capabilities \
                WHERE account_id = ?2 AND revoked_at IS NULL AND expires_at > ?1 \
-               ORDER BY issued_at, rowid \
+                 AND token_hash <> ?4 \
+               ORDER BY issued_at, token_hash \
                LIMIT MAX(0, (SELECT count(*) FROM capabilities \
                              WHERE account_id = ?2 AND revoked_at IS NULL AND expires_at > ?1) - ?3))",
         )
         .bind(now)
         .bind(account.0)
         .bind(max_active)
+        .bind(&token_hash[..])
         .execute(&mut *tx)
         .await
         .map_err(map_db_error)?;

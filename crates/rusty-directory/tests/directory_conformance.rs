@@ -844,3 +844,51 @@ async fn capability_at_twins_reject_absurd_clock_values() {
     })
     .await;
 }
+
+/// Eviction at the cap is deterministic and identical on both backends: among the active rows the
+/// oldest `issued_at` goes first, ties (second granularity: a burst) are broken by `token_hash`
+/// ascending, and the token just issued is never the victim. All tokens below share one second,
+/// so the tie-break alone decides; several accounts make a chance pass negligible.
+#[tokio::test]
+async fn capability_eviction_tie_break_is_token_hash_order_on_both_backends() {
+    for_each_backend(|b| async move {
+        let dom = b.dir.create_domain("evict.test").await.unwrap();
+        for n in 0..6 {
+            let acc = b.dir.create_account(&format!("user{n}"), dom, None, None).await.unwrap();
+            for _ in 0..MAX_ACTIVE_CAPABILITIES_PER_ACCOUNT {
+                b.dir.issue_capability_at(acc, CapabilityRole::Imap, 600, 5_000).await.unwrap();
+            }
+            b.dir.issue_capability_at(acc, CapabilityRole::Imap, 600, 5_000).await.unwrap();
+            let active = b
+                .scalar(
+                    "SELECT COUNT(*) FROM capabilities WHERE account_id = ?1 AND revoked_at IS NULL",
+                    &[Bind::I(acc.0)],
+                )
+                .await;
+            assert_eq!(active, MAX_ACTIVE_CAPABILITIES_PER_ACCOUNT as i64, "account {n}");
+            // Exactly one victim, and it has the smallest hash among the originals: at most one
+            // active row (the new token) may sort below it.
+            let victims = b
+                .scalar(
+                    "SELECT COUNT(*) FROM capabilities WHERE account_id = ?1 AND revoked_at IS NOT NULL",
+                    &[Bind::I(acc.0)],
+                )
+                .await;
+            assert_eq!(victims, 1, "account {n}");
+            let smaller_active = b
+                .scalar(
+                    "SELECT COUNT(*) FROM capabilities a, capabilities v \
+                     WHERE a.account_id = ?1 AND v.account_id = ?1 \
+                       AND v.revoked_at IS NOT NULL AND a.revoked_at IS NULL \
+                       AND a.token_hash < v.token_hash",
+                    &[Bind::I(acc.0)],
+                )
+                .await;
+            assert!(
+                smaller_active <= 1,
+                "account {n}: the victim is not the smallest token_hash ({smaller_active} active rows sort below it)"
+            );
+        }
+    })
+    .await;
+}
