@@ -806,7 +806,7 @@ async fn deliver_equivalence(deleted: Vec<bool>, batches: Vec<Vec<DItem>>) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(20))]
+    #![proptest_config(ProptestConfig::with_cases(100))]
     #[test]
     fn deliver_many_matches_loop_of_deliver(
         deleted in proptest::collection::vec(proptest::bool::ANY, 0..4),
