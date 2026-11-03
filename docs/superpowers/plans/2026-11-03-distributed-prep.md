@@ -129,6 +129,36 @@
 - [ ] **Step 3: Implement** migration, `caps.rs`, the hooks and the purge.
 - [ ] **Step 4: Run focused tests, workspace tests, regenerate the snapshot; commit** `feat(directory): hashed revocable capabilities`.
 
+### Task P6: Query shape and batch operations (rusty-store, rusty-directory)
+
+Execution order: after P4 (needs P2's `deliver`), before P5.
+
+**Files:**
+- Modify: `crates/rusty-store/src/mailbox.rs`, `crates/rusty-directory/src/dir.rs`, `crates/rusty-directory/tests/acceptance.rs`
+- Test: `crates/rusty-store/tests/batch.rs`, `crates/rusty-store/tests/query_shape.rs`, `crates/rusty-directory/tests/directory.rs`
+
+**Interfaces:**
+- Consumes: `Mailbox::{set_flags, move_message, expunge, deliver}` (P2), the existing `find_thread`, `ancestor_depth`, `Directory::resolve`.
+- Produces:
+  - `pub const MAX_BATCH: usize = 1000;` `pub struct BatchOutcome { pub applied: u32, pub missing: Vec<MessageId> }` (`missing` capped at 1000 entries; ids that do not exist, are soft-deleted, or belong to another mailbox are all reported as missing and are never touched).
+  - `Mailbox::set_flags_many(&self, ids: &[MessageId], flags: Flags) -> Result<BatchOutcome>`
+  - `Mailbox::move_many(&self, ids: &[MessageId], to: FolderId) -> Result<MoveBatch>` with `MoveBatch { pub moved: Vec<(MessageId, MessageRef)>, pub missing: Vec<MessageId> }`
+  - `Mailbox::expunge_many(&self, ids: &[MessageId]) -> Result<BatchOutcome>`
+  - `Mailbox::deliver_many(&self, folder: FolderId, items: Vec<DeliverItem>) -> Result<Vec<DeliverOutcome>>` with `DeliverItem { pub raw: Bytes, pub flags: Flags, pub delivery_id: DeliveryId }`, at most `MAX_BATCH` items and at most 64 MiB of total raw bytes (more -> `Error::Invalid`/`Quota`); blobs are written before the transaction (idempotent), then ONE transaction does all metadata; outcome vector is in input order.
+  - A call with more than `MAX_BATCH` ids/items, or an empty slice, is `Error::Invalid` (callers chunk).
+  - Semantics: each batch call is ONE write transaction (one `BEGIN IMMEDIATE`, one commit/fsync); all-or-nothing on storage errors; counters (`next_change_seq`, destination `next_uid`, `next_msg_id`) advance by exactly the number applied, allocated with a single `UPDATE ... RETURNING` per counter, no gaps; one `change_log` row per applied message; duplicate ids in the input are applied once.
+  - `Directory::resolve` unchanged in behavior but at most 2 queries (domain+account/alias/list kind resolved in one statement, then members), and list expansion is capped: `pub const MAX_LIST_MEMBERS: usize = 10_000;` `add_list_member` refuses to exceed it (`Error::Quota`), and `resolve` returns `Error::Quota` (never a truncated list) if a list already exceeds it.
+
+- [ ] **Step 1: Write failing tests**
+  - Query shape (`query_shape.rs`): keep the OLD per-candidate `find_thread` and the OLD step-by-step `ancestor_depth` as test oracles and prove equivalence with proptest over random message/reference graphs and random folder trees (including max depth 64, depth 65 -> Invalid, move into descendant -> Conflict, many missing references, duplicate Message-IDs choosing the smallest id, soft-deleted anchors); `find_thread_uses_one_query` and `ancestor_depth_uses_one_query` (count statements with a test-only counter on the connection or `EXPLAIN`-free statement logger: assert 1 statement regardless of 32 candidates / depth 64); `resolve_uses_at_most_two_queries`.
+  - Batch (`batch.rs`): `set_flags_many_matches_loop_of_singles` (proptest oracle: same final rows and same change_log content as applying singles in order), `move_many_allocates_contiguous_uids_in_input_order`, `expunge_many_logs_one_destroy_per_message`, `missing_and_foreign_ids_are_reported_and_untouched` (ids from another mailbox, soft-deleted, nonexistent), `duplicate_ids_apply_once`, `empty_and_oversized_batches_are_invalid`, `batch_is_atomic_on_failure` (test-only trigger aborts on the 500th message: nothing applied, counters unchanged), `batch_is_one_transaction` (change_log seq advanced by exactly N, `next_msg_id`/`next_uid` by exactly N, no gaps), `concurrent_batches_have_no_duplicate_uids_or_seqs` (file DB, pool of 4, 8 tasks x 100-item batches into the same folder), `deliver_many_mixes_created_and_duplicate_outcomes` and `deliver_many_rejects_reused_id_with_different_content_atomically` (the whole batch rolls back), `deliver_many_respects_total_size_cap`.
+  - Performance sanity (`batch.rs`): `batch_beats_loop` on a file DB with 1,000 messages: time 1,000 singles vs one `set_flags_many`; print both with `eprintln!`; assert ratio >= 2 unless the singles loop is faster than 1 ms per call (then print a loud note and skip the ratio, never silently).
+  - Directory: `list_expansion_cap_enforced_on_add_and_resolve`, `resolve_semantics_unchanged` (account before alias before list, unknown -> NotFound, cross-domain isolation), existing resolve tests stay green.
+- [ ] **Step 2: Run to confirm FAIL.**
+- [ ] **Step 3: Implement.** `find_thread`: one statement with up to 32 bound candidates, grouping by `message_id_hdr` with the minimal `id` per header, then pick the first candidate in priority order in Rust. `ancestor_depth`: one recursive CTE walking up from the start folder, bounded by `MAX_FOLDER_DEPTH + 1` rows, deciding `Conflict`/`Invalid` from the returned rows. `resolve`: one UNION ALL statement for account/alias/list ids (priority preserved) after the domain lookup, then one members query with `LIMIT MAX_LIST_MEMBERS + 1`. Batch methods: validate input, open the write transaction once, run set-based SQL in chunks of at most 500 bound ids, allocate counter ranges with a single `UPDATE ... RETURNING`, write change_log rows with one multi-row `INSERT` per chunk. Keep the single-item methods as thin wrappers over the batch code paths OR keep them and prove equivalence by the oracle tests (choose the one with less duplicated code; justify in the report).
+- [ ] **Step 4: Update `acceptance_10k_messages`** to use the batch methods for the flag, move and expunge phases (assertions unchanged); report old vs new elapsed time in the report (expected large drop).
+- [ ] **Step 5: Run focused tests several times (flake check), workspace tests, clippy, deny, regenerate nothing in the schema snapshot (no migration here); commit** `perf(store): single-query thread/ancestor lookups, batch operations`.
+
 ### Task P5: Verification and docs
 
 **Files:**
