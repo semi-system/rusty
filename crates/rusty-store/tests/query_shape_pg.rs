@@ -1,0 +1,126 @@
+//! Postgres statement-count oracle and lock-first probe for `MailboxRepo`.
+//!
+//! The counts include the transaction-local `set_config('lock_timeout')` and COMMIT (BEGIN is not
+//! logged by sqlx, add one round trip per write): every one is a network round trip (PG7 baseline: the statement-merging optimisation starts from
+//! this table). The shapes are recorded by the sqlx statement probe (`common::stmts`).
+#![cfg(feature = "postgres")]
+
+mod common;
+
+use common::backends::pg_backend;
+use common::shapes::{self, assert_lock_first};
+use common::stmts;
+
+/// Statements per operation on Postgres as the sqlx probe sees them: the transaction-local
+/// `set_config('lock_timeout')`, every statement and COMMIT. sqlx does not log BEGIN as a query
+/// event, so a write is ONE more round trip than listed. Measured at the repository boundary;
+/// a batch costs the same for 10 and 100 items by construction.
+const BUDGET: &[(&str, usize)] = &[
+    ("create_folder", 9),
+    ("rename_folder", 7),
+    ("move_folder", 9),
+    ("delete_folder (empty)", 11),
+    ("delete_folder (3 expunged messages)", 12),
+    ("append", 9),
+    ("append (delivery, new)", 11),
+    ("append (delivery, duplicate)", 5),
+    ("append_many (1)", 9),
+    ("append_many (10)", 9),
+    ("append_many (100)", 9),
+    ("deliver_many (10, new)", 11),
+    ("deliver_many (10, all duplicates)", 5),
+    ("set_flags", 6),
+    ("set_flags_many (100)", 6),
+    ("add_keyword", 9),
+    ("remove_keyword", 7),
+    ("move_message", 8),
+    ("move_many (10)", 9),
+    ("move_many (100)", 9),
+    ("expunge", 6),
+    ("expunge_many (10)", 6),
+    ("purge_deleted (11 rows)", 6),
+    ("expunge_many (100)", 6),
+    ("purge_deleted (100 rows)", 6),
+    ("purge_deleted (nothing)", 4),
+    ("list_folder", 2),
+    ("changes_since", 1),
+    ("list_folders", 1),
+    ("get_message", 1),
+    ("get_raw_ref", 1),
+    ("keywords", 2),
+];
+
+#[tokio::test]
+async fn statement_counts_per_operation_match_the_budget() {
+    let p = stmts::probe();
+    let Some(b) = pg_backend().await else { return };
+    let all = shapes::collect(&b, &p).await;
+    for s in &all {
+        eprintln!("{:<42} {:>3}", s.label, s.stmts.len());
+    }
+    for (label, expected) in BUDGET {
+        let s = all
+            .iter()
+            .find(|s| s.label == *label)
+            .unwrap_or_else(|| panic!("no shape for {label}"));
+        assert_eq!(s.stmts.len(), *expected, "{label}: {:#?}", s.stmts);
+    }
+    assert_eq!(BUDGET.len(), all.len(), "every operation has a budget line");
+    // The oracle that matters most: a batch is O(1) statements, not O(n).
+    let n = |label: &str| all.iter().find(|s| s.label == label).unwrap().stmts.len();
+    assert_eq!(n("append_many (10)"), n("append_many (100)"));
+    assert_eq!(n("move_many (10)"), n("move_many (100)"));
+    assert_eq!(n("expunge_many (10)"), n("expunge_many (100)"));
+    assert_eq!(n("purge_deleted (11 rows)") , n("purge_deleted (100 rows)"));
+    assert!(n("append_many (1)") <= n("append_many (100)"));
+}
+
+/// Review risk 6.3.1: a write method that forgets the mailbox lock still passes every counter
+/// test. Guard: the first data statement after BEGIN is the mailbox row lock, for EVERY write.
+#[tokio::test]
+async fn every_write_method_takes_the_mailbox_lock_first() {
+    let p = stmts::probe();
+    let Some(b) = pg_backend().await else { return };
+    let all = shapes::collect(&b, &p).await;
+    assert!(all.iter().filter(|s| s.write).count() >= 25);
+    for s in &all {
+        assert_lock_first("postgres", s);
+    }
+}
+
+/// No session state outside a transaction (PgBouncer transaction pooling, decision D6): no
+/// session-level SET, no temp tables, no advisory locks, no LISTEN, no cursors WITH HOLD, no SQL
+/// PREPARE in anything a repository operation executes.
+#[tokio::test]
+async fn repository_statements_use_no_session_state() {
+    let p = stmts::probe();
+    let Some(b) = pg_backend().await else { return };
+    let all = shapes::collect(&b, &p).await;
+    for s in &all {
+        for t in &s.stmts {
+            let u = t.to_ascii_uppercase();
+            for banned in [
+                "SET SESSION",
+                "SET ROLE",
+                "TEMP TABLE",
+                "TEMPORARY TABLE",
+                "PG_ADVISORY",
+                "LISTEN ",
+                "NOTIFY ",
+                "WITH HOLD",
+                "PREPARE ",
+                "DECLARE ",
+                "DISCARD",
+            ] {
+                assert!(!u.contains(banned), "{}: {banned} in {t:?}", s.label);
+            }
+            if u.starts_with("SET ") || u.contains(" SET LOCAL") {
+                assert!(u.starts_with("SET LOCAL"), "{}: session SET in {t:?}", s.label);
+            }
+            if u.contains("SET_CONFIG") {
+                // Only the transaction-local form (`is_local = true`).
+                assert!(t.contains(", true)"), "{}: session-level set_config in {t:?}", s.label);
+            }
+        }
+    }
+}

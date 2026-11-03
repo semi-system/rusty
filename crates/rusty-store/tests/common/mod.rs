@@ -9,6 +9,7 @@ use rusty_store::{BlobStore, FsBlobStore, Mailbox, SqliteStore, BLOB_ROOT_MARKER
 #[cfg(feature = "postgres")]
 pub mod pg;
 pub mod backends;
+pub mod shapes;
 
 /// Fresh private in-memory store with migrations applied.
 pub async fn mem() -> SqliteStore {
@@ -218,17 +219,37 @@ pub mod stmts {
     struct Counter;
 
     /// Reads the executed statement text from the `db.statement` field of a sqlx query event.
-    struct Text(Option<String>);
+    struct Text {
+        summary: Option<String>,
+        statement: Option<String>,
+    }
+
+    impl Text {
+        /// sqlx puts the full statement in `db.statement` only when the one-line `summary` is not
+        /// the whole statement (long or multi-line SQL); otherwise `db.statement` is empty.
+        fn text(self) -> Option<String> {
+            match self.statement {
+                Some(s) if !s.trim().is_empty() => Some(s.trim().to_owned()),
+                _ => self.summary,
+            }
+        }
+    }
 
     impl tracing::field::Visit for Text {
         fn record_str(&mut self, f: &tracing::field::Field, v: &str) {
-            if f.name() == "db.statement" {
-                self.0 = Some(v.to_owned());
+            match f.name() {
+                "db.statement" => self.statement = Some(v.to_owned()),
+                "summary" => self.summary = Some(v.to_owned()),
+                _ => {}
             }
         }
         fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
-            if f.name() == "db.statement" {
-                self.0 = Some(format!("{v:?}").trim_matches('"').to_owned());
+            let s = format!("{v:?}");
+            let s = s.trim_matches('"').to_owned();
+            match f.name() {
+                "db.statement" => self.statement = Some(s),
+                "summary" => self.summary = Some(s),
+                _ => {}
             }
         }
     }
@@ -245,9 +266,12 @@ pub mod stmts {
         fn event(&self, e: &Event<'_>) {
             if e.metadata().target() == "sqlx::query" {
                 COUNT.fetch_add(1, Ordering::SeqCst);
-                let mut v = Text(None);
+                let mut v = Text {
+                    summary: None,
+                    statement: None,
+                };
                 e.record(&mut v);
-                if let Some(t) = v.0 {
+                if let Some(t) = v.text() {
                     TEXTS.lock().unwrap_or_else(|p| p.into_inner()).push(t);
                 }
             }
