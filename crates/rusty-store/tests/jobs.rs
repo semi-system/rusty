@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use common::{file_store, mem};
 use rusty_core::{DomainId, Error, JobId};
-use rusty_store::{JobQueue, SqliteStore, SqliteTx};
+use rusty_store::{JobQueue, SqliteStore, SqliteTx, JOB_RETENTION_SECS};
 use serde_json::{json, Value};
 
 const STALE: &str = "stale job epoch";
@@ -30,6 +30,22 @@ async fn num(s: &SqliteStore, sql: &str, id: JobId) -> i64 {
         .fetch_one(s.pool())
         .await
         .unwrap()
+}
+
+/// A value nested `depth` containers deep, built without recursion.
+fn nested(depth: usize) -> Value {
+    let mut v = json!(1);
+    for _ in 0..depth {
+        v = Value::Array(vec![v]);
+    }
+    v
+}
+
+/// Drop a deeply nested value without recursion (serde_json drops recursively).
+fn teardown(mut v: Value) {
+    while let Value::Array(mut a) = v {
+        v = a.pop().unwrap_or(Value::Null);
+    }
 }
 
 fn is_stale(r: &rusty_core::Result<()>) -> bool {
@@ -82,14 +98,12 @@ async fn enqueue_validates_kind_and_payload() {
         Err(Error::Invalid(_))
     ));
     // A payload nested deeper than serde_json can parse back would poison claim: refused.
-    let mut deep = json!(1);
-    for _ in 0..200 {
-        deep = Value::Array(vec![deep]);
-    }
+    let deep = nested(200);
     assert!(matches!(
         jq.enqueue("p", None, &deep, None).await,
         Err(Error::Invalid(_))
     ));
+    teardown(deep);
     // Attempt cap bounds.
     for n in [0u32, 21] {
         assert!(matches!(
@@ -478,16 +492,17 @@ async fn heartbeat_extends_lease() {
 async fn purge_finished_only_removes_old_done_dead() {
     let (s, jq) = q().await;
     let mut ids = Vec::new();
-    for _ in 0..5 {
+    for _ in 0..6 {
         ids.push(enq(&jq, "t", None, 100).await);
     }
-    let [done_old, dead_old, done_new, queued_old, running_old] = ids[..] else {
+    let [done_old, dead_old, done_new, queued_old, running_old, failed_old] = ids[..] else {
         panic!()
     };
     for (id, st, at) in [
         (done_old, "done", 100),
         (dead_old, "dead", 100),
         (done_new, "done", 5000),
+        (failed_old, "failed", 100),
     ] {
         sqlx::query("UPDATE jobs SET state = ?, updated_at = ? WHERE id = ?")
             .bind(st)
@@ -512,7 +527,7 @@ async fn purge_finished_only_removes_old_done_dead() {
         .unwrap();
     // Strict cutoff: updated_at < older_than.
     assert_eq!(jq.purge_finished(100).await.unwrap(), 0);
-    assert_eq!(jq.purge_finished(1000).await.unwrap(), 2);
+    assert_eq!(jq.purge_finished(1000).await.unwrap(), 3);
     let left: Vec<i64> = sqlx::query_scalar("SELECT id FROM jobs ORDER BY id")
         .fetch_all(s.pool())
         .await
@@ -629,4 +644,373 @@ async fn schema_rejects_inconsistent_rows() {
         .await
         .unwrap_err();
     assert!(matches!(rusty_store::map_db_error(e), Error::Invalid(m) if m == "invalid value"));
+}
+
+// ---------- review fixes: caps, bounded claim, complete_in, depth, clamps ----------
+
+#[tokio::test]
+async fn nesting_depth_limit_is_128_and_never_recurses() {
+    let (_s, jq) = q().await;
+    let ok = nested(128);
+    let id = jq.enqueue_at("p", None, &ok, None, 10).await.unwrap();
+    teardown(ok);
+    // What was accepted can be claimed (it parses back).
+    let j = jq.claim_at("w", &["p"], 30, 10).await.unwrap().unwrap();
+    assert_eq!(j.id, id);
+    teardown(j.payload);
+    let too_deep = nested(129);
+    assert!(matches!(
+        jq.enqueue("p", None, &too_deep, None).await,
+        Err(Error::Invalid(_))
+    ));
+    teardown(too_deep);
+    let huge = nested(100_000);
+    assert!(matches!(
+        jq.enqueue("p", None, &huge, None).await,
+        Err(Error::Invalid(_))
+    ));
+    teardown(huge);
+    // Objects count too.
+    let mut v = json!(1);
+    for _ in 0..129 {
+        let mut m = serde_json::Map::new();
+        m.insert("a".into(), v);
+        v = Value::Object(m);
+    }
+    assert!(matches!(
+        jq.enqueue("p", None, &v, None).await,
+        Err(Error::Invalid(_))
+    ));
+}
+
+async fn add_domain(s: &SqliteStore, id: i64) {
+    sqlx::query("INSERT INTO domains (id, name, created_at) VALUES (?, ?, 0)")
+        .bind(id)
+        .bind(format!("d{id}.test"))
+        .execute(s.pool())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn pending_job_caps_are_per_domain_and_free_up() {
+    assert_eq!(rusty_store::MAX_PENDING_JOBS_PER_DOMAIN, 10_000);
+    assert_eq!(rusty_store::MAX_PENDING_JOBS_GLOBAL_NO_DOMAIN, 10_000);
+    let s = mem().await;
+    let jq = JobQueue::with_limits(s.clone(), 3, 2);
+    add_domain(&s, 1).await;
+    add_domain(&s, 2).await;
+    let a = Some(DomainId(1));
+    let b = Some(DomainId(2));
+    for _ in 0..3 {
+        jq.enqueue_at("t", a, &json!({}), None, 10).await.unwrap();
+    }
+    let r = jq.enqueue_at("t", a, &json!({}), None, 10).await;
+    assert!(
+        matches!(&r, Err(Error::Quota(m)) if m == "job queue full"),
+        "{r:?}"
+    );
+    // Domain B and the no-domain bucket are independent.
+    jq.enqueue_at("t", b, &json!({}), None, 10).await.unwrap();
+    jq.enqueue_at("t", None, &json!({}), None, 10)
+        .await
+        .unwrap();
+    jq.enqueue_at("t", None, &json!({}), None, 10)
+        .await
+        .unwrap();
+    let r = jq.enqueue_at("t", None, &json!({}), None, 10).await;
+    assert!(matches!(r, Err(Error::Quota(_))));
+    // A running job still counts; completing it frees a slot in ITS bucket.
+    let j = jq.claim_at("w", &["t"], 60, 10).await.unwrap().unwrap();
+    let bucket = j.domain;
+    assert!(matches!(
+        jq.enqueue_at("t", bucket, &json!({}), None, 10).await,
+        Err(Error::Quota(_))
+    ));
+    jq.complete_at(j.id, j.epoch, 11).await.unwrap();
+    jq.enqueue_at("t", bucket, &json!({}), None, 12)
+        .await
+        .unwrap();
+    assert!(matches!(
+        jq.enqueue_at("t", bucket, &json!({}), None, 12).await,
+        Err(Error::Quota(_))
+    ));
+    // Purging finished rows also keeps the table small.
+    assert_eq!(jq.purge_finished(1_000).await.unwrap(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_enqueues_at_the_cap_never_exceed_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = file_store(dir.path()).await;
+    let cap = 10;
+    let jq = JobQueue::with_limits(s.clone(), cap, cap);
+    for _ in 0..cap - 1 {
+        jq.enqueue("t", None, &json!({}), None).await.unwrap();
+    }
+    let mut tasks = Vec::new();
+    for _ in 0..8 {
+        let jq = jq.clone();
+        tasks.push(tokio::spawn(async move {
+            jq.enqueue("t", None, &json!({}), None).await
+        }));
+    }
+    let mut ok = 0;
+    for t in tasks {
+        match t.await.unwrap() {
+            Ok(_) => ok += 1,
+            Err(Error::Quota(_)) => {}
+            Err(e) => panic!("{e:?}"),
+        }
+    }
+    assert_eq!(ok, 1);
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs")
+        .fetch_one(s.pool())
+        .await
+        .unwrap();
+    assert_eq!(n, i64::from(cap));
+}
+
+#[tokio::test]
+async fn claim_touches_o1_rows_not_the_whole_table() {
+    let (s, jq) = q().await;
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 5000) \
+         INSERT INTO jobs (kind, state, payload, attempts, max_attempts, run_after, \
+                           created_at, updated_at) \
+         SELECT 't', 'queued', '{}', 0, 5, 1000000, 0, 42 FROM n",
+    )
+    .execute(s.pool())
+    .await
+    .unwrap();
+    let due = enq(&jq, "t", Some(10), 10).await;
+    let j = jq.claim_at("w", &["t"], 30, 100).await.unwrap().unwrap();
+    assert_eq!(j.id, due);
+    let touched: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE updated_at <> 42")
+        .fetch_one(s.pool())
+        .await
+        .unwrap();
+    assert_eq!(touched, 1, "only the claimed row was written");
+    // Nothing else due: still no writes.
+    assert!(jq.claim_at("w", &["t"], 30, 100).await.unwrap().is_none());
+    let touched: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE updated_at <> 42")
+        .fetch_one(s.pool())
+        .await
+        .unwrap();
+    assert_eq!(touched, 1);
+}
+
+#[tokio::test]
+async fn claim_settles_at_most_100_exhausted_rows_per_call() {
+    let (s, jq) = q().await;
+    // 150 running jobs on their last attempt whose leases lapsed.
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 150) \
+         INSERT INTO jobs (kind, state, payload, attempts, max_attempts, run_after, \
+                           lease_owner, lease_expires_at, epoch, created_at, updated_at) \
+         SELECT 't', 'running', '{}', 1, 1, i, 'w', 5, 1, 0, 0 FROM n",
+    )
+    .execute(s.pool())
+    .await
+    .unwrap();
+    let good = enq(&jq, "t", Some(100_000), 0).await;
+    let dead = || async {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM jobs WHERE state = 'dead'")
+            .fetch_one(s.pool())
+            .await
+            .unwrap()
+    };
+    assert!(jq
+        .claim_at("w", &["t"], 30, 200_000)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(dead().await, 100);
+    let got = jq
+        .claim_at("w", &["t"], 30, 200_000)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(got.id, good);
+    assert_eq!(dead().await, 150);
+    let e: Vec<String> =
+        sqlx::query_scalar("SELECT DISTINCT last_error FROM jobs WHERE state = 'dead'")
+            .fetch_all(s.pool())
+            .await
+            .unwrap();
+    assert_eq!(e, vec!["lease expired on the last attempt".to_string()]);
+    // A queued row with no attempt left gets its own fixed text.
+    sqlx::query(
+        "INSERT INTO jobs (kind, state, payload, attempts, max_attempts, run_after, created_at, \
+                           updated_at) VALUES ('q', 'queued', '{}', 2, 2, 0, 0, 0)",
+    )
+    .execute(s.pool())
+    .await
+    .unwrap();
+    assert!(jq.claim_at("w", &["q"], 30, 10).await.unwrap().is_none());
+    let e: String = sqlx::query_scalar("SELECT last_error FROM jobs WHERE kind = 'q'")
+        .fetch_one(s.pool())
+        .await
+        .unwrap();
+    assert_eq!(e, "no attempts left");
+}
+
+async fn effect(s: &SqliteStore, name: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM domains WHERE name = ?")
+        .bind(name)
+        .fetch_one(s.pool())
+        .await
+        .unwrap()
+}
+
+/// A worker step: database effect plus completion in one transaction. `?` on a failed
+/// completion drops the transaction, which rolls the effect back.
+async fn effect_and_complete(
+    s: &SqliteStore,
+    id: JobId,
+    epoch: i64,
+    name: &str,
+    now: i64,
+) -> rusty_core::Result<()> {
+    let mut tx = SqliteTx::begin(s).await?;
+    sqlx::query("INSERT INTO domains (name, created_at) VALUES (?, 0)")
+        .bind(name)
+        .execute(tx.conn())
+        .await
+        .map_err(rusty_store::map_db_error)?;
+    JobQueue::complete_in_at(&mut tx, id, epoch, now).await?;
+    tx.commit().await
+}
+
+#[tokio::test]
+async fn complete_in_commits_effect_and_completion_atomically() {
+    let (s, jq) = q().await;
+    let id = enq(&jq, "t", None, 1000).await;
+    let j = jq.claim_at("w", &["t"], 30, 1000).await.unwrap().unwrap();
+    effect_and_complete(&s, id, j.epoch, "atomic.test", 1010)
+        .await
+        .unwrap();
+    assert_eq!(effect(&s, "atomic.test").await, 1);
+    assert_eq!(state(&s, id).await, "done");
+    // Completing again is stale.
+    let mut tx = SqliteTx::begin(&s).await.unwrap();
+    assert!(is_stale(
+        &JobQueue::complete_in_at(&mut tx, id, j.epoch, 1011).await
+    ));
+    tx.rollback().await.unwrap();
+
+    // DB-clock variant.
+    jq.enqueue("t", None, &json!({}), None).await.unwrap();
+    let j = jq.claim("w", &["t"], 60).await.unwrap().unwrap();
+    let mut tx = SqliteTx::begin(&s).await.unwrap();
+    JobQueue::complete_in(&mut tx, j.id, j.epoch).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(state(&s, j.id).await, "done");
+}
+
+#[tokio::test]
+async fn complete_in_for_a_zombie_rolls_the_effect_back() {
+    let (s, jq) = q().await;
+    let id = enq(&jq, "t", None, 1000).await;
+    let zombie = jq.claim_at("w1", &["t"], 30, 1000).await.unwrap().unwrap();
+    let owner = jq.claim_at("w2", &["t"], 30, 1030).await.unwrap().unwrap();
+    let r = effect_and_complete(&s, id, zombie.epoch, "zombie.test", 1031).await;
+    assert!(is_stale(&r));
+    assert_eq!(effect(&s, "zombie.test").await, 0, "effect rolled back");
+    assert_eq!(state(&s, id).await, "running");
+    effect_and_complete(&s, id, owner.epoch, "owner.test", 1031)
+        .await
+        .unwrap();
+    assert_eq!(effect(&s, "owner.test").await, 1);
+}
+
+#[tokio::test]
+async fn crash_between_fenced_commit_and_complete_reruns_the_job() {
+    // The documented contract: a fence alone does not make the step exactly-once.
+    let (s, jq) = q().await;
+    let id = enq(&jq, "t", None, 1000).await;
+    let first = jq.claim_at("w1", &["t"], 30, 1000).await.unwrap().unwrap();
+    let mut tx = SqliteTx::begin(&s).await.unwrap();
+    JobQueue::fence_at(&mut tx, id, first.epoch, 1005)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO domains (name, created_at) VALUES ('crash.test', 0)")
+        .execute(tx.conn())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    // The worker crashes here: no complete. The lease lapses and the job runs again.
+    let second = jq.claim_at("w2", &["t"], 30, 1030).await.unwrap().unwrap();
+    assert_eq!((second.id, second.epoch, second.attempts), (id, 2, 2));
+    assert_eq!(
+        effect(&s, "crash.test").await,
+        1,
+        "the first effect persists"
+    );
+    let mut tx = SqliteTx::begin(&s).await.unwrap();
+    JobQueue::fence_at(&mut tx, id, second.epoch, 1031)
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn retry_back_off_is_clamped_to_seven_days() {
+    let (s, jq) = q().await;
+    let id = enq(&jq, "t", None, 1000).await;
+    let j = jq.claim_at("w", &["t"], 30, 1000).await.unwrap().unwrap();
+    jq.fail_at(id, j.epoch, "x", u32::MAX, 1001).await.unwrap();
+    assert_eq!(
+        num(&s, "SELECT run_after FROM jobs WHERE id = ?", id).await,
+        1001 + 7 * 86400
+    );
+    let j = jq
+        .claim_at("w", &["t"], 30, 1001 + 7 * 86400)
+        .await
+        .unwrap()
+        .unwrap();
+    jq.fail_at(id, j.epoch, "x", 7 * 86400, 2000).await.unwrap();
+    assert_eq!(
+        num(&s, "SELECT run_after FROM jobs WHERE id = ?", id).await,
+        2000 + 7 * 86400
+    );
+}
+
+#[tokio::test]
+async fn lease_length_bounds_are_enforced() {
+    let (_s, jq) = q().await;
+    let id = enq(&jq, "t", None, 10).await;
+    for bad in [0u32, 86_401, u32::MAX] {
+        assert!(matches!(
+            jq.claim_at("w", &["t"], bad, 10).await,
+            Err(Error::Invalid(_))
+        ));
+    }
+    let j = jq.claim_at("w", &["t"], 86_400, 10).await.unwrap().unwrap();
+    for bad in [0u32, 86_401, u32::MAX] {
+        assert!(matches!(
+            jq.heartbeat_at(id, j.epoch, bad, 11).await,
+            Err(Error::Invalid(_))
+        ));
+    }
+    jq.heartbeat_at(id, j.epoch, 1, 11).await.unwrap();
+    jq.heartbeat_at(id, j.epoch, 86_400, 11).await.unwrap();
+}
+
+#[tokio::test]
+async fn purge_finished_default_uses_db_clock_and_retention() {
+    assert_eq!(JOB_RETENTION_SECS, 7 * 86400);
+    let (s, jq) = q().await;
+    let old = enq(&jq, "t", None, 100).await;
+    let fresh = jq.enqueue("t", None, &json!({}), None).await.unwrap();
+    for (id, at) in [(old, 1i64), (fresh, i64::MAX / 2)] {
+        sqlx::query("UPDATE jobs SET state = 'done', updated_at = ? WHERE id = ?")
+            .bind(at)
+            .bind(id.0)
+            .execute(s.pool())
+            .await
+            .unwrap();
+    }
+    assert_eq!(jq.purge_finished_default().await.unwrap(), 1);
+    assert_eq!(state(&s, fresh).await, "done");
 }

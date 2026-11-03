@@ -27,6 +27,9 @@ pub struct SqliteTx(Transaction<'static, Sqlite>);
 
 impl SqliteTx {
     /// Begin a write transaction (`BEGIN IMMEDIATE`, see [`SqliteStore::begin_write`]).
+    ///
+    /// Internal: public only for callers that fence job steps and for tests; it will be removed
+    /// once the store service owns all database access.
     pub async fn begin(store: &SqliteStore) -> Result<SqliteTx> {
         Ok(SqliteTx(store.begin_write().await?))
     }
@@ -36,11 +39,15 @@ impl SqliteTx {
     }
 
     /// Commit. (An inherent twin of [`Tx::commit`] for callers that hold a plain `SqliteTx`.)
+    ///
+    /// Internal: see [`SqliteTx::begin`].
     pub async fn commit(self) -> Result<()> {
         self.0.commit().await.map_err(map_db_error)
     }
 
     /// Roll back. Dropping the transaction has the same effect.
+    ///
+    /// Internal: see [`SqliteTx::begin`].
     pub async fn rollback(self) -> Result<()> {
         self.0.rollback().await.map_err(map_db_error)
     }

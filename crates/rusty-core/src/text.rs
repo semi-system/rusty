@@ -49,15 +49,32 @@ mod tests {
         // Generated from Python 3 `unicodedata` (Unicode 16.0): categories Cf, Zl, Zp plus
         // U+061C, U+00AD, U+180E and U+E0000..=U+E007F.
         const EXPECTED: [(u32, u32); 20] = [
-            (0xAD, 0xAD), (0x600, 0x605), (0x61C, 0x61C), (0x6DD, 0x6DD), (0x70F, 0x70F),
-            (0x890, 0x891), (0x8E2, 0x8E2), (0x180E, 0x180E), (0x200B, 0x200F),
-            (0x2028, 0x202E), (0x2060, 0x2064), (0x2066, 0x206F), (0xFEFF, 0xFEFF),
-            (0xFFF9, 0xFFFB), (0x110BD, 0x110BD), (0x110CD, 0x110CD), (0x13430, 0x1343F),
-            (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A), (0xE0000, 0xE007F),
+            (0xAD, 0xAD),
+            (0x600, 0x605),
+            (0x61C, 0x61C),
+            (0x6DD, 0x6DD),
+            (0x70F, 0x70F),
+            (0x890, 0x891),
+            (0x8E2, 0x8E2),
+            (0x180E, 0x180E),
+            (0x200B, 0x200F),
+            (0x2028, 0x202E),
+            (0x2060, 0x2064),
+            (0x2066, 0x206F),
+            (0xFEFF, 0xFEFF),
+            (0xFFF9, 0xFFFB),
+            (0x110BD, 0x110BD),
+            (0x110CD, 0x110CD),
+            (0x13430, 0x1343F),
+            (0x1BCA0, 0x1BCA3),
+            (0x1D173, 0x1D17A),
+            (0xE0000, 0xE007F),
         ];
         let mut got: Vec<(u32, u32)> = Vec::new();
         for cp in 0..=0x10FFFFu32 {
-            let Some(c) = char::from_u32(cp) else { continue };
+            let Some(c) = char::from_u32(cp) else {
+                continue;
+            };
             if is_format_or_line_separator(c) {
                 match got.last_mut() {
                     Some(last) if last.1 + 1 == cp => last.1 = cp,
@@ -72,12 +89,31 @@ mod tests {
     #[test]
     fn spot_checks() {
         for c in [
-            '\u{AD}', '\u{61C}', '\u{180E}', '\u{200B}', '\u{200C}', '\u{202E}', '\u{2028}',
-            '\u{2029}', '\u{FEFF}', '\u{E0000}', '\u{E0041}', '\u{E007F}',
+            '\u{AD}',
+            '\u{61C}',
+            '\u{180E}',
+            '\u{200B}',
+            '\u{200C}',
+            '\u{202E}',
+            '\u{2028}',
+            '\u{2029}',
+            '\u{FEFF}',
+            '\u{E0000}',
+            '\u{E0041}',
+            '\u{E007F}',
         ] {
             assert!(is_format_or_line_separator(c), "{c:?}");
         }
-        for c in ['a', ' ', '\n', '\u{0}', '\u{E0080}', '\u{85}', 'é', '\u{3000}'] {
+        for c in [
+            'a',
+            ' ',
+            '\n',
+            '\u{0}',
+            '\u{E0080}',
+            '\u{85}',
+            'é',
+            '\u{3000}',
+        ] {
             assert!(!is_format_or_line_separator(c), "{c:?}");
         }
     }

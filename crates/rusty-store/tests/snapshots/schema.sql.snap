@@ -13,6 +13,9 @@ CREATE UNIQUE INDEX folders_role ON folders (mailbox_id, role) WHERE role <> 'cu
 -- index folders_sibling_name on folders
 CREATE UNIQUE INDEX folders_sibling_name ON folders (mailbox_id, COALESCE(parent_id, 0), name);
 
+-- index jobs_domain_state on jobs
+CREATE INDEX jobs_domain_state ON jobs (domain_id, state);
+
 -- index jobs_state_run_after on jobs
 CREATE INDEX jobs_state_run_after ON jobs (state, run_after);
 
