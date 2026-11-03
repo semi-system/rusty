@@ -31,9 +31,7 @@ fn op() -> impl Strategy<Value = Op> {
 
 /// Run `ops`, checking after every step that message ids, per-folder uids and change
 /// sequence numbers handed out are gapless and strictly increasing.
-async fn run(ops: Vec<Op>) {
-    let e = env().await;
-    let mb = &e.mb;
+async fn run(mb: &Mailbox, ops: Vec<Op>) {
     let mut folders: Vec<FolderId> = (1..=5).map(FolderId).collect();
     let mut live: Vec<MessageId> = vec![];
     let mut msg_folder: BTreeMap<i64, FolderId> = BTreeMap::new();
@@ -119,7 +117,10 @@ proptest! {
     #[test]
     fn ids_uids_seq_are_gapless_and_monotonic(ops in proptest::collection::vec(op(), 1..40)) {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        rt.block_on(run(ops));
+        rt.block_on(async {
+            let e = env().await;
+            run(&e.mb, ops).await;
+        });
     }
 }
 
@@ -205,4 +206,219 @@ async fn concurrent_appends_into_different_folders() {
         .map(|c| c.seq)
         .collect();
     assert_eq!(seqs, vec![1, 2]);
+}
+
+// ====================================================================== PG4: both backends
+
+/// Case count for the Postgres runs (each case creates and drops a database): `RUSTY_PG_PROP_CASES`
+/// (default 64). The SQLite case count above is unchanged.
+fn pg_cases() -> u32 {
+    std::env::var("RUSTY_PG_PROP_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(64)
+}
+
+#[cfg(feature = "postgres")]
+mod pg {
+    use super::*;
+    use common::backends::{acct, pg_backend};
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: pg_cases(), ..ProptestConfig::default() })]
+
+        /// The same gapless/monotonic model as the SQLite property, on Postgres (20 ops).
+        #[test]
+        fn pg_ids_uids_seq_are_gapless_and_monotonic(ops in proptest::collection::vec(op(), 1..20)) {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            rt.block_on(async {
+                let Some(b) = pg_backend().await else { return };
+                let (_, _, mb) = acct(&b, "props").await;
+                run(&mb, ops).await;
+            });
+        }
+    }
+}
+
+// ---------------------------------------------------------------- differential model
+
+/// Operations over the whole facade surface with small id spaces, so that missing ids, foreign
+/// folders, conflicts and quota errors are exercised as often as successes.
+#[derive(Debug, Clone)]
+enum DOp {
+    Append(u8, u8, u8),
+    AppendMany(u8, u8),
+    Deliver(u8, u8, u8),
+    DeliverMany(u8, u8, u8),
+    SetFlags(u8, u8),
+    SetFlagsMany(u8, u8, u8),
+    AddKeyword(u8, u8),
+    RemoveKeyword(u8, u8),
+    Move(u8, u8),
+    MoveMany(u8, u8, u8),
+    Expunge(u8),
+    ExpungeMany(u8, u8),
+    ExpungeAt(u8, u8),
+    Purge(bool),
+    CreateFolder(u8, u8),
+    RenameFolder(u8, u8),
+    MoveFolder(u8, u8),
+    DeleteFolder(u8),
+}
+
+fn dop() -> impl Strategy<Value = DOp> {
+    prop_oneof![
+        4 => (0u8..7, 0u8..6, 0u8..32).prop_map(|(f, s, fl)| DOp::Append(f, s, fl)),
+        2 => (0u8..7, 1u8..4).prop_map(|(f, n)| DOp::AppendMany(f, n)),
+        2 => (0u8..7, 0u8..4, 0u8..4).prop_map(|(f, d, c)| DOp::Deliver(f, d, c)),
+        2 => (0u8..7, 0u8..4, 1u8..4).prop_map(|(f, d, n)| DOp::DeliverMany(f, d, n)),
+        2 => (0u8..4, 0u8..32).prop_map(|(m, b)| DOp::SetFlags(m, b)),
+        1 => (0u8..4, 1u8..5, 0u8..32).prop_map(|(m, n, b)| DOp::SetFlagsMany(m, n, b)),
+        1 => (0u8..4, 0u8..4).prop_map(|(m, k)| DOp::AddKeyword(m, k)),
+        1 => (0u8..4, 0u8..4).prop_map(|(m, k)| DOp::RemoveKeyword(m, k)),
+        2 => (0u8..4, 0u8..7).prop_map(|(m, f)| DOp::Move(m, f)),
+        1 => (0u8..4, 1u8..5, 0u8..7).prop_map(|(m, n, f)| DOp::MoveMany(m, n, f)),
+        1 => (0u8..4).prop_map(DOp::Expunge),
+        1 => (0u8..4, 1u8..5).prop_map(|(m, n)| DOp::ExpungeMany(m, n)),
+        1 => (0u8..4, 0u8..3).prop_map(|(m, t)| DOp::ExpungeAt(m, t)),
+        1 => proptest::bool::ANY.prop_map(DOp::Purge),
+        2 => (0u8..7, 0u8..4).prop_map(|(p, n)| DOp::CreateFolder(p, n)),
+        1 => (0u8..7, 0u8..4).prop_map(|(f, n)| DOp::RenameFolder(f, n)),
+        1 => (0u8..7, 0u8..7).prop_map(|(f, p)| DOp::MoveFolder(f, p)),
+        1 => (0u8..7).prop_map(DOp::DeleteFolder),
+    ]
+}
+
+fn kind<T>(r: &rusty_core::Result<T>) -> String
+where
+    T: std::fmt::Debug,
+{
+    use rusty_core::Error;
+    match r {
+        Ok(v) => format!("ok {v:?}"),
+        Err(Error::NotFound(_)) => "NotFound".into(),
+        Err(Error::Conflict(_)) => "Conflict".into(),
+        Err(Error::Invalid(_)) => "Invalid".into(),
+        Err(Error::Quota(_)) => "Quota".into(),
+        Err(e) => format!("other {e:?}"),
+    }
+}
+
+fn folder_id(f: u8) -> FolderId {
+    // 0 is never a folder; 1..=5 are the system folders; 6.. the custom ones.
+    FolderId(i64::from(f) + 1)
+}
+
+fn ids(m: u8, n: u8) -> Vec<MessageId> {
+    (0..n).map(|k| MessageId(i64::from(m) + i64::from(k) + 1)).collect()
+}
+
+fn item(d: u8, c: u8) -> rusty_store::DeliverItem {
+    rusty_store::DeliverItem {
+        raw: raw(&format!("content-{c}"), None),
+        flags: Flags::empty(),
+        delivery_id: rusty_core::DeliveryId([d; 32]),
+    }
+}
+
+/// Run `ops`; return one line per operation plus a final snapshot of the observable state
+/// (everything except wall-clock values).
+async fn exec(mb: &Mailbox, ops: &[DOp]) -> Vec<String> {
+    let mut out = vec![];
+    for (step, o) in ops.iter().enumerate() {
+        let line = match o {
+            DOp::Append(f, s, fl) => {
+                let r = mb
+                    .append(folder_id(*f), raw(&format!("subj{s}"), Some(&format!("m{s}@x"))), Flags::from_bits(*fl).unwrap())
+                    .await;
+                kind(&r)
+            }
+            DOp::AppendMany(f, n) => {
+                let raws = (0..*n).map(|i| raw(&format!("am{step}-{i}"), None)).collect();
+                kind(&mb.append_many(folder_id(*f), raws, Flags::empty()).await)
+            }
+            DOp::Deliver(f, d, c) => {
+                kind(&mb.deliver(folder_id(*f), raw(&format!("content-{c}"), None), Flags::empty(), rusty_core::DeliveryId([*d; 32])).await)
+            }
+            DOp::DeliverMany(f, d, n) => {
+                let items = (0..*n).map(|i| item(d.wrapping_add(i) % 4, (d + i) % 3)).collect();
+                kind(&mb.deliver_many(folder_id(*f), items).await)
+            }
+            DOp::SetFlags(m, b) => kind(&mb.set_flags(MessageId(i64::from(*m) + 1), Flags::from_bits(*b).unwrap()).await),
+            DOp::SetFlagsMany(m, n, b) => {
+                kind(&mb.set_flags_many(&ids(*m, *n), Flags::from_bits(*b).unwrap()).await)
+            }
+            DOp::AddKeyword(m, k) => kind(&mb.add_keyword(MessageId(i64::from(*m) + 1), &format!("k{k}")).await),
+            DOp::RemoveKeyword(m, k) => kind(&mb.remove_keyword(MessageId(i64::from(*m) + 1), &format!("k{k}")).await),
+            DOp::Move(m, f) => kind(&mb.move_message(MessageId(i64::from(*m) + 1), folder_id(*f)).await),
+            DOp::MoveMany(m, n, f) => kind(&mb.move_many(&ids(*m, *n), folder_id(*f)).await),
+            DOp::Expunge(m) => kind(&mb.expunge(MessageId(i64::from(*m) + 1)).await),
+            DOp::ExpungeMany(m, n) => kind(&mb.expunge_many(&ids(*m, *n)).await),
+            DOp::ExpungeAt(m, t) => {
+                kind(&mb.expunge_many_at(&[MessageId(i64::from(*m) + 1)], i64::from(*t) * 100).await)
+            }
+            DOp::Purge(all) => kind(&mb.purge_deleted(if *all { i64::MAX } else { 150 }).await),
+            DOp::CreateFolder(p, n) => {
+                let parent = if *p == 0 { None } else { Some(folder_id(*p)) };
+                kind(&mb.create_folder(parent, &format!("n{n}")).await)
+            }
+            DOp::RenameFolder(f, n) => kind(&mb.rename_folder(folder_id(*f), &format!("n{n}")).await),
+            DOp::MoveFolder(f, p) => {
+                let parent = if *p == 0 { None } else { Some(folder_id(*p)) };
+                kind(&mb.move_folder(folder_id(*f), parent).await)
+            }
+            DOp::DeleteFolder(f) => kind(&mb.delete_folder(folder_id(*f)).await),
+        };
+        out.push(format!("{step}: {o:?} -> {line}"));
+    }
+    // Final snapshot.
+    out.push(format!("folders: {:?}", mb.list_folders().await));
+    let changes = mb.changes_since(0, MAX_PAGE).await.unwrap().changes;
+    out.push(format!("changes: {changes:?}"));
+    for f in mb.list_folders().await.unwrap() {
+        let list = mb.list_folder(f.id, 0, MAX_PAGE).await.unwrap();
+        let rows: Vec<_> = list
+            .iter()
+            .map(|m| (m.id, m.uid, m.size, m.subject.clone(), m.from_addr.clone(), m.flags, m.thread_id))
+            .collect();
+        out.push(format!("folder {}: {rows:?}", f.id.0));
+    }
+    for id in 1..=14 {
+        let id = MessageId(id);
+        let d = mb.get_message(id).await.map(|d| {
+            (d.folder, d.blob, d.deleted, d.summary.uid, d.summary.flags, d.summary.thread_id)
+        });
+        out.push(format!("message {}: {} kw={:?}", id.0, kind(&d), kind(&mb.keywords(id).await)));
+    }
+    out
+}
+
+async fn differential(ops: Vec<DOp>) {
+    use common::backends::{acct, sqlite_backend};
+    let sq = sqlite_backend().await;
+    let (_, _, m_sq) = acct(&sq, "diff").await;
+    let expected = exec(&m_sq, &ops).await;
+    #[cfg(feature = "postgres")]
+    if let Some(pg) = common::backends::pg_backend().await {
+        let (_, _, m_pg) = acct(&pg, "diff").await;
+        let got = exec(&m_pg, &ops).await;
+        assert_eq!(expected.len(), got.len());
+        for (e, g) in expected.iter().zip(&got) {
+            assert_eq!(e, g, "SQLite (left) and Postgres (right) diverge for {ops:?}");
+        }
+    }
+    let _ = expected;
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: pg_cases(), ..ProptestConfig::default() })]
+
+    /// Model-based differential test: the same random operation sequence (20 ops) produces the
+    /// same results, error kinds and final observable state on SQLite and Postgres. Without a
+    /// Postgres server only the SQLite half runs (it must not panic).
+    #[test]
+    fn sqlite_and_postgres_are_observably_identical(ops in proptest::collection::vec(dop(), 1..20)) {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(differential(ops));
+    }
 }
