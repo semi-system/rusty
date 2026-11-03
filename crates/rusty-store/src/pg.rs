@@ -100,6 +100,11 @@ impl PgStore {
             // neither the URL nor the sqlx source; operators get endpoint context separately.
             .map_err(|_| Error::storage("cannot connect to Postgres"))?;
 
+        sqlx::migrate!("./migrations_pg")
+            .run(&pool)
+            .await
+            .map_err(|_| Error::storage("Postgres migration failed"))?;
+
         Ok(Self { pool })
     }
 

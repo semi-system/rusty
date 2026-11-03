@@ -936,6 +936,85 @@ async fn migration_0002_backfills_zero_since() {
     assert_eq!(zero_since(s.pool(), HASH_B).await, None);
 }
 
+/// Upgrading an existing database gives every distribution-list member a deterministic
+/// insertion-order sequence; subsequent legacy inserts that omit `seq` are also assigned one.
+#[tokio::test]
+async fn migration_0008_backfills_list_member_sequence() {
+    let dir = tempfile::tempdir().unwrap();
+    let old_migrations = dir.path().join("migrations");
+    std::fs::create_dir(&old_migrations).unwrap();
+    for (name, body) in [
+        ("0001_init.sql", include_str!("../migrations/0001_init.sql")),
+        (
+            "0002_blob_zero_since.sql",
+            include_str!("../migrations/0002_blob_zero_since.sql"),
+        ),
+        (
+            "0003_folder_id_counter.sql",
+            include_str!("../migrations/0003_folder_id_counter.sql"),
+        ),
+        (
+            "0004_deliveries.sql",
+            include_str!("../migrations/0004_deliveries.sql"),
+        ),
+        ("0005_jobs.sql", include_str!("../migrations/0005_jobs.sql")),
+        (
+            "0006_jobs_domain_state.sql",
+            include_str!("../migrations/0006_jobs_domain_state.sql"),
+        ),
+        (
+            "0007_capabilities.sql",
+            include_str!("../migrations/0007_capabilities.sql"),
+        ),
+    ] {
+        std::fs::write(old_migrations.join(name), body).unwrap();
+    }
+    let url = format!(
+        "sqlite://{}?mode=rwc",
+        dir.path().join("old-list.sqlite").display()
+    );
+    {
+        let pool = SqlitePool::connect(&url).await.unwrap();
+        sqlx::migrate::Migrator::new(old_migrations.as_path())
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+        for sql in [
+            "INSERT INTO domains(id,name,created_at) VALUES (1,'example.com',0)",
+            "INSERT INTO accounts(id,local_part,domain_id,status,created_at) VALUES (1,'a',1,'active',0)",
+            "INSERT INTO accounts(id,local_part,domain_id,status,created_at) VALUES (2,'b',1,'active',0)",
+            "INSERT INTO lists(id,local_part,domain_id) VALUES (1,'team',1)",
+            "INSERT INTO list_members(list_id,account_id) VALUES (1,1)",
+            "INSERT INTO list_members(list_id,external) VALUES (1,'x@outside.test')",
+            "INSERT INTO list_members(list_id,account_id) VALUES (1,2)",
+        ] {
+            ok(&pool, sql).await;
+        }
+        pool.close().await;
+    }
+    let store = SqliteStore::open(&url).await.unwrap();
+    let rows: Vec<(Option<i64>, Option<String>, i64)> = sqlx::query_as(
+        "SELECT account_id,external,seq FROM list_members ORDER BY seq",
+    )
+    .fetch_all(store.pool())
+    .await
+    .unwrap();
+    assert_eq!(rows[0], (Some(1), None, 1));
+    assert_eq!(rows[1], (None, Some("x@outside.test".into()), 2));
+    assert_eq!(rows[2], (Some(2), None, 3));
+    ok(
+        store.pool(),
+        "INSERT INTO list_members(list_id,external) VALUES (1,'y@outside.test')",
+    )
+    .await;
+    assert_eq!(
+        count(store.pool(), "SELECT seq FROM list_members WHERE external='y@outside.test'").await,
+        4
+    );
+}
+
 // ---------- deliveries (migration 0004) ----------
 
 fn delivery(mailbox: i64, id_hex: &str, message: i64, hash: &str) -> String {
