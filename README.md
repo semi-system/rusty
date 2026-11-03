@@ -51,6 +51,20 @@ cargo test -p rusty-directory --test acceptance -- --nocapture
 
 `--nocapture` prints the elapsed time.
 
+## Development workflow
+
+Edit files in the Windows checkout (`<repo>`) and build in WSL, with the target
+directory on the WSL ext4 disk (`~/rusty-target`; much faster than building on `D:`):
+
+    bash scripts/wsl-cargo.sh test --workspace
+    bash scripts/wsl-cargo.sh clippy --workspace --all-targets -- -D warnings
+    bash scripts/wsl-ci.sh        # full gate; log in WSL at ~/rusty-ci.log
+
+`RUSTY_WSL_TARGET_DIR` overrides the target directory. `~/Rusty` inside WSL is an obsolete
+copy; do not use it. Files use LF line endings (`.gitattributes` enforces this). After an
+interrupted run, a corrupt musl artifact is fixed with
+`bash scripts/wsl-cargo.sh clean --target x86_64-unknown-linux-musl`.
+
 ## Crates
 
 - `rusty-core`: ids, flags, the shared `Error` type, the startup configuration loader,
