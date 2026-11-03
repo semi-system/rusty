@@ -1,7 +1,10 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::fmt;
+use std::sync::Arc;
 
-use rusty_core::{AccountId, DomainId, Error, FolderRole, ListId, MailboxId, PlanId, Result};
-use rusty_store::{map_db_error, SqliteStore};
+use rusty_core::{AccountId, DomainId, Error, ListId, MailboxId, PlanId, Result};
+use rusty_store::repo::sqlite::SqliteRepo;
+use rusty_store::repo::{DirectoryRepo, ListMember, NewAccount, Resolution, GLOBAL_PLAN};
+use rusty_store::SqliteStore;
 
 use crate::auth::hash_password;
 use crate::config::ensure_object;
@@ -17,27 +20,18 @@ pub enum Resolved {
     List(Vec<Resolved>),
 }
 
-#[derive(Debug, Clone)]
+/// Facade over a [`DirectoryRepo`]: normalization, validation, password hashing and result
+/// shaping live here; every SQL statement lives in `rusty-store`. Cloning is cheap.
+#[derive(Clone)]
 pub struct Directory {
-    store: SqliteStore,
+    repo: Arc<dyn DirectoryRepo>,
+    sqlite: Option<SqliteStore>,
 }
 
-pub(crate) fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-/// Number of system folders created with every mailbox (folder ids 1..=SYSTEM_FOLDERS).
-const SYSTEM_FOLDERS: i64 = 5;
-
-/// UIDVALIDITY seed for a new mailbox (spec §4, RFC 3501/9051 §2.3.1.1): the clock in
-/// seconds, clamped so that `base + SYSTEM_FOLDERS` still fits in 1..=u32::MAX. System
-/// folder `id` gets `base + id`; the mailbox high-water mark gets `base + SYSTEM_FOLDERS`,
-/// the largest value issued, so later folders (`Mailbox::create_folder`) are all greater.
-fn uid_validity_base() -> i64 {
-    now().clamp(1, i64::from(u32::MAX) - SYSTEM_FOLDERS)
+impl fmt::Debug for Directory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Directory")
+    }
 }
 
 fn has_bad_chars(s: &str) -> bool {
@@ -154,44 +148,49 @@ pub fn display_domain(punycode: &str) -> String {
 }
 
 impl Directory {
+    /// A directory over the SQLite backend.
     pub fn new(store: SqliteStore) -> Directory {
-        Directory { store }
+        Directory {
+            repo: Arc::new(SqliteRepo::new(store.clone())),
+            sqlite: Some(store),
+        }
     }
 
+    /// A directory over any backend's repository (`Store::open(..)?.repos().directory`).
+    pub fn with_repo(repo: Arc<dyn DirectoryRepo>) -> Directory {
+        Directory { repo, sqlite: None }
+    }
+
+    /// The SQLite store behind a directory built with [`Directory::new`], for test fixtures
+    /// and the not-yet-converted GC functions. Panics for a directory built with
+    /// [`Directory::with_repo`]. Removed when the tests stop using raw fixtures (PG6).
+    #[doc(hidden)]
     pub fn store(&self) -> &SqliteStore {
-        &self.store
+        self.sqlite
+            .as_ref()
+            .expect("Directory::store is only available on SQLite directories")
+    }
+
+    pub(crate) fn repo(&self) -> &dyn DirectoryRepo {
+        &*self.repo
     }
 
     pub async fn create_domain(&self, name: &str) -> Result<DomainId> {
         let name = normalize_domain(name)?;
-        let id: i64 =
-            sqlx::query_scalar("INSERT INTO domains (name, created_at) VALUES (?, ?) RETURNING id")
-                .bind(name)
-                .bind(now())
-                .fetch_one(self.store.pool())
-                .await
-                .map_err(map_db_error)?;
-        Ok(DomainId(id))
+        self.repo.create_domain(&name).await
     }
 
     pub async fn create_plan(&self, name: &str, config: serde_json::Value) -> Result<PlanId> {
         ensure_object(&config)?;
         let name = name.trim();
-        if name == crate::config::GLOBAL_PLAN {
+        if name == GLOBAL_PLAN {
             return Err(Error::Invalid("reserved plan name".into()));
         }
-        let id: i64 =
-            sqlx::query_scalar("INSERT INTO plans (name, config) VALUES (?, ?) RETURNING id")
-                .bind(name)
-                .bind(config.to_string())
-                .fetch_one(self.store.pool())
-                .await
-                .map_err(map_db_error)?;
-        Ok(PlanId(id))
+        self.repo.create_plan(name, &config.to_string()).await
     }
 
-    /// Inserts the account's `mailboxes` row. Every code path that inserts a `mailboxes` row
-    /// must seed `next_folder_id` (see `rusty_store::Mailbox`).
+    /// Inserts the account, its `mailboxes` row and the system folders in one transaction
+    /// (the repository seeds every counter, see `DirectoryRepo::create_account`).
     pub async fn create_account(
         &self,
         local: &str,
@@ -200,85 +199,28 @@ impl Directory {
         plan: Option<PlanId>,
     ) -> Result<AccountId> {
         let local = normalize_local(local)?;
-        let hash = match password {
+        let password_hash = match password {
             Some(p) => Some(hash_password(p).await?),
             None => None,
         };
-        // BEGIN IMMEDIATE: the write lock is taken up front. Every multi-statement directory
-        // write uses `begin_write`, never a deferred `pool.begin()`.
-        let mut tx = self.store.begin_write().await?;
-        let acc: i64 = sqlx::query_scalar(
-            "INSERT INTO accounts (local_part, domain_id, plan_id, password_hash, status, created_at) \
-             VALUES (?, ?, ?, ?, 'active', ?) RETURNING id",
-        )
-        .bind(&local)
-        .bind(domain.0)
-        .bind(plan.map(|p| p.0))
-        .bind(hash)
-        .bind(now())
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(map_db_error)?;
-        let uv_base = uid_validity_base();
-        // next_folder_id (migration 0003): custom folders start after the system folders.
-        let mb: i64 = sqlx::query_scalar(
-            "INSERT INTO mailboxes (account_id, uid_validity, next_folder_id) VALUES (?, ?, ?) \
-             RETURNING id",
-        )
-        .bind(acc)
-        .bind(uv_base + SYSTEM_FOLDERS)
-        .bind(SYSTEM_FOLDERS + 1)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(map_db_error)?;
-        let system = [
-            (1i64, "Inbox", FolderRole::Inbox),
-            (2, "Sent", FolderRole::Sent),
-            (3, "Drafts", FolderRole::Drafts),
-            (4, "Trash", FolderRole::Trash),
-            (5, "Spam", FolderRole::Spam),
-        ];
-        for (id, name, role) in system {
-            sqlx::query(
-                "INSERT INTO folders (mailbox_id, id, parent_id, name, role, uid_validity) \
-                 VALUES (?, ?, NULL, ?, ?, ?)",
-            )
-            .bind(mb)
-            .bind(id)
-            .bind(name)
-            .bind(role.as_str())
-            .bind(uv_base + id)
-            .execute(&mut *tx)
+        self.repo
+            .create_account(&NewAccount {
+                local,
+                domain,
+                plan,
+                password_hash,
+            })
             .await
-            .map_err(map_db_error)?;
-        }
-        tx.commit().await.map_err(map_db_error)?;
-        Ok(AccountId(acc))
     }
 
     pub async fn add_alias(&self, local: &str, domain: DomainId, account: AccountId) -> Result<()> {
         let local = normalize_local(local)?;
-        sqlx::query("INSERT INTO aliases (local_part, domain_id, account_id) VALUES (?, ?, ?)")
-            .bind(local)
-            .bind(domain.0)
-            .bind(account.0)
-            .execute(self.store.pool())
-            .await
-            .map_err(map_db_error)?;
-        Ok(())
+        self.repo.add_alias(&local, domain, account).await
     }
 
     pub async fn create_list(&self, local: &str, domain: DomainId) -> Result<ListId> {
         let local = normalize_local(local)?;
-        let id: i64 = sqlx::query_scalar(
-            "INSERT INTO lists (local_part, domain_id) VALUES (?, ?) RETURNING id",
-        )
-        .bind(local)
-        .bind(domain.0)
-        .fetch_one(self.store.pool())
-        .await
-        .map_err(map_db_error)?;
-        Ok(ListId(id))
+        self.repo.create_list(&local, domain).await
     }
 
     /// Exactly one of `account` / `external` must be given. A list holds at most
@@ -301,94 +243,37 @@ impl Directory {
                 ))
             }
         };
-        // The count and the insert share one write transaction, so concurrent adds cannot
-        // both take the last slot.
-        let mut tx = self.store.begin_write().await?;
-        let members: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM list_members WHERE list_id = ?")
-                .bind(list.0)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(map_db_error)?;
-        if usize::try_from(members).map_or(true, |m| m >= MAX_LIST_MEMBERS) {
-            return Err(Error::Quota("list has too many members".into()));
-        }
-        sqlx::query(
-            "INSERT INTO list_members (list_id, account_id, external, seq) \
-             SELECT ?, ?, ?, COALESCE(MAX(seq), 0) + 1 FROM list_members WHERE list_id = ?",
-        )
-            .bind(list.0)
-            .bind(account.map(|a| a.0))
-            .bind(external)
-            .bind(list.0)
-            .execute(&mut *tx)
+        self.repo
+            .add_list_member(list, account, external.as_deref(), MAX_LIST_MEMBERS)
             .await
-            .map_err(map_db_error)?;
-        tx.commit().await.map_err(map_db_error)?;
-        Ok(())
     }
 
     /// Resolve an address to an account (account, then alias, then list). At most two
     /// statements: the domain and the kind of the name in one, then the members of a list.
     /// A list expands to at most [`MAX_LIST_MEMBERS`] members; a larger one is
-    /// `Error::Quota`, never a truncated list.
-    ///
-    /// Portability: plain joins and `UNION ALL` with `ORDER BY ... LIMIT 1`; distribution-list
-    /// members use the explicit insertion-order `seq` column on every backend.
+    /// `Error::Quota`, never a truncated list. Members come in insertion order (`seq`).
     pub async fn resolve(&self, addr: &str) -> Result<Resolved> {
         let (local, domain) = parse_address(addr)?;
-        let pool = self.store.pool();
-        let not_found = || Error::NotFound("address".into());
-        let (kind, id): (i64, i64) = sqlx::query_as(
-            "SELECT kind, id FROM ( \
-               SELECT 1 AS kind, a.id AS id FROM domains d JOIN accounts a \
-                 ON a.domain_id = d.id WHERE d.name = ?1 AND a.local_part = ?2 \
-               UNION ALL \
-               SELECT 2, al.account_id FROM domains d JOIN aliases al \
-                 ON al.domain_id = d.id WHERE d.name = ?1 AND al.local_part = ?2 \
-               UNION ALL \
-               SELECT 3, l.id FROM domains d JOIN lists l \
-                 ON l.domain_id = d.id WHERE d.name = ?1 AND l.local_part = ?2 \
-             ) ORDER BY kind LIMIT 1",
-        )
-        .bind(&domain)
-        .bind(&local)
-        .fetch_optional(pool)
-        .await
-        .map_err(map_db_error)?
-        .ok_or_else(not_found)?;
-        if kind != 3 {
-            return Ok(Resolved::Account(AccountId(id)));
+        match self
+            .repo
+            .resolve(&local, &domain, MAX_LIST_MEMBERS)
+            .await?
+            .ok_or_else(|| Error::NotFound("address".into()))?
+        {
+            Resolution::Account(a) => Ok(Resolved::Account(a)),
+            Resolution::List(members) => Ok(Resolved::List(
+                members
+                    .into_iter()
+                    .map(|m| match m {
+                        ListMember::Account(a) => Resolved::Account(a),
+                        ListMember::External(e) => Resolved::External(e),
+                    })
+                    .collect(),
+            )),
         }
-        let rows: Vec<(Option<i64>, Option<String>)> = sqlx::query_as(
-            "SELECT account_id, external FROM list_members WHERE list_id = ? ORDER BY seq LIMIT ?",
-        )
-        .bind(id)
-        .bind(MAX_LIST_MEMBERS as i64 + 1)
-        .fetch_all(pool)
-        .await
-        .map_err(map_db_error)?;
-        if rows.len() > MAX_LIST_MEMBERS {
-            return Err(Error::Quota("list has too many members".into()));
-        }
-        Ok(Resolved::List(
-            rows.into_iter()
-                .filter_map(|(a, e)| match (a, e) {
-                    (Some(a), _) => Some(Resolved::Account(AccountId(a))),
-                    (None, Some(e)) => Some(Resolved::External(e)),
-                    _ => None,
-                })
-                .collect(),
-        ))
     }
 
     pub async fn mailbox_for(&self, account: AccountId) -> Result<MailboxId> {
-        sqlx::query_scalar::<_, i64>("SELECT id FROM mailboxes WHERE account_id = ?")
-            .bind(account.0)
-            .fetch_optional(self.store.pool())
-            .await
-            .map_err(map_db_error)?
-            .map(MailboxId)
-            .ok_or_else(|| Error::NotFound("mailbox for account".into()))
+        self.repo.mailbox_for(account).await
     }
 }

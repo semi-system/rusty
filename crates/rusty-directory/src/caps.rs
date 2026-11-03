@@ -43,9 +43,9 @@
 
 use rand_core::{OsRng, RngCore};
 use rusty_core::{AccountId, DomainId, Error, Result};
-use rusty_store::{map_db_error, SqliteStore};
+
 use sha2::{Digest, Sha256};
-use sqlx::SqliteConnection;
+
 
 use crate::dir::Directory;
 
@@ -187,33 +187,6 @@ fn parse_role(s: &str) -> Result<CapabilityRole> {
     }
 }
 
-async fn db_now(conn: &mut SqliteConnection) -> Result<i64> {
-    sqlx::query_scalar("SELECT unixepoch()")
-        .fetch_one(conn)
-        .await
-        .map_err(map_db_error)
-}
-
-/// Revoke every active capability of `account` on `conn` (inside the caller's write
-/// transaction). `now = None` uses the database clock. `revoked_at` is never before
-/// `issued_at` (the schema forbids it), which matters only for a test clock in the past.
-pub(crate) async fn revoke_all_in(
-    conn: &mut SqliteConnection,
-    account: AccountId,
-    now: Option<i64>,
-) -> Result<u64> {
-    let res = sqlx::query(
-        "UPDATE capabilities SET revoked_at = MAX(COALESCE(?1, unixepoch()), issued_at) \
-         WHERE account_id = ?2 AND revoked_at IS NULL AND expires_at > COALESCE(?1, unixepoch())",
-    )
-    .bind(now)
-    .bind(account.0)
-    .execute(conn)
-    .await
-    .map_err(map_db_error)?;
-    Ok(res.rows_affected())
-}
-
 impl Directory {
     /// Issue a capability for an `active` account. `ttl_secs` is clamped to `1..=86400`.
     /// When the account already has [`MAX_ACTIVE_CAPABILITIES_PER_ACCOUNT`] active ones, the
@@ -255,46 +228,16 @@ impl Directory {
         raw.fill(0);
         std::hint::black_box(&raw);
 
-        let mut tx = self.store().begin_write().await?;
-        let now = match now {
-            Some(n) => n,
-            None => db_now(&mut tx).await?,
-        };
-        let expires_at = now
-            .checked_add(ttl)
-            .ok_or_else(|| Error::Invalid("capability time out of range".into()))?;
-        let inserted = sqlx::query(
-            "INSERT INTO capabilities (token_hash, account_id, domain_id, role, issued_at, expires_at) \
-             SELECT ?, id, domain_id, ?, ?, ? FROM accounts WHERE id = ? AND status = 'active'",
-        )
-        .bind(&hash[..])
-        .bind(role.as_str())
-        .bind(now)
-        .bind(expires_at)
-        .bind(account.0)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_db_error)?
-        .rows_affected();
-        if inserted == 0 {
-            return Err(Error::NotFound("account".into()));
-        }
-        // Keep at most 64 active: revoke the oldest beyond that (the new row is the newest).
-        sqlx::query(
-            "UPDATE capabilities SET revoked_at = MAX(?1, issued_at) WHERE rowid IN (\
-               SELECT rowid FROM capabilities \
-               WHERE account_id = ?2 AND revoked_at IS NULL AND expires_at > ?1 \
-               ORDER BY issued_at, rowid \
-               LIMIT MAX(0, (SELECT count(*) FROM capabilities \
-                             WHERE account_id = ?2 AND revoked_at IS NULL AND expires_at > ?1) - ?3))",
-        )
-        .bind(now)
-        .bind(account.0)
-        .bind(MAX_ACTIVE_CAPABILITIES_PER_ACCOUNT)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_db_error)?;
-        tx.commit().await.map_err(map_db_error)?;
+        self.repo()
+            .issue_capability(
+                account,
+                role.as_str(),
+                &hash,
+                ttl,
+                MAX_ACTIVE_CAPABILITIES_PER_ACCOUNT,
+                now,
+            )
+            .await?;
         Ok(token)
     }
 
@@ -306,7 +249,7 @@ impl Directory {
         token: &str,
         role: CapabilityRole,
     ) -> Result<Option<CapabilityInfo>> {
-        validate_inner(self.store(), token, role, None).await
+        self.validate_inner(token, role, None).await
     }
 
     #[doc(hidden)]
@@ -316,7 +259,30 @@ impl Directory {
         role: CapabilityRole,
         now: i64,
     ) -> Result<Option<CapabilityInfo>> {
-        validate_inner(self.store(), token, role, Some(now)).await
+        self.validate_inner(token, role, Some(now)).await
+    }
+
+    async fn validate_inner(
+        &self,
+        token: &str,
+        role: CapabilityRole,
+        now: Option<i64>,
+    ) -> Result<Option<CapabilityInfo>> {
+        let hash = lookup_hash(token);
+        // One statement for every outcome: the primary-key lookup on the hash is the comparison.
+        match self
+            .repo()
+            .validate_capability(&hash, role.as_str(), now)
+            .await?
+        {
+            None => Ok(None),
+            Some(g) => Ok(Some(CapabilityInfo {
+                account: g.account,
+                domain: g.domain,
+                role: parse_role(&g.role)?,
+                expires_at: g.expires_at,
+            })),
+        }
     }
 
     /// Revoke one capability. `Ok(true)` if it was active; `Ok(false)` for a malformed,
@@ -332,73 +298,20 @@ impl Directory {
     }
 
     async fn revoke_one(&self, token: &str, now: Option<i64>) -> Result<bool> {
-        // A malformed token cannot match any row: answer without taking the writer lock.
+        // A malformed token cannot match any row: answer without touching the database.
         let Some(hash) = parse_hash(token) else {
             return Ok(false);
         };
-        let mut tx = self.store().begin_write().await?;
-        let n = sqlx::query(
-            "UPDATE capabilities SET revoked_at = MAX(COALESCE(?1, unixepoch()), issued_at) \
-             WHERE token_hash = ?2 AND revoked_at IS NULL \
-               AND expires_at > COALESCE(?1, unixepoch())",
-        )
-        .bind(now)
-        .bind(&hash[..])
-        .execute(&mut *tx)
-        .await
-        .map_err(map_db_error)?
-        .rows_affected();
-        tx.commit().await.map_err(map_db_error)?;
-        Ok(n > 0)
+        self.repo().revoke_capability(&hash, now).await
     }
 
     /// Revoke every active capability of `account`; returns how many were revoked.
     pub async fn revoke_all_capabilities(&self, account: AccountId) -> Result<u64> {
-        self.revoke_all(account, None).await
+        self.repo().revoke_all_capabilities(account, None).await
     }
 
     #[doc(hidden)]
     pub async fn revoke_all_capabilities_at(&self, account: AccountId, now: i64) -> Result<u64> {
-        self.revoke_all(account, Some(now)).await
-    }
-
-    async fn revoke_all(&self, account: AccountId, now: Option<i64>) -> Result<u64> {
-        let mut tx = self.store().begin_write().await?;
-        let n = revoke_all_in(&mut tx, account, now).await?;
-        tx.commit().await.map_err(map_db_error)?;
-        Ok(n)
-    }
-}
-
-async fn validate_inner(
-    store: &SqliteStore,
-    token: &str,
-    role: CapabilityRole,
-    now: Option<i64>,
-) -> Result<Option<CapabilityInfo>> {
-    let hash = lookup_hash(token);
-    // One statement for every outcome: the primary-key lookup on the hash is the comparison.
-    let row: Option<(i64, i64, String, i64)> = sqlx::query_as(
-        "SELECT c.account_id, c.domain_id, c.role, c.expires_at \
-         FROM capabilities c \
-         JOIN accounts a ON a.id = c.account_id AND a.domain_id = c.domain_id \
-         WHERE c.token_hash = ?1 AND c.revoked_at IS NULL \
-           AND c.expires_at > COALESCE(?2, unixepoch()) \
-           AND c.role = ?3 AND a.status = 'active'",
-    )
-    .bind(&hash[..])
-    .bind(now)
-    .bind(role.as_str())
-    .fetch_optional(store.pool())
-    .await
-    .map_err(map_db_error)?;
-    match row {
-        None => Ok(None),
-        Some((account, domain, role_s, expires_at)) => Ok(Some(CapabilityInfo {
-            account: AccountId(account),
-            domain: DomainId(domain),
-            role: parse_role(&role_s)?,
-            expires_at,
-        })),
+        self.repo().revoke_all_capabilities(account, Some(now)).await
     }
 }

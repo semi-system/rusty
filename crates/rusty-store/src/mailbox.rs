@@ -32,7 +32,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use rusty_core::{
@@ -262,13 +261,6 @@ pub fn normalize_keyword(kw: &str) -> Result<String> {
 
 // ---------- small helpers ----------
 
-fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
-}
-
 /// Issue a new folder UIDVALIDITY inside the caller's transaction.
 ///
 /// RFC 3501/9051 §2.3.1.1: a folder recreated under a reused name (and here also a reused
@@ -278,11 +270,11 @@ fn now() -> i64 {
 /// `Quota`: the caller returns the error, its transaction rolls back, and the mark is
 /// unchanged.
 async fn take_uid_validity(conn: &mut SqliteConnection, mb: MailboxId) -> Result<i64> {
-    let v: i64 = sqlx::query_scalar(
-        "UPDATE mailboxes SET uid_validity = max(?1, uid_validity + 1) WHERE id = ?2 \
-         RETURNING uid_validity",
-    )
-    .bind(now())
+    // The DATABASE clock (clock policy D2); `DB_NOW` is a constant, never caller data.
+    let v: i64 = sqlx::query_scalar(&format!(
+        "UPDATE mailboxes SET uid_validity = max({DB_NOW}, uid_validity + 1) WHERE id = ?1 \
+         RETURNING uid_validity"
+    ))
     .bind(mb.0)
     .fetch_optional(&mut *conn)
     .await
@@ -947,18 +939,20 @@ impl Mailbox {
         let uid = take_uid(&mut tx, self.id, folder).await?;
         let id = take_msg_id(&mut tx, self.id).await?;
         let thread_id = find_thread(&mut tx, self.id, &env).await?.unwrap_or(id);
-        sqlx::query(
+        // internal_date: the database clock, or the caller's `_at(now)` value verbatim (D2).
+        let at = delivery.and_then(|(_, at)| at);
+        sqlx::query(&format!(
             "INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, size, internal_date, \
              subject, from_addr, to_addrs, message_id_hdr, thread_id, flags) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
+             VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, {DB_NOW}), ?, ?, ?, ?, ?, ?)"
+        ))
         .bind(self.id.0)
         .bind(id)
         .bind(folder.0)
         .bind(i64::from(uid))
         .bind(hash.as_str())
         .bind(size)
-        .bind(now())
+        .bind(at)
         .bind(&env.subject)
         .bind(&env.from)
         .bind(&env.to)
@@ -1105,11 +1099,10 @@ impl Mailbox {
     /// Soft-delete a live message (sets `deleted_at`); the blob is untouched.
     pub async fn expunge(&self, id: MessageId) -> Result<()> {
         let mut tx = self.begin().await?;
-        let n = sqlx::query(
-            "UPDATE messages SET deleted_at = ? \
-             WHERE mailbox_id = ? AND id = ? AND deleted_at IS NULL",
-        )
-        .bind(now())
+        let n = sqlx::query(&format!(
+            "UPDATE messages SET deleted_at = {DB_NOW} \
+             WHERE mailbox_id = ? AND id = ? AND deleted_at IS NULL"
+        ))
         .bind(self.id.0)
         .bind(id.0)
         .execute(&mut *tx)

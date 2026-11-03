@@ -6,6 +6,11 @@ license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+# Runs the directory conformance suite against Postgres too (needs RUSTY_TEST_PG_URL).
+postgres = ["rusty-store/postgres"]
+
 [dependencies]
 rusty-core = { path = "../rusty-core" }
 rusty-store = { path = "../rusty-store" }
@@ -17,7 +22,6 @@ unicode-normalization.workspace = true
 unicode-general-category.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
-sqlx.workspace = true
 # spawn_blocking only (argon2 work off the async threads).
 tokio = { workspace = true, features = ["rt"] }
 
@@ -27,3 +31,4 @@ tempfile.workspace = true
 tracing.workspace = true
 proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+sqlx.workspace = true

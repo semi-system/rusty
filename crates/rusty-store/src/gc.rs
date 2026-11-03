@@ -222,7 +222,16 @@ pub async fn collect_blobs(
     if grace < MIN_GC_GRACE {
         return Err(Error::Invalid("gc grace must be at least one hour".into()));
     }
-    collect_blobs_at(store, blobs, grace, SystemTime::now()).await
+    // The grace cutoff comes from the DATABASE clock (clock policy D2), the same clock that
+    // stamped `blobs.zero_since`. Blob file mtimes are compared against the same cutoff; the
+    // minimum grace of one hour bounds the effect of any skew between the database and the
+    // filesystem clock.
+    let db_now: i64 = sqlx::query_scalar("SELECT unixepoch()")
+        .fetch_one(store.pool())
+        .await
+        .map_err(map_db_error)?;
+    let now = UNIX_EPOCH + Duration::from_secs(u64::try_from(db_now).unwrap_or(0));
+    collect_blobs_at(store, blobs, grace, now).await
 }
 
 /// Remove unreferenced blobs as seen at time `now`, with any `grace` (for tests; production
