@@ -103,7 +103,7 @@ check_static() {
     case "$f" in *.d|*.rlib|*.so|*.a) continue ;; esac
     file -L "$f" | grep -q "ELF" || continue
     found=$((found + 1))
-    if file -L "$f" | grep -q "statically linked"; then
+    if file -L "$f" | grep -qE "statically linked|static-pie linked"; then
       echo "static: $f"
     else
       echo "NOT static: $f" >&2; file -L "$f" >&2; return 1
