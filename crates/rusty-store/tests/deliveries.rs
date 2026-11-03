@@ -233,19 +233,9 @@ async fn purge_deliveries_removes_only_old_rows() {
         .await
         .unwrap();
     // Cutoff is strict: created_at < now - retention.
-    assert_eq!(
-        purge_deliveries_at(&e.store, 600, 100)
-            .await
-            .unwrap(),
-        1
-    );
+    assert_eq!(purge_deliveries_at(&e.store, 600, 100).await.unwrap(), 1);
     assert_eq!(e.scalar("SELECT count(*) FROM deliveries").await, 2);
-    assert_eq!(
-        purge_deliveries_at(&e.store, 600, 100)
-            .await
-            .unwrap(),
-        0
-    );
+    assert_eq!(purge_deliveries_at(&e.store, 600, 100).await.unwrap(), 0);
     assert_eq!(purge_deliveries(&e.store, 5000).await.unwrap(), 1);
     assert_eq!(e.scalar("SELECT count(*) FROM deliveries").await, 1);
     // Messages are untouched.
@@ -376,10 +366,16 @@ fn delivery_id_derive_is_stable_and_field_separated() {
 #[tokio::test]
 async fn deliver_at_stamps_created_at_and_deliver_uses_db_clock() {
     let e = env().await;
-    e.mb.deliver_at(INBOX, raw("a", None), Flags::empty(), did(1), 4242).await.unwrap();
+    e.mb.deliver_at(INBOX, raw("a", None), Flags::empty(), did(1), 4242)
+        .await
+        .unwrap();
     assert_eq!(e.scalar("SELECT created_at FROM deliveries").await, 4242);
-    e.mb.deliver(INBOX, raw("b", None), Flags::empty(), did(2)).await.unwrap();
-    let db_now = e.scalar("SELECT CAST(strftime('%s','now') AS INTEGER)").await;
+    e.mb.deliver(INBOX, raw("b", None), Flags::empty(), did(2))
+        .await
+        .unwrap();
+    let db_now = e
+        .scalar("SELECT CAST(strftime('%s','now') AS INTEGER)")
+        .await;
     let at = e
         .scalar("SELECT created_at FROM deliveries WHERE delivery_id = x'0202020202020202020202020202020202020202020202020202020202020202'")
         .await;

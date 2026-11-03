@@ -4,9 +4,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use rusty_core::{AccountId, FolderId};
-use rusty_store::{
-    BlobStore, FsBlobStore, Mailbox, SqliteStore, BLOB_ROOT_MARKER, GC_LOCK_FILE,
-};
+use rusty_store::{BlobStore, FsBlobStore, Mailbox, SqliteStore, BLOB_ROOT_MARKER, GC_LOCK_FILE};
 
 /// Fresh private in-memory store with migrations applied.
 pub async fn mem() -> SqliteStore {

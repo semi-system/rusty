@@ -95,7 +95,10 @@ async fn append_assigns_increasing_ids_and_uids() {
             change(3, ChangeItem::Message(MessageId(3)), ChangeOp::Create),
         ]
     );
-    assert_eq!(e.mb.changes_since(2, MAX_PAGE).await.unwrap().changes.len(), 1);
+    assert_eq!(
+        e.mb.changes_since(2, MAX_PAGE).await.unwrap().changes.len(),
+        1
+    );
     assert_eq!(e.scalar("SELECT refcount FROM blobs LIMIT 1").await, 1);
 }
 
@@ -152,7 +155,13 @@ async fn append_empty_is_invalid() {
             .await;
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
     assert!(e.blob_files().is_empty());
-    assert!(e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes.is_empty());
+    assert!(e
+        .mb
+        .changes_since(0, MAX_PAGE)
+        .await
+        .unwrap()
+        .changes
+        .is_empty());
 }
 
 #[tokio::test]
@@ -227,7 +236,10 @@ async fn failed_transaction_leaves_orphan_blob_not_metadata() {
         e.mb.append(INBOX, body, Flags::empty()).await.unwrap(),
         mref(1, 1)
     );
-    assert_eq!(e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes[0].seq, 1);
+    assert_eq!(
+        e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes[0].seq,
+        1
+    );
 }
 
 // ---------- flags / keywords ----------
@@ -246,7 +258,11 @@ async fn set_flags_logs_update() {
     let ch = e.mb.changes_since(1, MAX_PAGE).await.unwrap().changes;
     assert_eq!(
         ch,
-        vec![change(2, ChangeItem::Message(MessageId(1)), ChangeOp::Update)]
+        vec![change(
+            2,
+            ChangeItem::Message(MessageId(1)),
+            ChangeOp::Update
+        )]
     );
 
     let r = e.mb.set_flags(MessageId(2), Flags::SEEN).await;
@@ -264,15 +280,30 @@ async fn keyword_is_lowercased_and_idempotent() {
     e.mb.add_keyword(MessageId(1), "Work").await.unwrap();
     assert_eq!(keywords(&e, &e.mb, 1).await, vec!["$label1", "work"]);
     // create + two real additions; the duplicate logs nothing
-    assert_eq!(e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes.len(), 3);
+    assert_eq!(
+        e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes.len(),
+        3
+    );
 
     e.mb.remove_keyword(MessageId(1), "WORK").await.unwrap();
     assert_eq!(keywords(&e, &e.mb, 1).await, vec!["$label1"]);
-    let last = e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes.pop().unwrap();
-    assert_eq!(last, change(4, ChangeItem::Message(MessageId(1)), ChangeOp::Update));
+    let last =
+        e.mb.changes_since(0, MAX_PAGE)
+            .await
+            .unwrap()
+            .changes
+            .pop()
+            .unwrap();
+    assert_eq!(
+        last,
+        change(4, ChangeItem::Message(MessageId(1)), ChangeOp::Update)
+    );
     // removing an absent keyword is a no-op
     e.mb.remove_keyword(MessageId(1), "absent").await.unwrap();
-    assert_eq!(e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes.len(), 4);
+    assert_eq!(
+        e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes.len(),
+        4
+    );
 
     let r = e.mb.add_keyword(MessageId(9), "x").await;
     assert!(matches!(r, Err(Error::NotFound(_))), "{r:?}");
@@ -369,7 +400,11 @@ async fn move_changes_uid_and_logs_change() {
     let ch = e.mb.changes_since(3, MAX_PAGE).await.unwrap().changes;
     assert_eq!(
         ch,
-        vec![change(4, ChangeItem::Message(MessageId(1)), ChangeOp::Update)]
+        vec![change(
+            4,
+            ChangeItem::Message(MessageId(1)),
+            ChangeOp::Update
+        )]
     );
 
     // Moving to the folder it is already in allocates nothing.
@@ -377,7 +412,10 @@ async fn move_changes_uid_and_logs_change() {
         e.mb.move_message(MessageId(1), SENT).await.unwrap(),
         mref(1, 2)
     );
-    assert_eq!(e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes.len(), 4);
+    assert_eq!(
+        e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes.len(),
+        4
+    );
     assert_eq!(
         e.scalar("SELECT next_uid FROM folders WHERE id = 2").await,
         3
@@ -404,7 +442,12 @@ async fn expunge_hides_message_but_keeps_blob() {
         .unwrap();
     e.mb.expunge(MessageId(1)).await.unwrap();
 
-    assert!(e.mb.list_folder(INBOX, 0, MAX_PAGE).await.unwrap().is_empty());
+    assert!(e
+        .mb
+        .list_folder(INBOX, 0, MAX_PAGE)
+        .await
+        .unwrap()
+        .is_empty());
     assert_eq!(e.blobs.get(&BlobHash::of(&body)).await.unwrap(), body);
     assert_eq!(e.scalar("SELECT refcount FROM blobs").await, 1);
     assert_eq!(
@@ -415,7 +458,11 @@ async fn expunge_hides_message_but_keeps_blob() {
     let ch = e.mb.changes_since(1, MAX_PAGE).await.unwrap().changes;
     assert_eq!(
         ch,
-        vec![change(2, ChangeItem::Message(MessageId(1)), ChangeOp::Destroy)]
+        vec![change(
+            2,
+            ChangeItem::Message(MessageId(1)),
+            ChangeOp::Destroy
+        )]
     );
 
     for r in [
@@ -546,7 +593,13 @@ async fn delete_folder_with_messages_conflicts() {
     e.mb.move_message(MessageId(1), TRASH).await.unwrap();
     e.mb.delete_folder(child).await.unwrap();
     e.mb.delete_folder(f).await.unwrap();
-    let last = e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes.pop().unwrap();
+    let last =
+        e.mb.changes_since(0, MAX_PAGE)
+            .await
+            .unwrap()
+            .changes
+            .pop()
+            .unwrap();
     assert_eq!(last.item, ChangeItem::Folder(f));
     assert_eq!(last.op, ChangeOp::Destroy);
     let r = e.mb.delete_folder(f).await;
@@ -881,7 +934,10 @@ async fn uid_validity_over_u32_max_is_quota() {
         max,
         "high-water mark unchanged"
     );
-    assert_eq!(e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes.len(), changes);
+    assert_eq!(
+        e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes.len(),
+        changes
+    );
 }
 
 // ---------- isolation ----------
@@ -921,8 +977,14 @@ async fn cross_mailbox_ids_are_not_found() {
     let bl = bob.list_folder(INBOX, 0, MAX_PAGE).await.unwrap();
     assert_eq!(bl.len(), 3);
     assert!(bl.iter().all(|m| m.flags == Flags::empty()));
-    assert_eq!(e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes.len(), 1);
-    assert_eq!(bob.changes_since(0, MAX_PAGE).await.unwrap().changes.len(), 4);
+    assert_eq!(
+        e.mb.changes_since(0, MAX_PAGE).await.unwrap().changes.len(),
+        1
+    );
+    assert_eq!(
+        bob.changes_since(0, MAX_PAGE).await.unwrap().changes.len(),
+        4
+    );
 }
 
 // ---------- concurrency / cancellation ----------

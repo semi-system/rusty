@@ -1020,3 +1020,83 @@ async fn purge_finished_default_uses_db_clock_and_retention() {
     assert_eq!(jq.purge_finished_default().await.unwrap(), 1);
     assert_eq!(state(&s, fresh).await, "done");
 }
+
+// ---------- string-aware depth pre-check ----------
+
+async fn insert_raw(s: &SqliteStore, payload: &str) -> JobId {
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO jobs (kind, state, payload, attempts, max_attempts, run_after, created_at, updated_at) \
+         VALUES ('t', 'queued', ?, 0, 5, 0, 0, 0) RETURNING id",
+    )
+    .bind(payload)
+    .fetch_one(s.pool())
+    .await
+    .unwrap();
+    JobId(id)
+}
+
+#[tokio::test]
+async fn depth_check_ignores_brackets_inside_strings() {
+    let (_s, jq) = q().await;
+    // (a) a string value holding 200 brackets and escaped quotes is not nesting.
+    let text = format!("{}\"{}", "[".repeat(200), "]".repeat(200));
+    let payload = json!({ "s": text, "arr": [text.clone()] });
+    let id = jq.enqueue_at("t", None, &payload, None, 10).await.unwrap();
+    let got = jq.claim_at("w", &["t"], 30, 10).await.unwrap().unwrap();
+    assert_eq!(got.id, id);
+    assert_eq!(got.payload, payload);
+}
+
+#[tokio::test]
+async fn depth_check_still_rejects_deep_nesting_with_bracket_strings() {
+    let (s, jq) = q().await;
+    // (b) 65 containers deep, with bracket-laden strings among them: Value path ...
+    let mut v = json!("[[[[\"]]]]");
+    for _ in 0..65 {
+        v = json!([v, "{{{{"]);
+    }
+    assert!(matches!(
+        jq.enqueue("t", None, &v, None).await,
+        Err(Error::Invalid(_))
+    ));
+    teardown(v);
+    // ... and the stored-text path used by claim.
+    let deep = format!("{}\"[[[\"{}", "[".repeat(65), "]".repeat(65));
+    let bad = insert_raw(&s, &deep).await;
+    let good = enq(&jq, "t", Some(5), 1000).await;
+    let got = jq.claim_at("w", &["t"], 30, 1000).await.unwrap().unwrap();
+    assert_eq!(got.id, good);
+    assert_eq!(state(&s, bad).await, "dead");
+}
+
+#[tokio::test]
+async fn depth_check_survives_backslash_quote_sequences() {
+    let (s, jq) = q().await;
+    // (c1) shallow documents whose strings end in backslash runs and contain escaped quotes
+    // followed by many brackets: a scanner that loses string state would count them.
+    let brackets = "[".repeat(200);
+    let shallow = [
+        format!(r#"["\\\\","{brackets}"]"#),
+        format!(r#"["\\\"{brackets}"]"#),
+        format!(r#"["\\\\\"{brackets}","\\"]"#),
+        format!(r#"{{"k\\":"{brackets}","\"":"\\"}}"#),
+    ];
+    let mut ids = Vec::new();
+    for t in &shallow {
+        ids.push(insert_raw(&s, t).await);
+    }
+    for id in &ids {
+        let got = jq.claim_at("w", &["t"], 30, 10).await.unwrap().unwrap();
+        assert!(ids.contains(&got.id), "shallow doc was refused");
+        assert_ne!(state(&s, *id).await, "dead");
+    }
+    // (c2) 65 deep AFTER a string ending in an even backslash run: the quote closes the
+    // string, so the brackets after it are real and the document must be refused.
+    let (s, jq) = q().await;
+    let deep = format!(r#"["\\\\",{}1{}]"#, "[".repeat(64), "]".repeat(64));
+    let bad = insert_raw(&s, &deep).await;
+    let good = enq(&jq, "t", Some(5), 1000).await;
+    let got = jq.claim_at("w", &["t"], 30, 1000).await.unwrap().unwrap();
+    assert_eq!(got.id, good);
+    assert_eq!(state(&s, bad).await, "dead");
+}

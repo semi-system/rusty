@@ -8,9 +8,13 @@ use rusty_store::{ChangeItem, ChangeOp, MAX_PAGE};
 
 async fn append_n(e: &Env, n: usize) {
     for i in 0..n {
-        e.mb.append(INBOX, raw(&format!("m{i}"), Some(&format!("m{i}@x"))), Flags::empty())
-            .await
-            .unwrap();
+        e.mb.append(
+            INBOX,
+            raw(&format!("m{i}"), Some(&format!("m{i}@x"))),
+            Flags::empty(),
+        )
+        .await
+        .unwrap();
     }
 }
 
@@ -18,12 +22,27 @@ async fn append_n(e: &Env, n: usize) {
 async fn list_folder_pages_by_uid() {
     let e = env().await;
     append_n(&e, 25).await;
-    let uids = |v: Vec<rusty_store::MessageSummary>| v.into_iter().map(|s| s.uid).collect::<Vec<_>>();
-    assert_eq!(uids(e.mb.list_folder(INBOX, 0, 10).await.unwrap()), (1..=10).collect::<Vec<_>>());
-    assert_eq!(uids(e.mb.list_folder(INBOX, 10, 10).await.unwrap()), (11..=20).collect::<Vec<_>>());
-    assert_eq!(uids(e.mb.list_folder(INBOX, 20, 10).await.unwrap()), (21..=25).collect::<Vec<_>>());
+    let uids =
+        |v: Vec<rusty_store::MessageSummary>| v.into_iter().map(|s| s.uid).collect::<Vec<_>>();
+    assert_eq!(
+        uids(e.mb.list_folder(INBOX, 0, 10).await.unwrap()),
+        (1..=10).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        uids(e.mb.list_folder(INBOX, 10, 10).await.unwrap()),
+        (11..=20).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        uids(e.mb.list_folder(INBOX, 20, 10).await.unwrap()),
+        (21..=25).collect::<Vec<_>>()
+    );
     assert!(e.mb.list_folder(INBOX, 25, 10).await.unwrap().is_empty());
-    assert!(e.mb.list_folder(INBOX, u32::MAX, 10).await.unwrap().is_empty());
+    assert!(e
+        .mb
+        .list_folder(INBOX, u32::MAX, 10)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -69,7 +88,10 @@ async fn changes_since_pages_with_more_flag() {
     let p1 = e.mb.changes_since(0, 10).await.unwrap();
     assert_eq!(p1.changes.len(), 10);
     assert!(p1.more);
-    let p2 = e.mb.changes_since(p1.changes.last().unwrap().seq, 10).await.unwrap();
+    let p2 =
+        e.mb.changes_since(p1.changes.last().unwrap().seq, 10)
+            .await
+            .unwrap();
     assert_eq!(p2.changes.first().unwrap().seq, 11);
     assert!(p2.more);
     // Exactly the rest: more is false.
@@ -104,16 +126,18 @@ async fn changes_since_limit_is_clamped() {
 async fn change_items_and_thread_ids_are_typed() {
     let e = env().await;
     let f = e.mb.create_folder(None, "Work").await.unwrap();
-    let m = e.mb.append(f, raw("s", Some("s@x")), Flags::empty()).await.unwrap();
-    let items: Vec<(ChangeItem, ChangeOp)> = e
-        .mb
-        .changes_since(0, 10)
-        .await
-        .unwrap()
-        .changes
-        .into_iter()
-        .map(|c| (c.item, c.op))
-        .collect();
+    let m =
+        e.mb.append(f, raw("s", Some("s@x")), Flags::empty())
+            .await
+            .unwrap();
+    let items: Vec<(ChangeItem, ChangeOp)> =
+        e.mb.changes_since(0, 10)
+            .await
+            .unwrap()
+            .changes
+            .into_iter()
+            .map(|c| (c.item, c.op))
+            .collect();
     assert_eq!(
         items,
         vec![
@@ -171,8 +195,15 @@ async fn failed_create_folder_does_not_consume_an_id() {
     let e = env().await;
     e.mb.create_folder(None, "A").await.unwrap();
     let before = next_folder_id(&e).await;
-    assert!(matches!(e.mb.create_folder(None, "A").await, Err(Error::Conflict(_))));
-    assert_eq!(next_folder_id(&e).await, before, "rolled back with the transaction");
+    assert!(matches!(
+        e.mb.create_folder(None, "A").await,
+        Err(Error::Conflict(_))
+    ));
+    assert_eq!(
+        next_folder_id(&e).await,
+        before,
+        "rolled back with the transaction"
+    );
 }
 
 /// Backfill of `mailboxes.next_folder_id` from existing folders (migration 0003 applied to a

@@ -316,8 +316,12 @@ fn ensure_shard_dir(p: &Path) -> io::Result<()> {
 /// the idempotent early return of `put`: the earlier put that created the blob may have
 /// crashed before its own directory syncs, so a repeated `put` re-establishes durability.
 fn sync_shard_chain(root: &Path, path: &Path) -> io::Result<()> {
-    let l2 = path.parent().ok_or_else(|| io::Error::other("blob path has no parent"))?;
-    let l1 = l2.parent().ok_or_else(|| io::Error::other("blob path has no parent"))?;
+    let l2 = path
+        .parent()
+        .ok_or_else(|| io::Error::other("blob path has no parent"))?;
+    let l1 = l2
+        .parent()
+        .ok_or_else(|| io::Error::other("blob path has no parent"))?;
     fsync_dir(l2)?;
     fsync_dir(l1)?;
     fsync_dir(root)
@@ -326,8 +330,12 @@ fn sync_shard_chain(root: &Path, path: &Path) -> io::Result<()> {
 /// Write `bytes` as the blob at `root/l1/l2/<hash>` = `path` (see the module docs for the
 /// permission and durability protocol).
 fn write_blob_sync(root: &Path, path: &Path, h: &BlobHash, bytes: &[u8]) -> io::Result<()> {
-    let l2 = path.parent().ok_or_else(|| io::Error::other("blob path has no parent"))?;
-    let l1 = l2.parent().ok_or_else(|| io::Error::other("blob path has no parent"))?;
+    let l2 = path
+        .parent()
+        .ok_or_else(|| io::Error::other("blob path has no parent"))?;
+    let l1 = l2
+        .parent()
+        .ok_or_else(|| io::Error::other("blob path has no parent"))?;
     ensure_shard_dir(l1)?;
     ensure_shard_dir(l2)?;
     let (tmp, mut f) = create_temp(l2, || tmp_name(h))?;
@@ -365,9 +373,9 @@ fn check_root(root: &Path) -> Result<()> {
     match fs::symlink_metadata(root.join(BLOB_ROOT_MARKER)) {
         Ok(m) if m.file_type().is_file() => Ok(()),
         Ok(_) => Err(Error::storage("blob root marker is not a regular file")),
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            Err(Error::storage("blob root is not initialized (marker missing)"))
-        }
+        Err(e) if e.kind() == ErrorKind::NotFound => Err(Error::storage(
+            "blob root is not initialized (marker missing)",
+        )),
         Err(e) => Err(io_err("stat blob root marker", e)),
     }
 }
@@ -573,7 +581,9 @@ fn list_shard_sync(root: &Path, shard: u8) -> Vec<BlobEntry> {
 /// restored; `Ok(false)`: a file already existed and `q` was removed. A restore is made
 /// durable (directory fsync) before `q` is removed.
 fn restore_no_clobber(q: &Path, path: &Path) -> io::Result<bool> {
-    let dir = path.parent().ok_or_else(|| io::Error::other("blob path has no parent"))?;
+    let dir = path
+        .parent()
+        .ok_or_else(|| io::Error::other("blob path has no parent"))?;
     match fs::hard_link(q, path) {
         Ok(()) => {
             fsync_dir(dir)?;

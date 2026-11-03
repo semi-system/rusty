@@ -65,7 +65,10 @@ async fn delete_if_older_then_get_not_found() {
     let future = SystemTime::now() + DAY;
     assert!(s.delete_if_older(&h, future).await.unwrap());
     assert!(matches!(s.get(&h).await, Err(Error::NotFound(_))));
-    assert!(!s.delete_if_older(&BlobHash::of(b"nope"), future).await.unwrap());
+    assert!(!s
+        .delete_if_older(&BlobHash::of(b"nope"), future)
+        .await
+        .unwrap());
 }
 
 #[tokio::test]
@@ -418,7 +421,11 @@ async fn open_heals_quarantine_when_gc_lock_is_free() {
     let (dir, s) = store().await;
     let h = s.put(Bytes::from_static(b"crashed gc")).await.unwrap();
     let p = blob_path(dir.path(), &h);
-    let q = p.with_file_name(format!(".{}.gc1.1{}", h.as_str(), rusty_store::QUARANTINE_SUFFIX));
+    let q = p.with_file_name(format!(
+        ".{}.gc1.1{}",
+        h.as_str(),
+        rusty_store::QUARANTINE_SUFFIX
+    ));
     std::fs::rename(&p, &q).unwrap();
 
     // GC lock held elsewhere: open still succeeds and leaves the quarantine file alone.
@@ -547,7 +554,9 @@ async fn open_and_init_refuse_symlink_root_even_with_trailing_slash() {
     assert!(FsBlobStore::init(&link).await.is_err());
     // The real root still opens, with or without a trailing slash.
     FsBlobStore::open(&real).await.unwrap();
-    FsBlobStore::open(format!("{}/", real.display())).await.unwrap();
+    FsBlobStore::open(format!("{}/", real.display()))
+        .await
+        .unwrap();
 }
 
 // ----- P0 m5: the startup heal report is kept -----
@@ -558,7 +567,11 @@ async fn startup_heal_report_is_available() {
     assert_eq!(s.startup_heal().map(|r| r.restored), Some(0));
     let h = s.put(Bytes::from_static(b"crashed gc")).await.unwrap();
     let p = blob_path(dir.path(), &h);
-    let q = p.with_file_name(format!(".{}.gc1.1{}", h.as_str(), rusty_store::QUARANTINE_SUFFIX));
+    let q = p.with_file_name(format!(
+        ".{}.gc1.1{}",
+        h.as_str(),
+        rusty_store::QUARANTINE_SUFFIX
+    ));
     std::fs::rename(&p, &q).unwrap();
 
     let lock = s.try_lock_gc().await.unwrap();
