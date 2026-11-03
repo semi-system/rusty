@@ -1,41 +1,23 @@
-//! PG2 spike: backend-neutral repository traits at OPERATION granularity.
+//! Backend-neutral repository traits at OPERATION granularity (decision D3).
 //!
-//! One slice only (see docs/superpowers/plans/2026-11-03-postgres-backend-pg2-report.md):
-//! `create_domain`, `create_account` (mailbox row + system folders), `resolve`, `create_folder`,
-//! `append`/`deliver` (idempotent through a `DeliveryId`), `append_many`, `list_folder`,
-//! `changes_since`.
+//! - `directory`: [`DirectoryRepo`] (domains, accounts, aliases, lists, capabilities, config).
+//! - `mailbox`: [`MailboxRepo`] (folders, messages, batches, deliveries, change log).
 //!
-//! Division of labour (this is the point of the spike):
-//! - The facades below (`SpikeDirectory`, `SpikeMailbox`) own everything that does not talk to
-//!   a database: validation, limits, MIME parsing, blob IO ordering ("blob before metadata
-//!   transaction"), paging limits and the result-shaping rules. They hold `Arc<dyn Repo>`.
-//! - A repository method is ONE unit of work that owns its transaction. The caller passes owned
-//!   or borrowed plain data and gets plain data back. No transaction handle crosses the trait.
-//!   That is what makes the Postgres retry loop (40P01/40001) possible: a whole operation can
-//!   be re-run because nothing outside the repository observes a half-finished attempt.
-//! - Statement text that is identical up to placeholder syntax is shared (`sql` module); the
-//!   Rust glue (bind and decode) is per backend.
+//! The facades (`Directory`, `Mailbox`) own everything that does not talk to a database:
+//! validation, limits, MIME parsing, blob IO ordering ("blob before metadata transaction"),
+//! paging limits and result shaping. They hold `Arc<dyn Repo>`.
 //!
-//! Nothing here is wired into the existing `Mailbox` / `Directory`; those keep working
-//! untouched.
-
-use std::sync::Arc;
-
-use async_trait::async_trait;
-use bytes::Bytes;
-use rusty_core::{
-    AccountId, BlobHash, DeliveryId, Error, Flags, FolderId, MailboxId,
-    JobId, Result,
-};
-use rusty_mime::Envelope;
-
-use crate::mailbox::{
-    page_limit, validate_folder_name, ChangePage, DeliverOutcome, MessageRef, MessageSummary,
-    MAX_FOLDER_DEPTH, MAX_THREAD_CANDIDATES,
-};
-use crate::BlobStore;
+//! A repository method is ONE unit of work that owns its transaction. The caller passes owned or
+//! borrowed plain data and gets plain data back. No transaction handle crosses the trait, which
+//! is what makes the Postgres retry loop (40P01/40001) possible: a whole operation can be re-run
+//! because nothing outside the repository observes a half-finished attempt.
+//!
+//! Statement text that is identical up to placeholder syntax is shared (`sql_text`, `directory::sql`);
+//! the Rust glue (bind and decode) is per backend. Placeholders are `$N` on both backends and
+//! `{NOW}` is the database clock (`unixepoch()` / `rs_now()`).
 
 mod directory;
+mod mailbox;
 #[cfg(feature = "postgres")]
 pub mod pg;
 pub mod sqlite;
@@ -44,8 +26,15 @@ pub use directory::{
     AccountStatus, AuthRow, CapabilityGrant, ConfigLayers, ConfigTarget, DirectoryRepo, ListMember,
     NewAccount, Resolution, GLOBAL_PLAN,
 };
-
-
+pub use mailbox::{
+    sql_text, Committed, DeliverEntry, Delivery, FolderInfo, JobFence, MailboxRepo, MessageDetail,
+    NewMessage, RawRef,
+};
+pub(crate) use mailbox::{
+    changes_since_generic, check_batch_len, depth_verdict, moved_refs, not_found_folder,
+    not_found_mailbox, not_found_message, plan_deliveries, plan_move, split_hits,
+    summary_from_row, thread_candidates, Slot, SummaryRow,
+};
 
 /// Number of system folders created with every mailbox (folder ids 1..=SYSTEM_FOLDERS).
 pub const SYSTEM_FOLDERS: i64 = 5;
@@ -59,314 +48,11 @@ pub const SYSTEM_FOLDER_TABLE: [(i64, &str, &str); 5] = [
     (5, "Spam", "spam"),
 ];
 
-// ---------------------------------------------------------------- neutral data
-
-/// A message to store: metadata parsed by the facade, content already in the blob store.
-#[derive(Debug, Clone)]
-pub struct NewMessage {
-    pub folder: FolderId,
-    pub hash: BlobHash,
-    pub size: i64,
-    pub flags: Flags,
-    pub env: Envelope,
-}
-
-/// Idempotency key of a delivery. `created_at: None` = database clock.
-#[derive(Debug, Clone, Copy)]
-pub struct Delivery {
-    pub id: DeliveryId,
-    pub created_at: Option<i64>,
-}
-
-/// A claimed job to fence and complete in the SAME transaction as the repository effect (the
-/// `JobQueue::complete_in` pattern without exposing a transaction handle).
-#[derive(Debug, Clone, Copy)]
-pub struct JobFence {
-    pub id: JobId,
-    pub epoch: i64,
-}
-
-#[async_trait]
-pub trait MailboxRepo: Send + Sync {
-    async fn mailbox_for_account(&self, account: AccountId) -> Result<MailboxId>;
-    /// `NotFound` if the folder is not in this mailbox.
-    async fn folder_exists(&self, mb: MailboxId, folder: FolderId) -> Result<()>;
-    async fn create_folder(
-        &self,
-        mb: MailboxId,
-        parent: Option<FolderId>,
-        name: &str,
-    ) -> Result<FolderId>;
-    /// Store one message (plus a `deliveries` row if `delivery` is given), one transaction. With
-    /// `fence` the job is fenced and marked done in the same transaction, also when the delivery
-    /// turns out to be a duplicate; a stale fence rolls everything back (`Conflict`).
-    async fn append(
-        &self,
-        mb: MailboxId,
-        msg: &NewMessage,
-        delivery: Option<&Delivery>,
-        fence: Option<JobFence>,
-    ) -> Result<DeliverOutcome>;
-    /// Store `msgs` (1..) in input order in ONE transaction: ids, uids and change seqs are
-    /// consecutive in input order.
-    async fn append_many(&self, mb: MailboxId, msgs: &[NewMessage]) -> Result<Vec<MessageRef>>;
-    async fn list_folder(
-        &self,
-        mb: MailboxId,
-        folder: FolderId,
-        after_uid: u32,
-        limit: i64,
-    ) -> Result<Vec<MessageSummary>>;
-    async fn changes_since(&self, mb: MailboxId, seq: i64, limit: i64) -> Result<ChangePage>;
-}
-
-// ---------------------------------------------------------------- shared SQL
-
-/// Statement text shared by the backends. Written once with numbered `$N` placeholders (valid
-/// on Postgres natively and on SQLite through sqlx) and `{NOW}` for the database clock;
-/// `render_*` produce the dialect.
-/// Only static text is ever rendered: caller data is always bound.
-pub mod sql_text {
-    pub const FOLDER_EXISTS: &str = "SELECT id FROM folders WHERE mailbox_id = $1 AND id = $2";
-    pub const MAILBOX_FOR_ACCOUNT: &str = "SELECT id FROM mailboxes WHERE account_id = $1";
-    pub const ANCESTORS: &str = "WITH RECURSIVE up(id, parent_id, depth) AS ( \
-          SELECT id, parent_id, 1 FROM folders WHERE mailbox_id = $1 AND id = $2 \
-          UNION ALL \
-          SELECT f.id, f.parent_id, u.depth + 1 FROM folders f JOIN up u \
-            ON f.mailbox_id = $1 AND f.id = u.parent_id \
-          WHERE u.depth <= $3 \
-        ) SELECT id, parent_id FROM up ORDER BY depth";
-    pub const INSERT_FOLDER: &str = "INSERT INTO folders \
-        (mailbox_id, id, parent_id, name, role, uid_validity) VALUES ($1, $2, $3, $4, 'custom', $5)";
-    pub const INSERT_CHANGE: &str =
-        "INSERT INTO change_log (mailbox_id, seq, kind, item_id, op) VALUES ($1, $2, $3, $4, $5)";
-    /// Allocate `$3` uids of a folder; returns the first.
-    pub const TAKE_UIDS: &str = "UPDATE folders SET next_uid = next_uid + $3 \
-        WHERE mailbox_id = $1 AND id = $2 RETURNING next_uid - $3";
-    /// Allocate `$2` message ids AND `$2` change seqs (one per created message); returns both
-    /// firsts. Message creation always consumes one of each, so one statement serves a batch.
-    pub const TAKE_MSG_IDS_AND_SEQS: &str = "UPDATE mailboxes \
-        SET next_msg_id = next_msg_id + $2, next_change_seq = next_change_seq + $2 \
-        WHERE id = $1 RETURNING next_msg_id - $2, next_change_seq - $2";
-    pub const TAKE_FOLDER_ID: &str = "UPDATE mailboxes SET next_folder_id = next_folder_id + 1 \
-        WHERE id = $1 RETURNING next_folder_id - 1";
-    pub const TAKE_SEQ: &str = "UPDATE mailboxes SET next_change_seq = next_change_seq + 1 \
-        WHERE id = $1 RETURNING next_change_seq - 1";
-    pub const DELIVERY_LOOKUP: &str =
-        "SELECT message_id, blob_hash FROM deliveries WHERE mailbox_id = $1 AND delivery_id = $2";
-    pub const COMPLETE_JOB: &str = "UPDATE jobs SET state = 'done', lease_owner = NULL, \n        lease_expires_at = NULL, updated_at = {NOW} \n        WHERE id = $1 AND epoch = $2 AND state = 'running' AND lease_expires_at > {NOW}";
-    pub const MESSAGE_UID: &str = "SELECT uid FROM messages WHERE mailbox_id = $1 AND id = $2";
-    pub const LIST_FOLDER: &str = "SELECT id, uid, size, internal_date, subject, from_addr, \
-        flags, thread_id FROM messages WHERE mailbox_id = $1 AND folder_id = $2 AND uid > $3 \
-        AND deleted_at IS NULL ORDER BY uid LIMIT $4";
-    pub const CHANGES: &str = "SELECT seq, kind, item_id, op FROM change_log \
-        WHERE mailbox_id = $1 AND seq > $2 ORDER BY seq LIMIT $3";
-}
-
-// ---------------------------------------------------------------- pure helpers
-
-/// Verdict of the ancestor walk (rows from `sql_text::ANCESTORS` in depth order). Identical on
-/// every backend: the database only returns rows, the policy is Rust.
-pub(crate) fn depth_verdict(rows: &[(i64, Option<i64>)], forbidden: Option<i64>) -> Result<usize> {
-    let mut depth = 0usize;
-    let mut parent = None;
-    for (id, p) in rows {
-        if forbidden == Some(*id) {
-            return Err(Error::Conflict(
-                "cannot move a folder into itself or a descendant".into(),
-            ));
-        }
-        depth += 1;
-        if depth > MAX_FOLDER_DEPTH {
-            return Err(Error::Invalid("folder tree too deep".into()));
-        }
-        parent = *p;
-    }
-    if depth == 0 || parent.is_some() {
-        return Err(Error::NotFound("folder".into()));
-    }
-    Ok(depth)
-}
-
-/// Message-ids to look up for the thread of `env`, nearest ancestor first.
-pub(crate) fn thread_candidates(env: &Envelope) -> Vec<&str> {
-    env.references
-        .iter()
-        .rev()
-        .chain(env.in_reply_to.iter())
-        .take(MAX_THREAD_CANDIDATES)
-        .map(String::as_str)
-        .collect()
-}
-
 #[cfg(feature = "postgres")]
 /// Blob hash as the 32 raw bytes Postgres stores. `BlobHash` is validated lowercase hex.
-pub(crate) fn hash_bytes(h: &BlobHash) -> Result<Vec<u8>> {
-    hex::decode(h.as_str()).map_err(|_| Error::Invalid("invalid blob hash".into()))
+pub(crate) fn hash_bytes(h: &rusty_core::BlobHash) -> rusty_core::Result<Vec<u8>> {
+    hex::decode(h.as_str()).map_err(|_| rusty_core::Error::Invalid("invalid blob hash".into()))
 }
-
-pub(crate) fn not_found_folder() -> Error {
-    Error::NotFound("folder".into())
-}
-
-pub(crate) fn not_found_mailbox() -> Error {
-    Error::NotFound("mailbox".into())
-}
-
-
-// ---------------------------------------------------------------- facades
-
-/// Mailbox facade of the spike.
-#[derive(Clone)]
-pub struct SpikeMailbox {
-    repo: Arc<dyn MailboxRepo>,
-    blobs: Arc<dyn BlobStore>,
-    id: MailboxId,
-    max_message_bytes: usize,
-}
-
-impl SpikeMailbox {
-    pub async fn open(
-        repo: Arc<dyn MailboxRepo>,
-        blobs: Arc<dyn BlobStore>,
-        account: AccountId,
-    ) -> Result<Self> {
-        let id = repo.mailbox_for_account(account).await?;
-        Ok(Self {
-            repo,
-            blobs,
-            id,
-            max_message_bytes: crate::DEFAULT_MAX_MESSAGE_BYTES,
-        })
-    }
-
-    pub fn id(&self) -> MailboxId {
-        self.id
-    }
-
-    pub async fn create_folder(&self, parent: Option<FolderId>, name: &str) -> Result<FolderId> {
-        validate_folder_name(name)?;
-        self.repo.create_folder(self.id, parent, name).await
-    }
-
-    pub async fn append(&self, folder: FolderId, raw: Bytes, flags: Flags) -> Result<MessageRef> {
-        match self.store(folder, raw, flags, None, None).await? {
-            DeliverOutcome::Created(r) | DeliverOutcome::Duplicate(r) => Ok(r),
-        }
-    }
-
-    pub async fn deliver(
-        &self,
-        folder: FolderId,
-        raw: Bytes,
-        flags: Flags,
-        id: DeliveryId,
-    ) -> Result<DeliverOutcome> {
-        self.store(
-            folder,
-            raw,
-            flags,
-            Some(Delivery {
-                id,
-                created_at: None,
-            }),
-            None,
-        )
-        .await
-    }
-
-    /// [`deliver`](Self::deliver) that also fences and completes `job` in the same transaction.
-    pub async fn deliver_fenced(
-        &self,
-        folder: FolderId,
-        raw: Bytes,
-        flags: Flags,
-        id: DeliveryId,
-        job: JobFence,
-    ) -> Result<DeliverOutcome> {
-        self.store(
-            folder,
-            raw,
-            flags,
-            Some(Delivery {
-                id,
-                created_at: None,
-            }),
-            Some(job),
-        )
-        .await
-    }
-
-    /// Append every message of `raws` to `folder` in one transaction.
-    pub async fn append_many(
-        &self,
-        folder: FolderId,
-        raws: Vec<Bytes>,
-        flags: Flags,
-    ) -> Result<Vec<MessageRef>> {
-        if raws.is_empty() || raws.len() > crate::MAX_BATCH {
-            return Err(Error::Invalid("a batch holds between 1 and 1000 items".into()));
-        }
-        self.repo.folder_exists(self.id, folder).await?;
-        let mut msgs = Vec::with_capacity(raws.len());
-        for raw in raws {
-            msgs.push(self.prepare(folder, raw, flags).await?);
-        }
-        self.repo.append_many(self.id, &msgs).await
-    }
-
-    async fn prepare(&self, folder: FolderId, raw: Bytes, flags: Flags) -> Result<NewMessage> {
-        if raw.is_empty() {
-            return Err(Error::Invalid("empty message".into()));
-        }
-        if raw.len() > self.max_message_bytes {
-            return Err(Error::Quota("message exceeds the size limit".into()));
-        }
-        let size =
-            i64::try_from(raw.len()).map_err(|_| Error::Quota("message too large".into()))?;
-        let env = rusty_mime::parse_envelope(&raw)?;
-        // Blob first, metadata transaction second: a failed/retried transaction leaves at worst
-        // an orphan blob for the cleanup job, and a retry never repeats a blob write.
-        let hash = self.blobs.put(raw).await?;
-        Ok(NewMessage {
-            folder,
-            hash,
-            size,
-            flags,
-            env,
-        })
-    }
-
-    async fn store(
-        &self,
-        folder: FolderId,
-        raw: Bytes,
-        flags: Flags,
-        delivery: Option<Delivery>,
-        fence: Option<JobFence>,
-    ) -> Result<DeliverOutcome> {
-        self.repo.folder_exists(self.id, folder).await?;
-        let msg = self.prepare(folder, raw, flags).await?;
-        self.repo.append(self.id, &msg, delivery.as_ref(), fence).await
-    }
-
-    pub async fn list_folder(
-        &self,
-        folder: FolderId,
-        after_uid: u32,
-        limit: u32,
-    ) -> Result<Vec<MessageSummary>> {
-        let limit = page_limit(limit)?;
-        self.repo.list_folder(self.id, folder, after_uid, limit).await
-    }
-
-    pub async fn changes_since(&self, seq: i64, limit: u32) -> Result<ChangePage> {
-        let limit = page_limit(limit)?;
-        self.repo.changes_since(self.id, seq, limit).await
-    }
-}
-
-// ---------------------------------------------------------------- dialect rendering
 
 /// SQLite text: the database clock is `unixepoch()`. Placeholders are `$N` on every backend:
 /// sqlx-sqlite maps `$N` to the N-th bound value (see the tripwire test
@@ -379,48 +65,6 @@ pub(crate) fn render_sqlite(sql: &str) -> String {
 #[cfg(any(test, feature = "postgres"))]
 pub(crate) fn render_pg(sql: &str) -> String {
     sql.replace("{NOW}", "rs_now()").replace("{JSONB}", "::jsonb")
-}
-
-// ---------------------------------------------------------------- generic reads (experiment)
-
-/// `changes_since` written ONCE over `sqlx::Database` instead of once per backend. It works,
-/// at the price of the bound list below (see the PG2 report: usable for plain read queries
-/// that only bind/decode primitive types; not worth it for the write paths).
-pub(crate) async fn changes_since_generic<'e, DB, E>(
-    ex: E,
-    sql: &str,
-    mb: MailboxId,
-    seq: i64,
-    limit: i64,
-) -> Result<ChangePage>
-where
-    DB: sqlx::Database,
-    E: sqlx::Executor<'e, Database = DB>,
-    for<'q> <DB as sqlx::Database>::Arguments<'q>: sqlx::IntoArguments<'q, DB>,
-    i64: sqlx::Type<DB> + for<'q> sqlx::Encode<'q, DB>,
-    (i64, String, i64, String): for<'r> sqlx::FromRow<'r, DB::Row>,
-{
-    use crate::mailbox::{Change, ChangeItem, ChangeOp};
-    let rows: Vec<(i64, String, i64, String)> = sqlx::query_as(sql)
-        .bind(mb.0)
-        .bind(seq)
-        .bind(limit + 1)
-        .fetch_all(ex)
-        .await
-        .map_err(crate::map_db_error)?;
-    let more = rows.len() as i64 > limit;
-    let changes = rows
-        .into_iter()
-        .take(limit as usize)
-        .map(|(seq, kind, item_id, op)| {
-            Ok(Change {
-                seq,
-                item: ChangeItem::from_row(&kind, item_id)?,
-                op: ChangeOp::parse(&op)?,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(ChangePage { changes, more })
 }
 
 #[cfg(test)]
@@ -443,7 +87,9 @@ mod tests {
             directory::sql::CAP_REVOKE_ONE,
             directory::sql::INSERT_PLAN,
             sql_text::ANCESTORS,
+            sql_text::SUBTREE_HEIGHT,
             sql_text::TAKE_MSG_IDS_AND_SEQS,
+            sql_text::EXPUNGE,
             sql_text::LIST_FOLDER,
             sql_text::CHANGES,
             directory::sql::INSERT_ACCOUNT,
@@ -454,4 +100,3 @@ mod tests {
         }
     }
 }
-

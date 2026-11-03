@@ -1,35 +1,32 @@
 //! `Mailbox`: the high-level facade over one account's folders, messages and change log.
 //!
-//! Invariants:
-//! - Rule: every Mailbox write transaction starts with `BEGIN IMMEDIATE` and touches the
-//!   mailbox row first (`Mailbox::begin` reads `mailboxes` by id before anything else; a
-//!   missing row is `NotFound`). With SQLite the write lock is already global; the fixed
-//!   order is the lock-ordering rule a row-locking backend (Postgres: `SELECT ... FOR
-//!   UPDATE` on the mailbox row) relies on to serialize writers of one mailbox without
-//!   deadlocks.
+//! The facade is backend-free: it holds an `Arc<dyn MailboxRepo>` and keeps validation, size
+//! limits, MIME parsing, blob IO (`blob.put` BEFORE the metadata transaction, never repeated
+//! by a retry), paging limits and result shaping. Every method is one repository call, i.e.
+//! one transaction. See `repo::mailbox` for the repository contract.
+//!
+//! Invariants (enforced by the repositories, tested on both backends):
+//! - Locking rule: every write transaction takes the mailbox row lock FIRST (SQLite `BEGIN
+//!   IMMEDIATE` plus reading the row, Postgres `SELECT .. FOR UPDATE`; a missing row is
+//!   `NotFound`), then folders, then messages; `blobs` rows are locked in ascending hash order
+//!   in every path that changes a refcount.
 //! - The counters `mailboxes.next_msg_id`, `mailboxes.next_change_seq`,
-//!   `mailboxes.next_folder_id` and `folders.next_uid` are read and incremented inside that
-//!   transaction, so message ids, uids and change seqs are gapless and monotonic, and folder
-//!   ids are never reused (a deleted folder's id is not handed out again).
+//!   `mailboxes.next_folder_id` and `folders.next_uid` are incremented inside that transaction,
+//!   so message ids, uids and change seqs are gapless and monotonic, and folder ids are never
+//!   reused (a deleted folder's id is not handed out again).
 //! - Reads are paginated: `list_folder` and `changes_since` return at most [`MAX_PAGE`]
 //!   entries per call (a larger `limit` is clamped, `0` is `Invalid`).
 //! - Every lookup is scoped by `mailbox_id`: ids of another mailbox are `NotFound`.
-//! - `deliver` is `append` plus a `deliveries` row in the same transaction (see
-//!   `store_message`); the duplicate lookup runs after `begin`, so it is race-free.
+//! - `deliver` is `append` plus a `deliveries` row in the same transaction; the duplicate
+//!   lookup runs under the mailbox lock, so it is race-free.
 //! - `append` writes the blob before the metadata transaction; if the transaction fails the
 //!   blob is an orphan for the cleanup job (spec §5).
-//! - Batch calls (`set_flags_many`, `move_many`, `expunge_many`, `deliver_many`) follow the
-//!   same rule: one `begin`, set-based statements (at most 500 bound ids each), one
-//!   `UPDATE ... RETURNING` per counter, one commit. Thread and ancestor lookups are one
-//!   statement each (`lookup_threads`, a recursive CTE).
-//! - Portability (Postgres next): the SQL uses numbered parameters, `RETURNING`,
-//!   `WITH RECURSIVE`, multi-row `INSERT` and `ON CONFLICT DO NOTHING`. SQLite-only
-//!   spellings: `strftime('%s','now')` (`DB_NOW`; Postgres `EXTRACT(EPOCH FROM now())`)
-//!   and `BEGIN IMMEDIATE` (in `SqliteStore::begin_write`). No statement joins two
-//!   `mailbox_id`s.
+//! - Batch calls (`set_flags_many`, `move_many`, `expunge_many`, `deliver_many`) are one
+//!   transaction with set-based statements and one `UPDATE ... RETURNING` per counter.
+//! - Clock policy D2: correctness timestamps come from the database clock; the `_at` twins
+//!   (`#[doc(hidden)]`) store a caller value verbatim, bounded by [`MAX_SUPPLIED_TIME`].
 //! - Nothing here logs message content; error texts never echo caller input.
-
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
 
@@ -38,9 +35,13 @@ use rusty_core::{
     AccountId, DeliveryId, Error, Flags, FolderId, MailboxId, MessageId, Result, ThreadId,
 };
 use rusty_mime::Envelope;
-use sqlx::{Sqlite, SqliteConnection, Transaction};
 
-use crate::{map_db_error, BlobStore, SqliteStore};
+use crate::gc::PURGE_BATCH;
+use crate::repo::sqlite::SqliteRepo;
+use crate::repo::{
+    DeliverEntry, Delivery, FolderInfo, JobFence, MailboxRepo, MessageDetail, NewMessage, RawRef,
+};
+use crate::{BlobStore, SqliteStore};
 
 pub const DEFAULT_MAX_MESSAGE_BYTES: usize = 50 * 1024 * 1024;
 pub const MAX_KEYWORDS_PER_MESSAGE: usize = 32;
@@ -221,7 +222,7 @@ pub(crate) fn page_limit(limit: u32) -> Result<i64> {
 /// or `create_folder` would produce colliding or missing ids.
 #[derive(Clone)]
 pub struct Mailbox {
-    store: SqliteStore,
+    repo: Arc<dyn MailboxRepo>,
     blobs: Arc<dyn BlobStore>,
     id: MailboxId,
     limits: MailboxLimits,
@@ -270,47 +271,7 @@ pub fn normalize_keyword(kw: &str) -> Result<String> {
     }
     Ok(kw.to_ascii_lowercase())
 }
-
 // ---------- small helpers ----------
-
-/// Issue a new folder UIDVALIDITY inside the caller's transaction.
-///
-/// RFC 3501/9051 §2.3.1.1: a folder recreated under a reused name (and here also a reused
-/// folder id) must get a strictly greater UIDVALIDITY. `mailboxes.uid_validity` is the
-/// persisted high-water mark; the new value is `max(now_secs, high_water + 1)` and the mark
-/// is advanced to it in the same transaction, in one statement. Past `u32::MAX` it is
-/// `Quota`: the caller returns the error, its transaction rolls back, and the mark is
-/// unchanged.
-async fn take_uid_validity(conn: &mut SqliteConnection, mb: MailboxId) -> Result<i64> {
-    // The DATABASE clock (clock policy D2); `DB_NOW` is a constant, never caller data.
-    let v: i64 = sqlx::query_scalar(&format!(
-        "UPDATE mailboxes SET uid_validity = max({DB_NOW}, uid_validity + 1) WHERE id = ?1 \
-         RETURNING uid_validity"
-    ))
-    .bind(mb.0)
-    .fetch_optional(&mut *conn)
-    .await
-    .map_err(map_db_error)?
-    .ok_or_else(|| Error::NotFound("mailbox".into()))?;
-    if v > i64::from(u32::MAX) {
-        return Err(Error::Quota("folder UIDVALIDITY space exhausted".into()));
-    }
-    Ok(v)
-}
-
-/// Take the next folder id of the mailbox (`mailboxes.next_folder_id`, migration 0003).
-/// Every code path that inserts a `mailboxes` row must seed `next_folder_id`.
-async fn take_folder_id(conn: &mut SqliteConnection, mb: MailboxId) -> Result<i64> {
-    sqlx::query_scalar(
-        "UPDATE mailboxes SET next_folder_id = next_folder_id + 1 WHERE id = ? \
-         RETURNING next_folder_id - 1",
-    )
-    .bind(mb.0)
-    .fetch_optional(&mut *conn)
-    .await
-    .map_err(map_db_error)?
-    .ok_or_else(|| Error::NotFound("mailbox".into()))
-}
 
 pub(crate) fn to_uid(v: i64) -> Result<u32> {
     match u32::try_from(v) {
@@ -328,258 +289,6 @@ pub(crate) fn to_flags(v: i64) -> Result<Flags> {
         .ok_or_else(|| Error::storage("corrupt flags"))
 }
 
-fn not_found_folder() -> Error {
-    Error::NotFound("folder".into())
-}
-
-fn not_found_message() -> Error {
-    Error::NotFound("message".into())
-}
-
-// ---------- in-transaction primitives ----------
-
-/// Append a change_log row with the next seq of the mailbox.
-async fn log_change(
-    conn: &mut SqliteConnection,
-    mb: MailboxId,
-    item: ChangeItem,
-    op: ChangeOp,
-) -> Result<i64> {
-    let (kind, item_id) = item.to_row();
-    let seq: i64 = sqlx::query_scalar(
-        "UPDATE mailboxes SET next_change_seq = next_change_seq + 1 WHERE id = ? \
-         RETURNING next_change_seq - 1",
-    )
-    .bind(mb.0)
-    .fetch_optional(&mut *conn)
-    .await
-    .map_err(map_db_error)?
-    .ok_or_else(|| Error::NotFound("mailbox".into()))?;
-    sqlx::query(
-        "INSERT INTO change_log (mailbox_id, seq, kind, item_id, op) VALUES (?, ?, ?, ?, ?)",
-    )
-    .bind(mb.0)
-    .bind(seq)
-    .bind(kind)
-    .bind(item_id)
-    .bind(op.as_str())
-    .execute(&mut *conn)
-    .await
-    .map_err(map_db_error)?;
-    Ok(seq)
-}
-
-/// Take the next uid of `folder` (NotFound if the folder is not in this mailbox).
-async fn take_uid(conn: &mut SqliteConnection, mb: MailboxId, folder: FolderId) -> Result<u32> {
-    let uid: i64 = sqlx::query_scalar(
-        "UPDATE folders SET next_uid = next_uid + 1 WHERE mailbox_id = ? AND id = ? \
-         RETURNING next_uid - 1",
-    )
-    .bind(mb.0)
-    .bind(folder.0)
-    .fetch_optional(&mut *conn)
-    .await
-    .map_err(map_db_error)?
-    .ok_or_else(not_found_folder)?;
-    to_uid(uid)
-}
-
-async fn take_msg_id(conn: &mut SqliteConnection, mb: MailboxId) -> Result<i64> {
-    sqlx::query_scalar(
-        "UPDATE mailboxes SET next_msg_id = next_msg_id + 1 WHERE id = ? RETURNING next_msg_id - 1",
-    )
-    .bind(mb.0)
-    .fetch_optional(&mut *conn)
-    .await
-    .map_err(map_db_error)?
-    .ok_or_else(|| Error::NotFound("mailbox".into()))
-}
-
-/// `(parent_id, role)` of a folder of this mailbox.
-async fn folder_row(
-    conn: &mut SqliteConnection,
-    mb: MailboxId,
-    id: FolderId,
-) -> Result<(Option<i64>, String)> {
-    sqlx::query_as("SELECT parent_id, role FROM folders WHERE mailbox_id = ? AND id = ?")
-        .bind(mb.0)
-        .bind(id.0)
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(map_db_error)?
-        .ok_or_else(not_found_folder)
-}
-
-/// `Invalid` for system folders (role other than `custom`).
-async fn custom_folder(
-    conn: &mut SqliteConnection,
-    mb: MailboxId,
-    id: FolderId,
-) -> Result<Option<i64>> {
-    let (parent, role) = folder_row(conn, mb, id).await?;
-    if role != "custom" {
-        return Err(Error::Invalid("system folders cannot be changed".into()));
-    }
-    Ok(parent)
-}
-
-/// Number of levels from `start` up to its root (start included). `Conflict` if `forbidden`
-/// is `start` or one of its ancestors; `Invalid` if the chain exceeds `MAX_FOLDER_DEPTH`
-/// (which also stops on corrupt, cyclic data).
-async fn ancestor_depth(
-    conn: &mut SqliteConnection,
-    mb: MailboxId,
-    start: FolderId,
-    forbidden: Option<FolderId>,
-) -> Result<usize> {
-    // One recursive CTE walks up from `start`, bounded by MAX_FOLDER_DEPTH + 1 rows (the
-    // extra row is what proves "too deep"; it also stops on cyclic data). The verdict is
-    // then read off the rows in depth order, with the same checks in the same order as a
-    // step-by-step walk. Portable SQL (WITH RECURSIVE, numbered parameters).
-    let rows: Vec<(i64, Option<i64>)> = sqlx::query_as(
-        "WITH RECURSIVE up(id, parent_id, depth) AS ( \
-           SELECT id, parent_id, 1 FROM folders WHERE mailbox_id = ?1 AND id = ?2 \
-           UNION ALL \
-           SELECT f.id, f.parent_id, u.depth + 1 FROM folders f JOIN up u \
-             ON f.mailbox_id = ?1 AND f.id = u.parent_id \
-           WHERE u.depth <= ?3 \
-         ) SELECT id, parent_id FROM up ORDER BY depth",
-    )
-    .bind(mb.0)
-    .bind(start.0)
-    .bind(MAX_FOLDER_DEPTH as i64)
-    .fetch_all(&mut *conn)
-    .await
-    .map_err(map_db_error)?;
-    let mut depth = 0usize;
-    let mut parent = None;
-    for (id, p) in rows {
-        if forbidden.is_some_and(|f| f.0 == id) {
-            return Err(Error::Conflict(
-                "cannot move a folder into itself or a descendant".into(),
-            ));
-        }
-        depth += 1;
-        if depth > MAX_FOLDER_DEPTH {
-            return Err(Error::Invalid("folder tree too deep".into()));
-        }
-        parent = p;
-    }
-    // No rows: `start` is not in this mailbox. A parent that is not there either (corrupt
-    // data) ends the walk early with the same answer.
-    if depth == 0 || parent.is_some() {
-        return Err(not_found_folder());
-    }
-    Ok(depth)
-}
-
-/// Levels in the subtree rooted at `id` (a leaf is 1), capped just above the limit.
-async fn subtree_height(conn: &mut SqliteConnection, mb: MailboxId, id: FolderId) -> Result<usize> {
-    let h: i64 = sqlx::query_scalar(
-        "WITH RECURSIVE sub(id, depth) AS ( \
-           SELECT ?, 1 \
-           UNION ALL \
-           SELECT f.id, s.depth + 1 FROM folders f JOIN sub s \
-             ON f.mailbox_id = ? AND f.parent_id = s.id \
-           WHERE s.depth <= ? \
-         ) SELECT MAX(depth) FROM sub",
-    )
-    .bind(id.0)
-    .bind(mb.0)
-    .bind(MAX_FOLDER_DEPTH as i64)
-    .fetch_one(&mut *conn)
-    .await
-    .map_err(map_db_error)?;
-    usize::try_from(h).map_err(|_| Error::storage("corrupt folder tree"))
-}
-
-/// Ensure a live (not soft-deleted) message of this mailbox exists; returns `(folder_id, uid)`.
-async fn live_message(
-    conn: &mut SqliteConnection,
-    mb: MailboxId,
-    id: MessageId,
-) -> Result<(i64, i64)> {
-    sqlx::query_as(
-        "SELECT folder_id, uid FROM messages \
-         WHERE mailbox_id = ? AND id = ? AND deleted_at IS NULL",
-    )
-    .bind(mb.0)
-    .bind(id.0)
-    .fetch_optional(&mut *conn)
-    .await
-    .map_err(map_db_error)?
-    .ok_or_else(not_found_message)
-}
-
-/// Thread of the nearest known ancestor: the references from last to first, then
-/// In-Reply-To. Soft-deleted messages still anchor their thread.
-///
-/// At most `MAX_THREAD_CANDIDATES` (32) ids are tried. With more than 32 References only
-/// the last 32 are consulted and In-Reply-To is not consulted at all.
-async fn find_thread(
-    conn: &mut SqliteConnection,
-    mb: MailboxId,
-    env: &Envelope,
-) -> Result<Option<i64>> {
-    let candidates: Vec<&str> = env
-        .references
-        .iter()
-        .rev()
-        .chain(env.in_reply_to.iter())
-        .take(MAX_THREAD_CANDIDATES)
-        .map(String::as_str)
-        .collect();
-    if candidates.is_empty() {
-        return Ok(None);
-    }
-    let known = lookup_threads(conn, mb, &candidates).await?;
-    Ok(candidates.iter().find_map(|c| known.get(*c).copied()))
-}
-
-/// Thread of the oldest message (smallest id) for each of the given Message-IDs, in one
-/// statement per `SQL_CHUNK` ids (one for the at most 32 thread candidates). Soft-deleted
-/// messages count. Portable SQL: a grouped subquery and numbered parameters.
-async fn lookup_threads(
-    conn: &mut SqliteConnection,
-    mb: MailboxId,
-    hdrs: &[&str],
-) -> Result<HashMap<String, i64>> {
-    let mut out = HashMap::new();
-    for chunk in hdrs.chunks(SQL_CHUNK) {
-        let sql = format!(
-            "SELECT message_id_hdr, thread_id FROM messages WHERE mailbox_id = ?1 AND id IN ( \
-               SELECT MIN(id) FROM messages WHERE mailbox_id = ?1 AND message_id_hdr IN ({}) \
-               GROUP BY message_id_hdr)",
-            placeholders(2, chunk.len())
-        );
-        let mut q = sqlx::query_as::<_, (String, i64)>(&sql).bind(mb.0);
-        for h in chunk {
-            q = q.bind(*h);
-        }
-        out.extend(q.fetch_all(&mut *conn).await.map_err(map_db_error)?);
-    }
-    Ok(out)
-}
-
-/// Most bound ids per statement in the set-based queries (SQLite's default limit is 32,766
-/// variables, Postgres's 65,535; this stays far below both).
-const SQL_CHUNK: usize = 500;
-
-/// `?first,?first+1,..` for `n` numbered parameters. Only numbers are formatted into SQL text.
-fn placeholders(first: usize, n: usize) -> String {
-    (first..first + n)
-        .map(|i| format!("?{i}"))
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-/// Database clock in unix seconds. SQLite-only spelling; the Postgres port is
-/// `EXTRACT(EPOCH FROM now())::bigint`.
-const DB_NOW: &str = "CAST(strftime('%s', 'now') AS INTEGER)";
-
-/// Rows per multi-row INSERT into `change_log` (3 parameters per row).
-const LOG_CHUNK: usize = 400;
-
 /// The ids of a batch call: `1..=MAX_BATCH` given, duplicates dropped (first occurrence
 /// wins, so input order is kept).
 fn batch_ids(ids: &[MessageId]) -> Result<Vec<i64>> {
@@ -596,92 +305,29 @@ fn batch_ids(ids: &[MessageId]) -> Result<Vec<i64>> {
         .collect())
 }
 
-/// Split `ids` (input order) into those in `hit` and the rest.
-fn split_hits(ids: &[i64], hit: &HashSet<i64>) -> (Vec<i64>, Vec<MessageId>) {
-    let (mut applied, mut missing) = (Vec::new(), Vec::new());
-    for id in ids {
-        if hit.contains(id) {
-            applied.push(*id);
-        } else {
-            missing.push(MessageId(*id));
-        }
-    }
-    missing.truncate(MAX_BATCH);
-    (applied, missing)
-}
-
-/// Log one `op` change per message id, in order: the seq range is allocated with a single
-/// `UPDATE ... RETURNING` (no gaps) and the rows go in with multi-row INSERTs. Same rows as
-/// calling `log_change` once per id.
-async fn log_message_changes(
-    conn: &mut SqliteConnection,
-    mb: MailboxId,
-    ids: &[i64],
-    op: ChangeOp,
-) -> Result<()> {
-    if ids.is_empty() {
-        return Ok(());
-    }
-    let n = i64::try_from(ids.len()).map_err(|_| Error::Invalid("batch too large".into()))?;
-    let first: i64 = sqlx::query_scalar(
-        "UPDATE mailboxes SET next_change_seq = next_change_seq + ?1 WHERE id = ?2 \
-         RETURNING next_change_seq - ?1",
-    )
-    .bind(n)
-    .bind(mb.0)
-    .fetch_optional(&mut *conn)
-    .await
-    .map_err(map_db_error)?
-    .ok_or_else(|| Error::NotFound("mailbox".into()))?;
-    let mut seq = first;
-    for chunk in ids.chunks(LOG_CHUNK) {
-        // `op` is one of three constants, never caller input.
-        let rows = (0..chunk.len())
-            .map(|r| {
-                format!(
-                    "(?1, ?{}, 'message', ?{}, '{}')",
-                    2 + 2 * r,
-                    3 + 2 * r,
-                    op.as_str()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-        let sql =
-            format!("INSERT INTO change_log (mailbox_id, seq, kind, item_id, op) VALUES {rows}");
-        let mut q = sqlx::query(&sql).bind(mb.0);
-        for id in chunk {
-            q = q.bind(seq).bind(*id);
-            seq += 1;
-        }
-        q.execute(&mut *conn).await.map_err(map_db_error)?;
-    }
-    Ok(())
-}
-
-async fn commit(tx: Transaction<'static, Sqlite>) -> Result<()> {
-    tx.commit().await.map_err(map_db_error)
-}
-
 // ---------- the facade ----------
 
 impl Mailbox {
-    /// Open the mailbox of `account` (`NotFound` if it has none).
+    /// Open the mailbox of `account` on a SQLite store (`NotFound` if it has none).
     pub async fn open(
         store: SqliteStore,
         blobs: Arc<dyn BlobStore>,
         account: AccountId,
     ) -> Result<Mailbox> {
-        let id: i64 = sqlx::query_scalar("SELECT id FROM mailboxes WHERE account_id = ?")
-            .bind(account.0)
-            .fetch_optional(store.pool())
-            .await
-            .map_err(map_db_error)?
-            .ok_or_else(|| Error::NotFound("mailbox for account".into()))?;
+        Self::open_with(Arc::new(SqliteRepo::new(store)), blobs, account).await
+    }
+
+    /// Open the mailbox of `account` over any backend (`Store::repos().mailbox`).
+    pub async fn open_with(
+        repo: Arc<dyn MailboxRepo>,
+        blobs: Arc<dyn BlobStore>,
+        account: AccountId,
+    ) -> Result<Mailbox> {
+        let id = repo.mailbox_for_account(account).await?;
         Ok(Mailbox {
-            store,
+            repo,
             blobs,
-            id: MailboxId(id),
+            id,
             limits: MailboxLimits::default(),
         })
     }
@@ -699,142 +345,35 @@ impl Mailbox {
         self.limits
     }
 
-    /// Start a write transaction (`BEGIN IMMEDIATE`) and touch the mailbox row first (see the
-    /// module docs). `NotFound` if the mailbox no longer exists.
-    async fn begin(&self) -> Result<Transaction<'static, Sqlite>> {
-        let mut tx = self.store.begin_write().await?;
-        sqlx::query_scalar::<_, i64>("SELECT id FROM mailboxes WHERE id = ?")
-            .bind(self.id.0)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(map_db_error)?
-            .ok_or_else(|| Error::NotFound("mailbox".into()))?;
-        Ok(tx)
-    }
-
     // ----- folders -----
 
     pub async fn create_folder(&self, parent: Option<FolderId>, name: &str) -> Result<FolderId> {
         validate_folder_name(name)?;
-        let mut tx = self.begin().await?;
-        if let Some(p) = parent {
-            let depth = ancestor_depth(&mut tx, self.id, p, None).await?;
-            if depth + 1 > MAX_FOLDER_DEPTH {
-                return Err(Error::Invalid("folder tree too deep".into()));
-            }
-        }
-        let uid_validity = take_uid_validity(&mut tx, self.id).await?;
-        let id = take_folder_id(&mut tx, self.id).await?;
-        sqlx::query(
-            "INSERT INTO folders (mailbox_id, id, parent_id, name, role, uid_validity) \
-             VALUES (?, ?, ?, ?, 'custom', ?)",
-        )
-        .bind(self.id.0)
-        .bind(id)
-        .bind(parent.map(|p| p.0))
-        .bind(name)
-        .bind(uid_validity)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_db_error)?;
-        log_change(
-            &mut tx,
-            self.id,
-            ChangeItem::Folder(FolderId(id)),
-            ChangeOp::Create,
-        )
-        .await?;
-        commit(tx).await?;
-        Ok(FolderId(id))
+        Ok(self.repo.create_folder(self.id, parent, name).await?.value)
     }
 
     /// Rename a custom folder (system folders are `Invalid`).
     pub async fn rename_folder(&self, id: FolderId, name: &str) -> Result<()> {
         validate_folder_name(name)?;
-        let mut tx = self.begin().await?;
-        custom_folder(&mut tx, self.id, id).await?;
-        sqlx::query("UPDATE folders SET name = ? WHERE mailbox_id = ? AND id = ?")
-            .bind(name)
-            .bind(self.id.0)
-            .bind(id.0)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_db_error)?;
-        log_change(&mut tx, self.id, ChangeItem::Folder(id), ChangeOp::Update).await?;
-        commit(tx).await
+        Ok(self.repo.rename_folder(self.id, id, name).await?.value)
     }
 
     /// Re-parent a custom folder. Moving into itself or a descendant is `Conflict`; a result
     /// deeper than `MAX_FOLDER_DEPTH` is `Invalid`; system folders are `Invalid`.
     pub async fn move_folder(&self, id: FolderId, new_parent: Option<FolderId>) -> Result<()> {
-        let mut tx = self.begin().await?;
-        let old_parent = custom_folder(&mut tx, self.id, id).await?;
-        if old_parent == new_parent.map(|p| p.0) {
-            return Ok(());
-        }
-        if let Some(p) = new_parent {
-            let depth = ancestor_depth(&mut tx, self.id, p, Some(id)).await?;
-            let height = subtree_height(&mut tx, self.id, id).await?;
-            if depth + height > MAX_FOLDER_DEPTH {
-                return Err(Error::Invalid("folder tree too deep".into()));
-            }
-        }
-        sqlx::query("UPDATE folders SET parent_id = ? WHERE mailbox_id = ? AND id = ?")
-            .bind(new_parent.map(|p| p.0))
-            .bind(self.id.0)
-            .bind(id.0)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_db_error)?;
-        log_change(&mut tx, self.id, ChangeItem::Folder(id), ChangeOp::Update).await?;
-        commit(tx).await
+        Ok(self.repo.move_folder(self.id, id, new_parent).await?.value)
     }
 
     /// Delete an empty custom folder. Children or live messages are `Conflict`; system
     /// folders are `Invalid`. Rows of messages already expunged from it are purged (their
     /// blobs drop to refcount 0 for the cleanup job).
     pub async fn delete_folder(&self, id: FolderId) -> Result<()> {
-        let mut tx = self.begin().await?;
-        custom_folder(&mut tx, self.id, id).await?;
-        let children: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM folders WHERE mailbox_id = ? AND parent_id = ?",
-        )
-        .bind(self.id.0)
-        .bind(id.0)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(map_db_error)?;
-        if children > 0 {
-            return Err(Error::Conflict("folder has subfolders".into()));
-        }
-        let live: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM messages \
-             WHERE mailbox_id = ? AND folder_id = ? AND deleted_at IS NULL",
-        )
-        .bind(self.id.0)
-        .bind(id.0)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(map_db_error)?;
-        if live > 0 {
-            return Err(Error::Conflict("folder still contains messages".into()));
-        }
-        sqlx::query(
-            "DELETE FROM messages WHERE mailbox_id = ? AND folder_id = ? AND deleted_at IS NOT NULL",
-        )
-        .bind(self.id.0)
-        .bind(id.0)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_db_error)?;
-        sqlx::query("DELETE FROM folders WHERE mailbox_id = ? AND id = ?")
-            .bind(self.id.0)
-            .bind(id.0)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_db_error)?;
-        log_change(&mut tx, self.id, ChangeItem::Folder(id), ChangeOp::Destroy).await?;
-        commit(tx).await
+        Ok(self.repo.delete_folder(self.id, id).await?.value)
+    }
+
+    /// All folders of the mailbox in id order.
+    pub async fn list_folders(&self) -> Result<Vec<FolderInfo>> {
+        self.repo.list_folders(self.id).await
     }
 
     // ----- messages -----
@@ -846,7 +385,7 @@ impl Mailbox {
     /// Not idempotent: every call creates a message. Use [`Mailbox::deliver`] for retried
     /// deliveries.
     pub async fn append(&self, folder: FolderId, raw: Bytes, flags: Flags) -> Result<MessageRef> {
-        match self.store_message(folder, raw, flags, None).await? {
+        match self.store_message(folder, raw, flags, None, None).await? {
             DeliverOutcome::Created(r) | DeliverOutcome::Duplicate(r) => Ok(r),
         }
     }
@@ -868,8 +407,41 @@ impl Mailbox {
         flags: Flags,
         delivery_id: DeliveryId,
     ) -> Result<DeliverOutcome> {
-        self.store_message(folder, raw, flags, Some((delivery_id, None)))
-            .await
+        self.store_message(
+            folder,
+            raw,
+            flags,
+            Some(Delivery {
+                id: delivery_id,
+                created_at: None,
+            }),
+            None,
+        )
+        .await
+    }
+
+    /// [`Mailbox::deliver`] that also fences and completes `job` in the same transaction (the
+    /// `JobQueue::complete_in` pattern without a transaction handle): a stale epoch or an
+    /// expired lease is `Conflict` and nothing is written.
+    pub async fn deliver_fenced(
+        &self,
+        folder: FolderId,
+        raw: Bytes,
+        flags: Flags,
+        delivery_id: DeliveryId,
+        job: JobFence,
+    ) -> Result<DeliverOutcome> {
+        self.store_message(
+            folder,
+            raw,
+            flags,
+            Some(Delivery {
+                id: delivery_id,
+                created_at: None,
+            }),
+            Some(job),
+        )
+        .await
     }
 
     /// [`Mailbox::deliver`] with an explicit `created_at` / `internal_date` (unix seconds, stored
@@ -884,19 +456,23 @@ impl Mailbox {
         now: i64,
     ) -> Result<DeliverOutcome> {
         check_supplied_time(now)?;
-        self.store_message(folder, raw, flags, Some((delivery_id, Some(now))))
-            .await
+        self.store_message(
+            folder,
+            raw,
+            flags,
+            Some(Delivery {
+                id: delivery_id,
+                created_at: Some(now),
+            }),
+            None,
+        )
+        .await
     }
 
-    /// Shared body of `append` and `deliver`. `delivery` is the delivery id and an optional
-    /// `created_at` override (`None`: database clock).
-    async fn store_message(
-        &self,
-        folder: FolderId,
-        raw: Bytes,
-        flags: Flags,
-        delivery: Option<(DeliveryId, Option<i64>)>,
-    ) -> Result<DeliverOutcome> {
+    /// Validate and parse one raw message and put its blob (blob first, metadata transaction
+    /// second: a failed or retried transaction leaves at worst an orphan blob for the cleanup
+    /// job, and a retry never repeats a blob write).
+    fn parse_raw(&self, raw: &Bytes) -> Result<(i64, Envelope)> {
         if raw.is_empty() {
             return Err(Error::Invalid("empty message".into()));
         }
@@ -905,306 +481,127 @@ impl Mailbox {
         }
         let size =
             i64::try_from(raw.len()).map_err(|_| Error::Quota("message too large".into()))?;
-        let env = rusty_mime::parse_envelope(&raw)?;
-        {
-            let mut conn = self.store.pool().acquire().await.map_err(map_db_error)?;
-            folder_row(&mut conn, self.id, folder).await?;
-        }
-        let hash = self.blobs.put(raw).await?;
+        Ok((size, rusty_mime::parse_envelope(raw)?))
+    }
 
-        let mut tx = self.begin().await?;
-        if let Some((did, _)) = delivery {
-            // Inside BEGIN IMMEDIATE no other writer can insert between this lookup and
-            // our insert below; the primary key is the backstop.
-            let hit: Option<(i64, String)> = sqlx::query_as(
-                "SELECT message_id, blob_hash FROM deliveries \
-                 WHERE mailbox_id = ? AND delivery_id = ?",
-            )
-            .bind(self.id.0)
-            .bind(&did.0[..])
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(map_db_error)?;
-            if let Some((msg_id, blob_hash)) = hit {
-                if blob_hash != hash.as_str() {
-                    return Err(Error::Conflict(
-                        "delivery id reused with different content".into(),
-                    ));
-                }
-                let uid: i64 =
-                    sqlx::query_scalar("SELECT uid FROM messages WHERE mailbox_id = ? AND id = ?")
-                        .bind(self.id.0)
-                        .bind(msg_id)
-                        .fetch_optional(&mut *tx)
-                        .await
-                        .map_err(map_db_error)?
-                        .ok_or_else(|| Error::storage("delivery refers to a missing message"))?;
-                return Ok(DeliverOutcome::Duplicate(MessageRef {
-                    id: MessageId(msg_id),
-                    uid: to_uid(uid)?,
-                }));
-            }
+    async fn put_message(
+        &self,
+        folder: FolderId,
+        raw: Bytes,
+        flags: Flags,
+        parsed: (i64, Envelope),
+    ) -> Result<NewMessage> {
+        let hash = self.blobs.put(raw).await?;
+        Ok(NewMessage {
+            folder,
+            hash,
+            size: parsed.0,
+            flags,
+            env: parsed.1,
+        })
+    }
+
+    /// Shared body of `append` and `deliver`.
+    async fn store_message(
+        &self,
+        folder: FolderId,
+        raw: Bytes,
+        flags: Flags,
+        delivery: Option<Delivery>,
+        fence: Option<JobFence>,
+    ) -> Result<DeliverOutcome> {
+        let parsed = self.parse_raw(&raw)?;
+        self.repo.folder_exists(self.id, folder).await?;
+        let msg = self.put_message(folder, raw, flags, parsed).await?;
+        Ok(self
+            .repo
+            .append(self.id, &msg, delivery.as_ref(), fence)
+            .await?
+            .value)
+    }
+
+    /// Append every message of `raws` to `folder` in ONE transaction: consecutive ids, uids
+    /// and change seqs in input order, all or nothing. `1..=MAX_BATCH` items.
+    pub async fn append_many(
+        &self,
+        folder: FolderId,
+        raws: Vec<Bytes>,
+        flags: Flags,
+    ) -> Result<Vec<MessageRef>> {
+        if raws.is_empty() || raws.len() > MAX_BATCH {
+            return Err(Error::Invalid(
+                "a batch holds between 1 and 1000 items".into(),
+            ));
         }
-        sqlx::query("INSERT INTO blobs (hash, size) VALUES (?, ?) ON CONFLICT (hash) DO NOTHING")
-            .bind(hash.as_str())
-            .bind(size)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_db_error)?;
-        let uid = take_uid(&mut tx, self.id, folder).await?;
-        let id = take_msg_id(&mut tx, self.id).await?;
-        let thread_id = find_thread(&mut tx, self.id, &env).await?.unwrap_or(id);
-        // internal_date: the database clock, or the caller's `_at(now)` value verbatim (D2).
-        let at = delivery.and_then(|(_, at)| at);
-        sqlx::query(&format!(
-            "INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, size, internal_date, \
-             subject, from_addr, to_addrs, message_id_hdr, thread_id, flags) \
-             VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, {DB_NOW}), ?, ?, ?, ?, ?, ?)"
-        ))
-        .bind(self.id.0)
-        .bind(id)
-        .bind(folder.0)
-        .bind(i64::from(uid))
-        .bind(hash.as_str())
-        .bind(size)
-        .bind(at)
-        .bind(&env.subject)
-        .bind(&env.from)
-        .bind(&env.to)
-        .bind(env.message_id.as_deref())
-        .bind(thread_id)
-        .bind(i64::from(flags.bits()))
-        .execute(&mut *tx)
-        .await
-        .map_err(map_db_error)?;
-        if let Some((did, at)) = delivery {
-            sqlx::query(
-                "INSERT INTO deliveries (mailbox_id, delivery_id, message_id, blob_hash, created_at) \
-                 VALUES (?, ?, ?, ?, COALESCE(?, CAST(strftime('%s', 'now') AS INTEGER)))",
-            )
-            .bind(self.id.0)
-            .bind(&did.0[..])
-            .bind(id)
-            .bind(hash.as_str())
-            .bind(at)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_db_error)?;
+        self.repo.folder_exists(self.id, folder).await?;
+        let mut msgs = Vec::with_capacity(raws.len());
+        // Validate everything before the first blob is written.
+        let parsed = raws
+            .iter()
+            .map(|r| self.parse_raw(r))
+            .collect::<Result<Vec<_>>>()?;
+        for (raw, p) in raws.into_iter().zip(parsed) {
+            msgs.push(self.put_message(folder, raw, flags, p).await?);
         }
-        log_change(
-            &mut tx,
-            self.id,
-            ChangeItem::Message(MessageId(id)),
-            ChangeOp::Create,
-        )
-        .await?;
-        commit(tx).await?;
-        Ok(DeliverOutcome::Created(MessageRef {
-            id: MessageId(id),
-            uid,
-        }))
+        Ok(self.repo.append_many(self.id, &msgs).await?.value)
     }
 
     /// Replace the standard flags of a live message.
     pub async fn set_flags(&self, id: MessageId, flags: Flags) -> Result<()> {
-        let mut tx = self.begin().await?;
-        let n = sqlx::query(
-            "UPDATE messages SET flags = ? WHERE mailbox_id = ? AND id = ? AND deleted_at IS NULL",
-        )
-        .bind(i64::from(flags.bits()))
-        .bind(self.id.0)
-        .bind(id.0)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_db_error)?
-        .rows_affected();
-        if n == 0 {
-            return Err(not_found_message());
-        }
-        log_change(&mut tx, self.id, ChangeItem::Message(id), ChangeOp::Update).await?;
-        commit(tx).await
+        Ok(self.repo.set_flags(self.id, id, flags).await?.value)
     }
 
     /// Add a keyword (lowercased). Idempotent; a 33rd distinct keyword is `Quota`.
     pub async fn add_keyword(&self, id: MessageId, keyword: &str) -> Result<()> {
         let kw = normalize_keyword(keyword)?;
-        let mut tx = self.begin().await?;
-        live_message(&mut tx, self.id, id).await?;
-        let present: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM keywords WHERE mailbox_id = ? AND message_id = ? AND keyword = ?",
-        )
-        .bind(self.id.0)
-        .bind(id.0)
-        .bind(&kw)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(map_db_error)?;
-        if present.is_some() {
-            return Ok(());
-        }
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM keywords WHERE mailbox_id = ? AND message_id = ?",
-        )
-        .bind(self.id.0)
-        .bind(id.0)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(map_db_error)?;
-        if usize::try_from(count).map_or(true, |c| c >= MAX_KEYWORDS_PER_MESSAGE) {
-            return Err(Error::Quota("too many keywords on message".into()));
-        }
-        sqlx::query("INSERT INTO keywords (mailbox_id, message_id, keyword) VALUES (?, ?, ?)")
-            .bind(self.id.0)
-            .bind(id.0)
-            .bind(&kw)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_db_error)?;
-        log_change(&mut tx, self.id, ChangeItem::Message(id), ChangeOp::Update).await?;
-        commit(tx).await
+        Ok(self.repo.add_keyword(self.id, id, &kw).await?.value)
     }
 
     /// Remove a keyword (case-insensitive). Removing an absent keyword is a no-op.
     pub async fn remove_keyword(&self, id: MessageId, keyword: &str) -> Result<()> {
         let kw = normalize_keyword(keyword)?;
-        let mut tx = self.begin().await?;
-        live_message(&mut tx, self.id, id).await?;
-        let n = sqlx::query(
-            "DELETE FROM keywords WHERE mailbox_id = ? AND message_id = ? AND keyword = ?",
-        )
-        .bind(self.id.0)
-        .bind(id.0)
-        .bind(&kw)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_db_error)?
-        .rows_affected();
-        if n == 0 {
-            return Ok(());
-        }
-        log_change(&mut tx, self.id, ChangeItem::Message(id), ChangeOp::Update).await?;
-        commit(tx).await
+        Ok(self.repo.remove_keyword(self.id, id, &kw).await?.value)
     }
 
     /// Move a live message to `to`, giving it a fresh uid there. Moving to the folder it is
     /// already in changes nothing and returns the current ref.
     pub async fn move_message(&self, id: MessageId, to: FolderId) -> Result<MessageRef> {
-        let mut tx = self.begin().await?;
-        let (folder, uid) = live_message(&mut tx, self.id, id).await?;
-        if folder == to.0 {
-            return Ok(MessageRef {
-                id,
-                uid: to_uid(uid)?,
-            });
-        }
-        let new_uid = take_uid(&mut tx, self.id, to).await?;
-        sqlx::query("UPDATE messages SET folder_id = ?, uid = ? WHERE mailbox_id = ? AND id = ?")
-            .bind(to.0)
-            .bind(i64::from(new_uid))
-            .bind(self.id.0)
-            .bind(id.0)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_db_error)?;
-        log_change(&mut tx, self.id, ChangeItem::Message(id), ChangeOp::Update).await?;
-        commit(tx).await?;
-        Ok(MessageRef { id, uid: new_uid })
+        Ok(self.repo.move_message(self.id, id, to).await?.value)
     }
 
     /// Soft-delete a live message (sets `deleted_at`); the blob is untouched.
     pub async fn expunge(&self, id: MessageId) -> Result<()> {
-        let mut tx = self.begin().await?;
-        let n = sqlx::query(&format!(
-            "UPDATE messages SET deleted_at = {DB_NOW} \
-             WHERE mailbox_id = ? AND id = ? AND deleted_at IS NULL"
-        ))
-        .bind(self.id.0)
-        .bind(id.0)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_db_error)?
-        .rows_affected();
-        if n == 0 {
-            return Err(not_found_message());
-        }
-        log_change(&mut tx, self.id, ChangeItem::Message(id), ChangeOp::Destroy).await?;
-        commit(tx).await
+        Ok(self.repo.expunge(self.id, id).await?.value)
     }
 
     // ----- batches -----
     //
-    // One call is ONE write transaction (`begin`, so the mailbox row is touched first), all or
-    // nothing. Counters advance by exactly the number applied, each allocated with one
-    // `UPDATE ... RETURNING`; one change_log row per applied message, in input order.
-    // Ids that do not exist, are soft-deleted or belong to another mailbox are reported as
-    // `missing` and never touched. Duplicate ids apply once. An empty input or more than
-    // `MAX_BATCH` items is `Invalid`. The single-item methods above stay as they are; the
-    // equivalence tests (tests/batch.rs) prove each batch equals the loop of singles.
+    // One call is ONE write transaction (mailbox row locked first), all or nothing. Counters
+    // advance by exactly the number applied, each allocated with one `UPDATE ... RETURNING`; one
+    // change_log row per applied message, in input order. Ids that do not exist, are
+    // soft-deleted or belong to another mailbox are reported as `missing` and never touched.
+    // Duplicate ids apply once. An empty input or more than `MAX_BATCH` items is `Invalid`. The
+    // single-item methods above stay as they are; the equivalence tests (tests/batch.rs) prove
+    // each batch equals the loop of singles.
 
     /// [`Mailbox::set_flags`] for many messages.
     pub async fn set_flags_many(&self, ids: &[MessageId], flags: Flags) -> Result<BatchOutcome> {
         let ids = batch_ids(ids)?;
-        let mut tx = self.begin().await?;
-        let mut hit = HashSet::with_capacity(ids.len());
-        for chunk in ids.chunks(SQL_CHUNK) {
-            let sql = format!(
-                "UPDATE messages SET flags = ?1 WHERE mailbox_id = ?2 AND deleted_at IS NULL \
-                 AND id IN ({}) RETURNING id",
-                placeholders(3, chunk.len())
-            );
-            let mut q = sqlx::query_scalar::<_, i64>(&sql)
-                .bind(i64::from(flags.bits()))
-                .bind(self.id.0);
-            for id in chunk {
-                q = q.bind(*id);
-            }
-            hit.extend(q.fetch_all(&mut *tx).await.map_err(map_db_error)?);
-        }
-        let (applied, missing) = split_hits(&ids, &hit);
-        log_message_changes(&mut tx, self.id, &applied, ChangeOp::Update).await?;
-        commit(tx).await?;
-        Ok(BatchOutcome {
-            applied: applied.len() as u32,
-            missing,
-        })
+        Ok(self.repo.set_flags_many(self.id, &ids, flags).await?.value)
     }
 
     /// [`Mailbox::expunge`] for many messages.
     pub async fn expunge_many(&self, ids: &[MessageId]) -> Result<BatchOutcome> {
-        self.expunge_many_inner(ids, None).await
+        let ids = batch_ids(ids)?;
+        Ok(self.repo.expunge_many(self.id, &ids, None).await?.value)
     }
 
     /// [`Mailbox::expunge_many`] with an explicit `deleted_at` (unix seconds), for tests.
     #[doc(hidden)]
     pub async fn expunge_many_at(&self, ids: &[MessageId], now: i64) -> Result<BatchOutcome> {
         check_supplied_time(now)?;
-        self.expunge_many_inner(ids, Some(now)).await
-    }
-
-    async fn expunge_many_inner(&self, ids: &[MessageId], at: Option<i64>) -> Result<BatchOutcome> {
         let ids = batch_ids(ids)?;
-        let mut tx = self.begin().await?;
-        let mut hit = HashSet::with_capacity(ids.len());
-        for chunk in ids.chunks(SQL_CHUNK) {
-            // `deleted_at` is the database clock unless a test supplies one.
-            let sql = format!(
-                "UPDATE messages SET deleted_at = COALESCE(?1, {DB_NOW}) \
-                 WHERE mailbox_id = ?2 AND deleted_at IS NULL AND id IN ({}) RETURNING id",
-                placeholders(3, chunk.len())
-            );
-            let mut q = sqlx::query_scalar::<_, i64>(&sql).bind(at).bind(self.id.0);
-            for id in chunk {
-                q = q.bind(*id);
-            }
-            hit.extend(q.fetch_all(&mut *tx).await.map_err(map_db_error)?);
-        }
-        let (applied, missing) = split_hits(&ids, &hit);
-        log_message_changes(&mut tx, self.id, &applied, ChangeOp::Destroy).await?;
-        commit(tx).await?;
-        Ok(BatchOutcome {
-            applied: applied.len() as u32,
-            missing,
-        })
+        Ok(self.repo.expunge_many(self.id, &ids, Some(now)).await?.value)
     }
 
     /// [`Mailbox::move_message`] for many messages: the moved ones get contiguous fresh uids
@@ -1212,94 +609,7 @@ impl Mailbox {
     /// unknown destination folder is `NotFound` even if every id is missing.
     pub async fn move_many(&self, ids: &[MessageId], to: FolderId) -> Result<MoveBatch> {
         let ids = batch_ids(ids)?;
-        let mut tx = self.begin().await?;
-        folder_row(&mut tx, self.id, to).await?;
-        let mut live: HashMap<i64, (i64, i64)> = HashMap::with_capacity(ids.len());
-        for chunk in ids.chunks(SQL_CHUNK) {
-            let sql = format!(
-                "SELECT id, folder_id, uid FROM messages \
-                 WHERE mailbox_id = ?1 AND deleted_at IS NULL AND id IN ({})",
-                placeholders(2, chunk.len())
-            );
-            let mut q = sqlx::query_as::<_, (i64, i64, i64)>(&sql).bind(self.id.0);
-            for id in chunk {
-                q = q.bind(*id);
-            }
-            for (id, folder, uid) in q.fetch_all(&mut *tx).await.map_err(map_db_error)? {
-                live.insert(id, (folder, uid));
-            }
-        }
-        // Plan in input order: `Some(uid)` = already there, `None` = gets a new uid.
-        let mut plan: Vec<(i64, Option<i64>)> = Vec::new();
-        let mut missing = Vec::new();
-        for id in &ids {
-            match live.get(id) {
-                None => missing.push(MessageId(*id)),
-                Some((folder, uid)) if *folder == to.0 => plan.push((*id, Some(*uid))),
-                Some(_) => plan.push((*id, None)),
-            }
-        }
-        missing.truncate(MAX_BATCH);
-        let to_move: Vec<i64> = plan.iter().filter(|p| p.1.is_none()).map(|p| p.0).collect();
-        let mut first_uid = 0i64;
-        if !to_move.is_empty() {
-            let n = to_move.len() as i64;
-            first_uid = sqlx::query_scalar(
-                "UPDATE folders SET next_uid = next_uid + ?1 WHERE mailbox_id = ?2 AND id = ?3 \
-                 RETURNING next_uid - ?1",
-            )
-            .bind(n)
-            .bind(self.id.0)
-            .bind(to.0)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(map_db_error)?
-            .ok_or_else(not_found_folder)?;
-            to_uid(first_uid + n - 1)?; // the last uid must still fit
-                                        // 250 messages per statement: each is bound twice (CASE and IN).
-            for (c, chunk) in to_move.chunks(SQL_CHUNK / 2).enumerate() {
-                let base = first_uid + (c * (SQL_CHUNK / 2)) as i64;
-                let whens = (0..chunk.len())
-                    .map(|k| format!("WHEN ?{} THEN ?{}", 3 + 2 * k, 4 + 2 * k))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let ins = (0..chunk.len())
-                    .map(|k| format!("?{}", 3 + 2 * k))
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let sql = format!(
-                    "UPDATE messages SET folder_id = ?1, uid = CASE id {whens} END \
-                     WHERE mailbox_id = ?2 AND deleted_at IS NULL AND id IN ({ins})"
-                );
-                let mut q = sqlx::query(&sql).bind(to.0).bind(self.id.0);
-                for (k, id) in chunk.iter().enumerate() {
-                    q = q.bind(*id).bind(base + k as i64);
-                }
-                q.execute(&mut *tx).await.map_err(map_db_error)?;
-            }
-        }
-        log_message_changes(&mut tx, self.id, &to_move, ChangeOp::Update).await?;
-        let mut next = first_uid;
-        let mut moved = Vec::with_capacity(plan.len());
-        for (id, existing) in plan {
-            let uid = match existing {
-                Some(u) => to_uid(u)?,
-                None => {
-                    next += 1;
-                    to_uid(next - 1)?
-                }
-            };
-            moved.push((
-                MessageId(id),
-                MessageRef {
-                    id: MessageId(id),
-                    uid,
-                },
-            ));
-        }
-        // Every fallible step is done: nothing can fail after the commit.
-        commit(tx).await?;
-        Ok(MoveBatch { moved, missing })
+        Ok(self.repo.move_many(self.id, &ids, to).await?.value)
     }
 
     /// [`Mailbox::deliver`] for many messages into `folder`: at most [`MAX_BATCH`] items and
@@ -1317,7 +627,17 @@ impl Mailbox {
         folder: FolderId,
         items: Vec<DeliverItem>,
     ) -> Result<Vec<DeliverOutcome>> {
-        self.deliver_many_inner(folder, items, None).await
+        self.deliver_many_inner(folder, items, None, None).await
+    }
+
+    /// [`Mailbox::deliver_many`] that also fences and completes `job` in the same transaction.
+    pub async fn deliver_many_fenced(
+        &self,
+        folder: FolderId,
+        items: Vec<DeliverItem>,
+        job: JobFence,
+    ) -> Result<Vec<DeliverOutcome>> {
+        self.deliver_many_inner(folder, items, None, Some(job)).await
     }
 
     /// [`Mailbox::deliver_many`] with an explicit `internal_date` / `created_at` (unix
@@ -1330,7 +650,7 @@ impl Mailbox {
         now: i64,
     ) -> Result<Vec<DeliverOutcome>> {
         check_supplied_time(now)?;
-        self.deliver_many_inner(folder, items, Some(now)).await
+        self.deliver_many_inner(folder, items, Some(now), None).await
     }
 
     async fn deliver_many_inner(
@@ -1338,6 +658,7 @@ impl Mailbox {
         folder: FolderId,
         items: Vec<DeliverItem>,
         at: Option<i64>,
+        fence: Option<JobFence>,
     ) -> Result<Vec<DeliverOutcome>> {
         if items.is_empty() || items.len() > MAX_BATCH {
             return Err(Error::Invalid(
@@ -1359,269 +680,67 @@ impl Mailbox {
             }
             envs.push(rusty_mime::parse_envelope(&it.raw)?);
         }
-        {
-            let mut conn = self.store.pool().acquire().await.map_err(map_db_error)?;
-            folder_row(&mut conn, self.id, folder).await?;
+        self.repo.folder_exists(self.id, folder).await?;
+        let mut entries = Vec::with_capacity(items.len());
+        for (it, env) in items.into_iter().zip(envs) {
+            let size = i64::try_from(it.raw.len())
+                .map_err(|_| Error::Quota("message too large".into()))?;
+            let hash = self.blobs.put(it.raw).await?;
+            entries.push(DeliverEntry {
+                msg: NewMessage {
+                    folder,
+                    hash,
+                    size,
+                    flags: it.flags,
+                    env,
+                },
+                delivery_id: it.delivery_id,
+            });
         }
-        let mut hashes: Vec<String> = Vec::with_capacity(items.len());
-        let mut sizes: Vec<i64> = Vec::with_capacity(items.len());
-        for it in &items {
-            sizes.push(
-                i64::try_from(it.raw.len())
-                    .map_err(|_| Error::Quota("message too large".into()))?,
-            );
-            hashes.push(self.blobs.put(it.raw.clone()).await?.as_str().to_owned());
-        }
+        Ok(self
+            .repo
+            .deliver_many(self.id, &entries, at, fence)
+            .await?
+            .value)
+    }
 
-        let mut tx = self.begin().await?;
-        // Deliveries that already exist (one statement per SQL_CHUNK distinct ids).
-        let mut wanted: Vec<&[u8]> = Vec::new();
-        let mut seen = HashSet::new();
-        for it in &items {
-            if seen.insert(it.delivery_id.0) {
-                wanted.push(&it.delivery_id.0[..]);
+    /// Hard-delete the soft-deleted messages of THIS mailbox with `deleted_at < older_than`
+    /// (unix seconds), one bounded transaction at a time ([`PURGE_BATCH`] messages), until none
+    /// are left. A message that still has a `deliveries` row is kept (see
+    /// [`purge_deleted`](crate::purge_deleted), which does the same for every mailbox of a
+    /// SQLite store). Returns how many were removed.
+    pub async fn purge_deleted(&self, older_than: i64) -> Result<u64> {
+        let mut total = 0u64;
+        loop {
+            let n = self
+                .repo
+                .purge_deleted(self.id, older_than, PURGE_BATCH)
+                .await?
+                .value;
+            total += n;
+            if n < PURGE_BATCH as u64 {
+                return Ok(total);
             }
         }
-        let mut existing: HashMap<Vec<u8>, (i64, String)> = HashMap::new();
-        for chunk in wanted.chunks(SQL_CHUNK) {
-            let sql = format!(
-                "SELECT delivery_id, message_id, blob_hash FROM deliveries \
-                 WHERE mailbox_id = ?1 AND delivery_id IN ({})",
-                placeholders(2, chunk.len())
-            );
-            let mut q = sqlx::query_as::<_, (Vec<u8>, i64, String)>(&sql).bind(self.id.0);
-            for d in chunk {
-                q = q.bind(*d);
-            }
-            for (d, msg, hash) in q.fetch_all(&mut *tx).await.map_err(map_db_error)? {
-                existing.insert(d, (msg, hash));
-            }
-        }
-        // Plan in input order, as a loop of `deliver` calls would see it.
-        enum Slot {
-            Existing(i64),
-            Created(usize),
-            DuplicateOfNew(usize),
-        }
-        let mut slots = Vec::with_capacity(items.len());
-        let mut creates: Vec<usize> = Vec::new(); // item index of each message to create
-        let mut new_by_delivery: HashMap<[u8; 32], usize> = HashMap::new();
-        let reused = || Error::Conflict("delivery id reused with different content".into());
-        for (i, it) in items.iter().enumerate() {
-            if let Some((msg, hash)) = existing.get(&it.delivery_id.0[..]) {
-                if *hash != hashes[i] {
-                    return Err(reused());
-                }
-                slots.push(Slot::Existing(*msg));
-            } else if let Some(&c) = new_by_delivery.get(&it.delivery_id.0) {
-                if hashes[creates[c]] != hashes[i] {
-                    return Err(reused());
-                }
-                slots.push(Slot::DuplicateOfNew(c));
-            } else {
-                new_by_delivery.insert(it.delivery_id.0, creates.len());
-                slots.push(Slot::Created(creates.len()));
-                creates.push(i);
-            }
-        }
-        // Uids of the messages earlier deliveries created.
-        let old_ids: Vec<i64> = {
-            let mut s = HashSet::new();
-            slots
-                .iter()
-                .filter_map(|s| match s {
-                    Slot::Existing(m) => Some(*m),
-                    _ => None,
-                })
-                .filter(|m| s.insert(*m))
-                .collect()
-        };
-        let mut old_uid: HashMap<i64, i64> = HashMap::new();
-        for chunk in old_ids.chunks(SQL_CHUNK) {
-            let sql = format!(
-                "SELECT id, uid FROM messages WHERE mailbox_id = ?1 AND id IN ({})",
-                placeholders(2, chunk.len())
-            );
-            let mut q = sqlx::query_as::<_, (i64, i64)>(&sql).bind(self.id.0);
-            for m in chunk {
-                q = q.bind(*m);
-            }
-            old_uid.extend(q.fetch_all(&mut *tx).await.map_err(map_db_error)?);
-        }
-
-        let mut first_id = 0i64;
-        let mut first_uid = 0i64;
-        if !creates.is_empty() {
-            let n = creates.len() as i64;
-            first_id = sqlx::query_scalar(
-                "UPDATE mailboxes SET next_msg_id = next_msg_id + ?1 WHERE id = ?2 \
-                 RETURNING next_msg_id - ?1",
-            )
-            .bind(n)
-            .bind(self.id.0)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(map_db_error)?
-            .ok_or_else(|| Error::NotFound("mailbox".into()))?;
-            first_uid = sqlx::query_scalar(
-                "UPDATE folders SET next_uid = next_uid + ?1 WHERE mailbox_id = ?2 AND id = ?3 \
-                 RETURNING next_uid - ?1",
-            )
-            .bind(n)
-            .bind(self.id.0)
-            .bind(folder.0)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(map_db_error)?
-            .ok_or_else(not_found_folder)?;
-            to_uid(first_uid + n - 1)?; // the last uid must still fit
-
-            // Threads: one lookup for every candidate of every new message against the rows
-            // that exist before this batch (all with smaller ids than any new message), then
-            // earlier messages of this batch, candidate by candidate, as a loop would see.
-            let cands: Vec<Vec<&str>> = creates
-                .iter()
-                .map(|&i| {
-                    envs[i]
-                        .references
-                        .iter()
-                        .rev()
-                        .chain(envs[i].in_reply_to.iter())
-                        .take(MAX_THREAD_CANDIDATES)
-                        .map(String::as_str)
-                        .collect()
-                })
-                .collect();
-            let mut all: Vec<&str> = cands.iter().flatten().copied().collect();
-            all.sort_unstable();
-            all.dedup();
-            let in_db = lookup_threads(&mut tx, self.id, &all).await?;
-            let mut in_batch: HashMap<&str, i64> = HashMap::new();
-            let mut threads = Vec::with_capacity(creates.len());
-            for (c, &i) in creates.iter().enumerate() {
-                let id = first_id + c as i64;
-                let thread = cands[c]
-                    .iter()
-                    .find_map(|h| in_db.get(*h).or_else(|| in_batch.get(h)).copied())
-                    .unwrap_or(id);
-                threads.push(thread);
-                if let Some(mid) = envs[i].message_id.as_deref() {
-                    in_batch.entry(mid).or_insert(thread);
-                }
-            }
-
-            for chunk in creates.chunks(60).enumerate() {
-                let (ci, chunk) = chunk;
-                let first_c = ci * 60;
-                if chunk.is_empty() {
-                    continue;
-                }
-                // blobs rows (refcount is maintained by the messages triggers)
-                let rows = (0..chunk.len())
-                    .map(|r| format!("(?{}, ?{})", 1 + 2 * r, 2 + 2 * r))
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let sql = format!(
-                    "INSERT INTO blobs (hash, size) VALUES {rows} ON CONFLICT (hash) DO NOTHING"
-                );
-                let mut q = sqlx::query(&sql);
-                for &i in chunk {
-                    q = q.bind(&hashes[i]).bind(sizes[i]);
-                }
-                q.execute(&mut *tx).await.map_err(map_db_error)?;
-
-                // messages
-                let rows = (0..chunk.len())
-                    .map(|r| {
-                        let b = 4 + 10 * r;
-                        format!(
-                            "(?1, ?{}, ?3, ?{}, ?{}, ?{}, COALESCE(?2, {DB_NOW}), ?{}, ?{}, ?{}, ?{}, ?{}, ?{})",
-                            b, b + 1, b + 2, b + 3, b + 4, b + 5, b + 6, b + 7, b + 8, b + 9
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let sql = format!(
-                    "INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, size, \
-                     internal_date, subject, from_addr, to_addrs, message_id_hdr, thread_id, \
-                     flags) VALUES {rows}"
-                );
-                let mut q = sqlx::query(&sql).bind(self.id.0).bind(at).bind(folder.0);
-                for (k, &i) in chunk.iter().enumerate() {
-                    let c = first_c + k;
-                    q = q
-                        .bind(first_id + c as i64)
-                        .bind(first_uid + c as i64)
-                        .bind(&hashes[i])
-                        .bind(sizes[i])
-                        .bind(&envs[i].subject)
-                        .bind(&envs[i].from)
-                        .bind(&envs[i].to)
-                        .bind(envs[i].message_id.as_deref())
-                        .bind(threads[c])
-                        .bind(i64::from(items[i].flags.bits()));
-                }
-                q.execute(&mut *tx).await.map_err(map_db_error)?;
-
-                // deliveries
-                let rows = (0..chunk.len())
-                    .map(|r| {
-                        let b = 3 + 3 * r;
-                        format!(
-                            "(?1, ?{}, ?{}, ?{}, COALESCE(?2, {DB_NOW}))",
-                            b,
-                            b + 1,
-                            b + 2
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let sql = format!(
-                    "INSERT INTO deliveries (mailbox_id, delivery_id, message_id, blob_hash, \
-                     created_at) VALUES {rows}"
-                );
-                let mut q = sqlx::query(&sql).bind(self.id.0).bind(at);
-                for (k, &i) in chunk.iter().enumerate() {
-                    q = q
-                        .bind(&items[i].delivery_id.0[..])
-                        .bind(first_id + (first_c + k) as i64)
-                        .bind(&hashes[i]);
-                }
-                q.execute(&mut *tx).await.map_err(map_db_error)?;
-            }
-            let created_ids: Vec<i64> = (0..creates.len()).map(|c| first_id + c as i64).collect();
-            log_message_changes(&mut tx, self.id, &created_ids, ChangeOp::Create).await?;
-        }
-
-        let new_ref = |c: usize| -> Result<MessageRef> {
-            Ok(MessageRef {
-                id: MessageId(first_id + c as i64),
-                uid: to_uid(first_uid + c as i64)?,
-            })
-        };
-        let outcomes = slots
-            .into_iter()
-            .map(|s| match s {
-                Slot::Created(c) => Ok(DeliverOutcome::Created(new_ref(c)?)),
-                Slot::DuplicateOfNew(c) => Ok(DeliverOutcome::Duplicate(new_ref(c)?)),
-                Slot::Existing(m) => {
-                    let uid = old_uid
-                        .get(&m)
-                        .copied()
-                        .ok_or_else(|| Error::storage("delivery refers to a missing message"))?;
-                    Ok(DeliverOutcome::Duplicate(MessageRef {
-                        id: MessageId(m),
-                        uid: to_uid(uid)?,
-                    }))
-                }
-            })
-            .collect::<Result<Vec<_>>>()?;
-        // Every fallible step is done: nothing can fail after the commit.
-        commit(tx).await?;
-        Ok(outcomes)
     }
 
     // ----- reads -----
+
+    /// One message, soft-deleted ones included (`MessageDetail::deleted`). `NotFound` for an id
+    /// of another mailbox.
+    pub async fn get_message(&self, id: MessageId) -> Result<MessageDetail> {
+        self.repo.get_message(self.id, id).await
+    }
+
+    /// Where the raw bytes of a live message are (blob hash and size).
+    pub async fn get_raw_ref(&self, id: MessageId) -> Result<RawRef> {
+        self.repo.get_raw_ref(self.id, id).await
+    }
+
+    /// The keywords of a live message, sorted.
+    pub async fn keywords(&self, id: MessageId) -> Result<Vec<String>> {
+        self.repo.keywords(self.id, id).await
+    }
 
     /// One page of the live messages of `folder` with `uid > after_uid`, ordered by uid: at
     /// most `limit` entries, clamped to [`MAX_PAGE`]; `limit == 0` is `Invalid`. Start with
@@ -1633,37 +752,7 @@ impl Mailbox {
         limit: u32,
     ) -> Result<Vec<MessageSummary>> {
         let limit = page_limit(limit)?;
-        let mut conn = self.store.pool().acquire().await.map_err(map_db_error)?;
-        folder_row(&mut conn, self.id, folder).await?;
-        type Row = (i64, i64, i64, i64, String, String, i64, i64);
-        let rows: Vec<Row> = sqlx::query_as(
-            "SELECT id, uid, size, internal_date, subject, from_addr, flags, thread_id \
-             FROM messages WHERE mailbox_id = ? AND folder_id = ? AND uid > ? \
-             AND deleted_at IS NULL ORDER BY uid LIMIT ?",
-        )
-        .bind(self.id.0)
-        .bind(folder.0)
-        .bind(i64::from(after_uid))
-        .bind(limit)
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(map_db_error)?;
-        rows.into_iter()
-            .map(
-                |(id, uid, size, internal_date, subject, from_addr, flags, thread_id)| {
-                    Ok(MessageSummary {
-                        id: MessageId(id),
-                        uid: to_uid(uid)?,
-                        size,
-                        internal_date,
-                        subject,
-                        from_addr,
-                        flags: to_flags(flags)?,
-                        thread_id: ThreadId(thread_id),
-                    })
-                },
-            )
-            .collect()
+        self.repo.list_folder(self.id, folder, after_uid, limit).await
     }
 
     /// One page of change-log entries with `seq > seq`, ordered by seq: at most `limit`
@@ -1671,28 +760,6 @@ impl Mailbox {
     /// follow the last one returned; continue from its `seq`.
     pub async fn changes_since(&self, seq: i64, limit: u32) -> Result<ChangePage> {
         let limit = page_limit(limit)?;
-        let rows: Vec<(i64, String, i64, String)> = sqlx::query_as(
-            "SELECT seq, kind, item_id, op FROM change_log \
-             WHERE mailbox_id = ? AND seq > ? ORDER BY seq LIMIT ?",
-        )
-        .bind(self.id.0)
-        .bind(seq)
-        .bind(limit + 1)
-        .fetch_all(self.store.pool())
-        .await
-        .map_err(map_db_error)?;
-        let more = rows.len() as i64 > limit;
-        let changes = rows
-            .into_iter()
-            .take(limit as usize)
-            .map(|(seq, kind, item_id, op)| {
-                Ok(Change {
-                    seq,
-                    item: ChangeItem::from_row(&kind, item_id)?,
-                    op: ChangeOp::parse(&op)?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(ChangePage { changes, more })
+        self.repo.changes_since(self.id, seq, limit).await
     }
 }

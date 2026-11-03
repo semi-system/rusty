@@ -80,13 +80,20 @@ pub struct PgRetryStats {
 }
 
 /// Test-only fault injection: lets a test force the interleaving that the ordering rule
-/// prevents. Never set in production code paths.
+/// prevents. Never set in production code paths (all fields are off by default).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Knobs {
-    /// Lock blobs one by one in the order the messages are given instead of ascending.
+    /// Lock blobs one by one in the order the caller supplies them instead of ascending.
     pub unordered_blob_locks: bool,
     /// `pg_sleep` this long after the first blob lock (only with `unordered_blob_locks`).
     pub hold_after_first_blob_ms: u32,
+    /// With `unordered_blob_locks`: iterate the supplied blobs in REVERSE (a crossed order).
+    pub reverse_blob_lock_order: bool,
+    /// Keep the transaction open this long after the work and before COMMIT (two-session
+    /// interleavings without sleeps in the statements).
+    pub pause_before_commit_ms: u32,
+    /// Omit the mailbox row lock (exercises the second line of defence: triggers, FKs, counters).
+    pub skip_mailbox_lock: bool,
 }
 
 pub(super) enum Step<T> {
@@ -200,12 +207,20 @@ macro_rules! tx_retry {
                 let $c: &mut sqlx::PgConnection = &mut *tx;
                 let lock: Option<rusty_core::MailboxId> = $lock;
                 if let Some(mb) = lock {
-                    $self.lock_mailbox(&mut *$c, mb).await?;
+                    if !$self.knobs.skip_mailbox_lock {
+                        $self.lock_mailbox(&mut *$c, mb).await?;
+                    }
                 }
                 $self.maybe_inject_deadlock(&mut *$c).await?;
                 $body
             }
             .await;
+            if res.is_ok() && $self.knobs.pause_before_commit_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(u64::from(
+                    $self.knobs.pause_before_commit_ms,
+                )))
+                .await;
+            }
             match $self.finish(tx, res, attempt).await {
                 $crate::repo::pg::tx::Step::Done(v) => break Ok::<_, rusty_core::Error>(v),
                 $crate::repo::pg::tx::Step::Retry => attempt += 1,

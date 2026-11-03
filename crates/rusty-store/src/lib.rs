@@ -35,6 +35,7 @@ pub use mailbox::{
 };
 #[cfg(feature = "postgres")]
 pub use pg::{PgPoolConfig, PgStore};
+pub use repo::{FolderInfo, JobFence, MessageDetail, RawRef};
 pub use store::{Repos, Store, StoreConfig};
 pub use sqlite::{map_db_error, SqliteStore, SqliteTx, DEFAULT_BUSY_TIMEOUT};
 
