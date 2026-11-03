@@ -68,15 +68,7 @@ fuzz_all() {
     cargo test -p rusty-mime -p rusty-directory --test fuzz_smoke
   fi
 }
-# Not via stage(): a subshell would lose DEGRADED.
-echo "==> fuzz smoke"
-if fuzz_all; then
-  STAGES=$((STAGES + 1))
-  echo "[ OK ] fuzz smoke"
-else
-  echo "[FAIL] fuzz smoke" >&2
-  exit 1
-fi
+stage "fuzz smoke" fuzz_all
 
 if [ "$DEGRADED" -eq 1 ]; then
   echo "CI OK (DEGRADED: fuzz ran as proptest stand-in)"

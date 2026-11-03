@@ -533,14 +533,15 @@ async fn all_paths(local: &str) -> bool {
 #[tokio::test]
 async fn rejects_zero_width_and_bidi_override_in_local_part() {
     // Positive controls next to the negatives.
-    for good in ["josé.müller", "straße", "ørsted", "łukasz", "nguyễn.văn.an", "ǆ", "ı", "a1_b-c+d"] {
+    for good in ["josé.müller", "straße", "ørsted", "łukasz", "đạt", "tơ.ư", "nguyễn.văn.an", "ı", "a1_b-c+d"] {
         assert!(all_paths(good).await, "{good:?}");
     }
     let invisible = [
         '\u{200B}', '\u{200C}', '\u{200D}', '\u{200E}', '\u{202A}', '\u{202E}', '\u{2066}',
         '\u{2069}', '\u{FEFF}', '\u{00AD}', '\u{034F}', '\u{FE0F}', '\u{E0100}', '\u{3164}',
         '\u{115F}', '\u{1160}', '\u{FFA0}', '\u{2800}', '\u{E000}', '\u{0378}', '\u{00A0}',
-        '\u{0000}', '\u{2028}',
+        '\u{0000}', '\u{2028}', '\u{200F}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{2067}',
+        '\u{2068}', '\u{F8FF}', '\u{10FFFD}', '\u{FFFF}',
     ];
     for c in invisible {
         for local in [format!("al{c}ice"), format!("{c}alice"), format!("alice{c}")] {
@@ -598,6 +599,10 @@ async fn local_part_allow_list_rejects_everything_else() {
         "\u{F7}",               // division sign
         "\u{C0}\u{2160}",       // roman numeral
         "\u{1E9E}\u{1D00}",     // small cap (Ll but outside blocks)
+        "\u{17F}",             // long s: NFKC-unstable
+        "\u{1C6}",             // dz digraph: NFKC-unstable
+        "\u{133}",             // ij ligature: NFKC-unstable
+        "\u{1E9A}",            // a with right half ring: NFKC-unstable
         ".a",
         "a.",
         "a..b",
@@ -608,7 +613,7 @@ async fn local_part_allow_list_rejects_everything_else() {
         assert!(!all_paths(b).await, "{b:?}");
     }
     // Positive controls with the same shape.
-    for good in ["abc", "a.b", "\u{DF}", "\u{FF}", "\u{17F}", "\u{24F}", "\u{1EFF}"] {
+    for good in ["abc", "a.b", "\u{DF}", "\u{FF}", "\u{17E}", "\u{24F}", "\u{1EFF}", "\u{1B0}"] {
         assert!(all_paths(good).await, "{good:?}");
     }
 }

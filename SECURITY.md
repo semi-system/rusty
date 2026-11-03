@@ -15,14 +15,13 @@ An attacker who controls any of the following can:
   dots, plus non-ASCII lowercase letters (category Ll) in the Latin blocks U+00DF..U+00FF
   (minus U+00F7), U+0100..U+024F and U+1E00..U+1EFF. Everything else is rejected:
   combining marks, other scripts, non-ASCII digits, symbols, emoji, spaces, controls,
-  format characters, private use, unassigned and compatibility forms. Max 64 octets and
+  format characters, private use, unassigned, and compatibility letters (anything that
+  changes under NFKC, e.g. ſ, ĳ, ǆ). Max 64 octets and
   64 characters. Checked for accounts, aliases, lists and external list members.
 - **Blob names and hashes:** hashes must be 64 lowercase hex characters; the blob
   store and GC have tests against hostile names (see rusty-store tests).
-- **The startup config file:** it is read with a 64 KiB cap, errors do not echo its
-  contents, and a FIFO at the config path does not hang startup.
-- **Message size:** appends over the per-mailbox limit (default 50 MiB) are refused
-  with a quota error.
+- **Startup config file:** 64 KiB cap, errors never echo contents, a FIFO cannot hang startup.
+- **Message size:** appends over the per-mailbox limit (default 50 MiB) get a quota error.
 
 The project's own crates contain no `unsafe`: `#![forbid(unsafe_code)]` is checked in
 every `crates/*/src/lib.rs`, and a scan rejects any `unsafe` token in `crates/*/src`.
@@ -32,7 +31,7 @@ use `unsafe` (bundled SQLite C code, rustix, tokio, sqlx).
 Local-part tradeoff: only Latin is accepted. Names in other scripts (Cyrillic, Greek,
 Arabic, CJK, Indic, Hangul...) and emoji cannot be used yet, and ZWJ/ZWNJ are always
 rejected. Other scripts will be opt-in per tenant later, under a single-script rule.
-`İ` (U+0130) lowercases to `i` + a combining dot and is therefore rejected.
+`İ` (U+0130) lowercases to `i` + a combining dot and is rejected.
 
 ## Invariants enforced by tests
 
@@ -54,8 +53,10 @@ rejected. Other scripts will be opt-in per tenant later, under a single-script r
 - No process sandbox (seccomp, namespaces, privilege drop).
 - No encryption at rest. Argon2 hashing exists but no rate limiting or lockout yet.
 - Homoglyph detection is partial. Cross-script mixing is impossible by construction, but
-  intra-Latin look-alikes remain (e.g. dotless `ı` U+0131 vs `i`, `l` vs `1`). Follow-up:
+  intra-Latin look-alikes remain (dotless `ı` vs `i`, `ł`/`l`, `l` vs `1`). Follow-up:
   UTS #39 skeleton uniqueness per tenant.
+- `parse_address` trims Unicode whitespace around the whole address and the domain and
+  returns the canonical form. Protocol layers must reject padded input themselves.
 - The Ll test follows the `unicode-general-category` crate's Unicode version.
 
 ## Dependency policy
@@ -89,7 +90,6 @@ Seed inputs live in `fuzz/seeds/<target>/`; ci.sh passes them to the fuzzer.
     rustup target add x86_64-unknown-linux-musl
     sudo apt install musl-tools
     export CC_x86_64_unknown_linux_musl=musl-gcc    # SQLite is compiled from C
-
 The musl build is for static release binaries; glibc stays the default.
 
 ## Reporting a vulnerability

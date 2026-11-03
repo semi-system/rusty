@@ -84,7 +84,7 @@ const LATIN_RANGES: &[std::ops::RangeInclusive<u32>] = &[
 
 /// Allow list for one character of an already NFC+lowercased local part (dots are handled
 /// separately by the caller). ASCII: a-z, 0-9 and the RFC 5322 atext specials. Non-ASCII:
-/// only Ll letters inside [`LATIN_RANGES`]. Everything else (combining marks, other scripts,
+/// only Ll letters inside [`LATIN_RANGES`] that are NFKC-stable. Everything else (combining marks, other scripts,
 /// digits, symbols, emoji, spaces, controls, format characters, private use, unassigned,
 /// compatibility forms) is rejected. The Ll test uses `unicode-general-category` because
 /// `char::is_lowercase` also accepts Other_Lowercase characters that are not Ll.
@@ -96,9 +96,13 @@ pub fn allowed_local_char(c: char) -> bool {
             || c == '.'
             || "!#$%&'*+-/=?^_`{|}~".contains(c);
     }
+    use unicode_normalization::UnicodeNormalization;
     POLICY.latin
         && LATIN_RANGES.iter().any(|r| r.contains(&(c as u32)))
         && get_general_category(c) == GeneralCategory::LowercaseLetter
+        // Compatibility characters (ligatures like U+0133, long s U+017F, digraphs U+01C6, ...)
+        // are rejected: a character must be stable under NFKC.
+        && std::iter::once(c).nfkc().eq(std::iter::once(c))
 }
 
 /// Normalize a local part: NFC, lowercase, NFC; then every character must pass

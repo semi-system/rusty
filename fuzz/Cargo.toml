@@ -9,6 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+unicode-general-category = "1"
 rusty-mime = { path = "../crates/rusty-mime" }
 rusty-directory = { path = "../crates/rusty-directory" }
 
