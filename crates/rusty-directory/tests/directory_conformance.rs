@@ -779,3 +779,50 @@ async fn errors_never_echo_caller_data() {
     })
     .await;
 }
+
+/// The count and the insert of `add_list_member` are one transaction under the list row lock
+/// (Postgres `FOR UPDATE`; SQLite `BEGIN IMMEDIATE`). Several adders racing at `cap - 1` must
+/// yield exactly one success and `Quota` for the rest, never `cap + 1` members. Repeated over
+/// fresh lists because the race window is narrow without the lock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn concurrent_adders_at_the_list_cap_boundary_admit_exactly_one() {
+    for_each_backend(|b| async move {
+        let dom = b.dir.create_domain("boundary.test").await.unwrap();
+        for round in 0..6 {
+            let list = b.dir.create_list(&format!("big{round}"), dom).await.unwrap();
+            let fill = if b.is_sqlite() {
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2) \
+                 INSERT INTO list_members (list_id, external, seq) \
+                 SELECT ?1, 'm' || i || '@r.example', i FROM n"
+            } else {
+                "INSERT INTO list_members (list_id, external) \
+                 SELECT ?1, 'm' || i || '@r.example' FROM generate_series(1, ?2::int) AS i"
+            };
+            b.run(fill, &[Bind::I(list.0), Bind::I(MAX_LIST_MEMBERS as i64 - 1)]).await;
+            let mut tasks = Vec::new();
+            for i in 0..8 {
+                let d = b.dir.clone();
+                tasks.push(tokio::spawn(async move {
+                    d.add_list_member(list, None, Some(&format!("racer{i}@r.example"))).await
+                }));
+            }
+            let (mut ok, mut quota) = (0, 0);
+            for t in tasks {
+                match t.await.unwrap() {
+                    Ok(()) => ok += 1,
+                    Err(Error::Quota(_)) => quota += 1,
+                    Err(e) => panic!("unexpected error: {e:?}"),
+                }
+            }
+            let n = b
+                .scalar("SELECT COUNT(*) FROM list_members WHERE list_id = ?1", &[Bind::I(list.0)])
+                .await;
+            assert_eq!(
+                (ok, quota, n),
+                (1, 7, MAX_LIST_MEMBERS as i64),
+                "round {round}: the cap was exceeded or no adder won"
+            );
+        }
+    })
+    .await;
+}
