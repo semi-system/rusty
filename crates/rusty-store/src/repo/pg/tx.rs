@@ -19,7 +19,8 @@
 //!
 //! The body of `tx_retry!` may run several times: it must have no side effects outside the
 //! transaction (blob IO happens before the repository call). Post-commit hooks (cache
-//! notification, PG4) run after the macro, never inside the loop.
+//! notification) run after the macro, never inside the loop; every write returns `Committed` with
+//! the last change seq for them.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;

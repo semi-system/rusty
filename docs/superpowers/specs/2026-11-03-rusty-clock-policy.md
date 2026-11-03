@@ -54,7 +54,7 @@ share a Rust clock.
 Open items: GC on Postgres and `jobs` on Postgres arrive with PG5; their clock tests reuse the
 bodies above through `for_each_backend`.
 
-Caller-supplied timestamps: the `_at` twins (`Mailbox::deliver_at`, `deliver_many_at`,
+Caller-supplied timestamps (both backends, `mailbox_conformance::caller_supplied_dates_are_verbatim_and_bounded`): the `_at` twins (`Mailbox::deliver_at`, `deliver_many_at`,
 `expunge_many_at`, the capability `*_at` methods) are `#[doc(hidden)]`, store the value verbatim
 (rule 3) and reject anything outside `0..=MAX_SUPPLIED_TIME` (2100-01-01) with `Error::Invalid`.
 A future client IMAP APPEND date must go through the same bound. `collect_blobs_with_db_clock`

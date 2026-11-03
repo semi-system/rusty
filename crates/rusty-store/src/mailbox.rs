@@ -355,20 +355,23 @@ impl Mailbox {
     /// Rename a custom folder (system folders are `Invalid`).
     pub async fn rename_folder(&self, id: FolderId, name: &str) -> Result<()> {
         validate_folder_name(name)?;
-        Ok(self.repo.rename_folder(self.id, id, name).await?.value)
+        self.repo.rename_folder(self.id, id, name).await?;
+        Ok(())
     }
 
     /// Re-parent a custom folder. Moving into itself or a descendant is `Conflict`; a result
     /// deeper than `MAX_FOLDER_DEPTH` is `Invalid`; system folders are `Invalid`.
     pub async fn move_folder(&self, id: FolderId, new_parent: Option<FolderId>) -> Result<()> {
-        Ok(self.repo.move_folder(self.id, id, new_parent).await?.value)
+        self.repo.move_folder(self.id, id, new_parent).await?;
+        Ok(())
     }
 
     /// Delete an empty custom folder. Children or live messages are `Conflict`; system
     /// folders are `Invalid`. Rows of messages already expunged from it are purged (their
     /// blobs drop to refcount 0 for the cleanup job).
     pub async fn delete_folder(&self, id: FolderId) -> Result<()> {
-        Ok(self.repo.delete_folder(self.id, id).await?.value)
+        self.repo.delete_folder(self.id, id).await?;
+        Ok(())
     }
 
     /// All folders of the mailbox in id order.
@@ -548,19 +551,22 @@ impl Mailbox {
 
     /// Replace the standard flags of a live message.
     pub async fn set_flags(&self, id: MessageId, flags: Flags) -> Result<()> {
-        Ok(self.repo.set_flags(self.id, id, flags).await?.value)
+        self.repo.set_flags(self.id, id, flags).await?;
+        Ok(())
     }
 
     /// Add a keyword (lowercased). Idempotent; a 33rd distinct keyword is `Quota`.
     pub async fn add_keyword(&self, id: MessageId, keyword: &str) -> Result<()> {
         let kw = normalize_keyword(keyword)?;
-        Ok(self.repo.add_keyword(self.id, id, &kw).await?.value)
+        self.repo.add_keyword(self.id, id, &kw).await?;
+        Ok(())
     }
 
     /// Remove a keyword (case-insensitive). Removing an absent keyword is a no-op.
     pub async fn remove_keyword(&self, id: MessageId, keyword: &str) -> Result<()> {
         let kw = normalize_keyword(keyword)?;
-        Ok(self.repo.remove_keyword(self.id, id, &kw).await?.value)
+        self.repo.remove_keyword(self.id, id, &kw).await?;
+        Ok(())
     }
 
     /// Move a live message to `to`, giving it a fresh uid there. Moving to the folder it is
@@ -571,7 +577,8 @@ impl Mailbox {
 
     /// Soft-delete a live message (sets `deleted_at`); the blob is untouched.
     pub async fn expunge(&self, id: MessageId) -> Result<()> {
-        Ok(self.repo.expunge(self.id, id).await?.value)
+        self.repo.expunge(self.id, id).await?;
+        Ok(())
     }
 
     // ----- batches -----
