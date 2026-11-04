@@ -235,7 +235,6 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
     out
 }
 
-use rusty_store::repo::{GcRepo, JobRepo};
 use super::backends::{insert_blob_row, set_zero_since};
 
 /// The first DATA statement of the transaction (after BEGIN) must be the mailbox lock. Transaction-local

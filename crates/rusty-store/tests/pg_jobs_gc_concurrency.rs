@@ -14,7 +14,7 @@ use common::pg::pg_admin_url;
 use common::raw;
 use rusty_core::{Error, Flags, JobId};
 use rusty_store::repo::pg::{Knobs, PgRepo};
-use rusty_store::repo::{GcRepo, JobRepo};
+use rusty_store::repo::GcRepo;
 use rusty_store::{Gc, JobFence, JobQueue, Mailbox, PgPoolConfig, PgStore};
 use serde_json::json;
 
