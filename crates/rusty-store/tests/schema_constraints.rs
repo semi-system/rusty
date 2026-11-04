@@ -1072,3 +1072,23 @@ async fn deliveries_cascade_with_message_and_mailbox() {
     ok(p, "DELETE FROM mailboxes WHERE id = 2").await;
     assert_eq!(count(p, "SELECT count(*) FROM deliveries").await, 0);
 }
+
+/// Review PG5 I1: the `ON DELETE RESTRICT` foreign key to `blobs` is checked by probing
+/// `messages.blob_hash` for every blob row GC deletes; that probe must use an index (migration
+/// 0009) and not scan `messages`.
+#[tokio::test]
+async fn messages_blob_hash_is_indexed_for_the_gc_foreign_key_probe() {
+    use sqlx::Row;
+    let s = mem().await;
+    let rows = sqlx::query("EXPLAIN QUERY PLAN SELECT 1 FROM messages WHERE blob_hash = ?")
+        .bind(HASH_A)
+        .fetch_all(s.pool())
+        .await
+        .unwrap();
+    let plan: Vec<String> = rows.iter().map(|r| r.get::<String, _>("detail")).collect();
+    assert!(
+        plan.iter().any(|d| d.contains("USING INDEX messages_blob_hash")
+            || d.contains("USING COVERING INDEX messages_blob_hash")),
+        "the RESTRICT probe scans messages: {plan:?}"
+    );
+}

@@ -308,6 +308,10 @@ CREATE TABLE messages (
 CREATE INDEX messages_thread ON messages (mailbox_id, thread_id);
 CREATE INDEX messages_msgid ON messages (mailbox_id, message_id_hdr);
 CREATE INDEX messages_deleted_at ON messages (deleted_at) WHERE deleted_at IS NOT NULL;
+-- The ON DELETE RESTRICT foreign key probes messages(blob_hash) for every blobs row GC deletes;
+-- without this index each probe is a sequential scan of messages (review PG5 I1: 5.5 s vs 17 ms
+-- for one GC_BATCH of 1000 rows at 100k messages).
+CREATE INDEX messages_blob_hash ON messages (blob_hash);
 
 CREATE FUNCTION rs_messages_refcount() RETURNS trigger LANGUAGE plpgsql
 SET search_path = pg_catalog, public AS $$

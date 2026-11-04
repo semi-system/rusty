@@ -236,3 +236,16 @@ Suggested order: PG3 -> PG4 -> PG5 -> PG6 (PG7 can start after PG4 for the appen
 * Divergence between the two backends' notion of "now" (8.8).
 * Pool starvation under a hot mailbox (5.3).
 * Cost of keeping two implementations of ~50 operations in lockstep: the conformance harness is the only thing keeping them honest; do not let any operation land without a both-backend test.
+
+## 13. Addendum (PG5 review I1): index on `messages(blob_hash)`
+
+The spike schema had no index on the foreign key column `messages.blob_hash -> blobs.hash ON DELETE RESTRICT`. Postgres runs `SELECT 1 FROM ONLY messages WHERE blob_hash = $1 FOR KEY SHARE` for every `blobs` row a statement deletes (SQLite probes the child table the same way), so without an index each deleted blob row costs a scan of `messages`.
+
+Measured (Postgres 18 container, tmpfs, 101,000 `blobs` rows, 100,000 `messages` rows, one `GC_BATCH` = `DELETE` of 1,000 unreferenced blob rows, simplified two-table schema with the same FK; `psql \timing`, single run each, 2026-11-04):
+
+| | delete of 1,000 blob rows |
+|---|---|
+| no index on `messages(blob_hash)` | 4,236 ms (review run: 5.2-5.9 s) |
+| `CREATE INDEX messages_blob_hash ON messages (blob_hash)` | 12.8 ms (review run: 17 ms) |
+
+The cost without the index grows linearly with `messages` (about a minute per batch at 1M messages) and the batch holds 1,000 blob row locks meanwhile, so under PG8 timeouts GC would degrade to `Busy` forever. The index costs about 58 bytes per message (review measurement; B-tree deduplication helps the one-blob-to-many-mailboxes fan-out) and one index write per append and expunge. It is now in `migrations_pg/0001_init.sql` and SQLite `migrations/0009_messages_blob_hash_index.sql`; the regression tests are `pg_plans::gc_delete_foreign_key_probe_uses_the_blob_hash_index` and `schema_constraints::messages_blob_hash_is_indexed_for_the_gc_foreign_key_probe`.

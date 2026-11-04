@@ -301,6 +301,7 @@ INDEX lists.lists_local_part_domain_id_key CREATE UNIQUE INDEX lists_local_part_
 INDEX lists.lists_pkey CREATE UNIQUE INDEX lists_pkey ON public.lists USING btree (id)
 INDEX mailboxes.mailboxes_account_id_key CREATE UNIQUE INDEX mailboxes_account_id_key ON public.mailboxes USING btree (account_id)
 INDEX mailboxes.mailboxes_pkey CREATE UNIQUE INDEX mailboxes_pkey ON public.mailboxes USING btree (id)
+INDEX messages.messages_blob_hash CREATE INDEX messages_blob_hash ON public.messages USING btree (blob_hash)
 INDEX messages.messages_deleted_at CREATE INDEX messages_deleted_at ON public.messages USING btree (deleted_at) WHERE (deleted_at IS NOT NULL)
 INDEX messages.messages_mailbox_id_folder_id_uid_key CREATE UNIQUE INDEX messages_mailbox_id_folder_id_uid_key ON public.messages USING btree (mailbox_id, folder_id, uid)
 INDEX messages.messages_msgid CREATE INDEX messages_msgid ON public.messages USING btree (mailbox_id, message_id_hdr)

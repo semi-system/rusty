@@ -34,6 +34,9 @@ CREATE INDEX jobs_state_run_after ON jobs (state, run_after);
 -- index list_members_seq on list_members
 CREATE UNIQUE INDEX list_members_seq ON list_members (list_id, seq);
 
+-- index messages_blob_hash on messages
+CREATE INDEX messages_blob_hash ON messages (blob_hash);
+
 -- index messages_deleted_at on messages
 CREATE INDEX messages_deleted_at ON messages (deleted_at) WHERE deleted_at IS NOT NULL;
 

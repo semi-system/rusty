@@ -93,7 +93,7 @@ postgres_tests() {
         --test pg_schema_constraints --test pg_schema_cases --test pg_schema_concurrency \
         --test pg_schema_parity --test mailbox_conformance --test pg_mailbox_concurrency --test pg_guard \
         --test error_busy --test clock_policy --test query_shape_pg --test mailbox_props \
-        --test jobs_conformance --test gc_conformance --test pg_jobs_gc_concurrency || rc=$?
+        --test jobs_conformance --test gc_conformance --test pg_jobs_gc_concurrency --test pg_plans || rc=$?
   fi
   if [ "$rc" -eq 0 ]; then
     RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
