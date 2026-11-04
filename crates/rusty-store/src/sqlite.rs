@@ -154,6 +154,11 @@ pub fn map_db_error(e: sqlx::Error) -> Error {
         match db.code().as_deref() {
             Some("RS001") => return Error::Conflict("database conflict".into()),
             Some("RS002") => return Error::Invalid("invalid value".into()),
+            // ON DELETE RESTRICT raises restrict_violation, not foreign_key_violation (the driver
+            // does not classify it): the same answer as SQLite's FOREIGN KEY failure.
+            Some("23001") => {
+                return Error::Conflict("referenced row missing or still in use".into());
+            }
             // Transient classes (D1). 40P01/40001 reach this function only after the retry loop
             // gave up (or outside it): the caller may retry later.
             Some("55P03") => return busy("lock timeout"),
