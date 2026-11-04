@@ -108,6 +108,50 @@ async fn catalog_dump(store: &PgStore) -> String {
     out
 }
 
+/// Line-level summary of what regenerating the snapshot changes: counts plus the first changed
+/// lines of each side.
+fn snapshot_diff_summary(old: &str, new: &str) -> String {
+    let o: BTreeSet<&str> = old.lines().collect();
+    let n: BTreeSet<&str> = new.lines().collect();
+    let removed: Vec<&&str> = o.difference(&n).collect();
+    let added: Vec<&&str> = n.difference(&o).collect();
+    let mut s = format!(
+        "RUSTY_UPDATE_PG_SNAPSHOT=1: snapshot regenerated, {} lines removed, {} lines added",
+        removed.len(),
+        added.len()
+    );
+    for l in removed.iter().take(40) {
+        s.push_str(&format!("
+  - {}", l.chars().take(160).collect::<String>()));
+    }
+    for l in added.iter().take(40) {
+        s.push_str(&format!("
+  + {}", l.chars().take(160).collect::<String>()));
+    }
+    if removed.len() + added.len() == 0 {
+        s.push_str(" (no change)");
+    }
+    s
+}
+
+// backend-neutral: unit test of the snapshot diff summary, no database
+#[test]
+fn snapshot_regeneration_prints_a_diff_summary() {
+    let s = snapshot_diff_summary("A
+B
+C
+", "A
+C
+D
+E
+");
+    assert!(s.contains("1 lines removed, 2 lines added"), "{s}");
+    assert!(s.contains("  - B") && s.contains("  + D") && s.contains("  + E"), "{s}");
+    assert!(snapshot_diff_summary("A
+", "A
+").contains("(no change)"));
+}
+
 #[tokio::test]
 async fn pg_catalog_matches_snapshot() {
     let Some(admin_url) = pg_admin_url() else {
@@ -118,6 +162,10 @@ async fn pg_catalog_matches_snapshot() {
     let got = catalog_dump(&pg).await;
     let path = snapshot_path();
     if std::env::var("RUSTY_UPDATE_PG_SNAPSHOT").as_deref() == Ok("1") {
+        // Regenerating blesses whatever the migration says, so it is loud: the summary below is
+        // what a reviewer reads in the log, and CI never sets the variable.
+        let old = std::fs::read_to_string(&path).unwrap_or_default();
+        eprintln!("{}", snapshot_diff_summary(&old, &got));
         std::fs::write(&path, &got).unwrap();
     } else {
         let want = std::fs::read_to_string(&path).unwrap_or_else(|e| {
