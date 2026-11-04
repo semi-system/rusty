@@ -337,3 +337,32 @@ async fn a_file_is_judged_by_the_file_system_clock_when_the_database_runs_ahead(
     })
     .await;
 }
+
+/// Review PG5 M-i: `GcReport::errors` is meant to be shown to operators and, one day, to an API.
+/// A failed row delete (here the RESTRICT foreign key of a blob whose refcount was corrupted)
+/// must report fixed text and at most the SQLSTATE class, never the server's message (which
+/// names the table, constraint and key bytes).
+#[tokio::test]
+async fn gc_report_errors_carry_no_database_detail() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let (_, _, mb) = acct(&b, "gcdetail").await;
+        mb.append(INBOX, common::raw("held", None), Flags::default()).await.unwrap();
+        let h = b.blobs.put(common::raw("held", None)).await.unwrap();
+        run(&b, &format!("UPDATE blobs SET refcount = 0 WHERE hash = {}", hash_lit(&b, h.as_str()))).await;
+        set_zero_since(&b, h.as_str(), 0).await;
+        let future = SystemTime::now() + Duration::from_secs(10 * 86400);
+        let rep = b.gc().collect_blobs_at(b.blobs.as_ref(), HOUR, future).await.unwrap();
+        assert!(!rep.errors.is_empty(), "{n}: the failed delete is reported");
+        for e in &rep.errors {
+            for leak in ["violates", "Key (", "messages", "_fkey", "\\x", "DETAIL", "table"] {
+                assert!(!e.contains(leak), "{n}: report error leaks database detail ({leak:?}): {e}");
+            }
+            assert!(e.contains(h.as_str()), "{n}: names the blob: {e}");
+        }
+        if n == "postgres" {
+            assert!(rep.errors[0].contains("SQLSTATE class 23"), "{n}: {}", rep.errors[0]);
+        }
+    })
+    .await;
+}

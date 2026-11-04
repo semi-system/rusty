@@ -76,7 +76,8 @@ pub struct GcReport {
     pub quarantine_restored: u64,
     /// Stale quarantine copies removed at startup.
     pub quarantine_removed: u64,
-    /// Per-blob failures that were skipped. Messages name blob hashes or shards only: no
+    /// Per-blob failures that were skipped. Messages name blob hashes or shards only, plus fixed
+    /// text and at most a SQLSTATE class (never the database server's message): no
     /// content and no filesystem paths.
     pub errors: Vec<String>,
     /// Failures beyond [`MAX_GC_ERRORS`] that were counted but not recorded.
@@ -102,12 +103,27 @@ impl GcReport {
     }
 }
 
-/// `Display` of a domain error plus its direct source (io / database errors carry no paths).
+/// Fixed text for a report line: the `Display` of the domain error (fixed texts only), the kind
+/// of an io source, and for a database source ONLY the SQLSTATE class (`23` = integrity
+/// constraint violation, ...). The server's own message names tables, constraints and key
+/// bytes and is never copied (review PG5 M-i).
 fn describe(e: &Error) -> String {
-    match std::error::Error::source(e) {
-        Some(src) => format!("{e}: {src}"),
-        None => e.to_string(),
+    let mut out = e.to_string();
+    let mut src = std::error::Error::source(e);
+    while let Some(s) = src {
+        if let Some(io) = s.downcast_ref::<std::io::Error>() {
+            out.push_str(&format!(": {}", io.kind()));
+        } else if let Some(sqlx::Error::Database(db)) = s.downcast_ref::<sqlx::Error>() {
+            if let Some(code) = db.code() {
+                // Postgres SQLSTATEs are five characters; SQLite result codes are not classed.
+                if code.len() == 5 && code.bytes().all(|b| b.is_ascii_alphanumeric()) {
+                    out.push_str(&format!(" (SQLSTATE class {})", &code[..2]));
+                }
+            }
+        }
+        src = s.source();
     }
+    out
 }
 
 /// The garbage collector over a [`GcRepo`].
