@@ -147,6 +147,13 @@ pub trait BlobStore: Send + Sync {
     /// Take the store's exclusive GC lock without waiting: `Conflict("gc already running")`
     /// if another holder (in this or another process) has it.
     async fn try_lock_gc(&self) -> Result<GcLock>;
+
+    /// The clock that stamps this store's file modification times: the operating system clock of
+    /// the host that owns the volume (`put` refreshes mtimes with it). GC compares it with the
+    /// database clock before it judges any file (clock policy, rule 4).
+    fn fs_now(&self) -> SystemTime {
+        SystemTime::now()
+    }
 }
 
 /// Content-addressed blobs stored at `root/ab/cd/<sha256-hex>`.

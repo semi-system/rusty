@@ -18,8 +18,10 @@
 //!
 //! # Clock
 //!
-//! The grace cutoff is `db_now() - grace` (decision D2): the clock that stamped
-//! `blobs.zero_since`. `collect_blobs_at` takes an explicit time for tests only.
+//! The row cutoff is `db_now() - grace` (decision D2): the clock that stamped
+//! `blobs.zero_since`. File cutoffs are `min(db_cutoff, fs_now - grace)` and a run is refused
+//! when the database and volume clocks differ by more than a quarter of the grace window
+//! (see the facade, clock policy rule 4). `collect_blobs_at` takes an explicit time for tests only.
 //!
 //! # Locking
 //!

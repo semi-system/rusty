@@ -27,8 +27,12 @@
 //!   (`BlobStore::heal_quarantine`): restored if the blob path is missing, removed if the blob
 //!   path exists and the copy is past the grace window.
 //!
-//! Clock (decision D2): the cutoff is the DATABASE clock minus the grace, the clock that
-//! stamped `blobs.zero_since`. Only the `_at` twins take a caller time, for tests.
+//! Clock (decision D2): the cutoff for ROWS is the DATABASE clock minus the grace, the clock
+//! that stamped `blobs.zero_since`. File mtimes are stamped by the blob volume's clock
+//! ([`BlobStore::fs_now`]), a different machine's clock when the database is remote, so files
+//! are judged by `min(db_cutoff, fs_now - grace)` and [`Gc::collect_blobs`] REFUSES to run
+//! (a storage error, nothing touched) when the two clocks differ by more than a quarter of the
+//! grace window (review PG5 I2). Only the `_at` twins take a caller time, for tests.
 //!
 //! Memory: rows are read in batches of [`GC_BATCH`]; files are walked one shard (1/256 of the
 //! store) at a time, together with the row hashes of that shard. The error list is capped at
@@ -191,13 +195,26 @@ impl Gc {
         if grace < MIN_GC_GRACE {
             return Err(Error::Invalid("gc grace must be at least one hour".into()));
         }
-        // The grace cutoff comes from the DATABASE clock (clock policy D2), the same clock that
-        // stamped `blobs.zero_since`. Blob file mtimes are compared against the same cutoff; the
-        // minimum grace of one hour bounds the effect of any skew between the database and the
-        // filesystem clock.
+        // Rows: the grace cutoff comes from the DATABASE clock (clock policy D2), the clock that
+        // stamped `blobs.zero_since`. Files: their mtimes are stamped by the volume's clock, which
+        // may be another machine's. Judging them by the database cutoff would let a database
+        // clock running ahead of the volume clock delete the file of an append that is still in
+        // flight (review PG5 I2). So (1) a run is REFUSED when the two clocks disagree by more
+        // than a quarter of the grace window, and (2) within that tolerance a file is judged by
+        // `min(db_cutoff, fs_now - grace)`: never by a cutoff younger than the volume clock
+        // allows.
         let db_now = self.repo.db_now().await?;
-        let now = UNIX_EPOCH + Duration::from_secs(u64::try_from(db_now).unwrap_or(0));
-        self.collect_blobs_at(blobs, grace, now).await
+        let fs_now = blobs.fs_now();
+        if db_now.abs_diff(unix_secs(fs_now)) > grace.as_secs() / 4 {
+            return Err(Error::storage(
+                "gc refused: the database clock and the blob volume clock differ by more than a \
+                 quarter of the grace window",
+            ));
+        }
+        let db_cutoff = db_now.saturating_sub(i64::try_from(grace.as_secs()).unwrap_or(i64::MAX));
+        let db_cutoff_time = UNIX_EPOCH + Duration::from_secs(u64::try_from(db_cutoff).unwrap_or(0));
+        let fs_cutoff_time = fs_now.checked_sub(grace).unwrap_or(UNIX_EPOCH);
+        self.run(blobs, db_cutoff, db_cutoff_time.min(fs_cutoff_time)).await
     }
 
     /// Remove unreferenced blobs as seen at time `now`, with any `grace` (for tests; production
@@ -224,7 +241,17 @@ impl Gc {
         now: SystemTime,
     ) -> Result<GcReport> {
         let cutoff = now.checked_sub(grace).unwrap_or(UNIX_EPOCH);
-        let cutoff_secs = unix_secs(cutoff);
+        self.run(blobs, unix_secs(cutoff), cutoff).await
+    }
+
+    /// The shared body: rows are judged by `row_cutoff_secs` (database clock), files by
+    /// `cutoff` (see [`collect_blobs`](Self::collect_blobs)).
+    async fn run(
+        &self,
+        blobs: &dyn BlobStore,
+        cutoff_secs: i64,
+        cutoff: SystemTime,
+    ) -> Result<GcReport> {
         // Held until this function returns (or unwinds).
         let _lock = blobs.try_lock_gc().await?;
         let mut report = GcReport::default();
@@ -239,7 +266,7 @@ impl Gc {
             Err(e) => report.error(|| format!("quarantine: {}", describe(&e))),
         }
         self.collect_rows(blobs, cutoff, cutoff_secs, &mut report).await?;
-        self.collect_orphans(blobs, cutoff, cutoff_secs, &mut report).await;
+        self.collect_orphans(blobs, cutoff, unix_secs(cutoff), &mut report).await;
         match blobs.sweep_temp_before(cutoff).await {
             Ok(n) => report.tmp_swept = n,
             Err(e) => report.error(|| format!("temporary files: {}", describe(&e))),
@@ -429,8 +456,10 @@ pub async fn collect_blobs(
 
 /// [`collect_blobs`] reading "now" from `clock_sql` (a statement returning one integer, unix
 /// seconds) instead of the real database clock. Tests pass a skewed clock to prove that the
-/// cutoff follows the DATABASE and not the process clock.
+/// cutoff follows the DATABASE and not the process clock. It runs an arbitrary SQL string on the
+/// store pool, so it exists only with the `test-knobs` feature (never in a release build).
 #[doc(hidden)]
+#[cfg(feature = "test-knobs")]
 pub async fn collect_blobs_with_db_clock(
     store: &SqliteStore,
     blobs: &dyn BlobStore,

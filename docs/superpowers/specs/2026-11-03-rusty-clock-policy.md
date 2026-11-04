@@ -19,9 +19,19 @@ Status: decided (PG3). Applies to both backends. Tests: `crates/rusty-store/test
    - the `_at(now)` test twins (`deliver_at`, `claim_at`, `issue_capability_at`, ...): they bind
      the caller's value in place of `{NOW}`. They exist for tests only.
 4. **File modification times** (blob files, temp files, quarantine copies) are stamped by the
-   operating system and compared with the OS clock (`blob.rs`). The GC compares file mtimes with
-   a cutoff derived from the database clock; the minimum grace of one hour bounds any skew
-   between the two.
+   operating system and compared with the OS clock (`blob.rs`, `BlobStore::fs_now`). Two clocks
+   take part in one GC run, the database's (rows: `zero_since`) and the blob volume's (files:
+   mtime), and they can be different machines' clocks. The rules (review PG5 I2):
+   - rows are judged by the database cutoff `db_now - grace`;
+   - files are judged by `min(db_cutoff, fs_now - grace)`: a file is never deleted on the
+     strength of a database clock that runs ahead of the volume clock;
+   - `collect_blobs` is REFUSED (a storage error, nothing is touched) when
+     `|db_now - fs_now| > grace / 4`. The minimum grace of one hour no longer "bounds any skew":
+     it bounds only the tolerated skew (15 minutes at the minimum grace, 6 hours at the default
+     24 h);
+   - tests: `gc_conformance::gc_refuses_to_run_when_database_and_file_clocks_disagree` (the
+     reproduction: database +2 h, one-hour grace, a fresh in-flight file) and
+     `a_file_is_judged_by_the_file_system_clock_when_the_database_runs_ahead`.
 
 Why: a correctness decision (is this lease still mine, is this blob past grace) taken against a
 clock other than the one that granted the value can hand one lease to two workers or delete a

@@ -65,18 +65,20 @@ async fn database_clock_path_uses_the_db_now() {
     .await;
 }
 
-/// The cutoff follows the DATABASE clock: skewed by a year each way while rows are aged
-/// relative to the real time. A cutoff from the process clock gives the opposite answers.
+/// The cutoff of ROWS follows the DATABASE clock: skewed by 5 h each way (inside the tolerated
+/// quarter of a 24 h grace window) while rows are aged relative to the real time. A cutoff from
+/// the process clock (now - 24 h) gives different answers in both directions: it would keep the
+/// 20 h row when the database is ahead and delete the 27 h row when it is behind.
 #[tokio::test]
 async fn cutoff_follows_a_skewed_database_clock() {
-    for (skew, expect, label) in [(31_536_000i64, 2, "ahead"), (-31_536_000, 0, "behind")] {
+    for (skew, expect, label) in [(5 * 3600i64, 2, "ahead"), (-5 * 3600, 0, "behind")] {
         for_each_backend(|b| async move {
             let n = b.name;
             let now = db_clock(&b).await;
-            blob(&b, "old", Some(now - 3 * 3600)).await;
-            blob(&b, "young", Some(now - 1800)).await;
+            blob(&b, "27h", Some(now - 27 * 3600)).await;
+            blob(&b, "20h", Some(now - 20 * 3600)).await;
             let gc = Gc::new(Arc::new(SkewedGc { inner: b.grepo.clone(), skew }));
-            let rep = gc.collect_blobs(b.blobs.as_ref(), HOUR).await.unwrap();
+            let rep = gc.collect_blobs(b.blobs.as_ref(), Duration::from_secs(24 * 3600)).await.unwrap();
             assert_eq!(rep.rows_deleted, expect, "{n} {label}: {rep:?}");
         })
         .await;
@@ -258,6 +260,80 @@ async fn a_candidate_rereferenced_and_released_after_listing_is_not_deleted() {
         run(&b, &format!("UPDATE blobs SET refcount = 1 WHERE hash = {lit}")).await;
         let gone = b.grepo.delete_blob_rows(&listed, i64::MAX).await.unwrap();
         assert!(gone.is_empty(), "{n}: referenced");
+    })
+    .await;
+}
+
+/// Backdate a blob file's mtime (the OS stamps it; the test plays the clock).
+fn age_file(b: &Backend, h: &BlobHash, secs: u64) {
+    let name = h.as_str();
+    let root = b._tmp.path().join("blobs");
+    let mut found = None;
+    let mut stack = vec![root];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.file_name().is_some_and(|n| n == name) {
+                found = Some(p);
+            }
+        }
+    }
+    let f = std::fs::File::options().write(true).open(found.expect("blob file")).unwrap();
+    f.set_modified(SystemTime::now() - Duration::from_secs(secs)).unwrap();
+}
+
+/// Review PG5 I2: the reproduction. The database clock runs two hours ahead of the file-system
+/// clock; an in-flight append has just `put` its file (fresh mtime) and not yet inserted its
+/// row. GC with a one-hour grace used to take the database cutoff as the file cutoff and delete
+/// the file. It must refuse to run when the clocks disagree by more than a quarter of the
+/// grace window, and the file must survive.
+#[tokio::test]
+async fn gc_refuses_to_run_when_database_and_file_clocks_disagree() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let in_flight = b.blobs.put(Bytes::from_static(b"in-flight append")).await.unwrap();
+        for (skew, grace) in [(7200i64, HOUR), (-7200, HOUR), (3601, Duration::from_secs(4 * 3600 - 1))] {
+            let gc = Gc::new(Arc::new(SkewedGc { inner: b.grepo.clone(), skew }));
+            let r = gc.collect_blobs(b.blobs.as_ref(), grace).await;
+            assert!(r.is_err(), "{n}: skew {skew}s with grace {grace:?} must be refused: {r:?}");
+            assert!(b.blobs.get(&in_flight).await.is_ok(), "{n}: the in-flight file must survive");
+        }
+        // Within a quarter of the grace window the run goes ahead and still keeps the file.
+        let gc = Gc::new(Arc::new(SkewedGc { inner: b.grepo.clone(), skew: 600 }));
+        let rep = gc.collect_blobs(b.blobs.as_ref(), HOUR).await.unwrap();
+        assert_eq!(rep.files_deleted, 0, "{n}: {rep:?}");
+        assert!(b.blobs.get(&in_flight).await.is_ok(), "{n}");
+    })
+    .await;
+}
+
+/// Review PG5 I2: inside the tolerated skew the file cutoff is `min(db_cutoff, fs_now - grace)`:
+/// with the database clock ahead, a file younger than the grace window by the file system's own
+/// clock is kept even though the database cutoff would already cover it. Rows follow the
+/// database cutoff.
+#[tokio::test]
+async fn a_file_is_judged_by_the_file_system_clock_when_the_database_runs_ahead() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let day = Duration::from_secs(24 * 3600);
+        let db = db_clock(&b).await;
+        // Row 25 h old (real time): past the grace window on every clock. File: 23 h old by the
+        // file-system clock, i.e. inside the 24 h grace window.
+        let h = blob(&b, "skewed", Some(db - 25 * 3600)).await;
+        age_file(&b, &h, 23 * 3600);
+        // The database runs 5 h ahead (< grace / 4 = 6 h): its cutoff is now - 19 h, so the file
+        // (now - 23 h) is "old enough" by the database cutoff alone.
+        let gc = Gc::new(Arc::new(SkewedGc { inner: b.grepo.clone(), skew: 5 * 3600 }));
+        let rep = gc.collect_blobs(b.blobs.as_ref(), day).await.unwrap();
+        assert_eq!(rep.rows_deleted, 1, "{n}: the row is past the database cutoff: {rep:?}");
+        assert_eq!(rep.files_deleted, 0, "{n}: the file is inside the grace window by its own clock: {rep:?}");
+        assert!(b.blobs.get(&h).await.is_ok(), "{n}");
+        // The orphan phase leaves it alone too (it is judged by the same cutoff).
+        let rep = gc.collect_blobs(b.blobs.as_ref(), day).await.unwrap();
+        assert_eq!(rep.files_deleted, 0, "{n}: {rep:?}");
+        assert!(b.blobs.get(&h).await.is_ok(), "{n}");
     })
     .await;
 }
