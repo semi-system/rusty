@@ -52,6 +52,39 @@ async fn wait_for_sleeper(pool: &sqlx::PgPool) {
     panic!("no session ever slept");
 }
 
+/// Wait until some session of this database is BLOCKED on a lock (`wait_event_type = 'Lock'`):
+/// proof that the interleaving the test is about really happened (the second session waited for
+/// the first), so the test cannot pass vacuously on a slow machine (review PG5 M-f). Panics when
+/// no session ever waits.
+async fn wait_for_lock_waiter(pool: &sqlx::PgPool) {
+    for _ in 0..1000 {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() \
+             AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if n > 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("no session ever waited for a lock: the interleaving did not happen");
+}
+
+/// Whether some session of this database is still inside a knob pause (`pg_sleep`).
+async fn someone_sleeps(pool: &sqlx::PgPool) -> bool {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() \
+         AND state = 'active' AND query LIKE 'SELECT pg_sleep%'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+        > 0
+}
+
 async fn blob_hash_of(b: &Backend, bytes: bytes::Bytes) -> rusty_core::BlobHash {
     b.blobs.put(bytes).await.unwrap()
 }
@@ -259,7 +292,7 @@ async fn gc_delete_in_flight_while_a_new_reference_arrives() {
     let (store, _) = b.pg.as_ref().unwrap();
     let gc_repo = Arc::new(
         PgRepo::new(store.clone())
-            .with_knobs_for_test(Knobs { pause_before_commit_ms: 800, ..Knobs::default() })
+            .with_knobs_for_test(Knobs { pause_before_commit_ms: 2500, ..Knobs::default() })
             .with_work_done_signal_for_test(signal.clone()),
     );
     let plain = repo_with(&b, Knobs::default());
@@ -273,7 +306,14 @@ async fn gc_delete_in_flight_while_a_new_reference_arrives() {
     let blobs = b.blobs.clone();
     let collector = tokio::spawn(async move { gc.collect_blobs_at(blobs.as_ref(), HOUR, SystemTime::now()).await });
     signal.notified().await; // the delete ran; its transaction (and lock) is still open
-    let appended = mb.append(INBOX, msg.clone(), Flags::default()).await.expect("append must succeed");
+    let appender = {
+        let (mb, msg) = (mb.clone(), msg.clone());
+        tokio::spawn(async move { mb.append(INBOX, msg, Flags::default()).await })
+    };
+    // The append must really be blocked on the GC's uncommitted delete (not merely started
+    // after the GC finished), or this test proves nothing.
+    wait_for_lock_waiter(b.pg.as_ref().unwrap().0.pool()).await;
+    let appended = appender.await.unwrap().expect("append must succeed");
     let rep = collector.await.unwrap().unwrap();
     assert_eq!(rep.rows_deleted, 1, "{rep:?}");
     assert_eq!(scalar(&b, &format!("SELECT refcount FROM blobs WHERE hash = {}", hex_lit(&h))).await, 1);
@@ -293,7 +333,7 @@ async fn gc_batch_waits_for_an_in_flight_reference_and_then_keeps_the_blob() {
     let (store, _) = b.pg.as_ref().unwrap();
     let app_repo = Arc::new(
         PgRepo::new(store.clone())
-            .with_knobs_for_test(Knobs { pause_before_commit_ms: 800, ..Knobs::default() })
+            .with_knobs_for_test(Knobs { pause_before_commit_ms: 2500, ..Knobs::default() })
             .with_work_done_signal_for_test(signal.clone()),
     );
     let plain = repo_with(&b, Knobs::default());
@@ -309,7 +349,13 @@ async fn gc_batch_waits_for_an_in_flight_reference_and_then_keeps_the_blob() {
     };
     signal.notified().await; // append holds the blob lock, uncommitted
     let gc = Gc::new(plain);
-    let rep = gc.collect_blobs_at(b.blobs.as_ref(), HOUR, SystemTime::now()).await.unwrap();
+    let collector = {
+        let blobs = b.blobs.clone();
+        tokio::spawn(async move { gc.collect_blobs_at(blobs.as_ref(), HOUR, SystemTime::now()).await })
+    };
+    // The GC batch must really be blocked on the appender's uncommitted reference.
+    wait_for_lock_waiter(b.pg.as_ref().unwrap().0.pool()).await;
+    let rep = collector.await.unwrap().unwrap();
     appender.await.unwrap().unwrap();
     assert_eq!(rep.rows_deleted, 0, "{rep:?}");
     assert!(rep.errors.is_empty(), "{rep:?}");
@@ -343,6 +389,8 @@ async fn gc_delete_commits_between_my_blob_insert_and_my_lock() {
         .await
         .unwrap();
     assert_eq!(rep.rows_deleted, 1, "the GC deleted the row in the window: {rep:?}");
+    // The GC finished while the append was still paused between its insert and its lock.
+    assert!(someone_sleeps(b.pg.as_ref().unwrap().0.pool()).await, "the window closed before the GC was done");
     let appended = appender.await.unwrap().expect("the bounded loop re-inserts the row");
     assert_eq!(scalar(&b, &format!("SELECT refcount FROM blobs WHERE hash = {}", hex_lit(&h))).await, 1);
     assert_eq!(raw_of(&b, &mb, appended.id).await, msg);
