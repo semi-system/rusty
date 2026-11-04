@@ -4,9 +4,12 @@ mod common;
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use std::sync::Arc;
+
 use bytes::Bytes;
 use common::backends::*;
 use rusty_core::{BlobHash, DeliveryId, Flags};
+use rusty_store::Gc;
 
 const HOUR: Duration = Duration::from_secs(3600);
 
@@ -72,7 +75,7 @@ async fn cutoff_follows_a_skewed_database_clock() {
             let now = db_clock(&b).await;
             blob(&b, "old", Some(now - 3 * 3600)).await;
             blob(&b, "young", Some(now - 1800)).await;
-            let gc = b.gc().with_clock_offset_for_test(skew);
+            let gc = Gc::new(Arc::new(SkewedGc { inner: b.grepo.clone(), skew }));
             let rep = gc.collect_blobs(b.blobs.as_ref(), HOUR).await.unwrap();
             assert_eq!(rep.rows_deleted, expect, "{n} {label}: {rep:?}");
         })

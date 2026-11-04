@@ -101,33 +101,13 @@ fn describe(e: &Error) -> String {
 #[derive(Clone)]
 pub struct Gc {
     repo: Arc<dyn GcRepo>,
-    /// Test knob: seconds added to the database clock (proves the cutoff follows the DATABASE).
-    #[cfg(feature = "test-knobs")]
-    clock_offset: i64,
 }
 
 impl Gc {
     pub fn new(repo: Arc<dyn GcRepo>) -> Gc {
         Gc {
             repo,
-            #[cfg(feature = "test-knobs")]
-            clock_offset: 0,
         }
-    }
-
-    /// Test knob: the database clock seen by the grace cutoff is shifted by `secs`.
-    #[cfg(feature = "test-knobs")]
-    #[doc(hidden)]
-    pub fn with_clock_offset_for_test(mut self, secs: i64) -> Gc {
-        self.clock_offset = secs;
-        self
-    }
-
-    async fn db_now(&self) -> Result<i64> {
-        let now = self.repo.db_now().await?;
-        #[cfg(feature = "test-knobs")]
-        let now = now.saturating_add(self.clock_offset);
-        Ok(now)
     }
 
     /// Hard-delete soft-deleted messages with `deleted_at < older_than` (unix seconds), in
@@ -215,7 +195,7 @@ impl Gc {
         // stamped `blobs.zero_since`. Blob file mtimes are compared against the same cutoff; the
         // minimum grace of one hour bounds the effect of any skew between the database and the
         // filesystem clock.
-        let db_now = self.db_now().await?;
+        let db_now = self.repo.db_now().await?;
         let now = UNIX_EPOCH + Duration::from_secs(u64::try_from(db_now).unwrap_or(0));
         self.collect_blobs_at(blobs, grace, now).await
     }

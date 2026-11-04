@@ -324,3 +324,48 @@ pub async fn set_zero_since(b: &Backend, hex: &str, t: i64) {
 pub async fn blob_row_exists(b: &Backend, hex: &str) -> bool {
     scalar(b, &format!("SELECT count(*) FROM blobs WHERE hash = {}", hash_lit(b, hex))).await == 1
 }
+
+/// A `GcRepo` whose database clock is skewed: everything is delegated, `db_now` is shifted.
+/// Proves that the grace cutoff is read from the REPOSITORY (the database), not from the
+/// process clock.
+pub struct SkewedGc {
+    pub inner: Arc<dyn GcRepo>,
+    pub skew: i64,
+}
+
+#[async_trait::async_trait]
+impl GcRepo for SkewedGc {
+    async fn db_now(&self) -> Result<i64, Error> {
+        Ok(self.inner.db_now().await? + self.skew)
+    }
+    async fn blob_candidates(
+        &self,
+        cutoff_secs: i64,
+        after: Option<&rusty_core::BlobHash>,
+        limit: i64,
+    ) -> Result<Vec<rusty_core::BlobHash>, Error> {
+        self.inner.blob_candidates(cutoff_secs, after, limit).await
+    }
+    async fn delete_blob_rows(
+        &self,
+        hashes: &[rusty_core::BlobHash],
+        cutoff_secs: i64,
+    ) -> Result<Vec<rusty_core::BlobHash>, Error> {
+        self.inner.delete_blob_rows(hashes, cutoff_secs).await
+    }
+    async fn blob_rows_in_shard(&self, shard: u8) -> Result<Vec<String>, Error> {
+        self.inner.blob_rows_in_shard(shard).await
+    }
+    async fn blob_row_exists(&self, hash: &rusty_core::BlobHash) -> Result<bool, Error> {
+        self.inner.blob_row_exists(hash).await
+    }
+    async fn purge_deleted_batch(&self, o: i64, l: i64) -> Result<u64, Error> {
+        self.inner.purge_deleted_batch(o, l).await
+    }
+    async fn purge_deliveries_batch(&self, o: i64, l: i64) -> Result<u64, Error> {
+        self.inner.purge_deliveries_batch(o, l).await
+    }
+    async fn purge_capabilities_batch(&self, o: i64, l: i64) -> Result<u64, Error> {
+        self.inner.purge_capabilities_batch(o, l).await
+    }
+}
