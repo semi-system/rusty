@@ -479,3 +479,41 @@ async fn claim_continues_past_a_window_of_locked_jobs() {
     assert_eq!(got.id, ids[70], "the oldest job that is not locked");
     holder.rollback().await.unwrap();
 }
+
+/// Review PG5 M-e: one mailbox whose lock keeps timing out must not stop the purge pass before
+/// the mailboxes behind it are reached; it is skipped and reported.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn purge_deleted_batch_continues_past_a_busy_mailbox() {
+    if pg_admin_url().is_none() {
+        return;
+    }
+    let b = pg_backend().await.unwrap();
+    let url = b._db.as_ref().unwrap().url().to_owned();
+    let (_, _, mb1) = common::backends::acct(&b, "busy1").await;
+    let (_, _, mb2) = common::backends::acct(&b, "busy2").await;
+    let mut ids = vec![];
+    for mb in [&mb1, &mb2] {
+        let m = mb.append(INBOX, common::raw("purgeable", None), Flags::default()).await.unwrap();
+        mb.expunge_many_at(&[m.id], 5).await.unwrap();
+        ids.push(m.id);
+    }
+    let boxes = common::backends::scalars(&b, "SELECT id FROM mailboxes ORDER BY id").await;
+    let cfg = PgPoolConfig { lock_timeout: Duration::from_millis(300), ..PgPoolConfig::default() };
+    let short = Arc::new(PgRepo::new(PgStore::connect_with_config(&url, cfg).await.unwrap()));
+    let (admin, _) = b.pg.as_ref().unwrap();
+    // Another session holds the LOWEST mailbox row.
+    let mut holder = admin.pool().begin().await.unwrap();
+    sqlx::query("SELECT id FROM mailboxes WHERE id = $1 FOR UPDATE")
+        .bind(boxes[0])
+        .fetch_one(&mut *holder)
+        .await
+        .unwrap();
+    let gc = Gc::new(short);
+    let rep = gc.purge_deleted_report(100).await.unwrap();
+    assert_eq!(rep.purged, 1, "the mailbox behind the busy one is purged: {rep:?}");
+    assert_eq!(rep.busy_mailboxes, vec![rusty_core::MailboxId(boxes[0])], "{rep:?}");
+    holder.rollback().await.unwrap();
+    // Once the holder is gone the skipped mailbox is purged by the next run.
+    assert_eq!(gc.purge_deleted(100).await.unwrap(), 1);
+    assert_eq!(scalar(&b, "SELECT count(*) FROM messages").await, 0);
+}

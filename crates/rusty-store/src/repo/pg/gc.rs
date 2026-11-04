@@ -7,7 +7,7 @@ use rusty_core::{BlobHash, Error, MailboxId, Result};
 use super::tx::tx_retry;
 use super::{lock_existing_blobs, PgRepo};
 use crate::map_db_error;
-use crate::repo::{hash_bytes, GcRepo, MailboxRepo};
+use crate::repo::{hash_bytes, GcRepo, MailboxRepo, PurgeBatch};
 
 /// Mailboxes visited by one `purge_deleted_batch` call.
 const MAILBOXES_PER_BATCH: i64 = 16;
@@ -98,32 +98,47 @@ impl GcRepo for PgRepo {
             .map_err(map_db_error)
     }
 
-    async fn purge_deleted_batch(&self, older_than: i64, limit: i64) -> Result<u64> {
-        // Mailboxes that have something purgeable (same predicate as the per-mailbox purge, so
-        // a mailbox held back by `deliveries` rows is never listed and cannot stall the loop).
-        let boxes: Vec<i64> = sqlx::query_scalar(
-            "SELECT DISTINCT mailbox_id FROM messages m \
-             WHERE deleted_at IS NOT NULL AND deleted_at < $1 \
-             AND NOT EXISTS (SELECT 1 FROM deliveries d \
-               WHERE d.mailbox_id = m.mailbox_id AND d.message_id = m.id) \
-             ORDER BY mailbox_id LIMIT $2",
-        )
-        .bind(older_than)
-        .bind(MAILBOXES_PER_BATCH)
-        .fetch_all(self.store.pool())
-        .await
-        .map_err(map_db_error)?;
-        let mut total = 0u64;
-        for mb in boxes {
-            // Mailbox row first, blobs ascending: the one implementation of the rule.
-            match MailboxRepo::purge_deleted(self, MailboxId(mb), older_than, limit).await {
-                Ok(c) => total += c.value,
-                // The mailbox vanished since the listing: nothing left to purge there.
-                Err(Error::NotFound(_)) => {}
-                Err(e) => return Err(e),
+    async fn purge_deleted_batch(&self, older_than: i64, limit: i64) -> Result<PurgeBatch> {
+        let mut out = PurgeBatch::default();
+        let mut visited = 0i64;
+        let mut after = 0i64;
+        loop {
+            // Mailboxes that have something purgeable (same predicate as the per-mailbox purge,
+            // so a mailbox held back by `deliveries` rows is never listed and cannot stall the
+            // loop), a page at a time behind a keyset cursor: a mailbox that is busy is skipped
+            // and the walk goes on behind it (review PG5 M-e).
+            let boxes: Vec<i64> = sqlx::query_scalar(
+                "SELECT DISTINCT mailbox_id FROM messages m \
+                 WHERE deleted_at IS NOT NULL AND deleted_at < $1 AND mailbox_id > $3 \
+                 AND NOT EXISTS (SELECT 1 FROM deliveries d \
+                   WHERE d.mailbox_id = m.mailbox_id AND d.message_id = m.id) \
+                 ORDER BY mailbox_id LIMIT $2",
+            )
+            .bind(older_than)
+            .bind(MAILBOXES_PER_BATCH)
+            .bind(after)
+            .fetch_all(self.store.pool())
+            .await
+            .map_err(map_db_error)?;
+            let page_full = boxes.len() as i64 >= MAILBOXES_PER_BATCH;
+            for mb in boxes {
+                after = mb;
+                // Mailbox row first, blobs ascending: the one implementation of the rule.
+                match MailboxRepo::purge_deleted(self, MailboxId(mb), older_than, limit).await {
+                    Ok(c) => {
+                        out.purged += c.value;
+                        visited += 1;
+                    }
+                    // The mailbox vanished since the listing: nothing left to purge there.
+                    Err(Error::NotFound(_)) => {}
+                    Err(Error::Busy(_)) => out.busy_mailboxes.push(MailboxId(mb)),
+                    Err(e) => return Err(e),
+                }
+            }
+            if !page_full || visited >= MAILBOXES_PER_BATCH {
+                return Ok(out);
             }
         }
-        Ok(total)
     }
 
     async fn purge_deliveries_batch(&self, older_than: i64, limit: i64) -> Result<u64> {

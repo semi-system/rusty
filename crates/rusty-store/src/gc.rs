@@ -42,7 +42,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusty_core::{BlobHash, Error, Result};
+use rusty_core::{BlobHash, Error, MailboxId, Result};
 
 use crate::blob::unix_secs;
 use crate::repo::{sqlite::SqliteRepo, GcRepo};
@@ -81,6 +81,15 @@ pub struct GcReport {
     pub errors: Vec<String>,
     /// Failures beyond [`MAX_GC_ERRORS`] that were counted but not recorded.
     pub errors_dropped: u64,
+}
+
+/// Outcome of [`Gc::purge_deleted_report`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PurgeReport {
+    /// Messages hard-deleted.
+    pub purged: u64,
+    /// Mailboxes skipped at least once because they were busy.
+    pub busy_mailboxes: Vec<MailboxId>,
 }
 
 impl GcReport {
@@ -122,13 +131,25 @@ impl Gc {
     /// has removed the row (<= [`DELIVERY_RETENTION_SECS`]). Returns how many messages were
     /// removed.
     pub async fn purge_deleted(&self, older_than: i64) -> Result<u64> {
-        let mut total = 0u64;
+        Ok(self.purge_deleted_report(older_than).await?.purged)
+    }
+
+    /// [`purge_deleted`](Self::purge_deleted) that also reports the mailboxes it had to skip
+    /// because their lock timed out (`Busy`): one busy mailbox neither stops the run nor hides
+    /// the others; run again later for the skipped ones.
+    pub async fn purge_deleted_report(&self, older_than: i64) -> Result<PurgeReport> {
+        let mut report = PurgeReport::default();
         loop {
-            let n = self.repo.purge_deleted_batch(older_than, PURGE_BATCH).await?;
-            if n == 0 {
-                return Ok(total);
+            let batch = self.repo.purge_deleted_batch(older_than, PURGE_BATCH).await?;
+            for mb in batch.busy_mailboxes {
+                if !report.busy_mailboxes.contains(&mb) {
+                    report.busy_mailboxes.push(mb);
+                }
             }
-            total += n;
+            if batch.purged == 0 {
+                return Ok(report);
+            }
+            report.purged += batch.purged;
         }
     }
 

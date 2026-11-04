@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use rusty_core::{BlobHash, Result};
 
 use super::SqliteRepo;
-use crate::repo::GcRepo;
+use crate::repo::{GcRepo, PurgeBatch};
 use crate::map_db_error;
 
 #[async_trait]
@@ -78,7 +78,7 @@ impl GcRepo for SqliteRepo {
         Ok(n != 0)
     }
 
-    async fn purge_deleted_batch(&self, older_than: i64, limit: i64) -> Result<u64> {
+    async fn purge_deleted_batch(&self, older_than: i64, limit: i64) -> Result<PurgeBatch> {
         let mut tx = self.store.begin_write().await?;
         let n = sqlx::query(
             "DELETE FROM messages WHERE rowid IN (\
@@ -95,7 +95,7 @@ impl GcRepo for SqliteRepo {
         .map_err(map_db_error)?
         .rows_affected();
         tx.commit().await.map_err(map_db_error)?;
-        Ok(n)
+        Ok(PurgeBatch { purged: n, busy_mailboxes: Vec::new() })
     }
 
     async fn purge_deliveries_batch(&self, older_than: i64, limit: i64) -> Result<u64> {

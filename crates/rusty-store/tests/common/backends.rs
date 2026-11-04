@@ -359,7 +359,7 @@ impl GcRepo for SkewedGc {
     async fn blob_row_exists(&self, hash: &rusty_core::BlobHash) -> Result<bool, Error> {
         self.inner.blob_row_exists(hash).await
     }
-    async fn purge_deleted_batch(&self, o: i64, l: i64) -> Result<u64, Error> {
+    async fn purge_deleted_batch(&self, o: i64, l: i64) -> Result<rusty_store::PurgeBatch, Error> {
         self.inner.purge_deleted_batch(o, l).await
     }
     async fn purge_deliveries_batch(&self, o: i64, l: i64) -> Result<u64, Error> {

@@ -46,7 +46,16 @@
 //!   correctness does not depend on the singleton: concurrent batches lock in the same order.
 
 use async_trait::async_trait;
-use rusty_core::{BlobHash, Result};
+use rusty_core::{BlobHash, MailboxId, Result};
+
+/// Outcome of one [`GcRepo::purge_deleted_batch`] call.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PurgeBatch {
+    /// Messages hard-deleted.
+    pub purged: u64,
+    /// Mailboxes skipped because they were busy (their lock timed out); retry on a later run.
+    pub busy_mailboxes: Vec<MailboxId>,
+}
 
 #[async_trait]
 pub trait GcRepo: Send + Sync {
@@ -68,9 +77,12 @@ pub trait GcRepo: Send + Sync {
     async fn blob_rows_in_shard(&self, shard: u8) -> Result<Vec<String>>;
     /// Whether a row exists for `hash` (a read).
     async fn blob_row_exists(&self, hash: &BlobHash) -> Result<bool>;
-    /// Hard-delete up to about `limit` soft-deleted messages with `deleted_at < older_than`
-    /// (those kept by a `deliveries` row excepted); returns how many. 0 means none are left.
-    async fn purge_deleted_batch(&self, older_than: i64, limit: i64) -> Result<u64>;
+    /// Hard-delete up to about `limit` soft-deleted messages per mailbox with `deleted_at <
+    /// older_than` (those kept by a `deliveries` row excepted), across several mailboxes.
+    /// `purged == 0` means none are left that could be purged. A mailbox that is `Busy` (lock
+    /// timeout) is skipped and reported in `busy_mailboxes`; it never stops the batch (review
+    /// PG5 M-e). Any other error aborts the batch.
+    async fn purge_deleted_batch(&self, older_than: i64, limit: i64) -> Result<PurgeBatch>;
     /// Delete up to `limit` `deliveries` rows with `created_at < older_than`.
     async fn purge_deliveries_batch(&self, older_than: i64, limit: i64) -> Result<u64>;
     /// Delete up to `limit` capabilities that expired or were revoked before `older_than`.

@@ -24,7 +24,7 @@ mod mailbox;
 pub mod pg;
 pub mod sqlite;
 
-pub use gc::GcRepo;
+pub use gc::{GcRepo, PurgeBatch};
 pub use jobs::{ClaimRequest, JobRepo, NewJob};
 pub use directory::{
     AccountStatus, AuthRow, CapabilityGrant, ConfigLayers, ConfigTarget, DirectoryRepo, ListMember,
