@@ -16,6 +16,12 @@ pub struct Shape {
     /// A write: its first data statement after BEGIN must be the mailbox lock.
     pub write: bool,
     pub stmts: Vec<String>,
+    /// The repository trait the method belongs to (`MailboxRepo`, `JobRepo`, `GcRepo`).
+    pub repo: &'static str,
+    /// First data statement a non-mailbox write must start with: (Postgres, SQLite) substrings.
+    pub first: Option<(&'static str, &'static str)>,
+    /// A statement that must appear somewhere in a Postgres run (the delegated mailbox lock).
+    pub must_include_pg: Option<&'static str>,
 }
 
 async fn new_msg(b: &Backend, folder: FolderId, subject: &str) -> NewMessage {
@@ -65,6 +71,9 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
                 method: method_of(stringify!($call)),
                 write: $write,
                 stmts: p.statements(),
+                repo: "MailboxRepo",
+                first: None,
+                must_include_pg: None,
             });
         }};
     }
@@ -134,8 +143,100 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
     shape!("get_message", false, r.get_message(id, rusty_core::MessageId(ids[3])));
     shape!("get_raw_ref", false, r.get_raw_ref(id, rusty_core::MessageId(ids[3])));
     shape!("keywords", false, r.keywords(id, rusty_core::MessageId(ids[3])));
+
+    // ---- JobRepo and GcRepo (PG5): not mailbox scoped, each write names its own first statement.
+    let j = &b.jrepo;
+    let g = &b.grepo;
+    macro_rules! other {
+        ($repo:expr, $label:expr, $write:expr, $first:expr, $include:expr, $call:expr) => {{
+            let fut = $call;
+            p.reset();
+            fut.await.unwrap();
+            out.push(Shape {
+                label: $label,
+                method: method_of(stringify!($call)),
+                write: $write,
+                stmts: p.statements(),
+                repo: $repo,
+                first: $first,
+                must_include_pg: $include,
+            });
+        }};
+    }
+    let dom = b.dir.create_domain("jobshape.test").await.unwrap();
+    let jq = b.jobs();
+    let nj = |kind: &'static str, domain| rusty_store::repo::NewJob {
+        kind,
+        domain,
+        payload: "{}",
+        run_after: None,
+        max_attempts: 5,
+        cap: 10_000,
+        now: None,
+    };
+    let (nj_dom, nj_none) = (nj("shape", Some(dom)), nj("shape", None));
+    other!("JobRepo", "db_now (jobs)", false, None, None, j.db_now());
+    other!("JobRepo", "enqueue (domain)", true,
+        Some(("FROM domains WHERE id = $1 FOR NO KEY UPDATE", "unixepoch()")), None,
+        j.enqueue(&nj_dom));
+    other!("JobRepo", "enqueue (no domain)", true,
+        Some(("pg_advisory_xact_lock", "unixepoch()")), None,
+        j.enqueue(&nj_none));
+    let kinds = ["shape"];
+    let creq = |worker| rusty_store::repo::ClaimRequest { worker, kinds: &kinds, lease_secs: 30, now: None };
+    let (c1, c2, c3, c4) = (creq("w"), creq("w2"), creq("w3"), creq("w4"));
+    let claimed = j.claim(&c1).await.unwrap().unwrap();
+    // `claim` of a fresh job is measured again below; this one is the fixture for the rest.
+    other!("JobRepo", "claim (job available)", true,
+        Some(("FOR UPDATE OF j SKIP LOCKED", "unixepoch()")), None,
+        j.claim(&c2));
+    other!("JobRepo", "claim (nothing)", true,
+        Some(("FOR UPDATE OF j SKIP LOCKED", "unixepoch()")), None,
+        j.claim(&c3));
+    other!("JobRepo", "heartbeat", true, Some(("UPDATE jobs SET", "UPDATE jobs SET")), None,
+        j.heartbeat(claimed.id, claimed.epoch, 30, None));
+    other!("JobRepo", "fence_check", false, None, None,
+        j.fence_check(rusty_store::JobFence { id: claimed.id, epoch: claimed.epoch }, None));
+    other!("JobRepo", "fail", true, Some(("UPDATE jobs SET", "UPDATE jobs SET")), None,
+        j.fail(claimed.id, claimed.epoch, "x", 0, None));
+    let again = j.claim(&c4).await.unwrap().unwrap();
+    other!("JobRepo", "complete", true, Some(("UPDATE jobs SET", "UPDATE jobs SET")), None,
+        j.complete(again.id, again.epoch, None));
+    other!("JobRepo", "purge_finished_batch", true,
+        Some(("DELETE FROM jobs", "DELETE FROM jobs")), None,
+        j.purge_finished_batch(i64::MAX, 1000));
+    let _ = jq;
+
+    // GC: an unreferenced blob row past any cutoff, plus a message that can be purged.
+    let hexes = ["aa".repeat(32), "bb".repeat(32)];
+    for h in &hexes {
+        insert_blob_row(b, h, 1).await;
+        set_zero_since(b, h, 0).await;
+    }
+    let hs: Vec<_> = hexes.iter().map(|h| rusty_core::BlobHash::parse(h).unwrap()).collect();
+    other!("GcRepo", "db_now (gc)", false, None, None, g.db_now());
+    other!("GcRepo", "blob_candidates", false, None, None, g.blob_candidates(100, None, 1000));
+    other!("GcRepo", "blob_rows_in_shard", false, None, None, g.blob_rows_in_shard(0xaa));
+    other!("GcRepo", "blob_row_exists", false, None, None, g.blob_row_exists(&hs[0]));
+    other!("GcRepo", "delete_blob_rows (2 rows)", true,
+        Some(("FROM blobs WHERE hash = ANY($1) ORDER BY hash FOR NO KEY UPDATE", "DELETE FROM blobs WHERE hash = ?")),
+        None, g.delete_blob_rows(&hs, 100));
+    let gone = mb.append(INBOX, raw("gc-purge", None), Flags::default()).await.unwrap();
+    mb.expunge_many_at(&[gone.id], 1).await.unwrap();
+    other!("GcRepo", "purge_deleted_batch (1 message)", true,
+        Some(("SELECT DISTINCT mailbox_id FROM messages", "DELETE FROM messages")),
+        Some("FROM mailboxes WHERE id = $1 FOR UPDATE"), g.purge_deleted_batch(100, 1000));
+    other!("GcRepo", "purge_deliveries_batch", true,
+        Some(("DELETE FROM deliveries", "DELETE FROM deliveries")), None,
+        g.purge_deliveries_batch(i64::MAX, 1000));
+    other!("GcRepo", "purge_capabilities_batch", true,
+        Some(("DELETE FROM capabilities", "DELETE FROM capabilities")), None,
+        g.purge_capabilities_batch(i64::MAX, 1000));
     out
 }
+
+use rusty_store::repo::{GcRepo, JobRepo};
+use super::backends::{insert_blob_row, set_zero_since};
 
 /// The first DATA statement of the transaction (after BEGIN) must be the mailbox lock. Transaction-local
 /// configuration (`set_config('lock_timeout', .., true)`) is allowed before it: it takes no lock
@@ -154,6 +255,16 @@ pub fn assert_lock_first(backend: &str, s: &Shape) {
                 && !t.trim_start().to_ascii_uppercase().starts_with("BEGIN")
         })
         .unwrap_or_else(|| panic!("{backend} {}: no statements: {:?}", s.label, s.stmts));
+    if let Some((pg, lite)) = s.first {
+        // Not mailbox scoped: the method documents what its first data statement is.
+        let want = if backend == "postgres" { pg } else { lite };
+        assert!(first.contains(want), "{backend} {}: first statement is not {want:?}: {first:?}
+all: {:#?}", s.label, s.stmts);
+        if let (true, Some(inc)) = (backend == "postgres", s.must_include_pg) {
+            assert!(s.stmts.iter().any(|t| t.contains(inc)), "{}: no {inc:?} in {:#?}", s.label, s.stmts);
+        }
+        return;
+    }
     let ok = if backend == "postgres" {
         first.contains("FROM mailboxes WHERE id = $1 FOR UPDATE")
     } else {
@@ -164,19 +275,31 @@ pub fn assert_lock_first(backend: &str, s: &Shape) {
 
 /// `r.create_folder(id, ..)` -> `create_folder`.
 fn method_of(call: &str) -> String {
-    let rest = call.trim_start().strip_prefix("r.").unwrap_or_else(|| panic!("shape call must start with `r.`: {call}"));
+    let t = call.trim_start();
+    let rest = ["r.", "j.", "g."].iter().find_map(|p| t.strip_prefix(p)).unwrap_or_else(|| panic!("shape call must start with r., j. or g.: {call}"));
     rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect()
 }
 
-const TRAIT_SOURCE: &str = include_str!("../../src/repo/mailbox.rs");
+/// The repository traits whose every method needs a shape: (trait name, source, read-only
+/// methods). In `MailboxRepo` a method is a write when it returns `Committed<..>`; in the other
+/// traits every method NOT listed as a read is a write (a new method defaults to "write", so it
+/// cannot escape the lock-first probe by being forgotten).
+const TRAITS: &[(&str, &str, &[&str])] = &[
+    ("MailboxRepo", include_str!("../../src/repo/mailbox.rs"), &[]),
+    ("JobRepo", include_str!("../../src/repo/jobs.rs"), &["db_now", "fence_check"]),
+    (
+        "GcRepo",
+        include_str!("../../src/repo/gc.rs"),
+        &["db_now", "blob_candidates", "blob_rows_in_shard", "blob_row_exists"],
+    ),
+];
 
-/// `(name, is_write)` of every method of `MailboxRepo`, read from the trait declaration itself
-/// (a method is a write when it returns `Committed<..>`).
-pub fn trait_methods() -> Vec<(String, bool)> {
-    let start = TRAIT_SOURCE
-        .find("pub trait MailboxRepo")
-        .expect("MailboxRepo declaration");
-    let body: String = TRAIT_SOURCE[start..]
+/// `(name, is_write)` of every method of the trait, read from the trait declaration itself.
+pub fn trait_methods(trait_name: &str) -> Vec<(String, bool)> {
+    let (_, source, reads) = TRAITS.iter().find(|t| t.0 == trait_name).expect("known trait");
+    let decl = format!("pub trait {trait_name}");
+    let start = source.find(&decl).unwrap_or_else(|| panic!("{trait_name} declaration"));
+    let body: String = source[start..]
         .lines()
         .skip(1)
         .take_while(|l| *l != "}")
@@ -185,48 +308,57 @@ pub fn trait_methods() -> Vec<(String, bool)> {
         .join("\n");
     let methods: Vec<(String, bool)> = body
         .split(';')
-        .filter_map(|decl| {
-            let at = decl.find("fn ")?;
-            let name: String = decl[at + 3..]
+        .filter_map(|d| {
+            let at = d.find("fn ")?;
+            let name: String = d[at + 3..]
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
                 .collect();
-            Some((name, decl.contains("Committed<")))
+            let write = if trait_name == "MailboxRepo" {
+                d.contains("Committed<")
+            } else {
+                !reads.contains(&name.as_str())
+            };
+            Some((name, write))
         })
         .collect();
-    assert!(
-        methods.len() >= 24,
-        "the MailboxRepo parser found only {} methods: {methods:?}",
-        methods.len()
-    );
+    let min = if trait_name == "MailboxRepo" { 24 } else { 5 };
+    assert!(methods.len() >= min, "the {trait_name} parser found only {} methods: {methods:?}", methods.len());
     methods
 }
 
-/// Review PG4 M6: a new `MailboxRepo` method that is not added to `collect` would escape the
-/// lock-first probe and the statement budget. Every trait method needs a shape, and a method that
-/// returns `Committed` (a write) must be recorded as one.
+/// Review PG4 M6: a new repository method that is not added to `collect` would escape the
+/// lock-first probe and the statement budget. Every trait method of every repository needs a
+/// shape, and a write must be recorded as one.
 pub fn assert_every_trait_method_has_a_shape(all: &[Shape]) {
-    let methods = trait_methods();
-    for (name, write) in &methods {
-        let mine: Vec<&Shape> = all.iter().filter(|s| s.method == *name).collect();
-        assert!(
-            !mine.is_empty(),
-            "MailboxRepo::{name} has no entry in tests/common/shapes.rs: add a `shape!` for it \
-             (and a BUDGET line in query_shape_pg.rs) so the lock-first probe covers it"
-        );
-        if *write {
+    for (trait_name, _, _) in TRAITS {
+        let methods = trait_methods(trait_name);
+        for (name, write) in &methods {
+            let mine: Vec<&Shape> =
+                all.iter().filter(|s| s.repo == *trait_name && s.method == *name).collect();
             assert!(
-                mine.iter().all(|s| s.write),
-                "MailboxRepo::{name} returns Committed but its shape is not marked as a write"
+                !mine.is_empty(),
+                "{trait_name}::{name} has no entry in tests/common/shapes.rs: add a shape for it \
+                 (and a BUDGET line in query_shape_pg.rs) so the lock-first probe covers it"
+            );
+            if *write {
+                assert!(
+                    mine.iter().all(|s| s.write),
+                    "{trait_name}::{name} is a write but its shape is not marked as a write"
+                );
+            }
+        }
+        for s in all.iter().filter(|s| s.repo == *trait_name) {
+            assert!(
+                methods.iter().any(|(m, _)| *m == s.method),
+                "shape {:?} measures `{}` which is not a {trait_name} method",
+                s.label,
+                s.method
             );
         }
     }
-    for s in all {
-        assert!(
-            methods.iter().any(|(m, _)| *m == s.method),
-            "shape {:?} measures `{}` which is not a MailboxRepo method",
-            s.label,
-            s.method
-        );
+    // Writes outside the mailbox lock rule must say what they start with.
+    for s in all.iter().filter(|s| s.repo != "MailboxRepo" && s.write) {
+        assert!(s.first.is_some(), "{}: a non-mailbox write needs its first-statement rule", s.label);
     }
 }

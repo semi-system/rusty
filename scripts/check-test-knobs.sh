@@ -65,7 +65,7 @@ static_check() {
   # (3) Rust sources outside rusty-store.
   out="$(find crates tools fuzz deploy -type f -name '*.rs' -not -path '*/target/*' \
           -not -path 'crates/rusty-store/*' 2>/dev/null | sort \
-        | xargs -r grep -nE 'test-knobs|with_knobs_for_test|inject_deadlocks_for_test|with_work_done_signal_for_test' 2>/dev/null || true)"
+        | xargs -r grep -nE 'test-knobs|with_knobs_for_test|inject_deadlocks_for_test|with_work_done_signal_for_test|with_clock_offset_for_test' 2>/dev/null || true)"
   if [ -n "$out" ]; then
     echo "test knob API used outside rusty-store:" >&2
     printf '%s\n' "$out" >&2
@@ -85,7 +85,7 @@ static_check() {
 }
 
 # Markers that exist only in knob code: SQL text and identifiers.
-MARKERS=(pg_sleep injected with_knobs_for_test inject_deadlocks_for_test with_work_done_signal_for_test)
+MARKERS=(pg_sleep injected with_knobs_for_test inject_deadlocks_for_test with_work_done_signal_for_test with_clock_offset_for_test)
 
 rlib_of() { # features [target]
   local feat="$1" target="${2:-}" args=()

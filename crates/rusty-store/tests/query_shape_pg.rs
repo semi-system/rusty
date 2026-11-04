@@ -59,6 +59,25 @@ const BUDGET: &[(&str, usize)] = &[
     ("get_message", 1),
     ("get_raw_ref", 1),
     ("keywords", 2),
+    // JobRepo and GcRepo (PG5)
+    ("db_now (jobs)", 1),
+    ("enqueue (domain)", 5),
+    ("enqueue (no domain)", 5),
+    ("claim (job available)", 4),
+    ("claim (nothing)", 3),
+    ("heartbeat", 3),
+    ("fence_check", 1),
+    ("fail", 3),
+    ("complete", 3),
+    ("purge_finished_batch", 3),
+    ("db_now (gc)", 1),
+    ("blob_candidates", 1),
+    ("blob_rows_in_shard", 1),
+    ("blob_row_exists", 1),
+    ("delete_blob_rows (2 rows)", 4),
+    ("purge_deleted_batch (1 message)", 7),
+    ("purge_deliveries_batch", 3),
+    ("purge_capabilities_batch", 3),
 ];
 
 /// How far below its ceiling an operation may get before the ceiling counts as stale.
@@ -161,7 +180,11 @@ async fn repository_statements_use_no_session_state() {
                 "SET ROLE",
                 "TEMP TABLE",
                 "TEMPORARY TABLE",
-                "PG_ADVISORY",
+                // Session-level advisory locks outlive a transaction; the transaction-scoped
+                // `pg_advisory_xact_lock` (job cap serialisation) is released at COMMIT and is fine.
+                "PG_ADVISORY_LOCK",
+                "PG_TRY_ADVISORY_LOCK",
+                "PG_ADVISORY_UNLOCK",
                 "LISTEN ",
                 "NOTIFY ",
                 "WITH HOLD",
