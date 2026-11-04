@@ -850,21 +850,48 @@ async fn fenced_delivery_commits_effect_and_completion_atomically_and_rolls_back
     assert_eq!(state(&e.store, id).await, "done");
 }
 
+/// Review PG5 M-g. Replaces `crash_between_fenced_commit_and_complete_reruns_the_job`: that
+/// scenario cannot be expressed any more because a fenced effect now commits TOGETHER with the
+/// completion. What remains, and is asserted here:
+/// 1. a bare `fence_check` is a read: it neither performs the effect nor completes the job, so
+///    a worker that dies after it leaves the job `running`;
+/// 2. the lapsed lease re-runs the job under a new epoch (attempts 2); the first worker is now
+///    a zombie and BOTH its check and its fenced delivery are refused, the latter without
+///    leaving a message behind;
+/// 3. the new owner's fenced delivery commits the message and `done` together: exactly one
+///    message although two workers ran the step.
 #[tokio::test]
-async fn a_fence_check_alone_does_not_make_the_step_exactly_once() {
-    // The documented contract: a check (or a fenced effect without completion) leaves the crash
-    // window; the lapsed lease re-runs the job under a new epoch that passes the fence.
-    let (_s, jq) = q().await;
+async fn a_bare_fence_check_leaves_the_job_running_and_only_a_fenced_effect_completes_it_once() {
+    use rusty_core::{DeliveryId, Flags};
+    use rusty_store::JobFence;
+    let e = common::env().await;
+    let jq = JobQueue::new(e.store.clone());
     let id = enq(&jq, "t", None, 1000).await;
     let first = jq.claim_at("w1", &["t"], 30, 1000).await.unwrap().unwrap();
-    jq.fence_check_at(rusty_store::JobFence { id, epoch: first.epoch }, 1005)
-        .await
-        .unwrap();
+    let fence1 = JobFence { id, epoch: first.epoch };
+    jq.fence_check_at(fence1, 1005).await.unwrap();
+    assert_eq!(state(&e.store, id).await, "running", "a check completes nothing");
+    assert_eq!(e.scalar("SELECT count(*) FROM messages").await, 0, "a check has no effect");
+    // w1 dies. The lease lapses and w2 re-runs the step.
     let second = jq.claim_at("w2", &["t"], 30, 1030).await.unwrap().unwrap();
     assert_eq!((second.id, second.epoch, second.attempts), (id, 2, 2));
-    jq.fence_check_at(rusty_store::JobFence { id, epoch: second.epoch }, 1031)
+    assert!(is_stale(&jq.fence_check_at(fence1, 1031).await), "the zombie's check is refused");
+    sqlx::query("UPDATE jobs SET lease_expires_at = 4000000000").execute(e.store.pool()).await.unwrap();
+    let raw = common::raw("exactly-once", None);
+    let did = DeliveryId([4; 32]);
+    let r = e.mb.deliver_fenced(common::INBOX, raw.clone(), Flags::empty(), did, fence1).await;
+    assert!(matches!(r, Err(Error::Conflict(ref m)) if m == STALE), "zombie effect refused: {r:?}");
+    assert_eq!(e.scalar("SELECT count(*) FROM messages").await, 0, "and leaves nothing behind");
+    e.mb
+        .deliver_fenced(common::INBOX, raw.clone(), Flags::empty(), did, JobFence { id, epoch: second.epoch })
         .await
         .unwrap();
+    assert_eq!(e.scalar("SELECT count(*) FROM messages").await, 1, "effect committed once");
+    assert_eq!(state(&e.store, id).await, "done", "with the completion");
+    // The zombie cannot run the step again either.
+    let r = e.mb.deliver_fenced(common::INBOX, raw, Flags::empty(), did, fence1).await;
+    assert!(matches!(r, Err(Error::Conflict(ref m)) if m == STALE), "{r:?}");
+    assert_eq!(e.scalar("SELECT count(*) FROM messages").await, 1);
 }
 
 #[tokio::test]
