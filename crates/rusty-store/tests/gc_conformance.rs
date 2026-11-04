@@ -209,3 +209,55 @@ async fn purge_deliveries_and_capabilities_are_swept_by_age() {
     })
     .await;
 }
+
+/// Review PG5 I4: the delete re-checks, under its lock, that each row is still unreferenced
+/// AND past the cutoff. The listing step filters by the cutoff too, so the boundary has to be
+/// driven at `delete_blob_rows` itself: a row at `cutoff` or after it stays, one before goes.
+#[tokio::test]
+async fn delete_blob_rows_rechecks_the_cutoff_itself() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let cutoff = 1_000_000i64;
+        let before = blob(&b, "before", Some(cutoff - 1)).await;
+        let at = blob(&b, "at", Some(cutoff)).await;
+        let after = blob(&b, "after", Some(cutoff + 1)).await;
+        let all = [at.clone(), after.clone(), before.clone()];
+        let gone = b.grepo.delete_blob_rows(&all, cutoff).await.unwrap();
+        assert_eq!(gone, vec![before.clone()], "{n}: only cutoff-1 is deleted");
+        assert!(!blob_row_exists(&b, before.as_str()).await, "{n}");
+        assert!(blob_row_exists(&b, at.as_str()).await, "{n}: zero_since = cutoff stays");
+        assert!(blob_row_exists(&b, after.as_str()).await, "{n}: zero_since = cutoff+1 stays");
+        // The same call one second later takes the boundary row.
+        let gone = b.grepo.delete_blob_rows(&all, cutoff + 1).await.unwrap();
+        assert_eq!(gone, vec![at.clone()], "{n}: the row at the old cutoff goes once past it");
+        assert!(blob_row_exists(&b, after.as_str()).await, "{n}");
+    })
+    .await;
+}
+
+/// Review PG5 I4: a candidate listed while it was past the grace window, then referenced and
+/// released again (which stamps a fresh `zero_since`), must NOT be deleted by the batch that
+/// still holds the stale listing.
+#[tokio::test]
+async fn a_candidate_rereferenced_and_released_after_listing_is_not_deleted() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let now = db_clock(&b).await;
+        let cutoff = now - 3600;
+        let h = blob(&b, "relisted", Some(now - 7200)).await;
+        let listed = b.grepo.blob_candidates(cutoff, None, 10).await.unwrap();
+        assert_eq!(listed, vec![h.clone()], "{n}: listed as a candidate");
+        // Another session appends a message with this content and expunges and purges it again.
+        let lit = hash_lit(&b, h.as_str());
+        run(&b, &format!("UPDATE blobs SET refcount = 1 WHERE hash = {lit}")).await;
+        run(&b, &format!("UPDATE blobs SET refcount = 0 WHERE hash = {lit}")).await;
+        let gone = b.grepo.delete_blob_rows(&listed, cutoff).await.unwrap();
+        assert!(gone.is_empty(), "{n}: unreferenced for less than the grace window: {gone:?}");
+        assert!(blob_row_exists(&b, h.as_str()).await, "{n}");
+        // Still referenced: stays as well.
+        run(&b, &format!("UPDATE blobs SET refcount = 1 WHERE hash = {lit}")).await;
+        let gone = b.grepo.delete_blob_rows(&listed, i64::MAX).await.unwrap();
+        assert!(gone.is_empty(), "{n}: referenced");
+    })
+    .await;
+}
