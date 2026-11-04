@@ -11,6 +11,7 @@
 //!     RUSTY_UPDATE_SNAPSHOT=1 cargo test -p rusty-store --test schema_snapshot
 //!
 //! and the regenerated file is reviewed and committed together with the migration.
+//! backend-neutral: SQLite schema snapshot; the Postgres counterpart is pg_schema_parity.rs against the SQLite catalog
 
 use std::path::PathBuf;
 

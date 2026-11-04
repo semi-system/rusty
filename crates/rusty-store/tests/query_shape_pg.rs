@@ -9,6 +9,7 @@
 //! test, an improvement does not. A separate snapshot test only complains when the measured
 //! count is MORE than `SNAPSHOT_TOLERANCE` below the ceiling, so that the ceilings are tightened
 //! after a real optimisation and cannot rot into a limit nobody would hit.
+//! backend-neutral: Postgres-only suite (needs a server; compares against the SQLite behaviour elsewhere)
 #![cfg(feature = "postgres")]
 
 mod common;

@@ -1,3 +1,4 @@
+//! backend-neutral: filesystem blob store only, no database
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 

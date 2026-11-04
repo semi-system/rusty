@@ -368,6 +368,7 @@ async fn cyclic_folder_data_is_invalid_not_a_hang() {
 
 /// Review risk 6.3.1 on SQLite: the first data statement of every write transaction is the read
 /// of the mailbox row (after `BEGIN IMMEDIATE`). The Postgres twin lives in `query_shape_pg.rs`.
+// backend-neutral: SQLite twin of the Postgres lock-first probe in query_shape_pg.rs (statement text is dialect-specific)
 #[tokio::test]
 async fn every_write_method_takes_the_mailbox_row_first_on_sqlite() {
     let p = stmts::probe();

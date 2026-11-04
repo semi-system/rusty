@@ -510,6 +510,7 @@ async fn concurrent_reader_never_sees_a_seq_hole() {
 /// sqlx-sqlite binds `$N` by NUMBER (plain SQLite would number `$2 - $1` by first appearance
 /// and swap the values). If a sqlx upgrade changes this, the shared SQL must go back to `?N`
 /// for SQLite (and be rewritten for Postgres).
+// backend-neutral: unit test of the SQLite placeholder syntax used by the fixtures
 #[tokio::test]
 async fn sqlite_dollar_placeholders_follow_their_number() {
     let store = common::mem().await;

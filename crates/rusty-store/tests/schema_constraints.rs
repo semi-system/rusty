@@ -1,3 +1,4 @@
+//! backend-neutral: SQLite schema constraints; the Postgres twins (one per test, exact constraint) are listed in pg_schema_constraints.rs PORTED
 mod common;
 
 use common::mem;

@@ -13,6 +13,7 @@
 //!    function bodies, identity generation and column collations. It is generated from Postgres
 //!    itself, so it is NOT an oracle: a regenerated snapshot blesses whatever is in the migration.
 //!    Regenerate with RUSTY_UPDATE_PG_SNAPSHOT=1 and review the diff.
+//! backend-neutral: Postgres-only suite (needs a server; compares against the SQLite behaviour elsewhere)
 
 #![cfg(feature = "postgres")]
 #![allow(clippy::type_complexity)]

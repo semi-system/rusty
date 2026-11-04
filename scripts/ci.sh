@@ -38,11 +38,12 @@ stage() { # name, command...
   echo "==> $name"
   # Test hook for scripts/tests/ci-trap.sh only: force this stage to fail.
   if [ "${RUSTY_CI_FORCE_FAIL:-}" = "$name" ]; then set -- false; fi
+  local t0=$SECONDS
   if "$@"; then
     STAGES=$((STAGES + 1))
-    echo "[ OK ] $name"
+    echo "[ OK ] $name ($((SECONDS - t0))s)"
   else
-    echo "[FAIL] $name" >&2
+    echo "[FAIL] $name ($((SECONDS - t0))s)" >&2
     exit 1
   fi
 }
@@ -61,6 +62,12 @@ rustup target list --installed | grep -qx "$MUSL" || { echo "[FAIL] missing rust
 # covers and what it cannot see). The gate has its own self-test.
 stage "raw-db gate self-test" bash scripts/tests/raw-db-gate.sh
 stage "no raw pool outside store" bash scripts/check-raw-db.sh
+# Raw SQL fixtures for other crates (rusty_store::fixtures) exist only in dev-dependency builds.
+stage "test-fixtures gate self-test" bash scripts/tests/test-fixtures-gate.sh
+stage "no test fixtures outside dev-dependencies" bash scripts/check-test-fixtures.sh static
+# Every behaviour test of the database crates runs on both backends or carries a reasoned marker.
+stage "parametrised gate self-test" bash scripts/tests/parametrised-gate.sh
+stage "every test runs on both backends" bash scripts/check-parametrised.sh
 # The `test-knobs` fault-injection feature of rusty-store is enabled only by its own tests.
 stage "test-knobs gate self-test" bash scripts/tests/test-knobs-gate.sh
 stage "no test knobs outside tests" bash scripts/check-test-knobs.sh static
@@ -97,7 +104,7 @@ postgres_tests() {
   fi
   if [ "$rc" -eq 0 ]; then
     RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
-      cargo test -p rusty-directory --features postgres --test directory_conformance || rc=$?
+      cargo test -p rusty-directory --features postgres || rc=$?
   fi
   if [ "$rc" -eq 0 ]; then
     RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
@@ -126,6 +133,7 @@ stage "test (musl)"  cargo test --workspace --target "$MUSL"
 stage "build (musl release)" cargo build --release --workspace --target "$MUSL"
 # A release build of rusty-store contains none of the knob code (positive control included).
 stage "no test knobs in release" bash scripts/check-test-knobs.sh symbols "$MUSL"
+stage "no test fixtures in release" bash scripts/check-test-fixtures.sh symbols "$MUSL"
 
 check_static() {
   local found=0 f

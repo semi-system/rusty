@@ -1058,6 +1058,7 @@ async fn poll_n_then_drop<F: std::future::Future>(fut: F, n: usize) -> bool {
 /// Regression: in sqlx 0.8.6, dropping `pool.begin_with(..)` right after SQLite acknowledged
 /// the BEGIN (deterministically: after its 3rd poll) left the pooled connection inside an
 /// open transaction forever, holding the write lock. `begin_write` must not.
+// backend-neutral: SQLite-only: regression for a sqlx 0.8.6 SQLite BEGIN cancellation bug; the Postgres cancellation tests are in pg_mailbox_concurrency.rs
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancelled_begin_write_does_not_leak_transaction() {
     let store = mem().await; // one connection: a leak would poison every later write

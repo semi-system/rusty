@@ -504,6 +504,7 @@ proptest! {
     /// Model-based differential test: the same random operation sequence (20 ops) produces the
     /// same results, error kinds and final observable state on SQLite and Postgres. Without a
     /// Postgres server only the SQLite half runs (it must not panic).
+    // backend-neutral: differential test: drives both backends itself and compares them
     #[test]
     fn sqlite_and_postgres_are_observably_identical(ops in proptest::collection::vec(dop(), 1..20)) {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();

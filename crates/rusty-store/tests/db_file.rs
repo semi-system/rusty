@@ -8,6 +8,7 @@ fn mode(p: &std::path::Path) -> u32 {
     std::fs::metadata(p).unwrap().permissions().mode() & 0o7777
 }
 
+// backend-neutral: SQLite-only: database file permissions
 #[tokio::test]
 async fn new_database_file_is_0600() {
     let dir = tempfile::tempdir().unwrap();
@@ -27,6 +28,7 @@ async fn new_database_file_is_0600() {
     }
 }
 
+// backend-neutral: SQLite-only: database file permissions
 #[tokio::test]
 async fn existing_database_file_mode_is_left_alone() {
     let dir = tempfile::tempdir().unwrap();

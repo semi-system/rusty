@@ -1,5 +1,6 @@
 //! D1: transient failures are `Error::Busy`, never `Storage`, never `Conflict`; the text is a
 //! fixed string (no URL, no SQL, no identifiers).
+//! backend-neutral: error mapping per backend: sqlite_* tests cover SQLite, the pg module covers Postgres, the rest are pure unit tests
 
 mod common;
 

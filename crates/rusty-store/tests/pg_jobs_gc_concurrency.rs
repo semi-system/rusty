@@ -1,5 +1,6 @@
 //! PG5: real-concurrency behaviour of the Postgres job and GC repositories.
 //! Requires `RUSTY_TEST_PG_URL` (loud SKIPPED notice otherwise).
+//! backend-neutral: Postgres-only suite (needs a server; compares against the SQLite behaviour elsewhere)
 #![cfg(feature = "postgres")]
 
 mod common;

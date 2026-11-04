@@ -16,6 +16,7 @@ fn ranges() -> impl Iterator<Item = char> {
         .filter_map(char::from_u32)
 }
 
+// backend-neutral: pure unit test over the local-part allow list, no database
 #[test]
 fn allow_list_is_exactly_stable_lowercase_letters_in_latin_ranges() {
     let mut allowed = 0;
@@ -34,6 +35,7 @@ fn allow_list_is_exactly_stable_lowercase_letters_in_latin_ranges() {
     assert_eq!(allowed, EXPECTED_ALLOWED);
 }
 
+// backend-neutral: pure unit test over the local-part allow list, no database
 #[test]
 fn nine_nfkc_unstable_letters_are_rejected() {
     for cp in [0x133u32, 0x140, 0x149, 0x17F, 0x1C6, 0x1C9, 0x1CC, 0x1F3, 0x1E9A] {

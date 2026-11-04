@@ -1,4 +1,5 @@
 //! Debug output of configuration and credential-carrying types must never contain secrets.
+//! backend-neutral: pure unit test of Debug output, no database
 
 use rusty_store::repo::{AuthRow, NewAccount};
 use rusty_core::DomainId;
