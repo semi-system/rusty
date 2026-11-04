@@ -407,3 +407,40 @@ async fn fenced_delivery_commits_with_completion_and_rolls_back_for_zombies() {
     })
     .await;
 }
+
+/// Review PG5 M-c: a fence is bound to the job's domain. A worker holding the fence of a job of
+/// domain A cannot deliver into a mailbox of domain B (defence in depth: claim is global by
+/// kind). The refusal is `Invalid`, rolls everything back, leaves the job running, and a job
+/// without a domain (a system job) is not restricted.
+#[tokio::test]
+async fn a_fence_cannot_deliver_into_another_domains_mailbox() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let (dom_a, _, mb_a) = acct(&b, "fencea").await;
+        let (_, _, mb_b) = acct(&b, "fenceb").await;
+        let jq = b.jobs();
+        let id = jq.enqueue("deliver", Some(dom_a), &json!({}), None).await.unwrap();
+        let job = jq.claim("w", &["deliver"], 60).await.unwrap().unwrap();
+        let fence = JobFence { id, epoch: job.epoch };
+        let did = DeliveryId([5; 32]);
+        let msg = common::raw("cross-domain", None);
+        let r = mb_b.deliver_fenced(INBOX, msg.clone(), Flags::default(), did, fence).await;
+        assert!(matches!(r, Err(Error::Invalid(_))), "{n}: wrong domain: {r:?}");
+        assert_eq!(scalar(&b, "SELECT count(*) FROM messages").await, 0, "{n}: rolled back");
+        assert_eq!(scalar(&b, "SELECT count(*) FROM deliveries").await, 0, "{n}");
+        assert_eq!(state(&b, id).await, "running", "{n}: the job is untouched");
+        // The same fence delivers into its own domain's mailbox.
+        mb_a.deliver_fenced(INBOX, msg, Flags::default(), did, fence).await.unwrap();
+        assert_eq!(state(&b, id).await, "done", "{n}");
+        // A system job (no domain) may deliver anywhere.
+        let sys = jq.enqueue("deliver", None, &json!({}), None).await.unwrap();
+        let sj = jq.claim("w", &["deliver"], 60).await.unwrap().unwrap();
+        assert_eq!(sj.id, sys);
+        mb_b.deliver_fenced(INBOX, common::raw("system", None), Flags::default(), DeliveryId([6; 32]),
+            JobFence { id: sys, epoch: sj.epoch })
+            .await
+            .unwrap();
+        assert_eq!(state(&b, sys).await, "done", "{n}");
+    })
+    .await;
+}

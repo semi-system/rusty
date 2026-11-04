@@ -48,7 +48,9 @@
 //! database effect passes `Option<JobFence>` to the mailbox operation that performs it
 //! (`append` / `deliver` and `deliver_many`, see `MailboxRepo`), and the fence + `done` happen
 //! in that operation's transaction (`COMPLETE_JOB`: epoch, `running`, lease unexpired by the
-//! database clock). [`JobRepo::fence_check`] is the standalone check, in its own transaction,
+//! database clock, and the job's domain: a job that has a domain may only act on a mailbox of that
+//! domain, `Invalid` otherwise; a job without a domain is a system job and is not restricted).
+//! [`JobRepo::fence_check`] is the standalone check, in its own transaction,
 //! for callers that only need to know whether they still own the job. No other repository
 //! operation is used by a worker kind today (there is no worker crate yet).
 

@@ -313,7 +313,13 @@ pub mod sql_text {
         WHERE id = $1 RETURNING next_change_seq - 1";
     pub const DELIVERY_LOOKUP: &str =
         "SELECT message_id, blob_hash FROM deliveries WHERE mailbox_id = $1 AND delivery_id = $2";
-    pub const COMPLETE_JOB: &str = "UPDATE jobs SET state = 'done', lease_owner = NULL, \n        lease_expires_at = NULL, updated_at = {NOW} \n        WHERE id = $1 AND epoch = $2 AND state = 'running' AND lease_expires_at > {NOW}";
+    pub const COMPLETE_JOB: &str = "UPDATE jobs SET state = 'done', lease_owner = NULL, \n        lease_expires_at = NULL, updated_at = {NOW} \n        WHERE id = $1 AND epoch = $2 AND state = 'running' AND lease_expires_at > {NOW} \
+        AND (domain_id IS NULL OR domain_id = (SELECT a.domain_id FROM mailboxes m \
+          JOIN accounts a ON a.id = m.account_id WHERE m.id = $3))";
+    /// Run only after `COMPLETE_JOB` matched no row: does the fence still own its job (so the
+    /// refusal was the domain binding and not a stale epoch)?
+    pub const JOB_STILL_OWNED: &str = "SELECT CAST(1 AS BIGINT) FROM jobs \
+        WHERE id = $1 AND epoch = $2 AND state = 'running' AND lease_expires_at > {NOW}";
     pub const MESSAGE_UID: &str = "SELECT uid FROM messages WHERE mailbox_id = $1 AND id = $2";
     pub const LIVE_MESSAGE: &str = "SELECT folder_id, uid FROM messages \
         WHERE mailbox_id = $1 AND id = $2 AND deleted_at IS NULL";

@@ -32,16 +32,27 @@ use crate::map_db_error;
 
 // ---------------------------------------------------------------- in-transaction primitives
 
-/// Fence and complete the job in the caller's transaction (see `JobQueue::complete_in`).
-async fn complete_job(c: &mut PgConnection, f: JobFence) -> TxResult<()> {
+/// Fence and complete the job in the caller's transaction (see `JobQueue::complete_in`). A job
+/// that has a domain may only act on a mailbox of that domain (`Invalid` otherwise, review PG5
+/// M-c); a stale epoch or lapsed lease is `Conflict`.
+async fn complete_job(c: &mut PgConnection, f: JobFence, mailbox: i64) -> TxResult<()> {
     let n = sqlx::query(&r(q::COMPLETE_JOB))
         .bind(f.id.0)
         .bind(f.epoch)
+        .bind(mailbox)
         .execute(&mut *c)
         .await?
         .rows_affected();
     if n == 1 {
-        Ok(())
+        return Ok(());
+    }
+    let owned: Option<i64> = sqlx::query_scalar(&r(q::JOB_STILL_OWNED))
+        .bind(f.id.0)
+        .bind(f.epoch)
+        .fetch_optional(&mut *c)
+        .await?;
+    if owned.is_some() {
+        Err(Error::Invalid("job belongs to another domain".into()).into())
     } else {
         Err(Error::Conflict("stale job epoch".into()).into())
     }
@@ -544,7 +555,7 @@ impl MailboxRepo for PgRepo {
                     }
                 };
                 if let Some(f) = fence {
-                    complete_job(c, f).await?;
+                    complete_job(c, f, mb.0).await?;
                 }
                 Ok((outcome, seq))
             }
@@ -641,7 +652,7 @@ impl MailboxRepo for PgRepo {
                     (refs, Some(seq))
                 };
                 if let Some(f) = fence {
-                    complete_job(c, f).await?;
+                    complete_job(c, f, mb.0).await?;
                 }
                 let outcomes = plan
                     .slots

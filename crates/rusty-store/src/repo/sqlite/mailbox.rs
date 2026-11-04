@@ -46,16 +46,28 @@ fn placeholders(first: usize, n: usize) -> String {
 
 /// Fence and complete the job in the caller's transaction (the `JobQueue::complete_in` pattern):
 /// a stale epoch or expired lease is `Conflict` and the caller drops the transaction.
-async fn complete_job(c: &mut SqliteConnection, f: JobFence) -> Result<()> {
+/// A job that has a domain may only act on a mailbox of that domain (`Invalid` otherwise, review
+/// PG5 M-c).
+async fn complete_job(c: &mut SqliteConnection, f: JobFence, mailbox: i64) -> Result<()> {
     let n = sqlx::query(&r(q::COMPLETE_JOB))
         .bind(f.id.0)
         .bind(f.epoch)
+        .bind(mailbox)
         .execute(&mut *c)
         .await
         .map_err(map_db_error)?
         .rows_affected();
     if n == 1 {
-        Ok(())
+        return Ok(());
+    }
+    let owned: Option<i64> = sqlx::query_scalar(&r(q::JOB_STILL_OWNED))
+        .bind(f.id.0)
+        .bind(f.epoch)
+        .fetch_optional(&mut *c)
+        .await
+        .map_err(map_db_error)?;
+    if owned.is_some() {
+        Err(Error::Invalid("job belongs to another domain".into()))
     } else {
         Err(Error::Conflict("stale job epoch".into()))
     }
@@ -542,7 +554,7 @@ impl MailboxRepo for SqliteRepo {
             }
         };
         if let Some(f) = fence {
-            complete_job(&mut tx, f).await?;
+            complete_job(&mut tx, f, mb.0).await?;
         }
         tx.commit().await.map_err(map_db_error)?;
         Ok(Committed::new(outcome, seq))
@@ -752,7 +764,7 @@ impl MailboxRepo for SqliteRepo {
             last_seq = log_message_changes(&mut tx, mb.0, &created_ids, ChangeOp::Create).await?;
         }
         if let Some(f) = fence {
-            complete_job(&mut tx, f).await?;
+            complete_job(&mut tx, f, mb.0).await?;
         }
 
         let new_ref = |c: usize| -> Result<MessageRef> {
