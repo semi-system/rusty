@@ -60,7 +60,7 @@ impl JobRepo for SqliteRepo {
             .await,
         }
         .map_err(map_db_error)?;
-        if pending >= i64::from(job.cap) {
+        if pending >= i64::from(job.effective_cap()) {
             return Err(Error::Quota("job queue full".into()));
         }
         let id: i64 = sqlx::query_scalar(

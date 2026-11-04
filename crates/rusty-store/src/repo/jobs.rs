@@ -69,10 +69,23 @@ pub struct NewJob<'a> {
     /// `None` = now (database clock).
     pub run_after: Option<i64>,
     pub max_attempts: u32,
-    /// Most `queued` + `running` jobs of this scope (per domain, or without a domain).
+    /// Most `queued` + `running` jobs of this scope (per domain, or without a domain). A
+    /// request: the repository never allows more than the documented ceiling of the scope
+    /// ([`NewJob::effective_cap`]), whatever the caller passes (review PG5 M-b).
     pub cap: u32,
     /// `None` = database clock; `Some` only from the test twins.
     pub now: Option<i64>,
+}
+
+impl NewJob<'_> {
+    /// The cap actually enforced: the requested one, bounded by the scope's ceiling.
+    pub(crate) fn effective_cap(&self) -> u32 {
+        let ceiling = match self.domain {
+            Some(_) => crate::jobs::MAX_PENDING_JOBS_PER_DOMAIN,
+            None => crate::jobs::MAX_PENDING_JOBS_GLOBAL_NO_DOMAIN,
+        };
+        self.cap.min(ceiling)
+    }
 }
 
 /// A validated claim request.

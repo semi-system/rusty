@@ -165,7 +165,7 @@ impl JobRepo for PgRepo {
                         .await?
                     }
                 };
-                if pending >= i64::from(job.cap) {
+                if pending >= i64::from(job.effective_cap()) {
                     return Err(Error::Quota("job queue full".into()).into());
                 }
                 let id: i64 = sqlx::query_scalar(&r(

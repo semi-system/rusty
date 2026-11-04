@@ -444,3 +444,46 @@ async fn a_fence_cannot_deliver_into_another_domains_mailbox() {
     })
     .await;
 }
+
+/// Review PG5 M-b: the pending-job cap is a property of the repository, not of whatever the
+/// caller passes: a holder of `Repos.jobs` that asks for `cap = u32::MAX` still hits the
+/// documented 10,000 per scope (a domain, or no domain).
+#[tokio::test]
+async fn the_repository_bounds_a_caller_supplied_cap() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let dom = b.dir.create_domain("capdom.test").await.unwrap();
+        for domain in [None, Some(dom)] {
+            let dcol = domain.map_or("NULL".to_owned(), |d| d.0.to_string());
+            let sql = if b.name == "postgres" {
+                format!(
+                    "INSERT INTO jobs (kind, domain_id, state, payload, attempts, max_attempts, run_after, \
+                     created_at, updated_at) SELECT 'cap', {dcol}, 'queued', '{{}}', 0, 5, 0, 0, 0 \
+                     FROM generate_series(1, 10000)"
+                )
+            } else {
+                format!(
+                    "WITH RECURSIVE s(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM s WHERE i < 10000) \
+                     INSERT INTO jobs (kind, domain_id, state, payload, attempts, max_attempts, run_after, \
+                     created_at, updated_at) SELECT 'cap', {dcol}, 'queued', '{{}}', 0, 5, 0, 0, 0 FROM s"
+                )
+            };
+            run(&b, &sql).await;
+            let job = rusty_store::repo::NewJob {
+                kind: "cap",
+                domain,
+                payload: "{}",
+                run_after: None,
+                max_attempts: 5,
+                cap: u32::MAX,
+                now: None,
+            };
+            let r = b.jrepo.enqueue(&job).await;
+            assert!(
+                matches!(r, Err(Error::Quota(_))),
+                "{n} {domain:?}: 10,000 pending is the ceiling whatever cap is asked for: {r:?}"
+            );
+        }
+    })
+    .await;
+}
