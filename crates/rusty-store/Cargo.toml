@@ -13,6 +13,9 @@ postgres = ["sqlx/postgres"]
 # NEVER enable outside this crate's own [dev-dependencies] (self dev-dependency below);
 # scripts/check-raw-db.sh and scripts/check-test-knobs.sh enforce that.
 test-knobs = ["tokio/sync"]
+# Raw SQL fixtures and the Postgres test-database helper for other crates tests. Enable it ONLY from
+# [dev-dependencies]; scripts/check-test-fixtures.sh enforces that and that a release build has none of it.
+test-fixtures = ["tokio/rt", "dep:url", "dep:tracing"]
 
 [dependencies]
 rusty-core = { path = "../rusty-core" }
@@ -26,11 +29,11 @@ rustix.workspace = true
 rand_core.workspace = true
 serde_json.workspace = true
 hex.workspace = true
+url = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
-rusty-store = { path = ".", features = ["test-knobs"] }
+rusty-store = { path = ".", features = ["test-knobs", "test-fixtures"] }
 proptest.workspace = true
 tempfile.workspace = true
-tracing.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
-url.workspace = true

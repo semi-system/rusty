@@ -6,6 +6,8 @@ mod jobs;
 mod mailbox;
 mod store;
 pub mod repo;
+#[cfg(feature = "test-fixtures")]
+pub mod fixtures;
 #[cfg(feature = "postgres")]
 mod pg;
 mod sqlite;
