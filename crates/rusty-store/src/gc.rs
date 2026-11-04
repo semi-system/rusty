@@ -18,7 +18,11 @@
 //! - At most one GC runs per blob root: `collect_blobs` takes the store's advisory lock
 //!   (`<blob root>/.gc.lock`, `File::try_lock`) and fails fast with `Conflict` otherwise. This
 //!   is a file lock, not a database session lock (nothing in the database outlives a
-//!   transaction, so the repositories are safe behind a transaction-pooling proxy).
+//!   transaction, so the repositories are safe behind a transaction-pooling proxy). It is
+//!   sound only for processes sharing one local volume on one kernel, NOT on NFS (without a
+//!   working lock daemon) or across hosts; the database-side safety of the row deletes does
+//!   not depend on it (lock order, see `repo/gc.rs`). Multi-host design: a lease row with an
+//!   epoch (PG8 carry-over).
 //! - File deletion renames the blob aside first (`.<hash>.gc<pid>.<n>.gcq`, see
 //!   `BlobStore::delete_if_older`). A referenced blob can therefore read `NotFound` from
 //!   `BlobStore::get` only in one narrow race (GC renamed it aside just as a `put` of the same

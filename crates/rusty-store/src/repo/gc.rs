@@ -40,10 +40,15 @@
 //!   copy of the locking rule exists.
 //! * The delivery and capability sweeps delete by key in small batches (`SKIP LOCKED`), never
 //!   touch blobs and wait for no lock.
-//! * The singleton rule (one GC per blob root) stays the blob-root file lock taken by the
-//!   facade; moving it into the database is a separate spec item and must use a
-//!   transaction-scoped lock (`pg_try_advisory_xact_lock`), never a session lock (D6). Batch
-//!   correctness does not depend on the singleton: concurrent batches lock in the same order.
+//! * The singleton rule (one GC per blob root) is the blob-root file lock (`flock`) taken by the
+//!   facade. It is sound only for processes that share ONE local volume on ONE kernel; it is
+//!   NOT sound on NFS without a working lock daemon, nor across hosts. The database side does
+//!   not depend on it: concurrent batches lock in the same order (mailbox row, blob rows
+//!   ascending, job row), and each volume's orphan phase only touches its own files. A
+//!   database singleton cannot be a transaction-scoped advisory lock, because one GC run spans
+//!   many transactions, and must not be a session lock (D6, PgBouncer). The planned multi-host
+//!   design is a lease row with an epoch (the `jobs` table already has that mechanism); see the
+//!   PG5 carry-over in the Postgres plan (PG8) and the distributed-model spec.
 
 use async_trait::async_trait;
 use rusty_core::{BlobHash, MailboxId, Result};
