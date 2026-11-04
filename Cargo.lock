@@ -1229,17 +1229,14 @@ dependencies = [
  "proptest",
  "rand_core 0.6.4",
  "rusty-core",
- "rusty-directory",
  "rusty-store",
  "serde_json",
  "sha2",
- "sqlx",
  "tempfile",
  "tokio",
  "tracing",
  "unicode-general-category",
  "unicode-normalization",
- "url",
 ]
 
 [[package]]
