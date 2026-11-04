@@ -190,12 +190,17 @@ async fn concurrent_enqueues_at_the_cap_never_exceed_it() {
     }
     let b = pg_backend().await.unwrap();
     let (store, _) = b.pg.as_ref().unwrap();
-    let r = Arc::new(PgRepo::new(store.clone()));
-    let q = JobQueue::with_repo_and_limits(r.clone(), 10, 10);
+    // Each transaction stays open 100 ms after its insert, so an unserialised count-then-insert
+    // would let several enqueues see the same count.
+    let r = Arc::new(
+        PgRepo::new(store.clone())
+            .with_knobs_for_test(Knobs { pause_before_commit_ms: 100, ..Knobs::default() }),
+    );
+    let q = JobQueue::with_repo_and_limits(r.clone(), 3, 3);
     let dom = b.dir.create_domain("capc.test").await.unwrap();
     for scope in [Some(dom), None] {
         let mut tasks = vec![];
-        for _ in 0..40 {
+        for _ in 0..8 {
             let q = q.clone();
             tasks.push(tokio::spawn(async move { q.enqueue("t", scope, &json!({}), None).await }));
         }
@@ -207,7 +212,7 @@ async fn concurrent_enqueues_at_the_cap_never_exceed_it() {
                 Err(e) => panic!("{e:?}"),
             }
         }
-        assert_eq!((ok, full), (10, 30), "scope {scope:?}");
+        assert_eq!((ok, full), (3, 5), "scope {scope:?}");
     }
 }
 

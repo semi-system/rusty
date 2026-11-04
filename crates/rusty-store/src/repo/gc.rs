@@ -5,6 +5,17 @@
 //! quarantine healing, the error report and the batch loops. The repository answers in plain
 //! data and owns its transactions.
 //!
+//! # The `zero_since` invariant
+//!
+//! Postgres: a BEFORE trigger assigns `NEW.zero_since` (the database clock when the refcount
+//! reaches 0, NULL while referenced) and `CHECK ((refcount = 0) = (zero_since IS NOT NULL))`
+//! makes the invariant a constraint (migration `0001`, hardened in `f41fef8`; killing tests in
+//! `pg_schema_cases.rs`, behaviour on both backends in `gc_conformance.rs`). SQLite keeps its
+//! AFTER triggers: `ALTER TABLE .. ADD CHECK` does not exist, a table rebuild would have to
+//! re-create every foreign key onto `blobs`, and the existing GC tests deliberately build
+//! corrupt rows (`refcount > 0` with an old `zero_since`) to prove GC still refuses to delete
+//! them. The observable behaviour is the same; the strengthening is Postgres-only by decision.
+//!
 //! # Clock
 //!
 //! The grace cutoff is `db_now() - grace` (decision D2): the clock that stamped
