@@ -1,11 +1,13 @@
+mod common;
+
 use std::collections::HashSet;
 
+use common::{for_each_backend, Backend, Bind};
 use rusty_core::{AccountId, DomainId, Error};
 use rusty_directory::{AccountStatus, CapabilityRole, Directory};
-use rusty_store::{purge_capabilities, purge_capabilities_at, SqliteStore};
 
-async fn setup() -> (Directory, DomainId, AccountId) {
-    let d = Directory::new(SqliteStore::open("sqlite::memory:").await.unwrap());
+async fn setup(b: &Backend) -> (Directory, DomainId, AccountId) {
+    let d = b.dir.clone();
     let dom = d.create_domain("example.com").await.unwrap();
     let acc = d
         .create_account("alice", dom, Some("pw"), None)
@@ -14,16 +16,14 @@ async fn setup() -> (Directory, DomainId, AccountId) {
     (d, dom, acc)
 }
 
-async fn count(d: &Directory, sql: &str) -> i64 {
-    sqlx::query_scalar(sql)
-        .fetch_one(d.store().pool())
-        .await
-        .unwrap()
+async fn count(b: &Backend, sql: &str) -> i64 {
+    b.scalar(sql, &[]).await
 }
 
 #[tokio::test]
 async fn issue_validate_roundtrip() {
-    let (d, dom, acc) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, dom, acc) = setup(&b).await;
     let cap = d
         .issue_capability_at(acc, CapabilityRole::Imap, 3600, 1000)
         .await
@@ -50,63 +50,86 @@ async fn issue_validate_roundtrip() {
         .await
         .unwrap()
         .is_some());
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn only_hash_is_stored() {
-    let (d, _dom, acc) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, _dom, acc) = setup(&b).await;
     let cap = d
         .issue_capability(acc, CapabilityRole::Dav, 600)
         .await
         .unwrap();
     let t = cap.expose_secret().to_string();
     let t_ascii_hex: String = t.bytes().map(|b| format!("{b:02x}")).collect();
-    let pool = d.store().pool();
-    let tables: Vec<String> = sqlx::query_scalar(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-    )
-    .fetch_all(pool)
-    .await
-    .unwrap();
+    let tables = if b.is_sqlite() {
+        b.strings(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+            &[],
+        )
+        .await
+    } else {
+        b.strings(
+            "SELECT table_name::text FROM information_schema.tables \
+             WHERE table_schema = 'public' AND table_type = 'BASE TABLE'",
+            &[],
+        )
+        .await
+    };
     assert!(tables.iter().any(|n| n == "capabilities"));
     let mut scanned = 0;
     for table in &tables {
-        let cols: Vec<String> =
-            sqlx::query_scalar(&format!("SELECT name FROM pragma_table_info('{table}')"))
-                .fetch_all(pool)
+        let cols = if b.is_sqlite() {
+            b.strings(&format!("SELECT name FROM pragma_table_info('{table}')"), &[])
                 .await
-                .unwrap();
+        } else {
+            b.strings(
+                "SELECT column_name::text FROM information_schema.columns \
+                 WHERE table_schema = 'public' AND table_name = ?1",
+                &[Bind::S(table)],
+            )
+            .await
+        };
         for col in cols {
             scanned += 1;
-            let sql = format!(
-                "SELECT count(*) FROM \"{table}\" WHERE instr(CAST(\"{col}\" AS TEXT), ?1) > 0 \
-                 OR instr(lower(hex(\"{col}\")), ?1) > 0 OR instr(lower(hex(\"{col}\")), ?2) > 0"
-            );
-            let n: i64 = sqlx::query_scalar(&sql)
-                .bind(&t)
-                .bind(&t_ascii_hex)
-                .fetch_one(pool)
-                .await
-                .unwrap();
+            let sql = if b.is_sqlite() {
+                format!(
+                    "SELECT count(*) FROM \"{table}\" WHERE instr(CAST(\"{col}\" AS TEXT), ?1) > 0 \
+                     OR instr(lower(hex(\"{col}\")), ?1) > 0 OR instr(lower(hex(\"{col}\")), ?2) > 0"
+                )
+            } else {
+                // bytea::text is '\x' + lowercase hex, so the text and hex forms are both covered.
+                format!(
+                    "SELECT count(*) FROM \"{table}\" WHERE position(?1 in \"{col}\"::text) > 0 \
+                     OR position(?1 in encode(convert_to(\"{col}\"::text, 'UTF8'), 'hex')) > 0 \
+                     OR position(?2 in encode(convert_to(\"{col}\"::text, 'UTF8'), 'hex')) > 0"
+                )
+            };
+            let n = b.scalar(&sql, &[Bind::S(&t), Bind::S(&t_ascii_hex)]).await;
             assert_eq!(n, 0, "token found in {table}.{col}");
         }
     }
     assert!(scanned > 10);
     // The stored key is a 32-byte hash that is not the token's own bytes.
-    let h: Vec<u8> = sqlx::query_scalar("SELECT token_hash FROM capabilities")
-        .fetch_one(pool)
+    let h = b
+        .byte_rows("SELECT token_hash FROM capabilities")
         .await
-        .unwrap();
+        .remove(0);
     assert_eq!(h.len(), 32);
     let raw: Vec<u8> = (0..32)
         .map(|i| u8::from_str_radix(&t[2 * i..2 * i + 2], 16).unwrap())
         .collect();
     assert_ne!(h, raw);
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn wrong_role_is_none() {
-    let (d, _, acc) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, _, acc) = setup(&b).await;
     let cap = d
         .issue_capability(acc, CapabilityRole::Imap, 600)
         .await
@@ -127,11 +150,14 @@ async fn wrong_role_is_none() {
         .await
         .unwrap()
         .is_some());
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn expired_is_none_via_validate_at() {
-    let (d, _, acc) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, _, acc) = setup(&b).await;
     let cap = d
         .issue_capability_at(acc, CapabilityRole::SmtpSubmit, 60, 1000)
         .await
@@ -153,11 +179,14 @@ async fn expired_is_none_via_validate_at() {
         .await
         .unwrap()
         .is_none());
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn revoked_is_none() {
-    let (d, _, acc) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, _, acc) = setup(&b).await;
     let a = d
         .issue_capability(acc, CapabilityRole::Imap, 600)
         .await
@@ -187,11 +216,14 @@ async fn revoked_is_none() {
         .await
         .unwrap()
         .is_none());
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn malformed_tokens_are_none_and_do_not_error() {
-    let (d, _, _acc) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, _, _acc) = setup(&b).await;
     let good = "0".repeat(64);
     let mut cases: Vec<String> = vec![
         String::new(),
@@ -212,11 +244,14 @@ async fn malformed_tokens_are_none_and_do_not_error() {
         }
         assert!(!d.revoke_capability(t).await.unwrap());
     }
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn locked_account_capabilities_are_none() {
-    let (d, _, acc) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, _, acc) = setup(&b).await;
     let cap = d
         .issue_capability(acc, CapabilityRole::Jmap, 600)
         .await
@@ -225,26 +260,13 @@ async fn locked_account_capabilities_are_none() {
     let r = CapabilityRole::Jmap;
     // Bypass the revocation hook to prove validation itself checks the status.
     for status in ["locked", "disabled"] {
-        sqlx::query("UPDATE accounts SET status = ? WHERE id = ?")
-            .bind(status)
-            .bind(acc.0)
-            .execute(d.store().pool())
-            .await
-            .unwrap();
+        b.run("UPDATE accounts SET status = ?1 WHERE id = ?2", &[Bind::S(status), Bind::I(acc.0)]).await;
         assert!(d.validate_capability(t, r).await.unwrap().is_none());
     }
-    sqlx::query("UPDATE accounts SET status = 'active' WHERE id = ?")
-        .bind(acc.0)
-        .execute(d.store().pool())
-        .await
-        .unwrap();
+    b.run("UPDATE accounts SET status = 'active' WHERE id = ?1", &[Bind::I(acc.0)]).await;
     assert!(d.validate_capability(t, r).await.unwrap().is_some());
     // Non-active accounts get no new capability, indistinguishable from a missing one.
-    sqlx::query("UPDATE accounts SET status = 'locked' WHERE id = ?")
-        .bind(acc.0)
-        .execute(d.store().pool())
-        .await
-        .unwrap();
+    b.run("UPDATE accounts SET status = 'locked' WHERE id = ?1", &[Bind::I(acc.0)]).await;
     assert!(matches!(
         d.issue_capability(acc, r, 60).await,
         Err(Error::NotFound(m)) if m == "account"
@@ -253,11 +275,14 @@ async fn locked_account_capabilities_are_none() {
         d.issue_capability(AccountId(9999), r, 60).await,
         Err(Error::NotFound(m)) if m == "account"
     ));
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn password_change_revokes_all() {
-    let (d, dom, acc) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, dom, acc) = setup(&b).await;
     let other = d
         .create_account("bob", dom, Some("pw"), None)
         .await
@@ -300,11 +325,14 @@ async fn password_change_revokes_all() {
         .await
         .unwrap()
         .is_some());
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn status_change_revokes_all() {
-    let (d, _, acc) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, _, acc) = setup(&b).await;
     let r = CapabilityRole::Jmap;
     for status in [AccountStatus::Locked, AccountStatus::Disabled] {
         let cap = d.issue_capability(acc, r, 600).await.unwrap();
@@ -325,26 +353,28 @@ async fn status_change_revokes_all() {
         .await
         .unwrap()
         .is_some());
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn account_delete_cascades() {
-    let (d, _, acc) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, _, acc) = setup(&b).await;
     d.issue_capability(acc, CapabilityRole::Imap, 600)
         .await
         .unwrap();
-    assert_eq!(count(&d, "SELECT count(*) FROM capabilities").await, 1);
-    sqlx::query("DELETE FROM accounts WHERE id = ?")
-        .bind(acc.0)
-        .execute(d.store().pool())
-        .await
-        .unwrap();
-    assert_eq!(count(&d, "SELECT count(*) FROM capabilities").await, 0);
+    assert_eq!(count(&b, "SELECT count(*) FROM capabilities").await, 1);
+    b.run("DELETE FROM accounts WHERE id = ?1", &[Bind::I(acc.0)]).await;
+    assert_eq!(count(&b, "SELECT count(*) FROM capabilities").await, 0);
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn per_account_cap_of_64_revokes_oldest() {
-    let (d, dom, acc) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, dom, acc) = setup(&b).await;
     let other = d
         .create_account("bob", dom, Some("pw"), None)
         .await
@@ -370,7 +400,7 @@ async fn per_account_cap_of_64_revokes_oldest() {
         .unwrap()
         .is_some());
     let active = count(
-        &d,
+        &b,
         &format!(
             "SELECT count(*) FROM capabilities WHERE account_id = {} AND revoked_at IS NULL",
             acc.0
@@ -385,11 +415,14 @@ async fn per_account_cap_of_64_revokes_oldest() {
         .await
         .unwrap()
         .is_some());
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn ttl_is_clamped() {
-    let (d, _, acc) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, _, acc) = setup(&b).await;
     let r = CapabilityRole::Dav;
     for (ttl, want) in [
         (0u32, 1i64),
@@ -407,11 +440,14 @@ async fn ttl_is_clamped() {
             .unwrap();
         assert_eq!(info.expires_at, 5000 + want, "ttl {ttl}");
     }
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn debug_does_not_print_token() {
-    let (d, _, acc) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, _, acc) = setup(&b).await;
     let c = d
         .issue_capability(acc, CapabilityRole::Imap, 60)
         .await
@@ -425,11 +461,14 @@ async fn debug_does_not_print_token() {
     assert!(!nested.contains(&t[..8]));
     let pretty = format!("{c:#?}");
     assert!(!pretty.contains(&t[..8]));
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn purge_capabilities_removes_only_old_dead_rows() {
-    let (d, _, acc) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, _, acc) = setup(&b).await;
     let r = CapabilityRole::Imap;
     let _old_expired = d.issue_capability_at(acc, r, 60, 100).await.unwrap(); // expires 160
     let _recent_expired = d.issue_capability_at(acc, r, 60, 1000).await.unwrap(); // expires 1060
@@ -444,13 +483,13 @@ async fn purge_capabilities_removes_only_old_dead_rows() {
         .await
         .unwrap());
     let live = d.issue_capability_at(acc, r, 86_400, 1000).await.unwrap();
-    assert_eq!(count(&d, "SELECT count(*) FROM capabilities").await, 5);
+    assert_eq!(count(&b, "SELECT count(*) FROM capabilities").await, 5);
 
-    let n = purge_capabilities(d.store(), 500).await.unwrap();
+    let n = b.gc().purge_capabilities(500).await.unwrap();
     assert_eq!(n, 2);
-    assert_eq!(count(&d, "SELECT count(*) FROM capabilities").await, 3);
+    assert_eq!(count(&b, "SELECT count(*) FROM capabilities").await, 3);
     // Idempotent.
-    assert_eq!(purge_capabilities(d.store(), 500).await.unwrap(), 0);
+    assert_eq!(b.gc().purge_capabilities(500).await.unwrap(), 0);
     assert!(d
         .validate_capability_at(live.expose_secret(), r, 1001)
         .await
@@ -458,43 +497,46 @@ async fn purge_capabilities_removes_only_old_dead_rows() {
         .is_some());
     // retention form: now=100_000, retention 86_400 -> older_than 13_600 removes the rest dead.
     assert_eq!(
-        purge_capabilities_at(d.store(), 100_000, 86_400)
+        b.gc().purge_capabilities_at(100_000, 86_400)
             .await
             .unwrap(),
         2
     );
-    assert_eq!(count(&d, "SELECT count(*) FROM capabilities").await, 1);
+    assert_eq!(count(&b, "SELECT count(*) FROM capabilities").await, 1);
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn purge_capabilities_batches_beyond_1000() {
-    let (d, _, acc) = setup().await;
+    for_each_backend(|b| async move {
+    let (_d, dom, acc) = setup(&b).await;
     for i in 0..2500i64 {
-        sqlx::query(
+        let hash: Vec<u8> = i
+            .to_be_bytes()
+            .iter()
+            .chain([0u8; 24].iter())
+            .copied()
+            .collect();
+        b.run(
             "INSERT INTO capabilities(token_hash,account_id,domain_id,role,issued_at,expires_at) \
-             SELECT ?, id, domain_id, 'imap', 100, 160 FROM accounts WHERE id = ?",
+             VALUES (?1, ?2, ?3, 'imap', 100, 160)",
+            &[Bind::B(&hash), Bind::I(acc.0), Bind::I(dom.0)],
         )
-        .bind(
-            i.to_be_bytes()
-                .iter()
-                .chain([0u8; 24].iter())
-                .copied()
-                .collect::<Vec<u8>>(),
-        )
-        .bind(acc.0)
-        .execute(d.store().pool())
-        .await
-        .unwrap();
+        .await;
     }
     assert_eq!(
-        purge_capabilities(d.store(), 1_000_000).await.unwrap(),
+        b.gc().purge_capabilities(1_000_000).await.unwrap(),
         2500
     );
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn tokens_are_unique_over_10k_issues() {
-    let (d, dom, _) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, dom, _) = setup(&b).await;
     let mut seen = HashSet::new();
     let mut accounts = Vec::new();
     for i in 0..200 {
@@ -512,11 +554,14 @@ async fn tokens_are_unique_over_10k_issues() {
         assert!(seen.insert(c.expose_secret().to_string()));
     }
     assert_eq!(seen.len(), 10_000);
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn capability_never_validates_as_another_account() {
-    let (d, dom, a) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, dom, a) = setup(&b).await;
     let dom2 = d.create_domain("other.org").await.unwrap();
     let b = d
         .create_account("alice", dom2, Some("pw"), None)
@@ -545,6 +590,8 @@ async fn capability_never_validates_as_another_account() {
         .await
         .unwrap()
         .is_some());
+    })
+    .await;
 }
 
 // ---------- review fixes ----------
@@ -562,8 +609,9 @@ fn hex_decode(s: &str) -> Vec<u8> {
 
 #[tokio::test]
 async fn stored_hash_is_tagged_sha256_and_token_must_be_canonical() {
+    for_each_backend(|b| async move {
     use sha2::{Digest, Sha256};
-    let (d, _, acc) = setup().await;
+    let (d, _, acc) = setup(&b).await;
     let r = CapabilityRole::Imap;
     // A token with at least one letter and one digit.
     let cap = loop {
@@ -578,11 +626,9 @@ async fn stored_hash_is_tagged_sha256_and_token_must_be_canonical() {
     h.update(b"rusty.capability.v1");
     h.update(hex_decode(&t));
     let want: Vec<u8> = h.finalize().to_vec();
-    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM capabilities WHERE token_hash = ?")
-        .bind(&want)
-        .fetch_one(d.store().pool())
-        .await
-        .unwrap();
+    let n = b
+        .scalar("SELECT count(*) FROM capabilities WHERE token_hash = ?1", &[Bind::B(&want)])
+        .await;
     assert_eq!(n, 1, "stored hash is not SHA-256(tag || token bytes)");
 
     let first_alpha = t.find(|c: char| c.is_ascii_lowercase()).unwrap();
@@ -611,11 +657,14 @@ async fn stored_hash_is_tagged_sha256_and_token_must_be_canonical() {
         assert!(!d.revoke_capability(v).await.unwrap());
     }
     assert!(d.validate_capability(&t, r).await.unwrap().is_some());
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn expired_capabilities_do_not_count_against_the_cap() {
-    let (d, _, acc) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, _, acc) = setup(&b).await;
     let r = CapabilityRole::Imap;
     let mut live = Vec::new();
     for _ in 0..63 {
@@ -637,20 +686,26 @@ async fn expired_capabilities_do_not_count_against_the_cap() {
             "live token {i} was revoked"
         );
     }
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn revoke_all_count_excludes_expired_rows() {
-    let (d, _, acc) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, _, acc) = setup(&b).await;
     let r = CapabilityRole::Dav;
     d.issue_capability_at(acc, r, 10, 1000).await.unwrap(); // expired, unrevoked
     d.issue_capability_at(acc, r, 600, 1400).await.unwrap();
     assert_eq!(d.revoke_all_capabilities_at(acc, 1500).await.unwrap(), 1);
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn revoking_an_expired_token_is_false() {
-    let (d, _, acc) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, _, acc) = setup(&b).await;
     let r = CapabilityRole::Dav;
     let c = d.issue_capability_at(acc, r, 60, 1000).await.unwrap();
     assert!(!d
@@ -666,46 +721,48 @@ async fn revoking_an_expired_token_is_false() {
         .revoke_capability_at(c2.expose_secret(), 1059)
         .await
         .unwrap());
+    })
+    .await;
 }
 
+// backend-neutral: the held lock is the SQLite writer lock / a Postgres table lock; asserted per backend
 #[tokio::test]
 async fn malformed_revoke_takes_no_write_lock() {
     use std::time::Duration;
-    let dir = tempfile::tempdir().unwrap();
-    let url = format!("sqlite://{}", dir.path().join("meta.sqlite").display());
-    let d = Directory::new(SqliteStore::open(&url).await.unwrap());
-    // Hold the writer lock on another connection.
-    let held = d.store().begin_write().await.unwrap();
-    let r = tokio::time::timeout(Duration::from_millis(500), d.revoke_capability("zz")).await;
-    assert!(
-        matches!(r, Ok(Ok(false))),
-        "malformed revoke must return immediately"
-    );
-    let r = tokio::time::timeout(
-        Duration::from_millis(500),
-        d.revoke_capability(&"A".repeat(64)),
-    )
+    for_each_backend(|b| async move {
+        let d = b.dir.clone();
+        // Hold the writer lock (SQLite) / an exclusive table lock (Postgres) on another connection.
+        let held = b.fx.hold_write_lock("capabilities").await;
+        let r = tokio::time::timeout(Duration::from_millis(500), d.revoke_capability("zz")).await;
+        assert!(
+            matches!(r, Ok(Ok(false))),
+            "malformed revoke must return immediately"
+        );
+        let r = tokio::time::timeout(
+            Duration::from_millis(500),
+            d.revoke_capability(&"A".repeat(64)),
+        )
+        .await;
+        assert!(matches!(r, Ok(Ok(false))));
+        drop(held);
+    })
     .await;
-    assert!(matches!(r, Ok(Ok(false))));
-    drop(held);
 }
 
-async fn active_count(d: &Directory, acc: AccountId) -> i64 {
-    sqlx::query_scalar(
-        "SELECT count(*) FROM capabilities WHERE account_id = ? \
-         AND revoked_at IS NULL AND expires_at > unixepoch()",
+async fn active_count(b: &Backend, acc: AccountId) -> i64 {
+    let now = b.db_now().await;
+    b.scalar(
+        "SELECT count(*) FROM capabilities WHERE account_id = ?1 \
+         AND revoked_at IS NULL AND expires_at > ?2",
+        &[Bind::I(acc.0), Bind::I(now)],
     )
-    .bind(acc.0)
-    .fetch_one(d.store().pool())
     .await
-    .unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_issues_keep_exactly_64_active() {
-    let dir = tempfile::tempdir().unwrap();
-    let url = format!("sqlite://{}", dir.path().join("meta.sqlite").display());
-    let d = Directory::new(SqliteStore::open(&url).await.unwrap());
+    for_each_backend(|b| async move {
+    let d = b.dir.clone();
     let dom = d.create_domain("example.com").await.unwrap();
     let acc = d.create_account("alice", dom, None, None).await.unwrap();
     let r = CapabilityRole::Imap;
@@ -723,7 +780,7 @@ async fn concurrent_issues_keep_exactly_64_active() {
         for h in hs {
             assert!(h.await.unwrap());
         }
-        assert_eq!(active_count(&d, acc).await, 64);
+        assert_eq!(active_count(&b, acc).await, 64);
     }
     // Locking races issues: whatever interleaving, nothing stays active.
     let mut hs = Vec::new();
@@ -740,5 +797,7 @@ async fn concurrent_issues_keep_exactly_64_active() {
     for h in hs {
         h.await.unwrap();
     }
-    assert_eq!(active_count(&d, acc).await, 0);
+    assert_eq!(active_count(&b, acc).await, 0);
+    })
+    .await;
 }

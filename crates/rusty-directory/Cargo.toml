@@ -10,9 +10,6 @@ publish.workspace = true
 default = []
 # Runs the directory conformance suite against Postgres too (needs RUSTY_TEST_PG_URL).
 postgres = ["rusty-store/postgres"]
-# Exposes `Directory::store()` (raw SQLite handle) to tests. Never enable outside dev-dependencies;
-# scripts/ci.sh enforces that.
-test-support = []
 
 [dependencies]
 rusty-core = { path = "../rusty-core" }
@@ -29,12 +26,10 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
-rusty-directory = { path = ".", features = ["test-support"] }
+rusty-store = { path = "../rusty-store", features = ["test-fixtures"] }
 bytes.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
 proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-sqlx.workspace = true
 hex.workspace = true
-url.workspace = true

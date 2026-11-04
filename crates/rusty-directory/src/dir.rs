@@ -25,9 +25,6 @@ pub enum Resolved {
 #[derive(Clone)]
 pub struct Directory {
     repo: Arc<dyn DirectoryRepo>,
-    /// Only kept for test fixtures (feature `test-support`); production builds carry no handle.
-    #[cfg(feature = "test-support")]
-    sqlite: Option<SqliteStore>,
 }
 
 impl fmt::Debug for Directory {
@@ -153,31 +150,13 @@ impl Directory {
     /// A directory over the SQLite backend.
     pub fn new(store: SqliteStore) -> Directory {
         Directory {
-            repo: Arc::new(SqliteRepo::new(store.clone())),
-            #[cfg(feature = "test-support")]
-            sqlite: Some(store),
+            repo: Arc::new(SqliteRepo::new(store)),
         }
     }
 
     /// A directory over any backend's repository (`Store::open(..)?.repos().directory`).
     pub fn with_repo(repo: Arc<dyn DirectoryRepo>) -> Directory {
-        Directory {
-            repo,
-            #[cfg(feature = "test-support")]
-            sqlite: None,
-        }
-    }
-
-    /// The SQLite store behind a directory built with [`Directory::new`], for test fixtures.
-    /// Compiled only with the `test-support` feature, which only this crate's own dev-dependency
-    /// enables, so production code cannot reach it. Panics for a directory built with
-    /// [`Directory::with_repo`]. Removed when the tests stop using raw fixtures (PG6).
-    #[cfg(feature = "test-support")]
-    #[doc(hidden)]
-    pub fn store(&self) -> &SqliteStore {
-        self.sqlite
-            .as_ref()
-            .expect("Directory::store is only available on SQLite directories")
+        Directory { repo }
     }
 
     pub(crate) fn repo(&self) -> &dyn DirectoryRepo {

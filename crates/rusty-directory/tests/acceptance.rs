@@ -1,18 +1,16 @@
 //! Foundation acceptance (spec section 8): 10,000 messages through the whole stack on
-//! file-backed SQLite plus the filesystem blob store. Lives here because rusty-store cannot
+//! file-backed SQLite and Postgres plus the filesystem blob store. Lives here because rusty-store cannot
 //! depend on rusty-directory. Run with `-- --nocapture` to see the elapsed time.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use bytes::Bytes;
 use rusty_core::{BlobHash, Flags, FolderId, MessageId};
-use rusty_directory::Directory;
-use rusty_store::{
-    collect_blobs_at, purge_deleted, BlobStore, Change, ChangeItem, ChangeOp, FsBlobStore,
-    Mailbox, MessageSummary, SqliteStore, MAX_BATCH, MAX_PAGE,
-};
+use rusty_store::{Change, ChangeItem, ChangeOp, Mailbox, MessageSummary, MAX_BATCH, MAX_PAGE};
+
+mod common;
+use common::for_each_backend;
 
 /// Every live message of `f`, paging through `list_folder` (pages of at most `MAX_PAGE`).
 async fn list_all(mb: &Mailbox, f: FolderId) -> Vec<MessageSummary> {
@@ -122,20 +120,15 @@ fn count_blob_files(root: &std::path::Path) -> usize {
 
 #[tokio::test]
 async fn acceptance_10k_messages() {
+    for_each_backend(|b| async move {
     let started = Instant::now();
-    let tmp = tempfile::tempdir().unwrap();
-    let url = format!("sqlite://{}", tmp.path().join("meta.sqlite").display());
-    let store = SqliteStore::open(&url).await.unwrap();
-    let blob_root = tmp.path().join("blobs");
-    FsBlobStore::init(&blob_root).await.unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::open(&blob_root).await.unwrap());
+    let blobs = b.blobs().await;
+    let blob_root = b.tmp.path().join("blobs");
 
-    let dir = Directory::new(store.clone());
+    let dir = b.dir.clone();
     let dom = dir.create_domain("example.com").await.unwrap();
     let acc = dir.create_account("alice", dom, None, None).await.unwrap();
-    let mb = Mailbox::open(store.clone(), blobs.clone(), acc)
-        .await
-        .unwrap();
+    let mb = b.mailbox(acc).await;
 
     // 3-level folder tree.
     let projects = mb.create_folder(None, "Projects").await.unwrap();
@@ -277,37 +270,24 @@ async fn acceptance_10k_messages() {
     assert!(tail.changes.is_empty() && !tail.more);
 
     // Blob accounting before purge: soft-deleted messages still hold references.
-    let pool = store.pool();
-    let refsum: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(refcount), 0) FROM blobs")
-        .fetch_one(pool)
-        .await
-        .unwrap();
+    let refsum: i64 = b.scalar("SELECT CAST(COALESCE(SUM(refcount), 0) AS BIGINT) FROM blobs", &[]).await;
     assert_eq!(refsum, TOTAL as i64);
     let distinct_all: HashSet<&str> = msgs.iter().map(|m| m.hash.as_str()).collect();
     assert_eq!(distinct_all.len(), UNIQUE, "dedupe: duplicates share a blob");
-    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blobs")
-        .fetch_one(pool)
-        .await
-        .unwrap();
+    let rows: i64 = b.scalar("SELECT COUNT(*) FROM blobs", &[]).await;
     assert_eq!(rows as usize, UNIQUE);
     assert_eq!(count_blob_files(&blob_root), UNIQUE);
 
     // Purge soft-deleted messages, then collect unreferenced blobs.
-    let purged = purge_deleted(&store, unix_now() + 1000).await.unwrap();
+    let purged = b.gc().purge_deleted(unix_now() + 1000).await.unwrap();
     assert_eq!(purged, 1000);
-    let nonpurged: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages")
-        .fetch_one(pool)
-        .await
-        .unwrap();
-    let refsum: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(refcount), 0) FROM blobs")
-        .fetch_one(pool)
-        .await
-        .unwrap();
+    let nonpurged: i64 = b.scalar("SELECT COUNT(*) FROM messages", &[]).await;
+    let refsum: i64 = b.scalar("SELECT CAST(COALESCE(SUM(refcount), 0) AS BIGINT) FROM blobs", &[]).await;
     assert_eq!(nonpurged, live as i64);
     assert_eq!(refsum, nonpurged);
 
     let far = SystemTime::now() + Duration::from_secs(10 * 86_400);
-    let report = collect_blobs_at(&store, blobs.as_ref(), Duration::ZERO, far)
+    let report = b.gc().collect_blobs_at(blobs.as_ref(), Duration::ZERO, far)
         .await
         .unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
@@ -320,34 +300,40 @@ async fn acceptance_10k_messages() {
     assert!(expected_blobs < UNIQUE, "some blobs became unreferenced");
     assert_eq!(report.rows_deleted as usize, UNIQUE - expected_blobs);
     assert_eq!(report.files_deleted as usize, UNIQUE - expected_blobs);
-    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blobs")
-        .fetch_one(pool)
-        .await
-        .unwrap();
+    let rows: i64 = b.scalar("SELECT COUNT(*) FROM blobs", &[]).await;
     assert_eq!(rows as usize, expected_blobs);
     assert_eq!(count_blob_files(&blob_root), expected_blobs);
-    let zero: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blobs WHERE refcount = 0")
-        .fetch_one(pool)
-        .await
-        .unwrap();
+    let zero: i64 = b.scalar("SELECT COUNT(*) FROM blobs WHERE refcount = 0", &[]).await;
     assert_eq!(zero, 0);
 
     // Database integrity.
-    let fk: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
-        .fetch_one(pool)
-        .await
-        .unwrap();
-    assert_eq!(fk, 1);
-    let ic: String = sqlx::query_scalar("PRAGMA integrity_check")
-        .fetch_one(pool)
-        .await
-        .unwrap();
-    assert_eq!(ic, "ok");
-    let fkc = sqlx::query("PRAGMA foreign_key_check")
-        .fetch_all(pool)
-        .await
-        .unwrap();
-    assert!(fkc.is_empty(), "foreign_key_check returned rows");
+    if b.is_sqlite() {
+        assert_eq!(b.scalar("PRAGMA foreign_keys", &[]).await, 1);
+        assert_eq!(b.strings("PRAGMA integrity_check", &[]).await, vec!["ok".to_string()]);
+        assert!(
+            b.rows("PRAGMA foreign_key_check", &[], 0).await.is_empty(),
+            "foreign_key_check returned rows"
+        );
+    }
+    // Both backends: no message points at a missing blob, no folder at a missing mailbox.
+    assert_eq!(
+        b.scalar(
+            "SELECT count(*) FROM messages m LEFT JOIN blobs bl ON bl.hash = m.blob_hash \
+             WHERE bl.hash IS NULL",
+            &[]
+        )
+        .await,
+        0
+    );
+    assert_eq!(
+        b.scalar(
+            "SELECT count(*) FROM folders f LEFT JOIN mailboxes mb ON mb.id = f.mailbox_id \
+             WHERE mb.id IS NULL",
+            &[]
+        )
+        .await,
+        0
+    );
 
     let elapsed = started.elapsed();
     eprintln!("acceptance_10k_messages elapsed: {elapsed:.2?}");
@@ -362,4 +348,6 @@ async fn acceptance_10k_messages() {
         elapsed < Duration::from_secs(max_secs),
         "too slow: {elapsed:?} (limit {max_secs}s, override with RUSTY_ACCEPTANCE_MAX_SECS)"
     );
+    })
+    .await;
 }

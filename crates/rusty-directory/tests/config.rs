@@ -1,15 +1,13 @@
 use rusty_core::Error;
-use rusty_directory::Directory;
-use rusty_store::SqliteStore;
-use serde_json::json;
+mod common;
 
-async fn dir() -> Directory {
-    Directory::new(SqliteStore::open("sqlite::memory:").await.unwrap())
-}
+use common::for_each_backend;
+use serde_json::json;
 
 #[tokio::test]
 async fn config_precedence_account_over_plan_over_domain_over_global() {
-    let d = dir().await;
+    for_each_backend(|b| async move {
+        let d = b.dir.clone();
     let dom = d.create_domain("example.com").await.unwrap();
     let plan = d.create_plan("basic", json!({})).await.unwrap();
     let acc = d
@@ -50,11 +48,14 @@ async fn config_precedence_account_over_plan_over_domain_over_global() {
         d.effective_config(acc, "other").await.unwrap(),
         Some(json!(true))
     );
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn config_non_object_is_invalid() {
-    let d = dir().await;
+    for_each_backend(|b| async move {
+        let d = b.dir.clone();
     let dom = d.create_domain("example.com").await.unwrap();
     let acc = d.create_account("alice", dom, None, None).await.unwrap();
     for v in [json!([1]), json!("s"), json!(null), json!(3)] {
@@ -75,11 +76,14 @@ async fn config_non_object_is_invalid() {
             Err(Error::Invalid(_))
         ));
     }
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn config_missing_key_is_none() {
-    let d = dir().await;
+    for_each_backend(|b| async move {
+        let d = b.dir.clone();
     let dom = d.create_domain("example.com").await.unwrap();
     let acc = d.create_account("alice", dom, None, None).await.unwrap();
     d.set_account_config(acc, json!({"a": 1})).await.unwrap();
@@ -88,11 +92,14 @@ async fn config_missing_key_is_none() {
         d.effective_config(rusty_core::AccountId(999), "a").await,
         Err(Error::NotFound(_))
     ));
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn null_config_value_inherits() {
-    let d = dir().await;
+    for_each_backend(|b| async move {
+        let d = b.dir.clone();
     let dom = d.create_domain("example.com").await.unwrap();
     let acc = d.create_account("alice", dom, None, None).await.unwrap();
     d.set_domain_config(dom, json!({"q": 7})).await.unwrap();
@@ -100,4 +107,6 @@ async fn null_config_value_inherits() {
     assert_eq!(d.effective_config(acc, "q").await.unwrap(), Some(json!(7)));
     d.set_domain_config(dom, json!({"q": null})).await.unwrap();
     assert_eq!(d.effective_config(acc, "q").await.unwrap(), None);
+    })
+    .await;
 }

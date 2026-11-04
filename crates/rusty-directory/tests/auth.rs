@@ -1,16 +1,19 @@
 use rusty_core::Error;
 use rusty_directory::{AccountStatus, Authenticator, Directory, LocalAuthenticator};
-use rusty_store::SqliteStore;
+mod common;
 
-async fn setup() -> (Directory, LocalAuthenticator, rusty_core::DomainId) {
-    let d = Directory::new(SqliteStore::open("sqlite::memory:").await.unwrap());
+use common::{for_each_backend, Backend};
+
+async fn setup(b: &Backend) -> (Directory, LocalAuthenticator, rusty_core::DomainId) {
+    let d = b.dir.clone();
     let dom = d.create_domain("example.com").await.unwrap();
     (d.clone(), LocalAuthenticator::new(d).await.unwrap(), dom)
 }
 
 #[tokio::test]
 async fn verify_correct_password() {
-    let (d, a, dom) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, a, dom) = setup(&b).await;
     let acc = d
         .create_account("alice", dom, Some("s3cret"), None)
         .await
@@ -19,20 +22,26 @@ async fn verify_correct_password() {
         a.verify("Alice@example.com", "s3cret").await.unwrap(),
         Some(acc)
     );
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn verify_wrong_password_is_none() {
-    let (d, a, dom) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, a, dom) = setup(&b).await;
     d.create_account("alice", dom, Some("s3cret"), None)
         .await
         .unwrap();
     assert_eq!(a.verify("alice@example.com", "nope").await.unwrap(), None);
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn verify_locked_account_is_none() {
-    let (d, a, dom) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, a, dom) = setup(&b).await;
     let acc = d
         .create_account("alice", dom, Some("s3cret"), None)
         .await
@@ -46,37 +55,49 @@ async fn verify_locked_account_is_none() {
         a.verify("alice@example.com", "s3cret").await.unwrap(),
         Some(acc)
     );
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn verify_account_without_hash_is_none() {
-    let (d, a, dom) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, a, dom) = setup(&b).await;
     d.create_account("alice", dom, None, None).await.unwrap();
     assert_eq!(a.verify("alice@example.com", "").await.unwrap(), None);
     assert_eq!(a.verify("alice@example.com", "x").await.unwrap(), None);
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn verify_unknown_address_is_none() {
-    let (_d, a, _) = setup().await;
+    for_each_backend(|b| async move {
+    let (_d, a, _) = setup(&b).await;
     assert_eq!(a.verify("ghost@example.com", "x").await.unwrap(), None);
     assert_eq!(a.verify("garbage", "x").await.unwrap(), None);
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn verify_through_alias() {
-    let (d, a, dom) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, a, dom) = setup(&b).await;
     let acc = d
         .create_account("alice", dom, Some("pw"), None)
         .await
         .unwrap();
     d.add_alias("ally", dom, acc).await.unwrap();
     assert_eq!(a.verify("ally@example.com", "pw").await.unwrap(), Some(acc));
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn empty_password_is_invalid() {
-    let (d, _a, dom) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, _a, dom) = setup(&b).await;
     assert!(matches!(
         d.create_account("alice", dom, Some(""), None).await,
         Err(Error::Invalid(_))
@@ -87,11 +108,14 @@ async fn empty_password_is_invalid() {
         Err(Error::Invalid(_))
     ));
     d.set_password(acc, "new").await.unwrap();
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn overlong_password_rejected() {
-    let (d, a, dom) = setup().await;
+    for_each_backend(|b| async move {
+    let (d, a, dom) = setup(&b).await;
     let long = "x".repeat(1025);
     assert!(matches!(
         d.create_account("alice", dom, Some(&long), None).await,
@@ -105,4 +129,6 @@ async fn overlong_password_rejected() {
     ));
     assert_eq!(a.verify("bob@example.com", &long).await.unwrap(), None);
     assert_eq!(a.verify("bob@example.com", &ok).await.unwrap(), Some(acc));
+    })
+    .await;
 }

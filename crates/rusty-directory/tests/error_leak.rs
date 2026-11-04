@@ -6,12 +6,14 @@
 //! never be serialized to clients (see `rusty_core::Error`).
 
 use std::str::FromStr;
-use std::sync::Arc;
+
+mod common;
 
 use bytes::Bytes;
 use rusty_core::{BlobHash, Error, FolderId, FolderRole, MessageId};
-use rusty_directory::{normalize_address, parse_address, Directory};
-use rusty_store::{BlobStore, FsBlobStore, Mailbox, SqliteStore};
+use common::for_each_backend;
+use rusty_directory::{normalize_address, parse_address};
+use rusty_store::SqliteStore;
 
 const SECRET: &str = "hunter2-S3CR3T-T0KEN";
 
@@ -92,7 +94,8 @@ async fn store_open_does_not_echo_url_or_path() {
 
 #[tokio::test]
 async fn directory_errors_do_not_echo() {
-    let d = Directory::new(SqliteStore::open("sqlite::memory:").await.unwrap());
+    for_each_backend(|b| async move {
+    let d = b.dir.clone();
     let dom = d.create_domain("example.com").await.unwrap();
     d.create_account("alice", dom, None, None).await.unwrap();
     let mut rejected = 0;
@@ -118,18 +121,17 @@ async fn directory_errors_do_not_echo() {
         "duplicate account",
         d.create_account(&local, dom, None, None).await,
     );
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn mailbox_errors_do_not_echo() {
-    let d = Directory::new(SqliteStore::open("sqlite::memory:").await.unwrap());
+    for_each_backend(|b| async move {
+    let d = b.dir.clone();
     let dom = d.create_domain("example.com").await.unwrap();
     let acc = d.create_account("alice", dom, None, None).await.unwrap();
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().join("blobs");
-    FsBlobStore::init(&root).await.unwrap();
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::open(&root).await.unwrap());
-    let mb = Mailbox::open(d.store().clone(), blobs, acc).await.unwrap();
+    let mb = b.mailbox(acc).await;
     for s in hostile() {
         check("create_folder", mb.create_folder(None, &s).await);
         check_err("add_keyword", mb.add_keyword(MessageId(1), &s).await);
@@ -145,4 +147,6 @@ async fn mailbox_errors_do_not_echo() {
         mb.append(FolderId(1), Bytes::from(raw), Default::default())
             .await,
     );
+    })
+    .await;
 }

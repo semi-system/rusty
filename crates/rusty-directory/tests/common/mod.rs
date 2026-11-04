@@ -1,23 +1,27 @@
-//! Backend harness for the directory conformance suite: every test body runs against SQLite
-//! and, when `RUSTY_TEST_PG_URL` is set and the `postgres` feature is on, against Postgres.
+//! Backend harness for the directory suites: every test body runs against SQLite and, when
+//! `RUSTY_TEST_PG_URL` is set and the `postgres` feature is on, against Postgres. Raw SQL goes
+//! through `rusty_store::fixtures` (feature `test-fixtures`, dev-dependency only); no test holds
+//! a pool or a database driver.
 #![allow(dead_code)]
 
 use std::future::Future;
+use std::sync::Arc;
 
+use rusty_core::AccountId;
 use rusty_directory::Directory;
-use rusty_store::{SqliteStore, Store, StoreConfig};
+use rusty_store::fixtures::{Fixtures, SqlFailure};
+pub use rusty_store::fixtures::Arg as Bind;
+use rusty_store::{BlobStore, FsBlobStore, Gc, Mailbox, Store, StoreConfig};
 
 #[cfg(feature = "postgres")]
-#[path = "../../../rusty-store/tests/common/pg.rs"]
-pub mod pg;
+pub use rusty_store::fixtures::pg_db as pg;
 
 pub struct Backend {
     pub name: &'static str,
     pub dir: Directory,
-    sqlite: Option<SqliteStore>,
-    #[cfg(feature = "postgres")]
-    pg: Option<rusty_store::PgStore>,
-    _tmp: tempfile::TempDir,
+    pub store: Store,
+    pub fx: Fixtures,
+    pub tmp: tempfile::TempDir,
     #[cfg(feature = "postgres")]
     _db: Option<pg::PgTestDb>,
 }
@@ -27,77 +31,85 @@ impl Drop for Backend {
     fn drop(&mut self) {}
 }
 
-pub enum Bind<'a> {
-    I(i64),
-    S(&'a str),
-}
-
 impl Backend {
     /// Raw fixture / probe statement returning one `bigint` (`?N` placeholders).
     pub async fn scalar(&self, sql: &str, binds: &[Bind<'_>]) -> i64 {
-        if let Some(s) = &self.sqlite {
-            let mut q = sqlx::query_scalar::<_, i64>(sql);
-            for b in binds {
-                q = match b {
-                    Bind::I(v) => q.bind(*v),
-                    Bind::S(v) => q.bind(*v),
-                };
-            }
-            return q.fetch_one(s.pool()).await.unwrap();
-        }
-        #[cfg(feature = "postgres")]
-        if let Some(p) = &self.pg {
-            let sql = sql.replace('?', "$");
-            let mut q = sqlx::query_scalar::<_, i64>(&sql);
-            for b in binds {
-                q = match b {
-                    Bind::I(v) => q.bind(*v),
-                    Bind::S(v) => q.bind(*v),
-                };
-            }
-            return q.fetch_one(p.pool()).await.unwrap();
-        }
-        unreachable!()
+        self.fx.scalar(sql, binds).await
     }
 
-    /// Raw statement without a result.
-    pub async fn run(&self, sql: &str, binds: &[Bind<'_>]) {
-        if let Some(s) = &self.sqlite {
-            let mut q = sqlx::query(sql);
-            for b in binds {
-                q = match b {
-                    Bind::I(v) => q.bind(*v),
-                    Bind::S(v) => q.bind(*v),
-                };
-            }
-            q.execute(s.pool()).await.unwrap();
+    pub async fn scalars(&self, sql: &str, binds: &[Bind<'_>]) -> Vec<i64> {
+        self.fx.scalars(sql, binds).await
+    }
 
-        }
-        #[cfg(feature = "postgres")]
-        if let Some(p) = &self.pg {
-            let sql = sql.replace('?', "$");
-            let mut q = sqlx::query(&sql);
-            for b in binds {
-                q = match b {
-                    Bind::I(v) => q.bind(*v),
-                    Bind::S(v) => q.bind(*v),
-                };
-            }
-            q.execute(p.pool()).await.unwrap();
-        }
+    pub async fn strings(&self, sql: &str, binds: &[Bind<'_>]) -> Vec<String> {
+        self.fx.strings(sql, binds).await
+    }
+
+    pub async fn byte_rows(&self, sql: &str) -> Vec<Vec<u8>> {
+        self.fx.byte_rows(sql, &[]).await
+    }
+
+    pub async fn rows(&self, sql: &str, binds: &[Bind<'_>], cols: usize) -> Vec<Vec<String>> {
+        self.fx.rows(sql, binds, cols).await
+    }
+
+    /// Raw statement without a result; panics if the database rejects it.
+    pub async fn run(&self, sql: &str, binds: &[Bind<'_>]) {
+        self.fx.run(sql, binds).await;
+    }
+
+    /// Raw statement the database may reject.
+    pub async fn try_run(&self, sql: &str, binds: &[Bind<'_>]) -> Result<u64, SqlFailure> {
+        self.fx.try_run(sql, binds).await
+    }
+
+    /// `SELECT count(*) FROM <table>`.
+    pub async fn count(&self, table: &str) -> i64 {
+        self.fx
+            .scalar(&format!("SELECT count(*) FROM {table}"), &[])
+            .await
     }
 
     /// The database clock.
     pub async fn db_now(&self) -> i64 {
-        if self.sqlite.is_some() {
-            self.scalar("SELECT unixepoch()", &[]).await
-        } else {
-            self.scalar("SELECT rs_now()", &[]).await
-        }
+        self.fx.db_clock().await
     }
 
     pub fn is_sqlite(&self) -> bool {
-        self.sqlite.is_some()
+        self.fx.is_sqlite()
+    }
+
+    /// The garbage collector over this backend's repository.
+    pub fn gc(&self) -> Gc {
+        Gc::new(self.store.repos().gc.clone())
+    }
+
+    /// A blob store in a fresh directory of this backend's temp dir.
+    pub async fn blobs(&self) -> Arc<dyn BlobStore> {
+        let root = self.tmp.path().join("blobs");
+        FsBlobStore::init(&root).await.unwrap();
+        Arc::new(FsBlobStore::open(&root).await.unwrap())
+    }
+
+    /// The mailbox of `acc`, with blobs in this backend's temp dir.
+    pub async fn mailbox(&self, acc: AccountId) -> Mailbox {
+        let blobs = self.blobs().await;
+        Mailbox::open_with(self.store.repos().mailbox.clone(), blobs, acc)
+            .await
+            .unwrap()
+    }
+
+    /// A second, independent database of the same kind.
+    pub async fn fresh_like(&self) -> Backend {
+        if self.is_sqlite() {
+            return sqlite_backend().await;
+        }
+        #[cfg(feature = "postgres")]
+        {
+            pg_backend().await.expect("postgres backend")
+        }
+        #[cfg(not(feature = "postgres"))]
+        unreachable!()
     }
 }
 
@@ -108,10 +120,9 @@ pub async fn sqlite_backend() -> Backend {
     Backend {
         name: "sqlite",
         dir: Directory::with_repo(store.repos().directory.clone()),
-        sqlite: store.sqlite().cloned(),
-        #[cfg(feature = "postgres")]
-        pg: None,
-        _tmp: tmp,
+        fx: Fixtures::of(&store),
+        store,
+        tmp,
         #[cfg(feature = "postgres")]
         _db: None,
     }
@@ -125,9 +136,9 @@ pub async fn pg_backend() -> Option<Backend> {
     Some(Backend {
         name: "postgres",
         dir: Directory::with_repo(store.repos().directory.clone()),
-        sqlite: None,
-        pg: store.postgres().cloned(),
-        _tmp: tempfile::tempdir().unwrap(),
+        fx: Fixtures::of(&store),
+        store,
+        tmp: tempfile::tempdir().unwrap(),
         _db: Some(db),
     })
 }

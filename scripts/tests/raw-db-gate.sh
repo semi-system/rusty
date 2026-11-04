@@ -26,5 +26,8 @@ mk; printf "[dependencies.sqlx]
 version = \"0.8\"
 " >> "$tmp/t/crates/app/Cargo.toml"; expect "sqlx table form" 1
 mk; echo "stop.store(true, Ordering::Relaxed);" > "$tmp/t/tools/x/src/main.rs"; expect "atomic store() is not a hit" 0
-mk; printf 'rusty-directory = { path = "x", features = ["test-support"] }\n' >> "$tmp/t/crates/app/Cargo.toml"; expect "test-support under [dependencies]" 1
+
+mk; mkdir -p "$tmp/t/crates/rusty-directory/tests"; echo 'let p = d.store().pool();' > "$tmp/t/crates/rusty-directory/tests/directory.rs"; expect "no exemption for the rusty-directory tests" 1
+mk; mkdir -p "$tmp/t/crates/rusty-directory"; printf '[package]\nname="rusty-directory"\n[dev-dependencies]\nsqlx = "0.8"\n' > "$tmp/t/crates/rusty-directory/Cargo.toml"; expect "no sqlx dev-dependency exemption for rusty-directory" 1
+mk; mkdir -p "$tmp/t/crates/rusty-directory/tests"; echo 'let f = Fixtures::of(&store); f.scalar("SELECT 1", &[]).await;' > "$tmp/t/crates/rusty-directory/tests/d.rs"; expect "the fixtures API passes the text scan" 0
 echo "raw-db-gate: OK"
