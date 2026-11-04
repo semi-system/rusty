@@ -19,6 +19,8 @@ use crate::PgStore;
 use tx::TxResult;
 
 pub use tx::{is_retryable, Knobs, PgRetryStats, MAX_ATTEMPTS};
+#[cfg(feature = "test-knobs")]
+pub use jobs::claim_statements_for_test;
 
 #[derive(Clone)]
 pub struct PgRepo {

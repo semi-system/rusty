@@ -421,8 +421,12 @@ CREATE TABLE jobs (
     OR (state <> 'running' AND lease_owner IS NULL AND lease_expires_at IS NULL)
   )
 );
-CREATE INDEX jobs_state_run_after ON jobs (state, run_after);
 CREATE INDEX jobs_domain_state ON jobs (domain_id, state);
+-- Claim probes (review PG5 I3): queued rows in claim order, and running rows by lease expiry.
+-- Replaces SQLite's jobs_state_run_after (state, run_after): with ties on run_after (seconds) its
+-- plans need an incremental sort over every tied row, and finished rows only bloat it.
+CREATE INDEX jobs_queued_order ON jobs (run_after, id) WHERE state = 'queued';
+CREATE INDEX jobs_running_lease ON jobs (lease_expires_at) WHERE state = 'running';
 
 CREATE TABLE capabilities (
   token_hash  bytea PRIMARY KEY CONSTRAINT capabilities_hash_length CHECK (octet_length(token_hash) = 32),

@@ -63,7 +63,7 @@ const BUDGET: &[(&str, usize)] = &[
     ("db_now (jobs)", 1),
     ("enqueue (domain)", 5),
     ("enqueue (no domain)", 5),
-    ("claim (job available)", 4),
+    ("claim (job available)", 5),
     ("claim (nothing)", 3),
     ("heartbeat", 3),
     ("fence_check", 1),

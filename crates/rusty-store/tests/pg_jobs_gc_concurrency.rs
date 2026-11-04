@@ -447,3 +447,35 @@ async fn raw_of(b: &Backend, mb: &Mailbox, id: rusty_core::MessageId) -> bytes::
     let r = mb.get_raw_ref(id).await.unwrap();
     b.blobs.get(&r.blob).await.expect("the blob file of a referenced message exists")
 }
+
+/// Review PG5 I3: the claim reads candidates in windows of 32 ordered index entries. A claim
+/// whose first window is entirely held by other claimers must continue behind it, exactly as a
+/// single `ORDER BY .. LIMIT 1 FOR UPDATE SKIP LOCKED` over the whole queue would.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn claim_continues_past_a_window_of_locked_jobs() {
+    if pg_admin_url().is_none() {
+        return;
+    }
+    let b = pg_backend().await.unwrap();
+    let (store, _) = b.pg.as_ref().unwrap();
+    let q = jq(&repo_with(&b, Knobs::default()));
+    let mut ids = vec![];
+    for i in 0..100 {
+        ids.push(q.enqueue("t", None, &json!({ "i": i }), Some(1000 + i)).await.unwrap());
+    }
+    // 70 claimers are "in the middle of claiming" the 70 oldest jobs: two full windows.
+    let mut holder = store.pool().begin().await.unwrap();
+    let held: Vec<i64> = ids[..70].iter().map(|j| j.0).collect();
+    sqlx::query("SELECT id FROM jobs WHERE id = ANY($1) FOR UPDATE")
+        .bind(&held)
+        .fetch_all(&mut *holder)
+        .await
+        .unwrap();
+    let got = tokio::time::timeout(Duration::from_secs(5), q.claim("w", &["t"], 30))
+        .await
+        .expect("claim must not wait for locked rows")
+        .unwrap()
+        .expect("the 71st job is free and due");
+    assert_eq!(got.id, ids[70], "the oldest job that is not locked");
+    holder.rollback().await.unwrap();
+}

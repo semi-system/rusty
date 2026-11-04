@@ -163,6 +163,10 @@ const KNOWN_DIFFS: &[(&str, &str, &str)] = &[
     ("sqlite", "TRIGGER blobs_zero_since_referenced", "merged into blobs_zero_since_refcount"),
     ("sqlite", "TRIGGER blobs_zero_since_released", "merged into blobs_zero_since_refcount"),
     ("pg", "TRIGGER blobs_zero_since_refcount", "merges the two SQLite triggers"),
+    // Claim probes (PG5 review I3): Postgres uses two ordered partial indexes instead of (state, run_after)
+    ("sqlite", "INDEX jobs_state_run_after on jobs (state,run_after) unique=false partial=false", "PG: partial jobs_queued_order / jobs_running_lease"),
+    ("pg", "INDEX jobs_queued_order on jobs (run_after,id) unique=false partial=true", "see above"),
+    ("pg", "INDEX jobs_running_lease on jobs (lease_expires_at) unique=false partial=true", "see above"),
     // PG splits "BEFORE UPDATE" vs "BEFORE DELETE" releases and guards TRUNCATE
     ("pg", "TRIGGER accounts_addr_unique_del", "SQLite releases via the registry-less rule; PG registry needs explicit release"),
     ("pg", "TRIGGER aliases_addr_unique_del", "see above"),

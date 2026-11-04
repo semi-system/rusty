@@ -249,3 +249,16 @@ Measured (Postgres 18 container, tmpfs, 101,000 `blobs` rows, 100,000 `messages`
 | `CREATE INDEX messages_blob_hash ON messages (blob_hash)` | 12.8 ms (review run: 17 ms) |
 
 The cost without the index grows linearly with `messages` (about a minute per batch at 1M messages) and the batch holds 1,000 blob row locks meanwhile, so under PG8 timeouts GC would degrade to `Busy` forever. The index costs about 58 bytes per message (review measurement; B-tree deduplication helps the one-blob-to-many-mailboxes fan-out) and one index write per append and expunge. It is now in `migrations_pg/0001_init.sql` and SQLite `migrations/0009_messages_blob_hash_index.sql`; the regression tests are `pg_plans::gc_delete_foreign_key_probe_uses_the_blob_hash_index` and `schema_constraints::messages_blob_hash_is_indexed_for_the_gc_foreign_key_probe`.
+
+## 14. Addendum (PG5 review I3): job claim plan
+
+The first PG5 claim statement filtered `(state = 'queued' AND run_after <= now) OR (state = 'running' AND lease_expires_at <= now)` with `ORDER BY run_after, id LIMIT 1 FOR UPDATE SKIP LOCKED`; the disjunction defeated `jobs_state_run_after`, so every claim read, filtered and sorted all job rows. Measured (Postgres 18 container, 502,000 jobs: 300k queued with ties on `run_after`, 2k running with live leases, 200k done; kind filter matching 75%; `EXPLAIN (ANALYZE, TIMING OFF)`, 2026-11-04):
+
+| claim candidate search | execution time | plan |
+|---|---|---|
+| single disjunction (old) | 69.7 ms | Seq Scan on jobs (277,000 rows removed by filter), external merge sort 7 MB |
+| two ordered index probes, window of 32 (new) | 0.08 ms | `jobs_queued_order` + `jobs_running_lease`, Merge Append, quicksort of the tiny expired set |
+
+The claim is now a peek of 32 ids plus a primary-key `FOR UPDATE SKIP LOCKED` statement (5 statements with BEGIN/COMMIT instead of 4; budget raised). Postgres `jobs` drops `jobs_state_run_after` (SQLite keeps it; recorded in `KNOWN_DIFFS`): with ties on `run_after` (a second resolution) its plans need an incremental sort over every tied row. Regression tests: `pg_plans::claim_probes_use_index_scans_at_scale` (202k rows, generic and concrete plans of the production statements), `pg_jobs_gc_concurrency::claim_continues_past_a_window_of_locked_jobs`.
+
+Known limit: the kind filter is not an index column. A worker for a rare kind behind a large backlog of other kinds reads past that backlog (bounded by the queued rows before its first match); a `(kind, run_after, id)` index would fix a single-kind claim and is a PG7 measurement item.

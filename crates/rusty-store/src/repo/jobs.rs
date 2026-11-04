@@ -23,9 +23,16 @@
 //! nothing else), so it cannot take part in a cycle with the mailbox paths, whose last lock is
 //! the job row of their fence.
 //!
-//! * `claim` (Postgres): `SELECT .. ORDER BY run_after, id LIMIT 1 FOR UPDATE OF j SKIP LOCKED`
-//!   per candidate, so concurrent claimers skip rows another transaction is claiming instead of
-//!   blocking; the loop settles exhausted or unreadable rows as `dead` exactly as the SQLite
+//! * `claim` (Postgres): two statements per candidate. (1) An unlocked peek of the next 32
+//!   eligible ids in `(run_after, id)` order: a `UNION ALL` of two ordered index probes
+//!   (`jobs_queued_order`, `jobs_running_lease`; review PG5 I3, 69.7 ms to 0.08 ms at 502k rows
+//!   against the single disjunction, which scanned and sorted every row). (2) `SELECT .. WHERE id
+//!   = ANY(window) ORDER BY run_after, id LIMIT 1 FOR UPDATE OF j SKIP LOCKED`, a primary-key
+//!   probe that locks the first window row another claimer does not hold and that is still
+//!   eligible when re-evaluated. A window held entirely by other claimers continues behind its
+//!   last key (at most 16 rounds), so the result equals `ORDER BY .. LIMIT 1 FOR UPDATE SKIP
+//!   LOCKED` over the whole queue, ordering and exclusivity included. Concurrent claimers skip
+//!   rows another transaction is claiming instead of blocking; the loop settles exhausted or unreadable rows as `dead` exactly as the SQLite
 //!   walk does (at most `MAX_SETTLED_PER_CLAIM` per call).
 //! * `enqueue` counts pending jobs and inserts in one transaction. SQLite's single writer makes
 //!   that atomic; on Postgres two concurrent enqueues could both slip under the cap, so the

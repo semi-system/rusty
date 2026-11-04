@@ -188,10 +188,10 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
     let claimed = j.claim(&c1).await.unwrap().unwrap();
     // `claim` of a fresh job is measured again below; this one is the fixture for the rest.
     other!("JobRepo", "claim (job available)", true,
-        Some(("FOR UPDATE OF j SKIP LOCKED", "unixepoch()")), None,
+        Some(("FROM jobs WHERE state = 'queued'", "unixepoch()")), Some("FOR UPDATE OF j SKIP LOCKED"),
         j.claim(&c2));
     other!("JobRepo", "claim (nothing)", true,
-        Some(("FOR UPDATE OF j SKIP LOCKED", "unixepoch()")), None,
+        Some(("FROM jobs WHERE state = 'queued'", "unixepoch()")), None,
         j.claim(&c3));
     other!("JobRepo", "heartbeat", true, Some(("UPDATE jobs SET", "UPDATE jobs SET")), None,
         j.heartbeat(claimed.id, claimed.epoch, 30, None));

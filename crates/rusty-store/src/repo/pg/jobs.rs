@@ -17,12 +17,103 @@ use crate::repo::{render_pg as r, JobFence, JobRepo};
 const NO_DOMAIN_LOCK_CLASS: i32 = 0x4A4F_4253; // "JOBS"
 const NO_DOMAIN_LOCK_KEY: i32 = 1;
 
-const CLAIM_SELECT: &str = "SELECT j.id, j.state, j.attempts, j.max_attempts, t.now \
-    FROM jobs j CROSS JOIN (SELECT COALESCE($2, {NOW}) AS now) t \
-    WHERE j.kind = ANY($1) \
-      AND ((j.state = 'queued' AND j.run_after <= t.now) \
-        OR (j.state = 'running' AND j.lease_expires_at <= t.now)) \
+/// Candidates fetched per probe round (see `next_candidate`).
+const CLAIM_WINDOW: i64 = 32;
+// The statements spell the window as a literal (a bound LIMIT makes generic plans assume 10%).
+const _: () = assert!(CLAIM_WINDOW == 32);
+/// Probe rounds per candidate search: with `CLAIM_WINDOW` this bounds a claim to 512 rows read
+/// even if other claimers hold locks on all of them.
+const CLAIM_MAX_ROUNDS: u32 = 16;
+
+/// Step 1 of a claim: the next `CLAIM_WINDOW` eligible job ids in `(run_after, id)` order after
+/// the key `($3, $4)`, WITHOUT locking, plus the decision time. Two ordered index probes
+/// (review PG5 I3): queued rows by `jobs_queued_order (run_after, id) WHERE state = 'queued'`,
+/// running rows with an expired lease by `jobs_running_lease (lease_expires_at) WHERE state =
+/// 'running'` (the expired set is small: crashed workers, reaped by the next claims). The old
+/// single disjunction could use neither index and read, sorted and filtered every job row
+/// (61 ms per claim at 500k rows). `$2` = the supplied time of the `_at` twins, else the
+/// database clock; the same value is bound into the later statements.
+const CLAIM_PEEK: &str = "SELECT c.id, c.run_after, COALESCE($2, {NOW}) AS now FROM (\
+      SELECT u.id, u.run_after FROM (\
+        (SELECT id, run_after FROM jobs \
+          WHERE state = 'queued' AND run_after <= COALESCE($2, {NOW}) AND kind = ANY($1) \
+            AND (run_after, id) > ($3, $4) \
+          ORDER BY run_after, id LIMIT 32) \
+        UNION ALL \
+        (SELECT id, run_after FROM jobs \
+          WHERE state = 'running' AND lease_expires_at <= COALESCE($2, {NOW}) AND kind = ANY($1) \
+            AND (run_after, id) > ($3, $4) \
+          ORDER BY run_after, id LIMIT 32)\
+      ) u ORDER BY u.run_after, u.id LIMIT 32\
+    ) c ORDER BY c.run_after, c.id";
+
+/// Step 2: lock the first of those ids that is still eligible (READ COMMITTED re-evaluates the
+/// predicate on a row another claimer changed) and not locked by another claimer. Primary-key
+/// probes only. `$1` = ids from step 1, `$2` = the decision time of step 1.
+const CLAIM_LOCK: &str = "SELECT j.id, j.state, j.attempts, j.max_attempts FROM jobs j \
+    WHERE j.id = ANY($1) \
+      AND ((j.state = 'queued' AND j.run_after <= $2) \
+        OR (j.state = 'running' AND j.lease_expires_at <= $2)) \
     ORDER BY j.run_after, j.id LIMIT 1 FOR UPDATE OF j SKIP LOCKED";
+
+/// The two claim probe statements, rendered for Postgres, for the plan tests.
+#[cfg(feature = "test-knobs")]
+pub fn claim_statements_for_test() -> (String, String) {
+    (r(CLAIM_PEEK), r(CLAIM_LOCK))
+}
+
+struct Candidate {
+    id: i64,
+    state: String,
+    attempts: i64,
+    max_attempts: i64,
+    now: i64,
+}
+
+/// The first eligible job in `(run_after, id)` order that no other transaction has locked, now
+/// locked by this one: `ORDER BY .. LIMIT 1 FOR UPDATE SKIP LOCKED` semantics over the whole
+/// queue, with every round bounded by index probes. A round whose window was full but yielded
+/// nothing lockable (every row held by other claimers) continues after its last key.
+async fn next_candidate(
+    c: &mut sqlx::PgConnection,
+    kinds: &[&str],
+    now: Option<i64>,
+) -> std::result::Result<Option<Candidate>, sqlx::Error> {
+    let mut after = (i64::MIN, i64::MIN);
+    for _ in 0..CLAIM_MAX_ROUNDS {
+        let window = sqlx::query(&r(CLAIM_PEEK))
+            .bind(kinds)
+            .bind(now)
+            .bind(after.0)
+            .bind(after.1)
+            .fetch_all(&mut *c)
+            .await?;
+        let (Some(first), Some(last)) = (window.first(), window.last()) else {
+            return Ok(None);
+        };
+        let decided: i64 = first.try_get("now")?;
+        let ids: Vec<i64> = window.iter().map(|w| w.try_get("id")).collect::<std::result::Result<_, sqlx::Error>>()?;
+        if let Some(row) = sqlx::query(CLAIM_LOCK)
+            .bind(&ids)
+            .bind(decided)
+            .fetch_optional(&mut *c)
+            .await?
+        {
+            return Ok(Some(Candidate {
+                id: row.try_get("id")?,
+                state: row.try_get("state")?,
+                attempts: row.try_get("attempts")?,
+                max_attempts: row.try_get("max_attempts")?,
+                now: decided,
+            }));
+        }
+        if (window.len() as i64) < CLAIM_WINDOW {
+            return Ok(None);
+        }
+        after = (last.try_get("run_after")?, last.try_get("id")?);
+    }
+    Ok(None)
+}
 
 #[async_trait]
 impl JobRepo for PgRepo {
@@ -106,19 +197,10 @@ impl JobRepo for PgRepo {
                     if settled >= MAX_SETTLED_PER_CLAIM {
                         break Ok(None);
                     }
-                    let Some(cand) = sqlx::query(&r(CLAIM_SELECT))
-                        .bind(&kinds)
-                        .bind(req.now)
-                        .fetch_optional(&mut *c)
-                        .await?
-                    else {
+                    let Some(cand) = next_candidate(&mut *c, &kinds, req.now).await? else {
                         break Ok(None);
                     };
-                    let id: i64 = cand.try_get("id")?;
-                    let state: String = cand.try_get("state")?;
-                    let attempts: i64 = cand.try_get("attempts")?;
-                    let max_attempts: i64 = cand.try_get("max_attempts")?;
-                    let now: i64 = cand.try_get("now")?;
+                    let Candidate { id, state, attempts, max_attempts, now } = cand;
                     if attempts >= max_attempts {
                         sqlx::query(sql::SETTLE_DEAD)
                             .bind(id)
