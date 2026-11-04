@@ -11,7 +11,7 @@
 mod common;
 
 use common::backends::*;
-use common::{env, raw};
+use common::{for_each_env, raw, INBOX};
 use rusty_core::{DeliveryId, Flags};
 
 /// The database's own notion of now.
@@ -24,7 +24,10 @@ async fn db_now(b: &Backend) -> i64 {
 }
 
 fn within(value: i64, lo: i64, hi: i64, what: &str) {
-    assert!((lo - 2..=hi + 2).contains(&value), "{what}: {value} not within [{lo}, {hi}] +-2s");
+    assert!(
+        (lo - 2..=hi + 2).contains(&value),
+        "{what}: {value} not within [{lo}, {hi}] +-2s"
+    );
 }
 
 #[tokio::test]
@@ -32,15 +35,34 @@ async fn directory_created_at_and_uid_validity_follow_the_database_clock() {
     for_each_backend(|b| async move {
         let lo = db_now(&b).await;
         let dom = b.dir.create_domain("clk.test").await.unwrap();
-        let acc = b.dir.create_account("alice", dom, None, None).await.unwrap();
+        let acc = b
+            .dir
+            .create_account("alice", dom, None, None)
+            .await
+            .unwrap();
         let hi = db_now(&b).await;
-        let d = exec(&b, "SELECT created_at FROM domains WHERE id = ?1", &[Bind::I(dom.0)]).await;
+        let d = exec(
+            &b,
+            "SELECT created_at FROM domains WHERE id = ?1",
+            &[Bind::I(dom.0)],
+        )
+        .await;
         within(d, lo, hi, "domains.created_at");
-        let a = exec(&b, "SELECT created_at FROM accounts WHERE id = ?1", &[Bind::I(acc.0)]).await;
+        let a = exec(
+            &b,
+            "SELECT created_at FROM accounts WHERE id = ?1",
+            &[Bind::I(acc.0)],
+        )
+        .await;
         within(a, lo, hi, "accounts.created_at");
         // The mailbox UIDVALIDITY high-water mark is the database clock plus the 5 system
         // folders; folder i has base + i.
-        let uv = exec(&b, "SELECT uid_validity FROM mailboxes WHERE account_id = ?1", &[Bind::I(acc.0)]).await;
+        let uv = exec(
+            &b,
+            "SELECT uid_validity FROM mailboxes WHERE account_id = ?1",
+            &[Bind::I(acc.0)],
+        )
+        .await;
         within(uv, lo + 5, hi + 5, "mailboxes.uid_validity");
         let f1 = exec(
             &b,
@@ -59,9 +81,16 @@ async fn spike_append_internal_date_and_delivery_created_at_follow_the_database_
     for_each_backend(|b| async move {
         let (_, _, mb) = acct(&b, "clkapp").await;
         let lo = db_now(&b).await;
-        let r = mb.append(INBOX, raw("a", Some("a@x")), Flags::empty()).await.unwrap();
+        let r = mb
+            .append(INBOX, raw("a", Some("a@x")), Flags::empty())
+            .await
+            .unwrap();
         let did = DeliveryId([7u8; 32]);
-        let r2 = match mb.deliver(INBOX, raw("b", Some("b@x")), Flags::empty(), did).await.unwrap() {
+        let r2 = match mb
+            .deliver(INBOX, raw("b", Some("b@x")), Flags::empty(), did)
+            .await
+            .unwrap()
+        {
             rusty_store::DeliverOutcome::Created(r) => r,
             other => panic!("{other:?}"),
         };
@@ -75,7 +104,12 @@ async fn spike_append_internal_date_and_delivery_created_at_follow_the_database_
             .await;
             within(d, lo, hi, what);
         }
-        let c = exec(&b, "SELECT created_at FROM deliveries WHERE mailbox_id = ?1", &[Bind::I(mb.id().0)]).await;
+        let c = exec(
+            &b,
+            "SELECT created_at FROM deliveries WHERE mailbox_id = ?1",
+            &[Bind::I(mb.id().0)],
+        )
+        .await;
         within(c, lo, hi, "deliveries.created_at");
     })
     .await;
@@ -86,22 +120,7 @@ async fn blob_zero_since_is_set_from_the_database_clock() {
     for_each_backend(|b| async move {
         let lo = db_now(&b).await;
         // A blob row nobody references starts at refcount 0 and gets zero_since at insert.
-        if let Some(s) = &b.sqlite {
-            sqlx::query("INSERT INTO blobs (hash, size) VALUES (?, 1)")
-                .bind("a".repeat(64))
-                .execute(s.pool())
-                .await
-                .unwrap();
-        } else {
-            #[cfg(feature = "postgres")]
-            if let Some((p, _)) = &b.pg {
-                sqlx::query("INSERT INTO blobs (hash, size) VALUES ($1, 1)")
-                    .bind(vec![0xaau8; 32])
-                    .execute(p.pool())
-                    .await
-                    .unwrap();
-            }
-        }
+        insert_blob_row(&b, &"aa".repeat(32), 1).await;
         let hi = db_now(&b).await;
         let z = exec(&b, "SELECT zero_since FROM blobs", &[]).await;
         within(z, lo, hi, "blobs.zero_since");
@@ -113,79 +132,104 @@ async fn blob_zero_since_is_set_from_the_database_clock() {
 
 #[tokio::test]
 async fn mailbox_append_internal_date_is_database_clock_and_at_twin_is_verbatim() {
-    let e = env().await;
-    let lo = e.scalar("SELECT unixepoch()").await;
-    let r = e.mb.append(common::INBOX, raw("a", Some("a@x")), Flags::empty()).await.unwrap();
-    let hi = e.scalar("SELECT unixepoch()").await;
-    let d = e
-        .scalar(&format!("SELECT internal_date FROM messages WHERE id = {}", r.id.0))
-        .await;
-    within(d, lo, hi, "Mailbox::append internal_date");
+    for_each_env(|e| async move {
+        let lo = e.db_clock().await;
+        let r =
+            e.mb.append(INBOX, raw("a", Some("a@x")), Flags::empty())
+                .await
+                .unwrap();
+        let hi = e.db_clock().await;
+        let d = e
+            .scalar(&format!(
+                "SELECT internal_date FROM messages WHERE id = {}",
+                r.id.0
+            ))
+            .await;
+        within(d, lo, hi, "Mailbox::append internal_date");
 
-    // The `_at(now)` twin: the caller's value is stored verbatim, also for internal_date
-    // (client-supplied INTERNALDATE class), never replaced by the Rust or database clock.
-    let did = DeliveryId([9u8; 32]);
-    let out = e
-        .mb
-        .deliver_at(common::INBOX, raw("b", Some("b@x")), Flags::empty(), did, 1_000)
-        .await
-        .unwrap();
-    let id = match out {
-        rusty_store::DeliverOutcome::Created(r) => r.id,
-        other => panic!("{other:?}"),
-    };
-    let d = e
-        .scalar(&format!("SELECT internal_date FROM messages WHERE id = {}", id.0))
-        .await;
-    assert_eq!(d, 1_000, "internal_date must be the caller value of deliver_at");
-    let c = e.scalar("SELECT created_at FROM deliveries").await;
-    assert_eq!(c, 1_000);
+        // The `_at(now)` twin: the caller's value is stored verbatim, also for internal_date
+        // (client-supplied INTERNALDATE class), never replaced by the Rust or database clock.
+        let did = DeliveryId([9u8; 32]);
+        let out =
+            e.mb.deliver_at(INBOX, raw("b", Some("b@x")), Flags::empty(), did, 1_000)
+                .await
+                .unwrap();
+        let id = match out {
+            rusty_store::DeliverOutcome::Created(r) => r.id,
+            other => panic!("{other:?}"),
+        };
+        let d = e
+            .scalar(&format!(
+                "SELECT internal_date FROM messages WHERE id = {}",
+                id.0
+            ))
+            .await;
+        assert_eq!(
+            d, 1_000,
+            "internal_date must be the caller value of deliver_at"
+        );
+        let c = e.scalar("SELECT created_at FROM deliveries").await;
+        assert_eq!(c, 1_000);
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn mailbox_expunge_and_folder_uid_validity_use_the_database_clock() {
-    let e = env().await;
-    let r = e.mb.append(common::INBOX, raw("a", Some("a@x")), Flags::empty()).await.unwrap();
-    let lo = e.scalar("SELECT unixepoch()").await;
-    e.mb.expunge(r.id).await.unwrap();
-    let f = e.mb.create_folder(None, "Later").await.unwrap();
-    let hi = e.scalar("SELECT unixepoch()").await;
-    let del = e
-        .scalar(&format!("SELECT deleted_at FROM messages WHERE id = {}", r.id.0))
-        .await;
-    within(del, lo, hi, "messages.deleted_at");
-    let uv = e
-        .scalar(&format!("SELECT uid_validity FROM folders WHERE id = {}", f.0))
-        .await;
-    assert!(uv >= lo - 2, "folder uid_validity {uv} below the database clock {lo}");
+    for_each_env(|e| async move {
+        let r =
+            e.mb.append(INBOX, raw("a", Some("a@x")), Flags::empty())
+                .await
+                .unwrap();
+        let lo = e.db_clock().await;
+        e.mb.expunge(r.id).await.unwrap();
+        let f = e.mb.create_folder(None, "Later").await.unwrap();
+        let hi = e.db_clock().await;
+        let del = e
+            .scalar(&format!(
+                "SELECT deleted_at FROM messages WHERE id = {}",
+                r.id.0
+            ))
+            .await;
+        within(del, lo, hi, "messages.deleted_at");
+        let uv = e
+            .scalar(&format!(
+                "SELECT uid_validity FROM folders WHERE id = {}",
+                f.0
+            ))
+            .await;
+        assert!(
+            uv >= lo - 2,
+            "folder uid_validity {uv} below the database clock {lo}"
+        );
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn gc_grace_cutoff_comes_from_the_database_clock() {
     use std::time::Duration;
-    let e = env().await;
-    let now = e.scalar("SELECT unixepoch()").await;
-    for (name, age) in [("old", 3 * 3600), ("young", 1800)] {
-        let h = format!("{:0>64}", name.bytes().map(|b| format!("{b:02x}")).collect::<String>());
-        sqlx::query("INSERT INTO blobs (hash, size) VALUES (?, 1)")
-            .bind(&h)
-            .execute(e.store.pool())
-            .await
-            .unwrap();
-        // The insert trigger stamps zero_since with the database clock; age it afterwards.
-        sqlx::query("UPDATE blobs SET zero_since = ? WHERE hash = ?")
-            .bind(now - age)
-            .bind(&h)
-            .execute(e.store.pool())
-            .await
-            .unwrap();
-    }
-    let rep = rusty_store::collect_blobs(&e.store, e.blobs.as_ref(), Duration::from_secs(3600))
-        .await
-        .unwrap();
-    assert_eq!(rep.rows_deleted, 1, "{rep:?}");
-    let left = e.scalar("SELECT COUNT(*) FROM blobs").await;
-    assert_eq!(left, 1);
+    for_each_env(|e| async move {
+        let now = e.db_clock().await;
+        for (name, age) in [("old", 3 * 3600), ("young", 1800)] {
+            let h = format!(
+                "{:0>64}",
+                name.bytes().map(|b| format!("{b:02x}")).collect::<String>()
+            );
+            insert_blob_row(&e.b, &h, 1).await;
+            // The insert trigger stamps zero_since with the database clock; age it afterwards.
+            set_zero_since(&e.b, &h, now - age).await;
+        }
+        let rep =
+            e.b.gc()
+                .collect_blobs(e.blobs.as_ref(), Duration::from_secs(3600))
+                .await
+                .unwrap();
+        assert_eq!(rep.rows_deleted, 1, "{rep:?}");
+        let left = e.scalar("SELECT COUNT(*) FROM blobs").await;
+        assert_eq!(left, 1);
+    })
+    .await;
 }
 
 // ---------------------------------------------------------------- source scan
@@ -211,7 +255,11 @@ fn no_rust_clock_in_correctness_paths() {
                 if path.extension().and_then(|x| x.to_str()) != Some("rs") {
                     continue;
                 }
-                let rel = path.strip_prefix(&crates).unwrap().to_string_lossy().replace('\\', "/");
+                let rel = path
+                    .strip_prefix(&crates)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
                 if ALLOWED.iter().any(|(f, _)| *f == rel) {
                     continue;
                 }
@@ -233,7 +281,11 @@ fn no_rust_clock_in_correctness_paths() {
             }
         }
     }
-    assert!(offenders.is_empty(), "Rust clock in correctness paths:\n{}", offenders.join("\n"));
+    assert!(
+        offenders.is_empty(),
+        "Rust clock in correctness paths:\n{}",
+        offenders.join("\n")
+    );
 }
 
 // ---------------------------------------------------------------- jobs (SQLite until PG5)
@@ -242,31 +294,47 @@ fn no_rust_clock_in_correctness_paths() {
 /// this test for Postgres through the same body.
 #[tokio::test]
 async fn job_lease_and_schedule_use_the_database_clock() {
-    use rusty_store::JobQueue;
-    let store = common::mem().await;
-    let jq = JobQueue::new(store.clone());
-    let lo: i64 = sqlx::query_scalar("SELECT unixepoch()").fetch_one(store.pool()).await.unwrap();
-    jq.enqueue("clock.test", None, &serde_json::json!({}), None).await.unwrap();
-    let job = jq.claim("w1", &["clock.test"], 60).await.unwrap().expect("job");
-    let hi: i64 = sqlx::query_scalar("SELECT unixepoch()").fetch_one(store.pool()).await.unwrap();
-    let (created, run_after, lease): (i64, i64, i64) = sqlx::query_as(
-        "SELECT created_at, run_after, lease_expires_at FROM jobs WHERE id = ?",
-    )
-    .bind(job.id.0)
-    .fetch_one(store.pool())
-    .await
-    .unwrap();
-    within(created, lo, hi, "jobs.created_at");
-    within(run_after, lo, hi, "jobs.run_after");
-    within(lease, lo + 60, hi + 60, "jobs.lease_expires_at");
-    // A heartbeat extends from the database clock too.
-    jq.heartbeat(job.id, job.epoch, 120).await.unwrap();
-    let lease: i64 = sqlx::query_scalar("SELECT lease_expires_at FROM jobs WHERE id = ?")
-        .bind(job.id.0)
-        .fetch_one(store.pool())
-        .await
-        .unwrap();
-    within(lease, lo + 120, hi + 120 + 2, "jobs.lease_expires_at after heartbeat");
+    for_each_backend(|b| async move {
+        let jq = b.jobs();
+        let lo = db_now(&b).await;
+        jq.enqueue("clock.test", None, &serde_json::json!({}), None)
+            .await
+            .unwrap();
+        let job = jq
+            .claim("w1", &["clock.test"], 60)
+            .await
+            .unwrap()
+            .expect("job");
+        let hi = db_now(&b).await;
+        let col = |name: &'static str, id: i64| {
+            let b = &b;
+            async move {
+                exec(
+                    b,
+                    &format!("SELECT {name} FROM jobs WHERE id = ?1"),
+                    &[Bind::I(id)],
+                )
+                .await
+            }
+        };
+        within(col("created_at", job.id.0).await, lo, hi, "jobs.created_at");
+        within(col("run_after", job.id.0).await, lo, hi, "jobs.run_after");
+        within(
+            col("lease_expires_at", job.id.0).await,
+            lo + 60,
+            hi + 60,
+            "jobs.lease_expires_at",
+        );
+        // A heartbeat extends from the database clock too.
+        jq.heartbeat(job.id, job.epoch, 120).await.unwrap();
+        within(
+            col("lease_expires_at", job.id.0).await,
+            lo + 120,
+            hi + 120 + 2,
+            "jobs.lease_expires_at after heartbeat",
+        );
+    })
+    .await;
 }
 
 // ---------------------------------------------------------------- supplied timestamps are bounded
@@ -275,31 +343,41 @@ async fn job_lease_and_schedule_use_the_database_clock() {
 /// writing them (negative, or beyond `MAX_SUPPLIED_TIME`, the year 2100).
 #[tokio::test]
 async fn supplied_timestamps_are_bounded() {
-    use rusty_store::{DeliverItem, MAX_SUPPLIED_TIME};
-    let e = env().await;
-    for (i, bad) in [-1i64, i64::MIN, MAX_SUPPLIED_TIME + 1, i64::MAX].into_iter().enumerate() {
-        let did = DeliveryId([i as u8 + 40; 32]);
-        let r = e
-            .mb
-            .deliver_at(common::INBOX, raw("x", Some("x@x")), Flags::empty(), did, bad)
-            .await;
-        assert!(matches!(r, Err(rusty_core::Error::Invalid(_))), "deliver_at({bad}): {r:?}");
-        let item = DeliverItem {
-            raw: raw("y", Some("y@x")),
-            flags: Flags::empty(),
-            delivery_id: DeliveryId([i as u8 + 60; 32]),
-        };
-        let r = e.mb.deliver_many_at(common::INBOX, vec![item], bad).await;
-        assert!(matches!(r, Err(rusty_core::Error::Invalid(_))), "deliver_many_at({bad}): {r:?}");
-        let r = e.mb.expunge_many_at(&[rusty_core::MessageId(1)], bad).await;
-        assert!(matches!(r, Err(rusty_core::Error::Invalid(_))), "expunge_many_at({bad}): {r:?}");
-    }
-    // Nothing was written by the rejected calls, and the bounds themselves are accepted.
-    assert_eq!(e.scalar("SELECT COUNT(*) FROM messages").await, 0);
-    for (i, ok) in [0i64, MAX_SUPPLIED_TIME].into_iter().enumerate() {
-        e.mb
-            .deliver_at(
-                common::INBOX,
+    for_each_env(|e| async move {
+        use rusty_store::{DeliverItem, MAX_SUPPLIED_TIME};
+        for (i, bad) in [-1i64, i64::MIN, MAX_SUPPLIED_TIME + 1, i64::MAX]
+            .into_iter()
+            .enumerate()
+        {
+            let did = DeliveryId([i as u8 + 40; 32]);
+            let r =
+                e.mb.deliver_at(INBOX, raw("x", Some("x@x")), Flags::empty(), did, bad)
+                    .await;
+            assert!(
+                matches!(r, Err(rusty_core::Error::Invalid(_))),
+                "deliver_at({bad}): {r:?}"
+            );
+            let item = DeliverItem {
+                raw: raw("y", Some("y@x")),
+                flags: Flags::empty(),
+                delivery_id: DeliveryId([i as u8 + 60; 32]),
+            };
+            let r = e.mb.deliver_many_at(INBOX, vec![item], bad).await;
+            assert!(
+                matches!(r, Err(rusty_core::Error::Invalid(_))),
+                "deliver_many_at({bad}): {r:?}"
+            );
+            let r = e.mb.expunge_many_at(&[rusty_core::MessageId(1)], bad).await;
+            assert!(
+                matches!(r, Err(rusty_core::Error::Invalid(_))),
+                "expunge_many_at({bad}): {r:?}"
+            );
+        }
+        // Nothing was written by the rejected calls, and the bounds themselves are accepted.
+        assert_eq!(e.scalar("SELECT COUNT(*) FROM messages").await, 0);
+        for (i, ok) in [0i64, MAX_SUPPLIED_TIME].into_iter().enumerate() {
+            e.mb.deliver_at(
+                INBOX,
                 raw("z", Some("z@x")),
                 Flags::empty(),
                 DeliveryId([i as u8 + 80; 32]),
@@ -307,7 +385,9 @@ async fn supplied_timestamps_are_bounded() {
             )
             .await
             .unwrap();
-    }
+        }
+    })
+    .await;
 }
 
 /// Behavioural proof that the GC cutoff follows the DATABASE clock: the database clock is skewed
@@ -315,37 +395,32 @@ async fn supplied_timestamps_are_bounded() {
 /// to the real time. A cutoff taken from the process clock would give the opposite answers.
 #[tokio::test]
 async fn gc_cutoff_follows_a_skewed_database_clock() {
-    use std::time::Duration;
+    use std::time::{Duration, UNIX_EPOCH};
     for (skew, expect_deleted, label) in [
         // DB clock a year ahead: even a 30-minute-old zero_since is past the 1h grace -> deleted.
-        ("SELECT unixepoch() + 31536000", 2, "database clock ahead"),
+        (31_536_000i64, 2u64, "database clock ahead"),
         // DB clock a year behind: a 3h-old row is not older than the grace window -> kept.
-        ("SELECT unixepoch() - 31536000", 0, "database clock behind"),
+        (-31_536_000i64, 0u64, "database clock behind"),
     ] {
-        let e = env().await;
-        let now = e.scalar("SELECT unixepoch()").await;
-        for (name, age) in [("old", 3 * 3600), ("young", 1800)] {
-            let h = format!("{:0>64}", name.bytes().map(|b| format!("{b:02x}")).collect::<String>());
-            sqlx::query("INSERT INTO blobs (hash, size) VALUES (?, 1)")
-                .bind(&h)
-                .execute(e.store.pool())
-                .await
-                .unwrap();
-            sqlx::query("UPDATE blobs SET zero_since = ? WHERE hash = ?")
-                .bind(now - age)
-                .bind(&h)
-                .execute(e.store.pool())
-                .await
-                .unwrap();
-        }
-        let rep = rusty_store::collect_blobs_with_db_clock(
-            &e.store,
-            e.blobs.as_ref(),
-            Duration::from_secs(3600),
-            skew,
-        )
-        .await
-        .unwrap();
-        assert_eq!(rep.rows_deleted, expect_deleted, "{label}: {rep:?}");
+        for_each_env(|e| async move {
+            let now = e.db_clock().await;
+            for (name, age) in [("old", 3 * 3600), ("young", 1800)] {
+                let h = format!(
+                    "{:0>64}",
+                    name.bytes().map(|b| format!("{b:02x}")).collect::<String>()
+                );
+                insert_blob_row(&e.b, &h, 1).await;
+                set_zero_since(&e.b, &h, now - age).await;
+            }
+            // "now" as the skewed database clock reports it, judged by the shared GC body.
+            let skewed = UNIX_EPOCH + Duration::from_secs(u64::try_from(now + skew).unwrap());
+            let rep =
+                e.b.gc()
+                    .collect_blobs_at(e.blobs.as_ref(), Duration::from_secs(3600), skewed)
+                    .await
+                    .unwrap();
+            assert_eq!(rep.rows_deleted, expect_deleted, "{label}: {rep:?}");
+        })
+        .await;
     }
 }

@@ -17,15 +17,15 @@ use rusty_store::MAX_FOLDER_DEPTH;
 async fn oracle_thread(e: &Env, refs: &[String], irt: Option<&str>) -> Option<i64> {
     let mb = e.mb.id().0;
     for mid in refs.iter().rev().map(String::as_str).chain(irt).take(32) {
-        let t: Option<i64> = sqlx::query_scalar(
-            "SELECT thread_id FROM messages WHERE mailbox_id = ? AND message_id_hdr = ? \
-             ORDER BY id LIMIT 1",
-        )
-        .bind(mb)
-        .bind(mid)
-        .fetch_optional(e.store.pool())
-        .await
-        .unwrap();
+        let t = e
+            .scalars(
+                "SELECT thread_id FROM messages WHERE mailbox_id = ? AND message_id_hdr = ? \
+                 ORDER BY id LIMIT 1",
+                &[Bind::I(mb), Bind::S(mid)],
+            )
+            .await
+            .first()
+            .copied();
         if t.is_some() {
             return t;
         }
@@ -62,7 +62,10 @@ fn id_str(n: u8) -> String {
 
 async fn thread_equivalence(msgs: Vec<Msg>) {
     let _p = stmts::probe();
-    let e = env().await;
+    for_each_env(|e| thread_equivalence_on(e, msgs.clone())).await;
+}
+
+async fn thread_equivalence_on(e: Env, msgs: Vec<Msg>) {
     for m in msgs {
         let refs: Vec<String> = m.refs.iter().map(|&r| id_str(r)).collect();
         let irt = m.irt.map(id_str);
@@ -97,48 +100,52 @@ proptest! {
 
 #[tokio::test]
 async fn duplicate_message_ids_choose_the_smallest_id_and_deleted_anchor_counts() {
-    let _p = stmts::probe();
-    let e = env().await;
-    let a =
-        e.mb.append(INBOX, raw("a", Some("dup@t")), Flags::empty())
-            .await
-            .unwrap();
-    let b =
-        e.mb.append(INBOX, raw("b", Some("dup@t")), Flags::empty())
-            .await
-            .unwrap();
-    assert_ne!(a.id, b.id);
-    e.mb.expunge(a.id).await.unwrap(); // a soft-deleted anchor still anchors
-    let c =
-        e.mb.append(INBOX, reply("c", None, Some("dup@t"), &[]), Flags::empty())
-            .await
-            .unwrap();
-    let t = |id: MessageId| format!("SELECT thread_id FROM messages WHERE id = {}", id.0);
-    assert_eq!(e.scalar(&t(c.id)).await, e.scalar(&t(a.id)).await);
+    for_each_env(|e| async move {
+        let _p = stmts::probe();
+        let a =
+            e.mb.append(INBOX, raw("a", Some("dup@t")), Flags::empty())
+                .await
+                .unwrap();
+        let b =
+            e.mb.append(INBOX, raw("b", Some("dup@t")), Flags::empty())
+                .await
+                .unwrap();
+        assert_ne!(a.id, b.id);
+        e.mb.expunge(a.id).await.unwrap(); // a soft-deleted anchor still anchors
+        let c =
+            e.mb.append(INBOX, reply("c", None, Some("dup@t"), &[]), Flags::empty())
+                .await
+                .unwrap();
+        let t = |id: MessageId| format!("SELECT thread_id FROM messages WHERE id = {}", id.0);
+        assert_eq!(e.scalar(&t(c.id)).await, e.scalar(&t(a.id)).await);
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn find_thread_uses_one_query() {
-    let p = stmts::probe(); // first: serializes this test, setup included
-    let e = env().await;
-    let refs: Vec<String> = (0..40).map(|i| format!("ref{i}@t.test")).collect();
-    e.mb.append(INBOX, raw("anchor", Some(&refs[20])), Flags::empty())
-        .await
-        .unwrap();
-    let refs_s: Vec<&str> = refs.iter().map(String::as_str).collect();
-    let many = reply("x", None, Some("irt@t.test"), &refs_s);
-    let none = raw("y", None);
+    for_each_env(|e| async move {
+        let p = stmts::probe(); // first: serializes this test, setup included
+        let refs: Vec<String> = (0..40).map(|i| format!("ref{i}@t.test")).collect();
+        e.mb.append(INBOX, raw("anchor", Some(&refs[20])), Flags::empty())
+            .await
+            .unwrap();
+        let refs_s: Vec<&str> = refs.iter().map(String::as_str).collect();
+        let many = reply("x", None, Some("irt@t.test"), &refs_s);
+        let none = raw("y", None);
 
-    p.reset();
-    e.mb.append(INBOX, none, Flags::empty()).await.unwrap();
-    let base = p.count();
-    p.reset();
-    e.mb.append(INBOX, many, Flags::empty()).await.unwrap();
-    assert_eq!(
-        p.count(),
-        base + 1,
-        "32 candidates must cost exactly one extra statement"
-    );
+        p.reset();
+        e.mb.append(INBOX, none, Flags::empty()).await.unwrap();
+        let base = p.count();
+        p.reset();
+        e.mb.append(INBOX, many, Flags::empty()).await.unwrap();
+        assert_eq!(
+            p.count(),
+            base + 1,
+            "32 candidates must cost exactly one extra statement"
+        );
+    })
+    .await;
 }
 
 // ---------- ancestor_depth (via create_folder / move_folder) ----------
@@ -212,7 +219,10 @@ fn too_deep(d: usize, extra: usize) -> Result<(), Error> {
 
 async fn folder_equivalence(ops: Vec<FOp>) {
     let _p = stmts::probe();
-    let e = env().await;
+    for_each_env(|e| folder_equivalence_on(e, ops.clone())).await;
+}
+
+async fn folder_equivalence_on(e: Env, ops: Vec<FOp>) {
     let mut tree: HashMap<i64, Option<i64>> = HashMap::new();
     let mut order: Vec<i64> = vec![];
     for op in ops {
@@ -270,81 +280,88 @@ proptest! {
 
 #[tokio::test]
 async fn depth_64_is_allowed_65_is_invalid_and_descendant_move_conflicts() {
-    let _p = stmts::probe();
-    let e = env().await;
-    let mut cur = e.mb.create_folder(None, "d1").await.unwrap();
-    let first = cur;
-    for i in 2..=MAX_FOLDER_DEPTH {
-        cur =
-            e.mb.create_folder(Some(cur), &format!("d{i}"))
-                .await
-                .unwrap();
-    }
-    assert!(matches!(
-        e.mb.create_folder(Some(cur), "d65").await,
-        Err(Error::Invalid(_))
-    ));
-    assert!(matches!(
-        e.mb.move_folder(first, Some(cur)).await,
-        Err(Error::Conflict(_))
-    ));
+    for_each_env(|e| async move {
+        let _p = stmts::probe();
+        let mut cur = e.mb.create_folder(None, "d1").await.unwrap();
+        let first = cur;
+        for i in 2..=MAX_FOLDER_DEPTH {
+            cur =
+                e.mb.create_folder(Some(cur), &format!("d{i}"))
+                    .await
+                    .unwrap();
+        }
+        assert!(matches!(
+            e.mb.create_folder(Some(cur), "d65").await,
+            Err(Error::Invalid(_))
+        ));
+        assert!(matches!(
+            e.mb.move_folder(first, Some(cur)).await,
+            Err(Error::Conflict(_))
+        ));
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn ancestor_depth_uses_one_query() {
-    let p = stmts::probe(); // first: serializes this test, setup included
-    let e = env().await;
-    let shallow = e.mb.create_folder(None, "s").await.unwrap();
-    let mut deep = e.mb.create_folder(None, "d1").await.unwrap();
-    for i in 2..=60 {
-        deep =
-            e.mb.create_folder(Some(deep), &format!("d{i}"))
-                .await
-                .unwrap();
-    }
-    p.reset();
-    e.mb.create_folder(None, "r").await.unwrap(); // no ancestor walk at all
-    let root = p.count();
-    p.reset();
-    e.mb.create_folder(Some(shallow), "a").await.unwrap();
-    let one = p.count();
-    p.reset();
-    e.mb.create_folder(Some(deep), "b").await.unwrap(); // a 60-level walk
-    let sixty = p.count();
-    assert_eq!(
-        one,
-        root + 1,
-        "an ancestor walk costs exactly one statement"
-    );
-    assert_eq!(sixty, one, "and does not grow with depth");
+    for_each_env(|e| async move {
+        let p = stmts::probe(); // first: serializes this test, setup included
+        let shallow = e.mb.create_folder(None, "s").await.unwrap();
+        let mut deep = e.mb.create_folder(None, "d1").await.unwrap();
+        for i in 2..=60 {
+            deep =
+                e.mb.create_folder(Some(deep), &format!("d{i}"))
+                    .await
+                    .unwrap();
+        }
+        p.reset();
+        e.mb.create_folder(None, "r").await.unwrap(); // no ancestor walk at all
+        let root = p.count();
+        p.reset();
+        e.mb.create_folder(Some(shallow), "a").await.unwrap();
+        let one = p.count();
+        p.reset();
+        e.mb.create_folder(Some(deep), "b").await.unwrap(); // a 60-level walk
+        let sixty = p.count();
+        assert_eq!(
+            one,
+            root + 1,
+            "an ancestor walk costs exactly one statement"
+        );
+        assert_eq!(sixty, one, "and does not grow with depth");
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn cyclic_folder_data_is_invalid_not_a_hang() {
-    let _p = stmts::probe();
-    let e = env().await;
-    let a = e.mb.create_folder(None, "a").await.unwrap();
-    let b = e.mb.create_folder(Some(a), "b").await.unwrap();
-    let c = e.mb.create_folder(None, "c").await.unwrap();
-    // Corrupt data: drop the guard trigger and close a cycle a -> b -> a by raw SQL.
-    sqlx::query("DROP TRIGGER folders_no_cycle")
-        .execute(e.store.pool())
-        .await
-        .unwrap();
-    sqlx::query("UPDATE folders SET parent_id = ? WHERE id = ?")
-        .bind(b.0)
-        .bind(a.0)
-        .execute(e.store.pool())
-        .await
-        .unwrap();
-    assert!(matches!(
-        e.mb.create_folder(Some(b), "x").await,
-        Err(Error::Invalid(_))
-    ));
-    assert!(matches!(
-        e.mb.move_folder(c, Some(a)).await,
-        Err(Error::Invalid(_))
-    ));
+    for_each_env(|e| async move {
+        let _p = stmts::probe();
+        let a = e.mb.create_folder(None, "a").await.unwrap();
+        let b = e.mb.create_folder(Some(a), "b").await.unwrap();
+        let c = e.mb.create_folder(None, "c").await.unwrap();
+        // Corrupt data: drop the guard trigger and close a cycle a -> b -> a by raw SQL.
+        if e.is_sqlite() {
+            e.exec("DROP TRIGGER folders_no_cycle", &[]).await;
+        } else {
+            e.exec("ALTER TABLE folders DISABLE TRIGGER folders_no_cycle", &[])
+                .await;
+        }
+        e.exec(
+            "UPDATE folders SET parent_id = ? WHERE id = ?",
+            &[Bind::I(b.0), Bind::I(a.0)],
+        )
+        .await;
+        assert!(matches!(
+            e.mb.create_folder(Some(b), "x").await,
+            Err(Error::Invalid(_))
+        ));
+        assert!(matches!(
+            e.mb.move_folder(c, Some(a)).await,
+            Err(Error::Invalid(_))
+        ));
+    })
+    .await;
 }
 
 // ---------- lock first (every MailboxRepo write) ----------

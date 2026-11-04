@@ -117,95 +117,93 @@ proptest! {
     #[test]
     fn ids_uids_seq_are_gapless_and_monotonic(ops in proptest::collection::vec(op(), 1..40)) {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        rt.block_on(async {
-            let e = env().await;
-            run(&e.mb, ops).await;
-        });
+        rt.block_on(for_each_env(|e| {
+            let ops = ops.clone();
+            async move { run(&e.mb, ops).await }
+        }));
     }
-}
-
-async fn file_env() -> Env {
-    let dir = tempfile::tempdir().unwrap();
-    let store = file_store(dir.path()).await;
-    env_with(store, dir).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn concurrent_appends_no_duplicates() {
-    let e = file_env().await;
-    let mb: Arc<Mailbox> = Arc::new(e.mb.clone());
-    let mut tasks = vec![];
-    for i in 0..50 {
-        let mb = mb.clone();
-        tasks.push(tokio::spawn(async move {
-            mb.append(
-                INBOX,
-                raw(&format!("c{i}"), Some(&format!("c{i}@x"))),
-                Flags::empty(),
-            )
+    for_each_env(|e| async move {
+        let mb: Arc<Mailbox> = Arc::new(e.mb.clone());
+        let mut tasks = vec![];
+        for i in 0..50 {
+            let mb = mb.clone();
+            tasks.push(tokio::spawn(async move {
+                mb.append(
+                    INBOX,
+                    raw(&format!("c{i}"), Some(&format!("c{i}@x"))),
+                    Flags::empty(),
+                )
+                .await
+                .unwrap()
+            }));
+        }
+        let mut refs = vec![];
+        for t in tasks {
+            refs.push(t.await.unwrap());
+        }
+        let mut uids: Vec<u32> = refs.iter().map(|r| r.uid).collect();
+        uids.sort_unstable();
+        assert_eq!(uids, (1..=50).collect::<Vec<u32>>());
+        let mut ids: Vec<i64> = refs.iter().map(|r| r.id.0).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, (1..=50).collect::<Vec<i64>>());
+
+        let seqs: Vec<i64> = mb
+            .changes_since(0, MAX_PAGE)
             .await
             .unwrap()
-        }));
-    }
-    let mut refs = vec![];
-    for t in tasks {
-        refs.push(t.await.unwrap());
-    }
-    let mut uids: Vec<u32> = refs.iter().map(|r| r.uid).collect();
-    uids.sort_unstable();
-    assert_eq!(uids, (1..=50).collect::<Vec<u32>>());
-    let mut ids: Vec<i64> = refs.iter().map(|r| r.id.0).collect();
-    ids.sort_unstable();
-    assert_eq!(ids, (1..=50).collect::<Vec<i64>>());
-
-    let seqs: Vec<i64> = mb
-        .changes_since(0, MAX_PAGE)
-        .await
-        .unwrap()
-        .changes
-        .iter()
-        .map(|c| c.seq)
-        .collect();
-    assert_eq!(seqs, (1..=50).collect::<Vec<i64>>());
-    assert_eq!(mb.list_folder(INBOX, 0, MAX_PAGE).await.unwrap().len(), 50);
+            .changes
+            .iter()
+            .map(|c| c.seq)
+            .collect();
+        assert_eq!(seqs, (1..=50).collect::<Vec<i64>>());
+        assert_eq!(mb.list_folder(INBOX, 0, MAX_PAGE).await.unwrap().len(), 50);
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_appends_into_different_folders() {
-    let e = file_env().await;
-    let mb = Arc::new(e.mb.clone());
-    let (a, b) = tokio::join!(
-        {
-            let mb = mb.clone();
-            async move {
-                mb.append(INBOX, raw("a", None), Flags::empty())
-                    .await
-                    .unwrap()
+    for_each_env(|e| async move {
+        let mb = Arc::new(e.mb.clone());
+        let (a, b) = tokio::join!(
+            {
+                let mb = mb.clone();
+                async move {
+                    mb.append(INBOX, raw("a", None), Flags::empty())
+                        .await
+                        .unwrap()
+                }
+            },
+            {
+                let mb = mb.clone();
+                async move {
+                    mb.append(SENT, raw("b", None), Flags::empty())
+                        .await
+                        .unwrap()
+                }
             }
-        },
-        {
-            let mb = mb.clone();
-            async move {
-                mb.append(SENT, raw("b", None), Flags::empty())
-                    .await
-                    .unwrap()
-            }
-        }
-    );
-    assert_ne!(a.id, b.id);
-    assert_eq!((a.uid, b.uid), (1, 1));
-    let mut ids = vec![a.id.0, b.id.0];
-    ids.sort_unstable();
-    assert_eq!(ids, vec![1, 2]);
-    let seqs: Vec<i64> = mb
-        .changes_since(0, MAX_PAGE)
-        .await
-        .unwrap()
-        .changes
-        .iter()
-        .map(|c| c.seq)
-        .collect();
-    assert_eq!(seqs, vec![1, 2]);
+        );
+        assert_ne!(a.id, b.id);
+        assert_eq!((a.uid, b.uid), (1, 1));
+        let mut ids = vec![a.id.0, b.id.0];
+        ids.sort_unstable();
+        assert_eq!(ids, vec![1, 2]);
+        let seqs: Vec<i64> = mb
+            .changes_since(0, MAX_PAGE)
+            .await
+            .unwrap()
+            .changes
+            .iter()
+            .map(|c| c.seq)
+            .collect();
+        assert_eq!(seqs, vec![1, 2]);
+    })
+    .await;
 }
 
 // ====================================================================== PG4: both backends
@@ -311,16 +309,25 @@ fn folder_id(f: u8) -> FolderId {
 }
 
 fn ids(m: u8, n: u8) -> Vec<MessageId> {
-    (0..n).map(|k| MessageId(i64::from(m) + i64::from(k) + 1)).collect()
+    (0..n)
+        .map(|k| MessageId(i64::from(m) + i64::from(k) + 1))
+        .collect()
 }
 
 /// A message with Message-ID `m{mid}@x` (if any) and a parent: 0 none, 1..=6 In-Reply-To
 /// `m{p-1}@x`, 7 a References chain (`m0@x m1@x m2@x`, nearest ancestor last) plus an In-Reply-To.
 fn threaded(subject: &str, mid: Option<u8>, parent: u8) -> bytes::Bytes {
     let id = mid.map(|m| format!("m{m}@x"));
-    let irt = (1..=6).contains(&parent).then(|| format!("m{}@x", parent - 1));
+    let irt = (1..=6)
+        .contains(&parent)
+        .then(|| format!("m{}@x", parent - 1));
     match parent {
-        7 => reply(subject, id.as_deref(), Some("m5@x"), &["m0@x", "m1@x", "m2@x"]),
+        7 => reply(
+            subject,
+            id.as_deref(),
+            Some("m5@x"),
+            &["m0@x", "m1@x", "m2@x"],
+        ),
         _ => reply(subject, id.as_deref(), irt.as_deref(), &[]),
     }
 }
@@ -346,7 +353,11 @@ async fn exec(mb: &Mailbox, ops: &[DOp]) -> Vec<String> {
         let line = match o {
             DOp::Append(f, s, fl, p) => {
                 let r = mb
-                    .append(folder_id(*f), threaded(&format!("subj{s}"), Some(*s), *p), Flags::from_bits(*fl).unwrap())
+                    .append(
+                        folder_id(*f),
+                        threaded(&format!("subj{s}"), Some(*s), *p),
+                        Flags::from_bits(*fl).unwrap(),
+                    )
                     .await;
                 kind(&r)
             }
@@ -356,37 +367,65 @@ async fn exec(mb: &Mailbox, ops: &[DOp]) -> Vec<String> {
                 let raws = (0..*n)
                     .map(|i| {
                         let k = step as u8 + i;
-                        threaded(&format!("am{step}-{i}"), Some(k % 6), (k.wrapping_mul(3)) % 8)
+                        threaded(
+                            &format!("am{step}-{i}"),
+                            Some(k % 6),
+                            (k.wrapping_mul(3)) % 8,
+                        )
                     })
                     .collect();
                 kind(&mb.append_many(folder_id(*f), raws, Flags::empty()).await)
             }
-            DOp::Deliver(f, d, c) => {
-                kind(&mb.deliver(folder_id(*f), content(*c), Flags::empty(), rusty_core::DeliveryId([*d; 32])).await)
-            }
+            DOp::Deliver(f, d, c) => kind(
+                &mb.deliver(
+                    folder_id(*f),
+                    content(*c),
+                    Flags::empty(),
+                    rusty_core::DeliveryId([*d; 32]),
+                )
+                .await,
+            ),
             DOp::DeliverMany(f, d, n) => {
-                let items = (0..*n).map(|i| item(d.wrapping_add(i) % 4, (d + i) % 3)).collect();
+                let items = (0..*n)
+                    .map(|i| item(d.wrapping_add(i) % 4, (d + i) % 3))
+                    .collect();
                 kind(&mb.deliver_many(folder_id(*f), items).await)
             }
-            DOp::SetFlags(m, b) => kind(&mb.set_flags(MessageId(i64::from(*m) + 1), Flags::from_bits(*b).unwrap()).await),
-            DOp::SetFlagsMany(m, n, b) => {
-                kind(&mb.set_flags_many(&ids(*m, *n), Flags::from_bits(*b).unwrap()).await)
-            }
-            DOp::AddKeyword(m, k) => kind(&mb.add_keyword(MessageId(i64::from(*m) + 1), &format!("k{k}")).await),
-            DOp::RemoveKeyword(m, k) => kind(&mb.remove_keyword(MessageId(i64::from(*m) + 1), &format!("k{k}")).await),
-            DOp::Move(m, f) => kind(&mb.move_message(MessageId(i64::from(*m) + 1), folder_id(*f)).await),
+            DOp::SetFlags(m, b) => kind(
+                &mb.set_flags(MessageId(i64::from(*m) + 1), Flags::from_bits(*b).unwrap())
+                    .await,
+            ),
+            DOp::SetFlagsMany(m, n, b) => kind(
+                &mb.set_flags_many(&ids(*m, *n), Flags::from_bits(*b).unwrap())
+                    .await,
+            ),
+            DOp::AddKeyword(m, k) => kind(
+                &mb.add_keyword(MessageId(i64::from(*m) + 1), &format!("k{k}"))
+                    .await,
+            ),
+            DOp::RemoveKeyword(m, k) => kind(
+                &mb.remove_keyword(MessageId(i64::from(*m) + 1), &format!("k{k}"))
+                    .await,
+            ),
+            DOp::Move(m, f) => kind(
+                &mb.move_message(MessageId(i64::from(*m) + 1), folder_id(*f))
+                    .await,
+            ),
             DOp::MoveMany(m, n, f) => kind(&mb.move_many(&ids(*m, *n), folder_id(*f)).await),
             DOp::Expunge(m) => kind(&mb.expunge(MessageId(i64::from(*m) + 1)).await),
             DOp::ExpungeMany(m, n) => kind(&mb.expunge_many(&ids(*m, *n)).await),
-            DOp::ExpungeAt(m, t) => {
-                kind(&mb.expunge_many_at(&[MessageId(i64::from(*m) + 1)], i64::from(*t) * 100).await)
-            }
+            DOp::ExpungeAt(m, t) => kind(
+                &mb.expunge_many_at(&[MessageId(i64::from(*m) + 1)], i64::from(*t) * 100)
+                    .await,
+            ),
             DOp::Purge(all) => kind(&mb.purge_deleted(if *all { i64::MAX } else { 150 }).await),
             DOp::CreateFolder(p, n) => {
                 let parent = if *p == 0 { None } else { Some(folder_id(*p)) };
                 kind(&mb.create_folder(parent, &format!("n{n}")).await)
             }
-            DOp::RenameFolder(f, n) => kind(&mb.rename_folder(folder_id(*f), &format!("n{n}")).await),
+            DOp::RenameFolder(f, n) => {
+                kind(&mb.rename_folder(folder_id(*f), &format!("n{n}")).await)
+            }
             DOp::MoveFolder(f, p) => {
                 let parent = if *p == 0 { None } else { Some(folder_id(*p)) };
                 kind(&mb.move_folder(folder_id(*f), parent).await)
@@ -403,16 +442,38 @@ async fn exec(mb: &Mailbox, ops: &[DOp]) -> Vec<String> {
         let list = mb.list_folder(f.id, 0, MAX_PAGE).await.unwrap();
         let rows: Vec<_> = list
             .iter()
-            .map(|m| (m.id, m.uid, m.size, m.subject.clone(), m.from_addr.clone(), m.flags, m.thread_id))
+            .map(|m| {
+                (
+                    m.id,
+                    m.uid,
+                    m.size,
+                    m.subject.clone(),
+                    m.from_addr.clone(),
+                    m.flags,
+                    m.thread_id,
+                )
+            })
             .collect();
         out.push(format!("folder {}: {rows:?}", f.id.0));
     }
     for id in 1..=14 {
         let id = MessageId(id);
         let d = mb.get_message(id).await.map(|d| {
-            (d.folder, d.blob, d.deleted, d.summary.uid, d.summary.flags, d.summary.thread_id)
+            (
+                d.folder,
+                d.blob,
+                d.deleted,
+                d.summary.uid,
+                d.summary.flags,
+                d.summary.thread_id,
+            )
         });
-        out.push(format!("message {}: {} kw={:?}", id.0, kind(&d), kind(&mb.keywords(id).await)));
+        out.push(format!(
+            "message {}: {} kw={:?}",
+            id.0,
+            kind(&d),
+            kind(&mb.keywords(id).await)
+        ));
     }
     out
 }
@@ -428,7 +489,10 @@ async fn differential(ops: Vec<DOp>) {
         let got = exec(&m_pg, &ops).await;
         assert_eq!(expected.len(), got.len());
         for (e, g) in expected.iter().zip(&got) {
-            assert_eq!(e, g, "SQLite (left) and Postgres (right) diverge for {ops:?}");
+            assert_eq!(
+                e, g,
+                "SQLite (left) and Postgres (right) diverge for {ops:?}"
+            );
         }
     }
     let _ = expected;

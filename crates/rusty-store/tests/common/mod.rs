@@ -6,10 +6,15 @@ use bytes::Bytes;
 use rusty_core::{AccountId, FolderId};
 use rusty_store::{BlobStore, FsBlobStore, Mailbox, SqliteStore, BLOB_ROOT_MARKER, GC_LOCK_FILE};
 
+pub mod backends;
 #[cfg(feature = "postgres")]
 pub mod pg;
-pub mod backends;
 pub mod shapes;
+#[allow(unused_imports)]
+pub use backends::{
+    blob_row_exists, clear_injected_failure, hash_lit, inject_insert_failure, insert_blob_row,
+    set_zero_since, Bind,
+};
 
 /// Fresh private in-memory store with migrations applied.
 pub async fn mem() -> SqliteStore {
@@ -79,7 +84,7 @@ pub async fn account(store: &SqliteStore, local: &str) -> AccountId {
 }
 
 /// A mailbox over an in-memory store with filesystem blobs in a temp dir.
-pub struct Env {
+pub struct LiteEnv {
     pub store: SqliteStore,
     pub blobs: Arc<FsBlobStore>,
     pub dir: tempfile::TempDir,
@@ -87,7 +92,7 @@ pub struct Env {
     pub mb: Mailbox,
 }
 
-impl Env {
+impl LiteEnv {
     /// Files under the blob root except the root's own marker and GC lock file.
     pub fn blob_files(&self) -> Vec<PathBuf> {
         let root = self.dir.path().join("blobs");
@@ -120,13 +125,13 @@ impl Env {
     }
 }
 
-pub async fn env_with(store: SqliteStore, dir: tempfile::TempDir) -> Env {
+pub async fn lite_env_with(store: SqliteStore, dir: tempfile::TempDir) -> LiteEnv {
     let blobs = Arc::new(blob_store(&dir.path().join("blobs")).await);
     let account = account(&store, "alice").await;
     let mb = Mailbox::open(store.clone(), blobs.clone() as Arc<dyn BlobStore>, account)
         .await
         .unwrap();
-    Env {
+    LiteEnv {
         store,
         blobs,
         dir,
@@ -141,8 +146,8 @@ pub async fn blob_store(root: &Path) -> FsBlobStore {
     FsBlobStore::open(root).await.unwrap()
 }
 
-pub async fn env() -> Env {
-    env_with(mem().await, tempfile::tempdir().unwrap()).await
+pub async fn lite_env() -> LiteEnv {
+    lite_env_with(mem().await, tempfile::tempdir().unwrap()).await
 }
 
 pub fn all_files(root: &Path) -> Vec<PathBuf> {
@@ -307,5 +312,183 @@ pub mod stmts {
         pub fn statements(&self) -> Vec<String> {
             TEXTS.lock().unwrap_or_else(|p| p.into_inner()).clone()
         }
+    }
+}
+
+// ------------------------------------------------------------------ backend-aware Env (PG6)
+
+/// A mailbox over one backend (SQLite file store or a fresh Postgres database) with filesystem
+/// blobs in a temp dir. Fixtures go through the repositories and the dialect-neutral helpers of
+/// [`backends`]; no test holds a raw pool.
+pub struct Env {
+    pub b: backends::Backend,
+    pub blobs: Arc<dyn BlobStore>,
+    pub domain: rusty_core::DomainId,
+    pub account: AccountId,
+    pub mb: Mailbox,
+}
+
+impl Env {
+    pub async fn new(b: backends::Backend) -> Env {
+        let blobs = b.blobs.clone();
+        let (domain, account, mb) = backends::acct(&b, "example").await;
+        Env {
+            b,
+            blobs,
+            domain,
+            account,
+            mb,
+        }
+    }
+
+    pub fn is_sqlite(&self) -> bool {
+        self.b.sqlite.is_some()
+    }
+
+    /// Files under the blob root except the root's own marker and GC lock file.
+    pub fn blob_files(&self) -> Vec<PathBuf> {
+        let root = self.b._tmp.path().join("blobs");
+        all_files(&root)
+            .into_iter()
+            .filter(|p| {
+                !(p.parent() == Some(root.as_path())
+                    && (p.ends_with(BLOB_ROOT_MARKER) || p.ends_with(GC_LOCK_FILE)))
+            })
+            .collect()
+    }
+
+    /// A further account in the same domain, with its mailbox.
+    pub async fn other(&self, local: &str) -> Mailbox {
+        backends::acct_in(&self.b, self.domain, local).await
+    }
+
+    /// Open the mailbox of `account` again (a second handle over the same repository).
+    pub async fn reopen(&self, account: AccountId) -> Result<Mailbox, rusty_core::Error> {
+        Mailbox::open_with(self.b.mrepo.clone(), self.blobs.clone(), account).await
+    }
+
+    pub async fn scalar(&self, sql: &str) -> i64 {
+        backends::scalar(&self.b, sql).await
+    }
+
+    pub async fn scalars(&self, sql: &str, binds: &[backends::Bind<'_>]) -> Vec<i64> {
+        backends::fetch_i64s(&self.b, sql, binds).await
+    }
+
+    pub async fn strings(&self, sql: &str, binds: &[backends::Bind<'_>]) -> Vec<String> {
+        backends::fetch_strings(&self.b, sql, binds).await
+    }
+
+    pub async fn opt_i64(&self, sql: &str, binds: &[backends::Bind<'_>]) -> Option<i64> {
+        backends::fetch_opt_i64(&self.b, sql, binds).await
+    }
+
+    pub async fn exec(&self, sql: &str, binds: &[backends::Bind<'_>]) -> u64 {
+        backends::execute(&self.b, sql, binds).await
+    }
+
+    /// The database clock (unix seconds).
+    pub async fn db_clock(&self) -> i64 {
+        backends::db_clock(&self.b).await
+    }
+}
+
+/// Run `f` once per available backend (SQLite always; Postgres when `RUSTY_TEST_PG_URL` is set).
+pub async fn for_each_env<F, Fut>(f: F)
+where
+    F: Fn(Env) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    for b in backends::backends().await {
+        eprintln!("-- backend {}", b.name);
+        f(Env::new(b).await).await;
+    }
+}
+
+impl Env {
+    /// SQLite over a private in-memory database (a single connection).
+    pub async fn sqlite_mem() -> Env {
+        Env::new(backends::sqlite_mem_backend().await).await
+    }
+}
+
+// Same reason as `Backend`: with a Drop impl an `async move` block captures the whole `Env`
+// (edition-2021 disjoint capture would otherwise leave the temp dir and database behind in the
+// closure parameter, which is dropped at once).
+impl Drop for Env {
+    fn drop(&mut self) {}
+}
+
+impl Env {
+    /// Rows of `cols` text cells (see [`backends::fetch_rows`]); NULL is the cell "NULL".
+    pub async fn rows(&self, sql: &str, cols: usize) -> Vec<Vec<String>> {
+        backends::fetch_rows(&self.b, sql, &[], cols).await
+    }
+}
+
+/// Parse a text cell as an integer.
+pub fn int(cell: &str) -> i64 {
+    cell.parse()
+        .unwrap_or_else(|_| panic!("not an integer: {cell}"))
+}
+
+/// Run `f` once per available backend with TWO independent environments of that backend.
+pub async fn for_each_env_pair<F, Fut>(f: F)
+where
+    F: Fn(Env, Env) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    for first in backends::backends().await {
+        let name = first.name;
+        eprintln!("-- backend {name} (pair)");
+        let second = if name == "sqlite" {
+            backends::sqlite_backend().await
+        } else {
+            #[cfg(feature = "postgres")]
+            {
+                backends::pg_backend().await.expect("postgres backend")
+            }
+            #[cfg(not(feature = "postgres"))]
+            {
+                unreachable!()
+            }
+        };
+        f(Env::new(first).await, Env::new(second).await).await;
+    }
+}
+
+/// Like [`for_each_env_pair`], but the Postgres leg runs for one case in `pg_one_in` (database
+/// creation dominates a case; SQLite keeps every case). The counter is process-wide.
+pub async fn for_each_env_pair_sampled<F, Fut>(pg_one_in: usize, f: F)
+where
+    F: Fn(Env, Env) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static CASES: AtomicUsize = AtomicUsize::new(0);
+    let n = CASES.fetch_add(1, Ordering::Relaxed);
+    f(
+        Env::new(backends::sqlite_backend().await).await,
+        Env::new(backends::sqlite_backend().await).await,
+    )
+    .await;
+    #[cfg(feature = "postgres")]
+    if n.is_multiple_of(pg_one_in) {
+        if let (Some(a), Some(b)) = (backends::pg_backend().await, backends::pg_backend().await) {
+            eprintln!("-- backend postgres (pair, sampled 1 in {pg_one_in})");
+            f(Env::new(a).await, Env::new(b).await).await;
+        }
+    }
+    let _ = (n, pg_one_in);
+}
+
+impl Env {
+    /// Run a statement the database is expected to reject (or accept) and report which.
+    pub async fn try_exec(
+        &self,
+        sql: &str,
+        binds: &[backends::Bind<'_>],
+    ) -> Result<u64, backends::SqlFailure> {
+        backends::try_execute(&self.b, sql, binds).await
     }
 }
