@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use rusty_core::{AccountId, DomainId, Error, FolderId};
 use rusty_store::repo::sqlite::SqliteRepo;
-use rusty_store::repo::{DirectoryRepo, MailboxRepo, NewAccount, Resolution};
-use rusty_store::Mailbox;
+use rusty_store::repo::{DirectoryRepo, GcRepo, JobRepo, MailboxRepo, NewAccount, Resolution};
+use rusty_store::{Gc, JobQueue, Mailbox};
 use rusty_core::PlanId;
 use rusty_store::{BlobStore, SqliteStore};
 
@@ -25,6 +25,8 @@ pub struct Backend {
     pub dir: TestDir,
     pub drepo: Arc<dyn DirectoryRepo>,
     pub mrepo: Arc<dyn MailboxRepo>,
+    pub jrepo: Arc<dyn JobRepo>,
+    pub grepo: Arc<dyn GcRepo>,
     pub blobs: Arc<dyn BlobStore>,
     pub sqlite: Option<SqliteStore>,
     #[cfg(feature = "postgres")]
@@ -46,7 +48,9 @@ pub async fn sqlite_backend() -> Backend {
         name: "sqlite",
         dir: TestDir::new(repo.clone()),
         drepo: repo.clone(),
-        mrepo: repo,
+        mrepo: repo.clone(),
+        jrepo: repo.clone(),
+        grepo: repo,
         blobs: blob_dir(&tmp).await,
         sqlite: Some(store),
         #[cfg(feature = "postgres")]
@@ -69,7 +73,9 @@ pub async fn pg_backend() -> Option<Backend> {
         name: "postgres",
         dir: TestDir::new(arc.clone()),
         drepo: arc.clone(),
-        mrepo: arc,
+        mrepo: arc.clone(),
+        jrepo: arc.clone(),
+        grepo: arc,
         blobs: blob_dir(&tmp).await,
         sqlite: None,
         pg: Some((store, repo)),
@@ -240,4 +246,81 @@ impl TestDir {
             .await?
             .ok_or_else(|| Error::NotFound("address".into()))
     }
+}
+
+// ------------------------------------------------------------------ jobs and GC (PG5)
+
+impl Backend {
+    /// A job queue over this backend's repository.
+    pub fn jobs(&self) -> JobQueue {
+        JobQueue::with_repo(self.jrepo.clone())
+    }
+
+    /// A job queue with smaller pending-job caps.
+    pub fn jobs_with_limits(&self, per_domain: u32, no_domain: u32) -> JobQueue {
+        JobQueue::with_repo_and_limits(self.jrepo.clone(), per_domain, no_domain)
+    }
+
+    /// The garbage collector over this backend's repository.
+    pub fn gc(&self) -> Gc {
+        Gc::new(self.grepo.clone())
+    }
+}
+
+/// Run one fixture statement with no parameters and no result (dialect-neutral SQL text).
+pub async fn run(b: &Backend, sql: &str) {
+    if let Some(s) = &b.sqlite {
+        sqlx::query(sql).execute(s.pool()).await.unwrap();
+        return;
+    }
+    #[cfg(feature = "postgres")]
+    if let Some((p, _)) = &b.pg {
+        sqlx::query(sql).execute(p.pool()).await.unwrap();
+        return;
+    }
+    unreachable!()
+}
+
+/// One text value from a fixture query.
+pub async fn text(b: &Backend, sql: &str) -> String {
+    if let Some(s) = &b.sqlite {
+        return sqlx::query_scalar::<_, String>(sql).fetch_one(s.pool()).await.unwrap();
+    }
+    #[cfg(feature = "postgres")]
+    if let Some((p, _)) = &b.pg {
+        return sqlx::query_scalar::<_, String>(sql).fetch_one(p.pool()).await.unwrap();
+    }
+    unreachable!()
+}
+
+/// The database clock, read through a fixture session (unix seconds).
+pub async fn db_clock(b: &Backend) -> i64 {
+    if b.sqlite.is_some() {
+        scalar(b, "SELECT unixepoch()").await
+    } else {
+        scalar(b, "SELECT extract(epoch FROM statement_timestamp())::bigint").await
+    }
+}
+
+/// SQL literal of a blob hash (`BlobHash` hex) for this dialect: text on SQLite, `bytea` on Postgres.
+pub fn hash_lit(b: &Backend, hex: &str) -> String {
+    assert!(hex.bytes().all(|c| c.is_ascii_hexdigit()));
+    if b.sqlite.is_some() {
+        format!("'{hex}'")
+    } else {
+        format!("decode('{hex}', 'hex')")
+    }
+}
+
+/// Insert an unreferenced `blobs` row (refcount 0; the trigger stamps `zero_since` with the DB clock).
+pub async fn insert_blob_row(b: &Backend, hex: &str, size: i64) {
+    run(b, &format!("INSERT INTO blobs (hash, size) VALUES ({}, {size})", hash_lit(b, hex))).await;
+}
+
+pub async fn set_zero_since(b: &Backend, hex: &str, t: i64) {
+    run(b, &format!("UPDATE blobs SET zero_since = {t} WHERE hash = {}", hash_lit(b, hex))).await;
+}
+
+pub async fn blob_row_exists(b: &Backend, hex: &str) -> bool {
+    scalar(b, &format!("SELECT count(*) FROM blobs WHERE hash = {}", hash_lit(b, hex))).await == 1
 }

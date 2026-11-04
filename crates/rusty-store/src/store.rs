@@ -1,9 +1,6 @@
 //! `Store::open(StoreConfig)`: chooses the backend and hands out the repositories.
 //!
-//! `Repos` holds the directory and mailbox repositories as `Arc<dyn Trait>`. The jobs and GC
-//! repositories join in PG5; until then `JobQueue` and the GC functions take the SQLite store
-//! directly (`Store::sqlite()`), and `Repos::mailbox` is the PG2 spike repository that PG4
-//! replaces.
+//! `Repos` holds the directory, mailbox, jobs and GC repositories as `Arc<dyn Trait>`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,7 +8,7 @@ use std::time::Duration;
 use rusty_core::{Error, Result};
 
 use crate::repo::sqlite::SqliteRepo;
-use crate::repo::{DirectoryRepo, MailboxRepo};
+use crate::repo::{DirectoryRepo, GcRepo, JobRepo, MailboxRepo};
 use crate::{SqliteStore, DEFAULT_BUSY_TIMEOUT};
 
 /// Which backend to open and how.
@@ -72,6 +69,8 @@ impl StoreConfig {
 pub struct Repos {
     pub directory: Arc<dyn DirectoryRepo>,
     pub mailbox: Arc<dyn MailboxRepo>,
+    pub jobs: Arc<dyn JobRepo>,
+    pub gc: Arc<dyn GcRepo>,
 }
 
 /// An opened store: the repositories plus the backend handle that not-yet-converted facades
@@ -97,7 +96,9 @@ impl Store {
                 Ok(Store {
                     repos: Repos {
                         directory: repo.clone(),
-                        mailbox: repo,
+                        mailbox: repo.clone(),
+                        jobs: repo.clone(),
+                        gc: repo,
                     },
                     sqlite: Some(store),
                     #[cfg(feature = "postgres")]
@@ -111,7 +112,9 @@ impl Store {
                 Ok(Store {
                     repos: Repos {
                         directory: repo.clone(),
-                        mailbox: repo,
+                        mailbox: repo.clone(),
+                        jobs: repo.clone(),
+                        gc: repo,
                     },
                     sqlite: None,
                     pg: Some(store),

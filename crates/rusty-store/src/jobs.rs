@@ -28,16 +28,17 @@
 //! fence. A slow worker whose lease lapsed loses its work (its fence and its `complete` fail).
 //! Heartbeat at most every `lease / 3`.
 //!
-//! The preferred pattern for a step whose effect is in this database is
-//! [`JobQueue::complete_in`]: in one write transaction do the effect, then `complete_in`
-//! (fence plus mark `done`), then commit. The effect and the completion then commit together or
-//! not at all, so the database effect happens exactly once. [`JobQueue::fence`] alone (effect
-//! committed, `complete` called separately) leaves the crash window described above.
+//! The preferred pattern for a step whose effect is in this database is to pass the claimed
+//! [`JobFence`] to the repository operation that performs it (`Mailbox::deliver_fenced`,
+//! `deliver_many_fenced`): the operation fences (epoch, `running`, lease unexpired by the
+//! database clock), does the effect and marks the job `done` in ONE transaction, so the effect
+//! and the completion commit together or not at all. A separate `complete` after a committed
+//! effect leaves the crash window described above.
 //! Effects outside the database (files, mail, network) must be idempotent on their own.
 //!
 //! # Time
 //!
-//! Every decision uses the database clock (`unixepoch()`), read inside the same transaction as
+//! Every decision uses the database clock (`unixepoch()` / `rs_now()`), read in the same statement as
 //! the decision. Each time-dependent method has a `#[doc(hidden)]` `_at(.., now)` twin taking
 //! unix seconds so tests never sleep; it trusts the caller's clock, production code calls the
 //! plain method.
@@ -60,26 +61,25 @@
 //! cap. Finished rows older than [`JOB_RETENTION_SECS`] are removed by
 //! [`purge_finished_default`](JobQueue::purge_finished_default).
 //!
-//! # Postgres port
+//! # Backends
 //!
-//! `claim` is one `BEGIN IMMEDIATE` transaction on SQLite: `SELECT` the first eligible row,
-//! settle or `UPDATE` it. On Postgres the same shape maps 1:1 to one transaction in which the
-//! `SELECT ... ORDER BY run_after, id LIMIT 1` gains `FOR UPDATE SKIP LOCKED` (concurrent
-//! claimers skip rows another transaction is claiming instead of blocking). `unixepoch()` becomes
-//! the database clock; note that `now()` is the *transaction start* time there, so use
-//! `statement_timestamp()` for lease-expiry checks inside long caller transactions (`fence`,
-//! `complete_in`). A bulk "reap everything" statement without `SKIP LOCKED` would block
-//! concurrent claimers; this queue deliberately has none (row-at-a-time settling). `fence` and
-//! `complete_in` must lock the job row (`SELECT ... FOR SHARE` / `FOR UPDATE`) on Postgres; on
-//! SQLite the caller's `BEGIN IMMEDIATE` already serializes them against `claim`.
+//! The queue is a facade over [`JobRepo`] (SQLite and Postgres implementations, same semantics;
+//! see `repo/jobs.rs` for the locking argument). On Postgres a claim takes the candidate with
+//! `FOR UPDATE SKIP LOCKED` and every lease decision uses `statement_timestamp()` of the
+//! deciding statement. A bulk "reap everything" statement without `SKIP LOCKED` would block
+//! concurrent claimers; this queue deliberately has none (row-at-a-time settling).
 
 use rusty_core::text::is_format_or_line_separator;
 use rusty_core::{DomainId, Error, JobId, Result};
 use serde_json::Value;
-use sqlx::{Row, SqliteConnection};
+
+use std::sync::Arc;
 
 use crate::gc::PURGE_BATCH;
-use crate::{map_db_error, SqliteStore, SqliteTx};
+use crate::repo::jobs::{ClaimRequest, NewJob};
+use crate::repo::{JobFence, JobRepo, sqlite::SqliteRepo};
+use crate::mailbox::check_supplied_time;
+use crate::SqliteStore;
 
 /// Largest serialized job payload, in bytes.
 pub const MAX_JOB_PAYLOAD_BYTES: usize = 65536;
@@ -124,10 +124,10 @@ pub struct ClaimedJob {
     pub attempts: u32,
 }
 
-/// The job queue over a [`SqliteStore`].
-#[derive(Debug, Clone)]
+/// The job queue over a [`JobRepo`] (either backend).
+#[derive(Clone)]
 pub struct JobQueue {
-    store: SqliteStore,
+    repo: Arc<dyn JobRepo>,
     max_pending_per_domain: u32,
     max_pending_no_domain: u32,
 }
@@ -136,7 +136,7 @@ fn invalid(what: &'static str) -> Error {
     Error::Invalid(what.into())
 }
 
-fn stale() -> Error {
+pub(crate) fn stale() -> Error {
     Error::Conflict(STALE.into())
 }
 
@@ -215,7 +215,7 @@ fn text_depth_ok(t: &str) -> bool {
 /// Parse stored payload text with the default parser limits. The iterative [`text_depth_ok`]
 /// scan runs first, so a corrupt or legacy row nested deeper than [`MAX_PAYLOAD_DEPTH`] is
 /// refused without any recursion.
-fn parse_payload(t: &str) -> Option<Value> {
+pub(crate) fn parse_payload(t: &str) -> Option<Value> {
     if !text_depth_ok(t) {
         return None;
     }
@@ -238,71 +238,17 @@ fn sanitize_error(s: &str) -> String {
     out
 }
 
-async fn db_now(conn: &mut SqliteConnection) -> Result<i64> {
-    sqlx::query_scalar("SELECT unixepoch()")
-        .fetch_one(conn)
-        .await
-        .map_err(map_db_error)
-}
-
-async fn clock(conn: &mut SqliteConnection, now: Option<i64>) -> Result<i64> {
-    match now {
-        Some(n) => Ok(n),
-        None => db_now(conn).await,
-    }
-}
-
-/// `Ok` iff exactly one row was affected by a fenced update.
-fn require_one(rows: u64) -> Result<()> {
-    if rows == 1 {
-        Ok(())
-    } else {
-        Err(stale())
-    }
-}
-
-/// Mark the job `done` if `epoch` still owns it with an unexpired lease.
-async fn complete_on(conn: &mut SqliteConnection, id: JobId, epoch: i64, now: i64) -> Result<()> {
-    let n = sqlx::query(
-        "UPDATE jobs SET state = 'done', lease_owner = NULL, lease_expires_at = NULL, \
-                updated_at = ? \
-         WHERE id = ? AND epoch = ? AND state = 'running' AND lease_expires_at > ?",
-    )
-    .bind(now)
-    .bind(id.0)
-    .bind(epoch)
-    .bind(now)
-    .execute(conn)
-    .await
-    .map_err(map_db_error)?
-    .rows_affected();
-    require_one(n)
-}
-
-/// Park a row that can never run again.
-async fn settle_dead(
-    conn: &mut SqliteConnection,
-    id: i64,
-    reason: &'static str,
-    now: i64,
-) -> Result<()> {
-    sqlx::query(
-        "UPDATE jobs SET state = 'dead', lease_owner = NULL, lease_expires_at = NULL, \
-                last_error = ?, updated_at = ? WHERE id = ?",
-    )
-    .bind(reason)
-    .bind(now)
-    .bind(id)
-    .execute(conn)
-    .await
-    .map_err(map_db_error)?;
-    Ok(())
-}
 
 impl JobQueue {
+    /// A queue over a SQLite store.
     pub fn new(store: SqliteStore) -> JobQueue {
+        Self::with_repo(Arc::new(SqliteRepo::new(store)))
+    }
+
+    /// A queue over any backend's [`JobRepo`].
+    pub fn with_repo(repo: Arc<dyn JobRepo>) -> JobQueue {
         JobQueue {
-            store,
+            repo,
             max_pending_per_domain: MAX_PENDING_JOBS_PER_DOMAIN,
             max_pending_no_domain: MAX_PENDING_JOBS_GLOBAL_NO_DOMAIN,
         }
@@ -315,8 +261,22 @@ impl JobQueue {
         max_pending_per_domain: u32,
         max_pending_no_domain: u32,
     ) -> JobQueue {
+        Self::with_repo_and_limits(
+            Arc::new(SqliteRepo::new(store)),
+            max_pending_per_domain,
+            max_pending_no_domain,
+        )
+    }
+
+    /// [`with_limits`](Self::with_limits) over any backend's repository.
+    #[doc(hidden)]
+    pub fn with_repo_and_limits(
+        repo: Arc<dyn JobRepo>,
+        max_pending_per_domain: u32,
+        max_pending_no_domain: u32,
+    ) -> JobQueue {
         JobQueue {
-            store,
+            repo,
             max_pending_per_domain,
             max_pending_no_domain,
         }
@@ -346,15 +306,9 @@ impl JobQueue {
         run_after: Option<i64>,
         now: i64,
     ) -> Result<JobId> {
-        self.enqueue_inner(
-            kind,
-            domain,
-            payload,
-            run_after,
-            DEFAULT_JOB_ATTEMPTS,
-            Some(now),
-        )
-        .await
+        check_supplied_time(now)?;
+        self.enqueue_inner(kind, domain, payload, run_after, DEFAULT_JOB_ATTEMPTS, Some(now))
+            .await
     }
 
     /// [`enqueue`](Self::enqueue) with an explicit `max_attempts` in `1..=`[`MAX_JOB_ATTEMPTS`].
@@ -381,6 +335,7 @@ impl JobQueue {
         max_attempts: u32,
         now: i64,
     ) -> Result<JobId> {
+        check_supplied_time(now)?;
         self.enqueue_inner(kind, domain, payload, run_after, max_attempts, Some(now))
             .await
     }
@@ -409,59 +364,26 @@ impl JobQueue {
         if text.len() > MAX_JOB_PAYLOAD_BYTES {
             return Err(invalid("job payload too large"));
         }
-        let mut tx = self.store.begin_write().await?;
-        let now = clock(&mut tx, now).await?;
-        // The count and the insert share one write transaction: concurrent enqueues cannot
-        // both slip under the cap.
-        let (pending, cap): (i64, u32) = match domain {
-            Some(d) => (
-                sqlx::query_scalar(
-                    "SELECT count(*) FROM jobs \
-                     WHERE domain_id = ? AND state IN ('queued', 'running')",
-                )
-                .bind(d.0)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(map_db_error)?,
-                self.max_pending_per_domain,
-            ),
-            None => (
-                sqlx::query_scalar(
-                    "SELECT count(*) FROM jobs \
-                     WHERE domain_id IS NULL AND state IN ('queued', 'running')",
-                )
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(map_db_error)?,
-                self.max_pending_no_domain,
-            ),
+        let cap = match domain {
+            Some(_) => self.max_pending_per_domain,
+            None => self.max_pending_no_domain,
         };
-        if pending >= i64::from(cap) {
-            return Err(Error::Quota("job queue full".into()));
-        }
-        let id: i64 = sqlx::query_scalar(
-            "INSERT INTO jobs (kind, domain_id, state, payload, attempts, max_attempts, \
-                               run_after, epoch, created_at, updated_at) \
-             VALUES (?, ?, 'queued', ?, 0, ?, ?, 0, ?, ?) RETURNING id",
-        )
-        .bind(kind)
-        .bind(domain.map(|d| d.0))
-        .bind(&text)
-        .bind(i64::from(max_attempts))
-        .bind(run_after.unwrap_or(now))
-        .bind(now)
-        .bind(now)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(map_db_error)?;
-        tx.commit().await.map_err(map_db_error)?;
-        Ok(JobId(id))
+        self.repo
+            .enqueue(&NewJob {
+                kind,
+                domain,
+                payload: &text,
+                run_after,
+                max_attempts,
+                cap,
+                now,
+            })
+            .await
     }
 
     /// Lease the oldest eligible job of one of `kinds` to `worker` for `lease_secs`
     /// (`1..=`[`MAX_LEASE_SECS`]), or `None` if there is none (or only exhausted rows were
-    /// found; see the module docs). The whole claim is one write transaction (see the module
-    /// docs for the Postgres mapping).
+    /// found; see the module docs). The whole claim is one write transaction.
     pub async fn claim(
         &self,
         worker: &str,
@@ -480,6 +402,7 @@ impl JobQueue {
         lease_secs: u32,
         now: i64,
     ) -> Result<Option<ClaimedJob>> {
+        check_supplied_time(now)?;
         self.claim_inner(worker, kinds, lease_secs, Some(now)).await
     }
 
@@ -500,89 +423,14 @@ impl JobQueue {
         {
             return Err(invalid("invalid job kinds"));
         }
-        // Only `?` placeholders are interpolated; every kind is bound.
-        let placeholders = vec!["?"; kinds.len()].join(", ");
-        let select = format!(
-            "SELECT id, state, attempts, max_attempts FROM jobs WHERE kind IN ({placeholders}) \
-             AND ((state = 'queued' AND run_after <= ?) \
-               OR (state = 'running' AND lease_expires_at <= ?)) \
-             ORDER BY run_after, id LIMIT 1"
-        );
-
-        let mut tx = self.store.begin_write().await?;
-        let now = clock(&mut tx, now).await?;
-        let mut settled = 0u32;
-        let claimed = loop {
-            if settled >= MAX_SETTLED_PER_CLAIM {
-                break None;
-            }
-            let mut q = sqlx::query(&select);
-            for k in kinds {
-                q = q.bind(*k);
-            }
-            let Some(cand) = q
-                .bind(now)
-                .bind(now)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(map_db_error)?
-            else {
-                break None;
-            };
-            let id: i64 = cand.try_get("id").map_err(map_db_error)?;
-            let state: String = cand.try_get("state").map_err(map_db_error)?;
-            let attempts: i64 = cand.try_get("attempts").map_err(map_db_error)?;
-            let max_attempts: i64 = cand.try_get("max_attempts").map_err(map_db_error)?;
-            if attempts >= max_attempts {
-                let why = if state == "running" {
-                    "lease expired on the last attempt"
-                } else {
-                    "no attempts left"
-                };
-                settle_dead(&mut tx, id, why, now).await?;
-                settled += 1;
-                continue;
-            }
-            let row = sqlx::query(
-                "UPDATE jobs SET state = 'running', attempts = attempts + 1, \
-                        epoch = epoch + 1, lease_owner = ?, lease_expires_at = ?, \
-                        updated_at = ? \
-                 WHERE id = ? \
-                 RETURNING id, kind, domain_id, payload, epoch, attempts",
-            )
-            .bind(worker)
-            .bind(now.saturating_add(i64::from(lease_secs)))
-            .bind(now)
-            .bind(id)
-            .fetch_one(&mut *tx)
+        self.repo
+            .claim(&ClaimRequest {
+                worker,
+                kinds,
+                lease_secs,
+                now,
+            })
             .await
-            .map_err(map_db_error)?;
-            let text: String = row.try_get("payload").map_err(map_db_error)?;
-            let attempts: i64 = row.try_get("attempts").map_err(map_db_error)?;
-            match parse_payload(&text) {
-                Some(payload) => {
-                    break Some(ClaimedJob {
-                        id: JobId(row.try_get("id").map_err(map_db_error)?),
-                        kind: row.try_get("kind").map_err(map_db_error)?,
-                        domain: row
-                            .try_get::<Option<i64>, _>("domain_id")
-                            .map_err(map_db_error)?
-                            .map(DomainId),
-                        payload,
-                        epoch: row.try_get("epoch").map_err(map_db_error)?,
-                        attempts: u32::try_from(attempts)
-                            .map_err(|_| Error::storage("job attempts out of range"))?,
-                    });
-                }
-                None => {
-                    // A row that can never be handed to a worker: park it and keep going.
-                    settle_dead(&mut tx, id, "unreadable payload", now).await?;
-                    settled += 1;
-                }
-            }
-        };
-        tx.commit().await.map_err(map_db_error)?;
-        Ok(claimed)
     }
 
     /// Extend the lease to `now + lease_secs`. `Conflict("stale job epoch")` unless the job is
@@ -600,6 +448,7 @@ impl JobQueue {
         lease_secs: u32,
         now: i64,
     ) -> Result<()> {
+        check_supplied_time(now)?;
         self.heartbeat_inner(id, epoch, lease_secs, Some(now)).await
     }
 
@@ -613,59 +462,21 @@ impl JobQueue {
         if !valid_lease(lease_secs) {
             return Err(invalid("invalid lease length"));
         }
-        let mut tx = self.store.begin_write().await?;
-        let now = clock(&mut tx, now).await?;
-        let n = sqlx::query(
-            "UPDATE jobs SET lease_expires_at = ?, updated_at = ? \
-             WHERE id = ? AND epoch = ? AND state = 'running' AND lease_expires_at > ?",
-        )
-        .bind(now.saturating_add(i64::from(lease_secs)))
-        .bind(now)
-        .bind(id.0)
-        .bind(epoch)
-        .bind(now)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_db_error)?
-        .rows_affected();
-        require_one(n)?;
-        tx.commit().await.map_err(map_db_error)
+        self.repo.heartbeat(id, epoch, lease_secs, now).await
     }
 
     /// Mark the job `done`. `Conflict("stale job epoch")` as for [`heartbeat`](Self::heartbeat).
-    /// For a step with a database effect prefer [`complete_in`](Self::complete_in).
+    /// For a step with a database effect pass a [`JobFence`] to the repository operation that
+    /// performs it (module docs) instead.
     pub async fn complete(&self, id: JobId, epoch: i64) -> Result<()> {
-        self.complete_inner(id, epoch, None).await
+        self.repo.complete(id, epoch, None).await
     }
 
     /// [`complete`](Self::complete) at time `now`.
     #[doc(hidden)]
     pub async fn complete_at(&self, id: JobId, epoch: i64, now: i64) -> Result<()> {
-        self.complete_inner(id, epoch, Some(now)).await
-    }
-
-    async fn complete_inner(&self, id: JobId, epoch: i64, now: Option<i64>) -> Result<()> {
-        let mut tx = self.store.begin_write().await?;
-        let now = clock(&mut tx, now).await?;
-        complete_on(&mut tx, id, epoch, now).await?;
-        tx.commit().await.map_err(map_db_error)
-    }
-
-    /// Fence and mark the job `done` inside the caller's write transaction `tx`. **The preferred
-    /// pattern**: do the database effect on `tx`, call `complete_in(&mut tx, ..)?`, commit. The
-    /// effect and the completion commit together or not at all, so the effect happens exactly
-    /// once; a zombie's call fails with `Conflict("stale job epoch")` and the caller's `?`
-    /// drops `tx`, rolling the effect back. See the module docs for the contract.
-    pub async fn complete_in(tx: &mut SqliteTx, id: JobId, epoch: i64) -> Result<()> {
-        let conn = tx.conn();
-        let now = db_now(conn).await?;
-        complete_on(conn, id, epoch, now).await
-    }
-
-    /// [`complete_in`](Self::complete_in) at time `now`.
-    #[doc(hidden)]
-    pub async fn complete_in_at(tx: &mut SqliteTx, id: JobId, epoch: i64, now: i64) -> Result<()> {
-        complete_on(tx.conn(), id, epoch, now).await
+        check_supplied_time(now)?;
+        self.repo.complete(id, epoch, Some(now)).await
     }
 
     /// Record a failed attempt: the job goes back to `queued` with
@@ -694,6 +505,7 @@ impl JobQueue {
         retry_after_secs: u32,
         now: i64,
     ) -> Result<()> {
+        check_supplied_time(now)?;
         self.fail_inner(id, epoch, error, retry_after_secs, Some(now))
             .await
     }
@@ -708,61 +520,22 @@ impl JobQueue {
     ) -> Result<()> {
         let error = sanitize_error(error);
         let retry = i64::from(retry_after_secs.min(MAX_RETRY_AFTER_SECS));
-        let mut tx = self.store.begin_write().await?;
-        let now = clock(&mut tx, now).await?;
-        let n = sqlx::query(
-            "UPDATE jobs SET \
-                    state = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'queued' END, \
-                    run_after = CASE WHEN attempts >= max_attempts THEN run_after ELSE ? END, \
-                    lease_owner = NULL, lease_expires_at = NULL, last_error = ?, updated_at = ? \
-             WHERE id = ? AND epoch = ? AND state = 'running' AND lease_expires_at > ?",
-        )
-        .bind(now.saturating_add(retry))
-        .bind(&error)
-        .bind(now)
-        .bind(id.0)
-        .bind(epoch)
-        .bind(now)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_db_error)?
-        .rows_affected();
-        require_one(n)?;
-        tx.commit().await.map_err(map_db_error)
+        self.repo.fail(id, epoch, &error, retry, now).await
     }
 
-    /// Verify, inside the caller's write transaction `tx`, that job `id` is `running` with this
-    /// `epoch` and an unexpired lease; otherwise `Conflict("stale job epoch")` and the caller
-    /// must drop (roll back) `tx`, normally by returning the error with `?`.
-    ///
-    /// A fence makes a zombie's effect roll back; it does **not** make the step exactly-once: a
-    /// crash after the fenced commit but before `complete` reruns the job under a new epoch
-    /// that passes the fence, so the step must be idempotent. To also make the completion
-    /// atomic with the effect, finish with [`complete_in`](Self::complete_in) instead.
-    pub async fn fence(tx: &mut SqliteTx, id: JobId, epoch: i64) -> Result<()> {
-        Self::fence_inner(tx, id, epoch, None).await
+    /// Check, in its own transaction, that the job is `running` with this `epoch` and an
+    /// unexpired lease; otherwise `Conflict("stale job epoch")`. A check is not a fence: it
+    /// holds nothing after it returns. A step with a database effect passes the [`JobFence`] to
+    /// the repository operation instead, so fence, effect and completion commit together.
+    pub async fn fence_check(&self, fence: JobFence) -> Result<()> {
+        self.repo.fence_check(fence, None).await
     }
 
-    /// [`fence`](Self::fence) at time `now`.
+    /// [`fence_check`](Self::fence_check) at time `now`.
     #[doc(hidden)]
-    pub async fn fence_at(tx: &mut SqliteTx, id: JobId, epoch: i64, now: i64) -> Result<()> {
-        Self::fence_inner(tx, id, epoch, Some(now)).await
-    }
-
-    async fn fence_inner(tx: &mut SqliteTx, id: JobId, epoch: i64, now: Option<i64>) -> Result<()> {
-        let conn = tx.conn();
-        let now = clock(conn, now).await?;
-        let ok: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM jobs \
-             WHERE id = ? AND epoch = ? AND state = 'running' AND lease_expires_at > ?",
-        )
-        .bind(id.0)
-        .bind(epoch)
-        .bind(now)
-        .fetch_optional(conn)
-        .await
-        .map_err(map_db_error)?;
-        ok.map(|_| ()).ok_or_else(stale)
+    pub async fn fence_check_at(&self, fence: JobFence, now: i64) -> Result<()> {
+        check_supplied_time(now)?;
+        self.repo.fence_check(fence, Some(now)).await
     }
 
     /// Delete `done`, `failed` and `dead` jobs with `updated_at < older_than` (unix seconds),
@@ -770,19 +543,7 @@ impl JobQueue {
     pub async fn purge_finished(&self, older_than: i64) -> Result<u64> {
         let mut total = 0u64;
         loop {
-            let mut tx = self.store.begin_write().await?;
-            let n = sqlx::query(
-                "DELETE FROM jobs WHERE rowid IN (\
-                   SELECT rowid FROM jobs \
-                   WHERE state IN ('done', 'failed', 'dead') AND updated_at < ? LIMIT ?)",
-            )
-            .bind(older_than)
-            .bind(PURGE_BATCH)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_db_error)?
-            .rows_affected();
-            tx.commit().await.map_err(map_db_error)?;
+            let n = self.repo.purge_finished_batch(older_than, PURGE_BATCH).await?;
             total += n;
             if n < PURGE_BATCH as u64 {
                 return Ok(total);
@@ -801,10 +562,7 @@ impl JobQueue {
     /// [`purge_finished`](Self::purge_finished) with the database clock and
     /// [`JOB_RETENTION_SECS`].
     pub async fn purge_finished_default(&self) -> Result<u64> {
-        let now: i64 = sqlx::query_scalar("SELECT unixepoch()")
-            .fetch_one(self.store.pool())
-            .await
-            .map_err(map_db_error)?;
+        let now = self.repo.db_now().await?;
         self.purge_finished_at(now, JOB_RETENTION_SECS).await
     }
 }

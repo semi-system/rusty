@@ -5,6 +5,8 @@
 //! Counters are taken with one `UPDATE .. RETURNING` each.
 
 mod directory;
+mod gc;
+mod jobs;
 mod mailbox;
 
 use rusty_core::{MailboxId, Result};

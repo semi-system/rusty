@@ -203,30 +203,3 @@ fn sqlite_busy_code(code: &str) -> bool {
             .parse::<u32>()
             .is_ok_and(|c| matches!(c & 0xff, 5 | 6))
 }
-
-/// SQLite write transaction (`BEGIN IMMEDIATE`).
-///
-/// Internal: used by `JobQueue::fence` / `complete_in` and their tests; it is removed in PG5
-/// when those become `JobFence` parameters of the repository operations.
-pub struct SqliteTx(Transaction<'static, Sqlite>);
-
-impl SqliteTx {
-    /// Begin a write transaction (`BEGIN IMMEDIATE`, see [`SqliteStore::begin_write`]).
-    pub async fn begin(store: &SqliteStore) -> Result<SqliteTx> {
-        Ok(SqliteTx(store.begin_write().await?))
-    }
-
-    pub fn conn(&mut self) -> &mut sqlx::SqliteConnection {
-        &mut self.0
-    }
-
-    /// Commit.
-    pub async fn commit(self) -> Result<()> {
-        self.0.commit().await.map_err(map_db_error)
-    }
-
-    /// Roll back. Dropping the transaction has the same effect.
-    pub async fn rollback(self) -> Result<()> {
-        self.0.rollback().await.map_err(map_db_error)
-    }
-}

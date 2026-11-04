@@ -17,11 +17,15 @@
 //! `{NOW}` is the database clock (`unixepoch()` / `rs_now()`).
 
 mod directory;
+mod gc;
+pub(crate) mod jobs;
 mod mailbox;
 #[cfg(feature = "postgres")]
 pub mod pg;
 pub mod sqlite;
 
+pub use gc::GcRepo;
+pub use jobs::{ClaimRequest, JobRepo, NewJob};
 pub use directory::{
     AccountStatus, AuthRow, CapabilityGrant, ConfigLayers, ConfigTarget, DirectoryRepo, ListMember,
     NewAccount, Resolution, GLOBAL_PLAN,

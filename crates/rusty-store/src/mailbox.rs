@@ -52,7 +52,7 @@ pub const MAX_FOLDER_NAME_BYTES: usize = 255;
 /// values are rejected with `Error::Invalid` rather than written. The lower bound is 0.
 pub const MAX_SUPPLIED_TIME: i64 = 4_102_444_800;
 
-fn check_supplied_time(t: i64) -> Result<()> {
+pub(crate) fn check_supplied_time(t: i64) -> Result<()> {
     if (0..=MAX_SUPPLIED_TIME).contains(&t) {
         Ok(())
     } else {

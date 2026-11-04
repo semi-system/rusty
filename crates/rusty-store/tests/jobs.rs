@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use common::{file_store, mem};
 use rusty_core::{DomainId, Error, JobId};
-use rusty_store::{JobQueue, SqliteStore, SqliteTx, JOB_RETENTION_SECS};
+use rusty_store::{JobQueue, SqliteStore, JOB_RETENTION_SECS};
 use serde_json::{json, Value};
 
 const STALE: &str = "stale job epoch";
@@ -280,72 +280,27 @@ async fn zombie_worker_cannot_heartbeat_complete_or_fail() {
 }
 
 #[tokio::test]
-async fn fence_rejects_stale_epoch_inside_transaction() {
-    let (s, jq) = q().await;
+async fn fence_check_rejects_stale_epoch_expired_lease_unknown_and_finished_jobs() {
+    let (_s, jq) = q().await;
     let id = enq(&jq, "t", None, 1000).await;
     let zombie = jq.claim_at("w1", &["t"], 30, 1000).await.unwrap().unwrap();
-
-    // The current owner passes and its side effect commits atomically with the fence check.
-    let mut tx = SqliteTx::begin(&s).await.unwrap();
-    JobQueue::fence_at(&mut tx, id, zombie.epoch, 1010)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO domains (name, created_at) VALUES ('fenced-ok.test', 0)")
-        .execute(tx.conn())
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM domains WHERE name = 'fenced-ok.test'")
-        .fetch_one(s.pool())
-        .await
-        .unwrap();
-    assert_eq!(n, 1);
-
+    let f = |epoch| rusty_store::JobFence { id, epoch };
+    jq.fence_check_at(f(zombie.epoch), 1010).await.unwrap();
     // An expired lease fails the fence even before anyone re-claims.
-    let mut tx = SqliteTx::begin(&s).await.unwrap();
-    let r = JobQueue::fence_at(&mut tx, id, zombie.epoch, 1030).await;
-    assert!(is_stale(&r));
-    tx.rollback().await.unwrap();
-
-    // After a re-claim the old epoch is rejected, the side effect is rolled back with it.
+    assert!(is_stale(&jq.fence_check_at(f(zombie.epoch), 1030).await));
+    // After a re-claim the old epoch is rejected.
     let owner = jq.claim_at("w2", &["t"], 30, 1030).await.unwrap().unwrap();
-    let mut tx = SqliteTx::begin(&s).await.unwrap();
-    sqlx::query("INSERT INTO domains (name, created_at) VALUES ('fenced-bad.test', 0)")
-        .execute(tx.conn())
-        .await
-        .unwrap();
-    let r = JobQueue::fence_at(&mut tx, id, zombie.epoch, 1031).await;
-    assert!(is_stale(&r));
-    drop(tx); // the caller abandons the transaction on a failed fence
-    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM domains WHERE name = 'fenced-bad.test'")
-        .fetch_one(s.pool())
-        .await
-        .unwrap();
-    assert_eq!(n, 0, "side effect rolled back");
-
-    // The new owner passes; unknown ids and finished jobs do not.
-    let mut tx = SqliteTx::begin(&s).await.unwrap();
-    JobQueue::fence_at(&mut tx, id, owner.epoch, 1031)
-        .await
-        .unwrap();
-    assert!(is_stale(
-        &JobQueue::fence_at(&mut tx, JobId(4242), 1, 1031).await
-    ));
-    tx.rollback().await.unwrap();
+    assert!(is_stale(&jq.fence_check_at(f(zombie.epoch), 1031).await));
+    jq.fence_check_at(f(owner.epoch), 1031).await.unwrap();
+    let unknown = rusty_store::JobFence { id: JobId(4242), epoch: 1 };
+    assert!(is_stale(&jq.fence_check_at(unknown, 1031).await));
     jq.complete_at(id, owner.epoch, 1032).await.unwrap();
-    let mut tx = SqliteTx::begin(&s).await.unwrap();
-    assert!(is_stale(
-        &JobQueue::fence_at(&mut tx, id, owner.epoch, 1033).await
-    ));
-    tx.rollback().await.unwrap();
-
+    assert!(is_stale(&jq.fence_check_at(f(owner.epoch), 1033).await));
     // The DB-clock variant works against a freshly claimed job.
     let id3 = jq.enqueue("t", None, &json!({}), None).await.unwrap();
     let j = jq.claim("w3", &["t"], 60).await.unwrap().unwrap();
     assert_eq!(j.id, id3);
-    let mut tx = SqliteTx::begin(&s).await.unwrap();
-    JobQueue::fence(&mut tx, id3, j.epoch).await.unwrap();
-    tx.rollback().await.unwrap();
+    jq.fence_check(rusty_store::JobFence { id: id3, epoch: j.epoch }).await.unwrap();
 }
 
 #[tokio::test]
@@ -861,103 +816,55 @@ async fn claim_settles_at_most_100_exhausted_rows_per_call() {
     assert_eq!(e, "no attempts left");
 }
 
-async fn effect(s: &SqliteStore, name: &str) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM domains WHERE name = ?")
-        .bind(name)
-        .fetch_one(s.pool())
-        .await
-        .unwrap()
-}
-
-/// A worker step: database effect plus completion in one transaction. `?` on a failed
-/// completion drops the transaction, which rolls the effect back.
-async fn effect_and_complete(
-    s: &SqliteStore,
-    id: JobId,
-    epoch: i64,
-    name: &str,
-    now: i64,
-) -> rusty_core::Result<()> {
-    let mut tx = SqliteTx::begin(s).await?;
-    sqlx::query("INSERT INTO domains (name, created_at) VALUES (?, 0)")
-        .bind(name)
-        .execute(tx.conn())
-        .await
-        .map_err(rusty_store::map_db_error)?;
-    JobQueue::complete_in_at(&mut tx, id, epoch, now).await?;
-    tx.commit().await
-}
-
+/// A worker step on SQLite: the mailbox effect and the completion in ONE transaction through the
+/// `JobFence` parameter (the old `complete_in`). The both-backend version is in
+/// `jobs_conformance.rs`; this one keeps the in-memory single-connection shape.
 #[tokio::test]
-async fn complete_in_commits_effect_and_completion_atomically() {
-    let (s, jq) = q().await;
+async fn fenced_delivery_commits_effect_and_completion_atomically_and_rolls_back_for_zombies() {
+    use rusty_core::{DeliveryId, Flags};
+    use rusty_store::JobFence;
+    let e = common::env().await;
+    let jq = JobQueue::new(e.store.clone());
     let id = enq(&jq, "t", None, 1000).await;
-    let j = jq.claim_at("w", &["t"], 30, 1000).await.unwrap().unwrap();
-    effect_and_complete(&s, id, j.epoch, "atomic.test", 1010)
+    let zombie = jq.claim("w1", &["t"], 30).await.unwrap().unwrap();
+    // Lapse the lease and re-claim: the zombie's fenced effect is refused and rolled back.
+    sqlx::query("UPDATE jobs SET lease_expires_at = 1")
+        .execute(e.store.pool())
         .await
         .unwrap();
-    assert_eq!(effect(&s, "atomic.test").await, 1);
-    assert_eq!(state(&s, id).await, "done");
-    // Completing again is stale.
-    let mut tx = SqliteTx::begin(&s).await.unwrap();
-    assert!(is_stale(
-        &JobQueue::complete_in_at(&mut tx, id, j.epoch, 1011).await
-    ));
-    tx.rollback().await.unwrap();
-
-    // DB-clock variant.
-    jq.enqueue("t", None, &json!({}), None).await.unwrap();
-    let j = jq.claim("w", &["t"], 60).await.unwrap().unwrap();
-    let mut tx = SqliteTx::begin(&s).await.unwrap();
-    JobQueue::complete_in(&mut tx, j.id, j.epoch).await.unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(state(&s, j.id).await, "done");
-}
-
-#[tokio::test]
-async fn complete_in_for_a_zombie_rolls_the_effect_back() {
-    let (s, jq) = q().await;
-    let id = enq(&jq, "t", None, 1000).await;
-    let zombie = jq.claim_at("w1", &["t"], 30, 1000).await.unwrap().unwrap();
-    let owner = jq.claim_at("w2", &["t"], 30, 1030).await.unwrap().unwrap();
-    let r = effect_and_complete(&s, id, zombie.epoch, "zombie.test", 1031).await;
-    assert!(is_stale(&r));
-    assert_eq!(effect(&s, "zombie.test").await, 0, "effect rolled back");
-    assert_eq!(state(&s, id).await, "running");
-    effect_and_complete(&s, id, owner.epoch, "owner.test", 1031)
+    let owner = jq.claim("w2", &["t"], 30).await.unwrap().unwrap();
+    let raw = common::raw("fenced", None);
+    let did = DeliveryId([3; 32]);
+    let r = e
+        .mb
+        .deliver_fenced(common::INBOX, raw.clone(), Flags::empty(), did, JobFence { id, epoch: zombie.epoch })
+        .await;
+    assert!(matches!(r, Err(Error::Conflict(ref m)) if m == STALE), "{r:?}");
+    assert_eq!(e.scalar("SELECT count(*) FROM messages").await, 0, "effect rolled back");
+    assert_eq!(state(&e.store, id).await, "running");
+    e.mb
+        .deliver_fenced(common::INBOX, raw, Flags::empty(), did, JobFence { id, epoch: owner.epoch })
         .await
         .unwrap();
-    assert_eq!(effect(&s, "owner.test").await, 1);
+    assert_eq!(e.scalar("SELECT count(*) FROM messages").await, 1);
+    assert_eq!(state(&e.store, id).await, "done");
 }
 
 #[tokio::test]
-async fn crash_between_fenced_commit_and_complete_reruns_the_job() {
-    // The documented contract: a fence alone does not make the step exactly-once.
-    let (s, jq) = q().await;
+async fn a_fence_check_alone_does_not_make_the_step_exactly_once() {
+    // The documented contract: a check (or a fenced effect without completion) leaves the crash
+    // window; the lapsed lease re-runs the job under a new epoch that passes the fence.
+    let (_s, jq) = q().await;
     let id = enq(&jq, "t", None, 1000).await;
     let first = jq.claim_at("w1", &["t"], 30, 1000).await.unwrap().unwrap();
-    let mut tx = SqliteTx::begin(&s).await.unwrap();
-    JobQueue::fence_at(&mut tx, id, first.epoch, 1005)
+    jq.fence_check_at(rusty_store::JobFence { id, epoch: first.epoch }, 1005)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO domains (name, created_at) VALUES ('crash.test', 0)")
-        .execute(tx.conn())
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    // The worker crashes here: no complete. The lease lapses and the job runs again.
     let second = jq.claim_at("w2", &["t"], 30, 1030).await.unwrap().unwrap();
     assert_eq!((second.id, second.epoch, second.attempts), (id, 2, 2));
-    assert_eq!(
-        effect(&s, "crash.test").await,
-        1,
-        "the first effect persists"
-    );
-    let mut tx = SqliteTx::begin(&s).await.unwrap();
-    JobQueue::fence_at(&mut tx, id, second.epoch, 1031)
+    jq.fence_check_at(rusty_store::JobFence { id, epoch: second.epoch }, 1031)
         .await
         .unwrap();
-    tx.rollback().await.unwrap();
 }
 
 #[tokio::test]

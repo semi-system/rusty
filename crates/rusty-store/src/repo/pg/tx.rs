@@ -108,6 +108,9 @@ pub struct Knobs {
     /// `lock_blobs` deletes the blob rows it has just inserted, every round (a GC that always wins
     /// the race): exercises the bounded retry loop giving up.
     pub drop_blob_rows_after_insert: bool,
+    /// `pg_sleep` this long between the blob INSERT and the blob LOCK of `lock_blobs`: the window
+    /// in which a concurrent GC can delete an unreferenced row the INSERT skipped (DO NOTHING).
+    pub pause_after_blob_insert_ms: u32,
 }
 
 pub(super) enum Step<T> {

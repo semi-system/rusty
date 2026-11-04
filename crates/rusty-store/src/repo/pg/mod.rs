@@ -2,6 +2,8 @@
 //! `mailbox.rs`). Transaction helper, retry loop and test knobs: `tx.rs`.
 
 mod directory;
+mod gc;
+mod jobs;
 mod mailbox;
 pub mod tx;
 
@@ -189,6 +191,13 @@ async fn lock_blobs(
         .bind(&sizes)
         .execute(&mut *c)
         .await?;
+        #[cfg(feature = "test-knobs")]
+        if knobs.pause_after_blob_insert_ms > 0 {
+            sqlx::query("SELECT pg_sleep($1)")
+                .bind(f64::from(knobs.pause_after_blob_insert_ms) / 1000.0)
+                .execute(&mut *c)
+                .await?;
+        }
         #[cfg(feature = "test-knobs")]
         if knobs.drop_blob_rows_after_insert {
             sqlx::query("DELETE FROM blobs WHERE hash = ANY($1)")
