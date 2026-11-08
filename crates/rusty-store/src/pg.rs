@@ -122,13 +122,6 @@ impl PgStore {
         Ok(Self { pool, lock_timeout })
     }
 
-    /// Graceful shutdown: close every pooled connection (in-flight statements finish). Further
-    /// use fails with a storage error. Closing twice is harmless.
-    pub async fn close(&self) -> Result<()> {
-        self.pool.close().await;
-        Ok(())
-    }
-
     /// The underlying pool. Public only with the `test-fixtures` feature (dev-dependencies only,
     /// see scripts/check-test-fixtures.sh); production builds keep it crate-private, so raw SQL
     /// access from another crate needs a feature no production build enables.

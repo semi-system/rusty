@@ -11,7 +11,8 @@ use rusty_core::Flags;
 async fn close(b: &Backend) -> rusty_core::Result<()> {
     #[cfg(feature = "postgres")]
     if let Some((store, _)) = &b.pg {
-        return store.close().await;
+        store.close().await;
+        return Ok(());
     }
     b.sqlite.as_ref().expect("a backend is SQLite or Postgres").close().await
 }

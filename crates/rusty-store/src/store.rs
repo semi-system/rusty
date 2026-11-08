@@ -135,7 +135,7 @@ impl Store {
         }
         #[cfg(feature = "postgres")]
         if let Some(p) = &self.pg {
-            p.close().await?;
+            p.close().await;
         }
         Ok(())
     }
