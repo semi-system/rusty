@@ -191,7 +191,7 @@ async fn list_mutations() {
         "SELECT 'constraint', c.conrelid::regclass::text || '.' || c.conname, \
                 'ALTER TABLE ' || c.conrelid::regclass::text || ' DROP CONSTRAINT ' || quote_ident(c.conname) \
          FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace \
-         WHERE n.nspname = 'public' AND c.contype IN ('c', 'u', 'f') AND c.conrelid::regclass::text <> '_sqlx_migrations' \
+         WHERE n.nspname = 'public' AND c.contype IN ('c', 'u', 'f', 'p') AND c.conrelid::regclass::text <> '_sqlx_migrations' \
          UNION ALL \
          SELECT 'trigger', c.relname || '.' || t.tgname, 'DROP TRIGGER ' || quote_ident(t.tgname) || ' ON ' || c.relname \
          FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace \

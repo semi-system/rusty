@@ -63,7 +63,8 @@ pub const TABLE: &[Mutation] = &[
     // ---- dialect translation (plan D5)
     text("D01-bare-int-in-union", PG, "CAST(1 AS BIGINT)", "1", "CAST(1 AS BIGINT) becomes a bare 1: Postgres types it integer, the decoder expects bigint"),
     text("D02-no-derived-table-alias", PG, " AS t(seq, item)", "", "unnest derived table loses its alias (Postgres requires one)"),
-    text("D03-least-for-greatest", PG, "GREATEST(", "LEAST(", "uid_validity high-water mark uses LEAST instead of GREATEST"),
+    text("D03a-uid-validity-least-for-greatest", PG, "uid_validity = GREATEST(", "uid_validity = LEAST(", "the mailbox uid_validity high-water mark GREATEST(rs_now(), uid_validity + 1) uses LEAST"),
+    text("D03b-limit-least-for-greatest", PG, "LIMIT GREATEST(", "LIMIT LEAST(", "the capability revoke LIMIT GREATEST(0, ..) uses LEAST (a negative LIMIT)"),
     text("D04-in-for-any", PG, "= ANY($", "IN ($", "= ANY($n) written as IN ($n): invalid for an array parameter"),
     text("D05-unixepoch-in-postgres", PG, "rs_now()", "unixepoch()", "the SQLite clock function in a Postgres statement"),
     text("D06-rs-now-in-sqlite", LITE, "unixepoch()", "rs_now()", "the Postgres clock function in a SQLite statement"),

@@ -7,6 +7,7 @@
 #   bash scripts/pg-mutate.sh dialect [OFFSET COUNT]   dialect / repository / logic mutations (chunkable)
 #   bash scripts/pg-mutate.sh schema  [OFFSET COUNT]   drop one named constraint / trigger / index (chunkable)
 #   bash scripts/pg-mutate.sh parity                   one-sided additions, judged by the sqlite_master oracle
+#   bash scripts/pg-mutate.sh forget ID_REGEX...       drop recorded rows whose id matches (to re-run only those)
 #   bash scripts/pg-mutate.sh table [OUT.md]           write the table from the accumulated results
 #
 # Needs RUSTY_TEST_PG_URL (scripts/pg-up.sh) and cargo. Nothing in the repository is edited: each
@@ -39,7 +40,8 @@ SKIP=(-- --skip the_committed_mutation_table_lists_every_dialect_mutation)
 # Full judging suites.
 FULL_DIALECT=(-p rusty-store -p rusty-directory --features "$F" --no-fail-fast
   --test mailbox_conformance --test jobs_conformance --test gc_conformance --test pg_mailbox_concurrency
-  --test pg_jobs_gc_concurrency --test directory_conformance --test mailbox --test jobs --test pg_dialect_mutations "${SKIP[@]}")
+  --test pg_jobs_gc_concurrency --test directory_conformance --test mailbox --test jobs --test pg_dialect_mutations
+  --test query_shape --test input_validation_conformance --test race_conformance "${SKIP[@]}")
 FULL_SCHEMA=(-p rusty-store --features "$FS" --test pg_schema_cases --test pg_schema_constraints
   --test pg_schema_concurrency --test pg_plans --test mailbox_conformance --test jobs_conformance --test gc_conformance
   --test pg_mailbox_concurrency)
@@ -54,6 +56,7 @@ judges() {
     D01*|D03*|D05*|D06*|D07*|D11*|D12*) printf '%s\n' "${d[@]}" -- --skip the_committed_mutation_table_lists_every_dialect_mutation ;;
     D09*|R01*) printf '%s\n' "${s[@]}" --test pg_mailbox_concurrency ;;
     R02*|R03*|R04*|R05*|R06*) printf '%s\n' "${s[@]}" --test pg_jobs_gc_concurrency ;;
+    R08*) printf '%s\n' "${s[@]}" --test query_shape ;;
     L01*) printf '%s\n' "${s[@]}" --test pg_mailbox_concurrency --test error_busy ;;
     *) printf '%s\n' "${s[@]}" ;;
   esac
@@ -70,7 +73,15 @@ first_fail() {
     END { if (ENVIRON["ALLFAIL"] == "1" && r != "") print r }' "$1"
 }
 
-record() { printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "${6:-}" >>"$RES"; echo "$1 $2: $3 $4" >&2; }
+# stamp: the commit the rows below are produced at ("+dirty" when crates/ or this script differ from it)
+stamp() {
+  local c; c="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  [ -z "$(git status --porcelain -- crates scripts/pg-mutate.sh 2>/dev/null)" ] || c="$c+dirty"
+  echo "$c"
+}
+
+# record <class> <id> <outcome> <killer> <what> [oracle]: one row, stamped with its own commit (field 7)
+record() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "${6:-}" "$(stamp)" >>"$RES"; echo "$1 $2: $3 $4" >&2; }
 
 # run <log> <env...> -- <cargo args>: returns 0 always; log in $1
 run() {
@@ -94,12 +105,30 @@ judge_dialect() {
   else record dialect "$id" SURVIVED "-" "$what"; fi
 }
 
-need_baseline() { [ -f "$READY" ] && [ -f "$LIST" ] || { echo "run '$0 baseline' first" >&2; exit 1; }; }
+# The baseline marker holds the commit the unmutated suites were last green at. Rows are written
+# only when (a) that commit is the current one and (b) the unmutated suite of the chunk's class is
+# green again right now (`recheck_baseline`), so a row can never be a kill of an already-red tree.
+need_baseline() {
+  case "$(stamp)" in *+dirty) echo "the tree has uncommitted changes under crates/ or scripts/pg-mutate.sh: commit first, rows are stamped with a commit" >&2; exit 1 ;; esac
+  [ -f "$READY" ] && [ -f "$LIST" ] || { echo "run '$0 baseline' first" >&2; exit 1; }
+  [ "$(cat "$READY")" = "$(stamp)" ] || { echo "baseline was green at '$(cat "$READY")', the tree is at '$(stamp)': run '$0 baseline' again" >&2; exit 1; }
+}
+
+# recheck_baseline <suite array name>: run that suite unmutated; abort the chunk when it is red
+recheck_baseline() {
+  declare -n suite="$1"
+  if ! env RUSTY_SQL_MUTATION= RUSTY_SQL_MUTATION_POST_MIGRATE= cargo test "${suite[@]}" >"$WORK/recheck.txt" 2>&1; then
+    echo "the unmutated $1 suite is red now; no rows are written:" >&2
+    grep -E "^test .* FAILED|panicked" "$WORK/recheck.txt" | head >&2; exit 1
+  fi
+  echo "baseline re-checked ($1 green at $(stamp))" >&2
+}
 
 case "$MODE" in
   reset) rm -f "$RES" "$READY" "$LIST"; echo "reset" >&2 ;;
 
   baseline)
+    case "$(stamp)" in *+dirty) echo "commit first: the baseline is recorded for a commit" >&2; exit 1 ;; esac
     cargo test --no-run "${FULL_DIALECT[@]}" >/dev/null 2>&1 || { echo "build failed (dialect suites)" >&2; exit 1; }
     cargo test --no-run "${FULL_SCHEMA[@]}" >/dev/null 2>&1 || { echo "build failed (schema suites)" >&2; exit 1; }
     for args in FULL_DIALECT FULL_SCHEMA; do
@@ -112,7 +141,15 @@ case "$MODE" in
     cargo test -p rusty-store --features "$FS" --test pg_dialect_mutations -- --ignored --nocapture list_mutations 2>/dev/null \
       | grep -E '^(DIALECT|SCHEMA)	' >"$LIST"
     echo "baseline green; $(grep -c '^DIALECT' "$LIST") dialect and $(grep -c '^SCHEMA' "$LIST") schema mutations" >&2
-    : >"$READY" ;;
+    stamp >"$READY" ;;
+
+  forget)
+    [ "$#" -ge 1 ] || { echo "usage: $0 forget ID_REGEX..." >&2; exit 2; }
+    for re in "$@"; do
+      n=$(awk -F'\t' -v re="$re" '$2 ~ re' "$RES" | wc -l)
+      awk -F'\t' -v re="$re" '$2 !~ re' "$RES" >"$WORK/res.new" && cat "$WORK/res.new" >"$RES"
+      echo "forgot $n row(s) matching $re" >&2
+    done ;;
 
   precheck)
     need_baseline
@@ -126,6 +163,7 @@ case "$MODE" in
 
   dialect)
     need_baseline
+    recheck_baseline FULL_DIALECT
     off="${1:-0}"; cnt="${2:-1000}"; n=0
     while IFS=$'\t' read -r kind id what; do
       [ "$kind" = DIALECT ] || continue
@@ -136,6 +174,7 @@ case "$MODE" in
 
   schema)
     need_baseline
+    recheck_baseline FULL_SCHEMA
     off="${1:-0}"; cnt="${2:-1000}"; n=0
     while IFS=$'\t' read -r kind id sql; do
       [ "$kind" = SCHEMA ] || continue
@@ -150,13 +189,16 @@ case "$MODE" in
       fi
       run "$WORK/par.txt" RUSTY_SQL_MUTATION_POST_MIGRATE="$mut" -- "${ORACLE[@]}"
       if grep -q "^test .* FAILED" "$WORK/par.txt"; then par=yes; else par=no; fi
-      if grep -q "mutation statement failed" "$log"; then record schema "$id" VOID "mutation could not be applied" "$sql" "$par"
+      if grep -q "mutation statement failed" "$log"; then
+        if grep -q "depend on it" "$log"; then record schema "$id" VOID "not mutable alone: other objects depend on it (a foreign key references it)" "$sql" "$par"
+        else record schema "$id" VOID "mutation could not be applied" "$sql" "$par"; fi
       elif [ -n "$fail" ]; then record schema "$id" KILLED "$fail" "$sql" "$par"
       else record schema "$id" SURVIVED "-" "$sql" "$par"; fi
     done <"$LIST" ;;
 
   parity)
     need_baseline
+    recheck_baseline FULL_SCHEMA
     one() { # id what env
       local id="$1" what="$2" e="$3" log="$WORK/log.txt"
       grep -q "^parity	$id	" "$RES" 2>/dev/null && return
@@ -181,28 +223,29 @@ case "$MODE" in
     {
       echo "# Postgres backend: mutation table"
       echo
-      echo "Generated by \`scripts/pg-mutate.sh table\` from the accumulated results on $(date -u +%Y-%m-%d) at commit \`$(git rev-parse --short HEAD)\`. Do not edit by hand; regenerate."
+      echo "Generated by \`scripts/pg-mutate.sh table\` from the accumulated results on $(date -u +%Y-%m-%d). Do not edit by hand; regenerate. Rows were produced across several commits: the last column of every row is the commit it was judged at (the runner refuses to write a row unless the tree is committed, equals the baseline commit and the unmutated suite is green again at that moment)."
       echo "Mutations are selected at run time (see the header of \`scripts/pg-mutate.sh\`); nothing in the repository is edited."
       echo "Each mutation was judged first by the test binaries that plausibly cover it and, if that did not kill it, by the full judging suite. The baseline (hook compiled in, no mutation selected) was green."
+      echo "Schema coverage: every named CHECK, UNIQUE, FOREIGN KEY and PRIMARY KEY constraint, every trigger and every non-constraint index is dropped once. Not covered: NOT NULL constraints, column defaults and identity definitions, and the bodies of trigger functions (they are exercised by the behaviour suites but never mutated)."
       echo
       total=$(wc -l <"$RES"); killed=$(grep -c $'\tKILLED' "$RES"); surv=$(grep -c $'\tSURVIVED\t' "$RES"); void=$(grep -c $'\tVOID\t' "$RES")
-      echo "**$total mutations: $killed killed, $surv survived, $void void.** A void mutation is not a kill. Survivors carry a written waiver for the reviewer to accept or reject."
+      echo "**$total mutations: $killed killed, $surv survived, $void void.** A void mutation is not a kill. Survivors carry a written waiver (one line per id in \`scripts/pg-mutate-waivers.tsv\`, no wildcards) for the reviewer to accept or reject; a survivor without one is printed as UNEXPLAINED and fails the committed-table test."
       echo
       for class in dialect schema parity; do
         grep -q "^$class"$'\t' "$RES" || continue
         echo "## $class"; echo
-        if [ "$class" = schema ]; then echo "| id | outcome | first failing test | sqlite_master oracle also fails | mutation |"; echo "|---|---|---|---|---|"
-        else echo "| id | outcome | first failing test | mutation |"; echo "|---|---|---|---|"; fi
-        grep "^$class"$'\t' "$RES" | while IFS=$'\t' read -r _ id outcome killer what par; do
-          what="${what//|/\\|}"
-          if [ "$class" = schema ]; then echo "| \`$id\` | $outcome | \`$killer\` | ${par:-n/a} | \`$what\` |"
-          else echo "| \`$id\` | $outcome | \`$killer\` | $what |"; fi
+        if [ "$class" = schema ]; then echo "| id | outcome | first failing test | sqlite_master oracle also fails | mutation | commit |"; echo "|---|---|---|---|---|---|"
+        else echo "| id | outcome | first failing test | mutation | commit |"; echo "|---|---|---|---|---|"; fi
+        grep "^$class"$'\t' "$RES" | while IFS=$'\t' read -r _ id outcome killer what par commit; do
+          what="${what//|/\|}"
+          if [ "$class" = schema ]; then echo "| \`$id\` | $outcome | \`$killer\` | ${par:-n/a} | \`$what\` | \`${commit:-unknown}\` |"
+          else echo "| \`$id\` | $outcome | \`$killer\` | $what | \`${commit:-unknown}\` |"; fi
         done; echo
       done
       echo "## Survivors"; echo
       if [ "$surv" -eq 0 ]; then echo "None."; else
         grep $'\tSURVIVED\t' "$RES" | while IFS=$'\t' read -r class id _ _ what _; do
-          w="$(awk -F'\t' -v id="$id" '{ k = $1; if (k == id || (substr(k, length(k)) == "*" && index(id, substr(k, 1, length(k) - 1)) == 1)) { print $2; exit } }' "$WAIVERS" 2>/dev/null)"
+          w="$(awk -F'\t' -v id="$id" '$1 == id { print $2; exit }' "$WAIVERS" 2>/dev/null)"
           if [ -n "$w" ]; then echo "- $class \`$id\` (WAIVER proposed): $what. $w"
           else echo "- $class \`$id\` (UNEXPLAINED): $what"; fi
         done
@@ -210,5 +253,5 @@ case "$MODE" in
     } >"$OUT"
     echo "table written to $OUT" >&2 ;;
 
-  *) echo "usage: $0 reset|baseline|precheck|dialect [OFFSET COUNT]|schema [OFFSET COUNT]|parity|table [OUT]" >&2; exit 2 ;;
+  *) echo "usage: $0 reset|baseline|precheck|dialect [OFFSET COUNT]|schema [OFFSET COUNT]|parity|forget ID_REGEX...|table [OUT]" >&2; exit 2 ;;
 esac
