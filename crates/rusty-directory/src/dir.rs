@@ -3,7 +3,10 @@ use std::sync::Arc;
 
 use rusty_core::{AccountId, DomainId, Error, ListId, MailboxId, PlanId, Result};
 use rusty_store::repo::sqlite::SqliteRepo;
-use rusty_store::repo::{DirectoryRepo, ListMember, NewAccount, Resolution, GLOBAL_PLAN};
+use rusty_store::repo::{
+    AccountInfo, AliasInfo, DirectoryRepo, DomainInfo, DomainStatus, ListMember, NewAccount,
+    Resolution, GLOBAL_PLAN,
+};
 use rusty_store::SqliteStore;
 
 use crate::auth::hash_password;
@@ -263,5 +266,55 @@ impl Directory {
 
     pub async fn mailbox_for(&self, account: AccountId) -> Result<MailboxId> {
         self.repo.mailbox_for(account).await
+    }
+
+    // ------------------------------------------------------------ administration (U2)
+
+    /// One page of domains in creation order; `after` is the last id of the previous page.
+    /// `limit` is 1..=[`MAX_LIST_PAGE`].
+    pub async fn list_domains(&self, after: Option<DomainId>, limit: usize) -> Result<Vec<DomainInfo>> {
+        self.repo.list_domains(after, limit).await
+    }
+
+    /// Look a domain up by name (normalized like every other entry point).
+    pub async fn find_domain(&self, name: &str) -> Result<Option<DomainInfo>> {
+        let name = normalize_domain(name)?;
+        self.repo.find_domain(&name).await
+    }
+
+    /// Disable or re-enable a domain: a disabled domain resolves nothing and its accounts cannot
+    /// authenticate; no data is deleted.
+    pub async fn set_domain_status(&self, domain: DomainId, status: DomainStatus) -> Result<()> {
+        self.repo.set_domain_status(domain, status).await
+    }
+
+    /// The account with exactly this address. Unlike `resolve`, an alias or list does not match.
+    pub async fn find_account(&self, addr: &str) -> Result<Option<AccountInfo>> {
+        let (local, domain) = parse_address(addr)?;
+        self.repo.find_account(&local, &domain).await
+    }
+
+    pub async fn list_accounts(
+        &self,
+        domain: DomainId,
+        after: Option<AccountId>,
+        limit: usize,
+    ) -> Result<Vec<AccountInfo>> {
+        self.repo.list_accounts(domain, after, limit).await
+    }
+
+    pub async fn list_aliases(
+        &self,
+        domain: DomainId,
+        after: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<AliasInfo>> {
+        self.repo.list_aliases(domain, after, limit).await
+    }
+
+    /// Remove the alias with this address (`NotFound` if there is none).
+    pub async fn remove_alias(&self, addr: &str) -> Result<()> {
+        let (local, domain) = parse_address(addr)?;
+        self.repo.remove_alias(&local, &domain).await
     }
 }

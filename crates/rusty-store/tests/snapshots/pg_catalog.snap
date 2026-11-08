@@ -41,6 +41,7 @@ COLUMN domains.id bigint nullable=NO identity=YES/ALWAYS collation= default=
 COLUMN domains.name text nullable=NO identity=NO/ collation=C default=
 COLUMN domains.config jsonb nullable=NO identity=NO/ collation= default='{}'::jsonb
 COLUMN domains.created_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN domains.status text nullable=NO identity=NO/ collation= default='active'::text
 COLUMN folders.mailbox_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN folders.id bigint nullable=NO identity=NO/ collation= default=
 COLUMN folders.parent_id bigint nullable=YES identity=NO/ collation= default=
@@ -172,6 +173,8 @@ CONSTRAINT domains.domains_name_key UNIQUE (name)
 CONSTRAINT domains.domains_name_not_null NOT NULL name
 CONSTRAINT domains.domains_name_valid CHECK (length(name) > 0 AND name = lower(name))
 CONSTRAINT domains.domains_pkey PRIMARY KEY (id)
+CONSTRAINT domains.domains_status_not_null NOT NULL status
+CONSTRAINT domains.domains_status_valid CHECK (status = ANY (ARRAY['active'::text, 'disabled'::text]))
 CONSTRAINT folders.folders_id_not_null NOT NULL id
 CONSTRAINT folders.folders_id_valid CHECK (id >= 1)
 CONSTRAINT folders.folders_mailbox_id_fkey FOREIGN KEY (mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE

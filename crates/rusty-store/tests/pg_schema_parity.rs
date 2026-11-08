@@ -190,8 +190,8 @@ const KNOWN_DIFFS: &[(&str, &str, &str)] = &[
     // jsonb type replaces the json_valid() CHECK of config columns
     ("sqlite", "CHECKS accounts 3", "accounts.config: jsonb replaces json_valid CHECK (PG 2)"),
     ("pg", "CHECKS accounts 2", "see above"),
-    ("sqlite", "CHECKS domains 2", "domains.config: jsonb replaces json_valid CHECK (PG 1)"),
-    ("pg", "CHECKS domains 1", "see above"),
+    ("sqlite", "CHECKS domains 3", "domains.config: jsonb replaces json_valid CHECK (PG 1)"),
+    ("pg", "CHECKS domains 2", "see above"),
     ("sqlite", "CHECKS plans 2", "plans.config: jsonb replaces json_valid CHECK (PG 1)"),
     ("pg", "CHECKS plans 1", "see above"),
     // blobs: SQLite 4 checks (hash glob, size, refcount, zero_since>=0); PG 4 + consistency
