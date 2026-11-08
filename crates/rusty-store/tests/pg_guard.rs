@@ -1,5 +1,4 @@
 //! The Postgres test guard must leave no database behind, also when the test panics.
-//! backend-neutral: Postgres-only suite (needs a server; compares against the SQLite behaviour elsewhere)
 #![cfg(feature = "postgres")]
 
 mod common;
@@ -13,6 +12,7 @@ const CHILD_ENV: &str = "RUSTY_GUARD_CHILD_NAME_FILE";
 
 /// Runs only as the child of `panicking_test_leaves_no_database`: creates a database and panics
 /// while the guard is alive.
+// backend-neutral: tests the Postgres test-database guard itself (PgTestDb); SQLite has no server database to leak
 #[tokio::test]
 async fn guard_child_panics_on_purpose() {
     let Ok(file) = std::env::var(CHILD_ENV) else {
@@ -25,6 +25,7 @@ async fn guard_child_panics_on_purpose() {
     panic!("deliberate panic while the test database guard is alive");
 }
 
+// backend-neutral: tests the Postgres test-database guard itself (PgTestDb); SQLite has no server database to leak
 #[tokio::test]
 async fn panicking_test_leaves_no_database() {
     let Some(admin_url) = pg_admin_url() else {
@@ -55,6 +56,7 @@ async fn panicking_test_leaves_no_database() {
     assert_eq!(left, 0, "the guard left database {name} behind");
 }
 
+// backend-neutral: tests the Postgres test-database guard itself (PgTestDb); SQLite has no server database to leak
 #[test]
 fn require_pg_accepts_only_one_zero_or_unset() {
     assert!(!parse_require_pg(None));
@@ -69,6 +71,7 @@ fn require_pg_accepts_only_one_zero_or_unset() {
     }
 }
 
+// backend-neutral: tests the Postgres test-database guard itself (PgTestDb); SQLite has no server database to leak
 #[test]
 fn bad_require_pg_is_rejected_even_when_the_url_is_set() {
     use common::pg::admin_url_from;

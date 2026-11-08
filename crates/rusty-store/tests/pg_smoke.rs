@@ -1,4 +1,3 @@
-//! backend-neutral: Postgres-only suite (needs a server; compares against the SQLite behaviour elsewhere)
 #![cfg(feature = "postgres")]
 
 mod common;
@@ -10,6 +9,7 @@ use rusty_core::Error;
 use rusty_store::{PgPoolConfig, PgStore};
 use url::Url;
 
+// backend-neutral: Postgres server facts (version, pool bounds, session timeouts, credential sanitising); SQLite has no equivalent
 #[test]
 fn pool_defaults_are_stable() {
     let config = PgPoolConfig::default();
@@ -21,6 +21,7 @@ fn pool_defaults_are_stable() {
     assert_eq!(config.max_lifetime, Duration::from_secs(30 * 60));
 }
 
+// backend-neutral: Postgres server facts (version, pool bounds, session timeouts, credential sanitising); SQLite has no equivalent
 #[tokio::test]
 async fn pg_reports_version_18() {
     let Some(admin_url) = pg_admin_url() else {
@@ -37,6 +38,7 @@ async fn pg_reports_version_18() {
     db.cleanup().await;
 }
 
+// backend-neutral: Postgres server facts (version, pool bounds, session timeouts, credential sanitising); SQLite has no equivalent
 #[tokio::test]
 async fn isolated_databases_do_not_see_each_other() {
     let Some(admin_url) = pg_admin_url() else {
@@ -61,6 +63,7 @@ async fn isolated_databases_do_not_see_each_other() {
     b.cleanup().await;
 }
 
+// backend-neutral: Postgres server facts (version, pool bounds, session timeouts, credential sanitising); SQLite has no equivalent
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pool_is_bounded_and_session_timeouts_are_applied() {
     let Some(admin_url) = pg_admin_url() else {
@@ -125,6 +128,7 @@ async fn pool_is_bounded_and_session_timeouts_are_applied() {
     db.cleanup().await;
 }
 
+// backend-neutral: Postgres server facts (version, pool bounds, session timeouts, credential sanitising); SQLite has no equivalent
 #[tokio::test]
 async fn wrong_password_is_sanitized() {
     let Some(admin_url) = pg_admin_url() else {
@@ -145,6 +149,7 @@ async fn wrong_password_is_sanitized() {
     }
 }
 
+// backend-neutral: Postgres server facts (version, pool bounds, session timeouts, credential sanitising); SQLite has no equivalent
 #[test]
 fn skip_notice_is_stable_and_contains_no_secret() {
     assert_eq!(
@@ -154,6 +159,7 @@ fn skip_notice_is_stable_and_contains_no_secret() {
     assert!(!PG_SKIP_NOTICE.contains("postgres://"));
 }
 
+// backend-neutral: Postgres server facts (version, pool bounds, session timeouts, credential sanitising); SQLite has no equivalent
 #[tokio::test]
 async fn database_is_dropped_even_when_the_test_panics() {
     let Some(admin_url) = pg_admin_url() else {

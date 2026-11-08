@@ -14,7 +14,6 @@
 //!    itself, so it is NOT an oracle: a regenerated snapshot blesses whatever is in the migration.
 //!    Regenerate with RUSTY_UPDATE_PG_SNAPSHOT=1 and review the diff.
 //!
-//! backend-neutral: Postgres-only suite (needs a server; compares against the SQLite behaviour elsewhere)
 
 #![cfg(feature = "postgres")]
 #![allow(clippy::type_complexity)]
@@ -153,6 +152,7 @@ E
 ").contains("(no change)"));
 }
 
+// backend-neutral: compares or snapshots the Postgres catalog (the parity test reads the SQLite catalog itself); not a behaviour suite
 #[tokio::test]
 async fn pg_catalog_matches_snapshot() {
     let Some(admin_url) = pg_admin_url() else {
@@ -471,6 +471,7 @@ async fn pg_description(p: &PgPool) -> BTreeSet<String> {
     out
 }
 
+// backend-neutral: compares or snapshots the Postgres catalog (the parity test reads the SQLite catalog itself); not a behaviour suite
 #[tokio::test]
 async fn pg_schema_matches_sqlite_structure() {
     let Some(admin_url) = pg_admin_url() else {
@@ -524,6 +525,7 @@ async fn pg_schema_matches_sqlite_structure() {
     db.cleanup().await;
 }
 
+// backend-neutral: compares or snapshots the Postgres catalog (the parity test reads the SQLite catalog itself); not a behaviour suite
 #[tokio::test]
 async fn rs_now_uses_the_statement_clock() {
     let Some(admin_url) = pg_admin_url() else {

@@ -3,7 +3,6 @@
 //! kill the mutants found in review. Each case runs in its own rolled-back transaction on one
 //! seeded database; every rejection asserts the expected SQLSTATE and, where the engine reports
 //! one, the constraint name, so a case cannot pass for the wrong reason.
-//! backend-neutral: Postgres-only suite (needs a server; compares against the SQLite behaviour elsewhere)
 #![cfg(feature = "postgres")]
 
 mod common;
@@ -409,6 +408,7 @@ async fn run_case(pool: &PgPool, c: &Case) -> Result<(), String> {
     }
 }
 
+// backend-neutral: Postgres DDL cases with exact SQLSTATE and constraint names; the SQLite originals are schema_constraints.rs, ledgered in PORTED
 #[tokio::test]
 async fn schema_cases_match_expected_sqlstate_and_constraint() {
     let Some(url) = pg_admin_url() else {
@@ -468,6 +468,7 @@ fn assert_recent(z: i64, before: i64, what: &str) {
     );
 }
 
+// backend-neutral: Postgres DDL cases with exact SQLSTATE and constraint names; the SQLite originals are schema_constraints.rs, ledgered in PORTED
 #[tokio::test]
 async fn refcount_and_zero_since_follow_message_lifecycle() {
     let Some(url) = pg_admin_url() else {
@@ -508,6 +509,7 @@ async fn refcount_and_zero_since_follow_message_lifecycle() {
     db.cleanup().await;
 }
 
+// backend-neutral: Postgres DDL cases with exact SQLSTATE and constraint names; the SQLite originals are schema_constraints.rs, ledgered in PORTED
 #[tokio::test]
 async fn cascades_release_everything_and_other_tenants_are_untouched() {
     let Some(url) = pg_admin_url() else {
@@ -576,6 +578,7 @@ async fn cascades_release_everything_and_other_tenants_are_untouched() {
     db.cleanup().await;
 }
 
+// backend-neutral: Postgres DDL cases with exact SQLSTATE and constraint names; the SQLite originals are schema_constraints.rs, ledgered in PORTED
 #[tokio::test]
 async fn address_registry_never_drifts_from_the_owner_tables() {
     let Some(url) = pg_admin_url() else {
@@ -609,6 +612,7 @@ async fn address_registry_never_drifts_from_the_owner_tables() {
     db.cleanup().await;
 }
 
+// backend-neutral: Postgres DDL cases with exact SQLSTATE and constraint names; the SQLite originals are schema_constraints.rs, ledgered in PORTED
 #[tokio::test]
 async fn text_keys_use_the_c_collation_and_defaults_hold() {
     let Some(url) = pg_admin_url() else {

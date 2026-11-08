@@ -1,4 +1,3 @@
-//! backend-neutral: needs the `mutation-testing` feature (passed by scripts/pg-mutate.sh, never enabled by a manifest); the hook is identity unless RUSTY_SQL_MUTATION is set
 //!
 //! Dialect mutation tests (plan D5). The table of mutations lives in `src/mutation.rs`; this file
 //! checks the table and the hook, and gives the runner a probe that proves a mutation is not

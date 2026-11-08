@@ -1,6 +1,5 @@
 //! Two-session tests for invariants that must hold under concurrent writers. SQLite's single
 //! writer made these impossible; on Postgres the schema itself has to serialize them.
-//! backend-neutral: Postgres-only suite (needs a server; compares against the SQLite behaviour elsewhere)
 #![cfg(feature = "postgres")]
 
 mod common;
@@ -56,6 +55,7 @@ async fn mailbox_with_folders(pool: &PgPool, folders: i64) -> i64 {
 /// T1 reparents 1 under 2 and stays open. T2 reparents 2 under 1 concurrently. Without the
 /// mailbox lock inside the trigger both commit and 1<->2 is a cycle; with it T2 waits for T1,
 /// then sees T1's committed row and is rejected with RS002.
+// backend-neutral: raw SQL against the Postgres rs_folders_no_cycle trigger lock; the engine-neutral twin is race_conformance::folder_moves_never_commit_a_cycle_or_exceed_the_depth_limit
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_reparenting_cannot_create_a_folder_cycle() {
     let Some(url) = pg_admin_url() else {
@@ -109,6 +109,7 @@ async fn concurrent_reparenting_cannot_create_a_folder_cycle() {
 
 /// Concurrent adds to two lists must each get a dense 1..n sequence and no spurious UNIQUE
 /// violation (SQLite semantics: per-list, writers serialized).
+// backend-neutral: raw SQL against the Postgres rs_list_members_seq trigger; the engine-neutral twin is race_conformance::concurrent_list_member_adds_get_a_dense_per_list_sequence
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_list_member_adds_get_dense_per_list_seq() {
     let Some(url) = pg_admin_url() else {

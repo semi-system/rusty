@@ -1,4 +1,3 @@
-//! backend-neutral: SQLite schema constraints; the Postgres twins (one per test, exact constraint) are listed in pg_schema_constraints.rs PORTED
 mod common;
 
 use common::mem;
@@ -76,6 +75,7 @@ fn folder(mailbox: i64, id: i64, parent: &str, name: &str, role: &str) -> String
     )
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_uppercase_domain() {
     let s = mem().await;
@@ -91,6 +91,7 @@ async fn rejects_uppercase_domain() {
     .await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_account_with_missing_domain() {
     let s = mem().await;
@@ -112,6 +113,7 @@ async fn rejects_account_with_missing_domain() {
     .await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_delete_domain_with_accounts() {
     let s = seed().await;
@@ -125,6 +127,7 @@ async fn rejects_delete_domain_with_accounts() {
     ok(p, "DELETE FROM domains WHERE id=2").await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_list_member_with_both_account_and_external() {
     let s = seed().await;
@@ -146,6 +149,7 @@ async fn rejects_list_member_with_both_account_and_external() {
     .await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_list_member_with_neither() {
     let s = seed().await;
@@ -167,6 +171,7 @@ async fn rejects_list_member_with_neither() {
     .await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_duplicate_folder_name_under_same_parent() {
     let s = seed().await;
@@ -176,6 +181,7 @@ async fn rejects_duplicate_folder_name_under_same_parent() {
     ok(p, &folder(1, 3, "1", "Play", "custom")).await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_duplicate_folder_name_at_root() {
     let s = seed().await;
@@ -185,6 +191,7 @@ async fn rejects_duplicate_folder_name_at_root() {
     ok(p, &folder(1, 3, "NULL", "Play", "custom")).await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_two_trash_folders() {
     let s = seed().await;
@@ -195,6 +202,7 @@ async fn rejects_two_trash_folders() {
     ok(p, &folder(2, 2, "NULL", "Trash", "trash")).await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn allows_many_custom_folders() {
     let s = seed().await;
@@ -212,6 +220,7 @@ async fn allows_many_custom_folders() {
     );
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_folder_parent_equal_self() {
     let s = seed().await;
@@ -220,6 +229,7 @@ async fn rejects_folder_parent_equal_self() {
     ok(p, &folder(1, 2, "1", "Loop", "custom")).await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_folder_cycle() {
     let s = seed().await;
@@ -246,6 +256,7 @@ async fn rejects_folder_cycle() {
     .await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_folder_tree_deeper_than_64() {
     let s = seed().await;
@@ -272,6 +283,7 @@ async fn rejects_folder_tree_deeper_than_64() {
     .await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_message_referencing_other_mailbox_folder() {
     let s = seed().await;
@@ -282,6 +294,7 @@ async fn rejects_message_referencing_other_mailbox_folder() {
     ok(p, &msg(2, 1, 2, 1, HASH_A, 5, 0)).await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_message_size_zero() {
     let s = seed().await;
@@ -289,6 +302,7 @@ async fn rejects_message_size_zero() {
     ok(s.pool(), &msg(1, 1, 1, 1, HASH_A, 1, 0)).await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_flags_over_31() {
     let s = seed().await;
@@ -296,6 +310,7 @@ async fn rejects_flags_over_31() {
     ok(s.pool(), &msg(1, 1, 1, 1, HASH_A, 5, 31)).await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_invalid_blob_hash() {
     let s = mem().await;
@@ -320,6 +335,7 @@ async fn rejects_invalid_blob_hash() {
     .await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_negative_refcount() {
     let s = mem().await;
@@ -341,6 +357,7 @@ async fn rejects_negative_refcount() {
     .await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_delete_folder_with_messages() {
     let s = seed().await;
@@ -352,6 +369,7 @@ async fn rejects_delete_folder_with_messages() {
     ok(p, "DELETE FROM folders WHERE mailbox_id=1 AND id=2").await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_address_shared_by_account_and_alias() {
     let s = seed().await;
@@ -374,6 +392,7 @@ async fn rejects_address_shared_by_account_and_alias() {
     .await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_address_shared_by_alias_and_list() {
     let s = seed().await;
@@ -392,6 +411,7 @@ async fn rejects_address_shared_by_alias_and_list() {
     .await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_address_shared_by_account_and_list() {
     let s = seed().await;
@@ -405,6 +425,7 @@ async fn rejects_address_shared_by_account_and_list() {
     .await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_address_collision_via_update() {
     let s = seed().await;
@@ -426,6 +447,7 @@ async fn rejects_address_collision_via_update() {
     ok(p, "UPDATE accounts SET local_part='b2' WHERE id=2").await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn same_local_part_in_different_domains_is_allowed() {
     let s = seed().await;
@@ -438,6 +460,7 @@ async fn same_local_part_in_different_domains_is_allowed() {
     ok(p, "INSERT INTO lists(local_part,domain_id) VALUES ('a',2)").await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_invalid_json_config() {
     let s = mem().await;
@@ -456,6 +479,7 @@ async fn rejects_invalid_json_config() {
     ok(p, "INSERT INTO plans(name,config) VALUES ('p','{}')").await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_change_log_bad_op() {
     let s = seed().await;
@@ -477,6 +501,7 @@ async fn rejects_change_log_bad_op() {
     .await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn refcount_follows_message_insert_update_delete() {
     let s = seed().await;
@@ -502,6 +527,7 @@ async fn refcount_follows_message_insert_update_delete() {
     assert_eq!((rc(p, a).await, rc(p, b).await), (0, 0));
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn refcount_follows_cascade_delete_of_mailbox() {
     let s = seed().await;
@@ -518,6 +544,7 @@ async fn refcount_follows_cascade_delete_of_mailbox() {
     );
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn open_enables_foreign_keys_on_every_pooled_connection() {
     // A failing PRAGMA cannot be simulated through the public API (open forces the
@@ -545,12 +572,14 @@ async fn open_enables_foreign_keys_on_every_pooled_connection() {
     .await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn open_reports_storage_error_for_unusable_path() {
     let r = SqliteStore::open("sqlite:///nonexistent-dir-xyz/sub/t.db").await;
     assert!(matches!(r, Err(Error::Storage { .. })));
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn map_db_error_classifies_constraint_violations() {
     let s = seed().await;
@@ -618,6 +647,7 @@ async fn map_db_error_classifies_constraint_violations() {
     .await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn map_db_error_messages_do_not_leak_sqlite_text() {
     let s = seed().await;
@@ -637,6 +667,7 @@ async fn map_db_error_messages_do_not_leak_sqlite_text() {
     }
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn delete_account_with_nested_folders_and_messages_succeeds() {
     let s = seed().await;
@@ -675,6 +706,7 @@ async fn delete_account_with_nested_folders_and_messages_succeeds() {
     );
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_delete_folder_with_children() {
     let s = seed().await;
@@ -685,6 +717,7 @@ async fn rejects_delete_folder_with_children() {
     ok(p, "DELETE FROM folders WHERE mailbox_id=1 AND id=1").await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_address_collision_via_domain_id_update() {
     let s = seed().await;
@@ -708,6 +741,7 @@ async fn rejects_address_collision_via_domain_id_update() {
     .await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_keyword_not_lowercase() {
     let s = seed().await;
@@ -730,6 +764,7 @@ async fn rejects_keyword_not_lowercase() {
     .await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_folder_name_with_slash() {
     let s = seed().await;
@@ -738,6 +773,7 @@ async fn rejects_folder_name_with_slash() {
     ok(p, &folder(1, 2, "NULL", "ab", "custom")).await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_invalid_account_status() {
     let s = seed().await;
@@ -754,6 +790,7 @@ async fn rejects_invalid_account_status() {
     .await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_invalid_folder_role() {
     let s = seed().await;
@@ -762,6 +799,7 @@ async fn rejects_invalid_folder_role() {
     ok(p, &folder(1, 2, "NULL", "X", "archive")).await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_message_uid_zero() {
     let s = seed().await;
@@ -786,6 +824,7 @@ async fn zero_since(p: &SqlitePool, h: &str) -> Option<i64> {
         .unwrap()
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn zero_since_is_set_when_blob_inserted_unreferenced() {
     let before = unix_now();
@@ -797,6 +836,7 @@ async fn zero_since_is_set_when_blob_inserted_unreferenced() {
     assert!((before..=after).contains(&z), "{before} <= {z} <= {after}");
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn zero_since_follows_message_insert_update_delete() {
     let s = seed().await;
@@ -850,6 +890,7 @@ async fn zero_since_follows_message_insert_update_delete() {
     );
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn zero_since_set_again_after_cascade_delete_of_account() {
     let s = seed().await;
@@ -861,6 +902,7 @@ async fn zero_since_set_again_after_cascade_delete_of_account() {
     assert!(zero_since(p, HASH_A).await.unwrap() >= before);
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn rejects_negative_zero_since() {
     let s = seed().await;
@@ -882,6 +924,7 @@ async fn rejects_negative_zero_since() {
     .await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn messages_have_partial_index_on_deleted_at() {
     let s = mem().await;
@@ -895,6 +938,7 @@ async fn messages_have_partial_index_on_deleted_at() {
 
 /// A database created before migration 0002: its unreferenced blobs get `zero_since` (now)
 /// when 0002 runs, referenced ones stay NULL.
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn migration_0002_backfills_zero_since() {
     let dir = tempfile::tempdir().unwrap();
@@ -939,6 +983,7 @@ async fn migration_0002_backfills_zero_since() {
 
 /// Upgrading an existing database gives every distribution-list member a deterministic
 /// insertion-order sequence; subsequent legacy inserts that omit `seq` are also assigned one.
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn migration_0008_backfills_list_member_sequence() {
     let dir = tempfile::tempdir().unwrap();
@@ -1028,6 +1073,7 @@ fn delivery(mailbox: i64, id_hex: &str, message: i64, hash: &str) -> String {
 const D1: &str = "0101010101010101010101010101010101010101010101010101010101010101";
 const D2: &str = "0202020202020202020202020202020202020202020202020202020202020202";
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn deliveries_accepts_valid_row_and_rejects_duplicate_key() {
     let s = seed().await;
@@ -1038,6 +1084,7 @@ async fn deliveries_accepts_valid_row_and_rejects_duplicate_key() {
     ok(p, &delivery(1, D2, 1, HASH_A)).await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn deliveries_rejects_bad_id_length_and_hash_length() {
     let s = seed().await;
@@ -1049,6 +1096,7 @@ async fn deliveries_rejects_bad_id_length_and_hash_length() {
     bad(p, "INSERT INTO deliveries(mailbox_id,delivery_id,message_id,blob_hash,created_at) VALUES (1,'text',1,'a',0)").await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn deliveries_rejects_missing_or_foreign_message() {
     let s = seed().await;
@@ -1060,6 +1108,7 @@ async fn deliveries_rejects_missing_or_foreign_message() {
     bad(p, &delivery(3, D1, 1, HASH_A)).await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn deliveries_cascade_with_message_and_mailbox() {
     let s = seed().await;
@@ -1077,6 +1126,7 @@ async fn deliveries_cascade_with_message_and_mailbox() {
 /// Review PG5 I1: the `ON DELETE RESTRICT` foreign key to `blobs` is checked by probing
 /// `messages.blob_hash` for every blob row GC deletes; that probe must use an index (migration
 /// 0009) and not scan `messages`.
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn messages_blob_hash_is_indexed_for_the_gc_foreign_key_probe() {
     use sqlx::Row;

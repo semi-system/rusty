@@ -1,5 +1,4 @@
 //! Schema tests for migration 0007 (`capabilities`, `accounts_id_domain`).
-//! backend-neutral: SQLite schema constraints; the Postgres twins (one per test, exact constraint) are listed in pg_schema_constraints.rs PORTED
 
 mod common;
 
@@ -60,6 +59,7 @@ fn cap(
     )
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn capabilities_table_accepts_valid_row() {
     let s = seed().await;
@@ -73,6 +73,7 @@ async fn capabilities_table_accepts_valid_row() {
     assert_eq!(count(p, "SELECT count(*) FROM capabilities").await, 1);
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn capability_with_mismatched_domain_is_rejected() {
     let s = seed().await;
@@ -94,6 +95,7 @@ async fn capability_with_mismatched_domain_is_rejected() {
     assert_eq!(count(p, "SELECT count(*) FROM capabilities").await, 0);
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn capability_row_constraints() {
     let s = seed().await;
@@ -143,6 +145,7 @@ async fn capability_row_constraints() {
     bad(p, &cap("10", 1, 1, "imap", 100, 200)).await;
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn deleting_account_cascades_to_capabilities() {
     let s = seed().await;
@@ -152,6 +155,7 @@ async fn deleting_account_cascades_to_capabilities() {
     assert_eq!(count(p, "SELECT count(*) FROM capabilities").await, 0);
 }
 
+// backend-neutral: SQLite schema constraints; the Postgres twin (exact constraint) is listed in pg_schema_constraints.rs PORTED
 #[tokio::test]
 async fn accounts_id_domain_unique_index_exists() {
     let s = seed().await;

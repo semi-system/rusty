@@ -1,4 +1,3 @@
-//! backend-neutral: filesystem blob store only, no database
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
@@ -38,6 +37,7 @@ fn mode(p: &std::path::Path) -> u32 {
     std::fs::symlink_metadata(p).unwrap().permissions().mode() & 0o7777
 }
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn put_is_idempotent_and_content_addressed() {
     let (dir, s) = store().await;
@@ -52,6 +52,7 @@ async fn put_is_idempotent_and_content_addressed() {
     assert_eq!(s.get(&h1).await.unwrap(), data);
 }
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn get_missing_is_not_found() {
     let (_d, s) = store().await;
@@ -59,6 +60,7 @@ async fn get_missing_is_not_found() {
     assert!(matches!(s.get(&h).await, Err(Error::NotFound(_))));
 }
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn delete_if_older_then_get_not_found() {
     let (_d, s) = store().await;
@@ -72,6 +74,7 @@ async fn delete_if_older_then_get_not_found() {
         .unwrap());
 }
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn round_trip_empty_and_large() {
     let (_d, s) = store().await;
@@ -81,6 +84,7 @@ async fn round_trip_empty_and_large() {
     }
 }
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn put_writes_via_temp_file_then_rename() {
     let (dir, s) = store().await;
@@ -90,6 +94,7 @@ async fn put_writes_via_temp_file_then_rename() {
     assert!(files.iter().all(|p| !p.to_string_lossy().ends_with(".tmp")));
 }
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn concurrent_puts_of_same_content_succeed() {
     let (dir, s) = store().await;
@@ -138,6 +143,7 @@ fn unix(t: SystemTime) -> i64 {
     t.duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
 }
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn put_refreshes_mtime_of_existing_blob() {
     let (dir, s) = store().await;
@@ -152,6 +158,7 @@ async fn put_refreshes_mtime_of_existing_blob() {
     assert_eq!(s.get(&h).await.unwrap(), Bytes::from_static(b"again"));
 }
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn list_returns_only_well_formed_blobs() {
     let (dir, s) = store().await;
@@ -186,6 +193,7 @@ async fn list_returns_only_well_formed_blobs() {
         .all(|e| e.hash.as_str().starts_with(&h2.as_str()[0..2])));
 }
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn store_with_no_blobs_lists_nothing() {
     let (_d, s) = store().await;
@@ -193,6 +201,7 @@ async fn store_with_no_blobs_lists_nothing() {
     assert_eq!(s.sweep_temp(Duration::ZERO).await.unwrap(), 0);
 }
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn delete_if_older_respects_cutoff() {
     let (dir, s) = store().await;
@@ -224,6 +233,7 @@ async fn delete_if_older_respects_cutoff() {
     assert!(p.is_dir());
 }
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn sweep_temp_removes_only_stale_tmp_files() {
     let (dir, s) = store().await;
@@ -265,6 +275,7 @@ async fn sweep_temp_removes_only_stale_tmp_files() {
         .is_symlink());
 }
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn sweep_temp_ignores_quarantine_files() {
     let (dir, s) = store().await;
@@ -288,6 +299,7 @@ async fn sweep_temp_ignores_quarantine_files() {
 }
 
 /// M3: a symlink or FIFO squatting on a blob path is never followed and never blocks.
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn symlink_or_fifo_at_blob_path_is_not_followed_and_does_not_block() {
     let (dir, s) = store().await;
@@ -349,6 +361,7 @@ async fn symlink_or_fifo_at_blob_path_is_not_followed_and_does_not_block() {
 
 // ----- B2: explicit init, fail-closed open -----
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn init_creates_root_0700_with_marker_0600_and_is_idempotent() {
     let parent = tempfile::tempdir().unwrap();
@@ -360,6 +373,7 @@ async fn init_creates_root_0700_with_marker_0600_and_is_idempotent() {
     FsBlobStore::open(&root).await.unwrap();
 }
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn open_fails_closed_on_missing_root_and_never_creates_it() {
     let parent = tempfile::tempdir().unwrap();
@@ -368,6 +382,7 @@ async fn open_fails_closed_on_missing_root_and_never_creates_it() {
     assert!(!root.exists(), "open must not create the root");
 }
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn open_requires_the_marker() {
     let dir = tempfile::tempdir().unwrap();
@@ -377,6 +392,7 @@ async fn open_requires_the_marker() {
     assert!(FsBlobStore::open(dir.path()).await.is_err());
 }
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn open_rejects_a_symlinked_root() {
     let parent = tempfile::tempdir().unwrap();
@@ -388,6 +404,7 @@ async fn open_rejects_a_symlinked_root() {
     assert!(FsBlobStore::init(&link).await.is_err());
 }
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn open_rejects_a_group_or_world_writable_root() {
     let (dir, _s) = store().await;
@@ -397,6 +414,7 @@ async fn open_rejects_a_group_or_world_writable_root() {
     FsBlobStore::open(dir.path()).await.unwrap();
 }
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn init_refuses_a_non_empty_directory_without_marker() {
     let dir = tempfile::tempdir().unwrap();
@@ -405,6 +423,7 @@ async fn init_refuses_a_non_empty_directory_without_marker() {
     assert!(!dir.path().join(BLOB_ROOT_MARKER).exists());
 }
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn put_and_gc_lock_never_create_a_vanished_root() {
     let parent = tempfile::tempdir().unwrap();
@@ -417,6 +436,7 @@ async fn put_and_gc_lock_never_create_a_vanished_root() {
     assert!(!root.exists(), "the root must not be recreated");
 }
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn open_heals_quarantine_when_gc_lock_is_free() {
     let (dir, s) = store().await;
@@ -443,6 +463,7 @@ async fn open_heals_quarantine_when_gc_lock_is_free() {
 
 // ----- B3: file modes -----
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn blob_files_are_0600_and_shard_dirs_0700() {
     let (dir, s) = store().await;
@@ -464,6 +485,7 @@ async fn blob_files_are_0600_and_shard_dirs_0700() {
 /// Each operation runs on its own OS thread (released together by a barrier, then delayed by
 /// a pseudo-random spin from a fixed seed), so neither can starve the other on a shared
 /// runtime worker. Both orders and the overlapping interleavings all occur.
+// backend-neutral: filesystem blob store only, no database
 #[test]
 fn put_racing_delete_if_older_never_loses_the_blob() {
     const ITERATIONS: usize = 2000;
@@ -541,6 +563,7 @@ fn put_racing_delete_if_older_never_loses_the_blob() {
 
 // ----- P0 m1: symlinked roots are refused, with or without a trailing slash -----
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn open_and_init_refuse_symlink_root_even_with_trailing_slash() {
     let parent = tempfile::tempdir().unwrap();
@@ -562,6 +585,7 @@ async fn open_and_init_refuse_symlink_root_even_with_trailing_slash() {
 
 // ----- P0 m5: the startup heal report is kept -----
 
+// backend-neutral: filesystem blob store only, no database
 #[tokio::test]
 async fn startup_heal_report_is_available() {
     let (dir, s) = store().await;
