@@ -21,7 +21,7 @@ const SENT: FolderId = FolderId(2);
 /// Message `i` of mailbox `m`. Every tenth message is the same content in every mailbox
 /// (shared blobs); all others are unique.
 fn body(m: usize, i: usize) -> Bytes {
-    let (tag, id) = if i % 10 == 0 { (0, i) } else { (m + 1, i) };
+    let (tag, id) = if i.is_multiple_of(10) { (0, i) } else { (m + 1, i) };
     Bytes::from(format!(
         "From: s{}@remote.test\r\nTo: u{m}@example.test\r\nSubject: acceptance {tag}-{id}\r\n\
          Message-ID: <a{tag}-{id}@acc.test>\r\nDate: Tue, 03 Nov 2026 10:00:00 +0000\r\n\r\n\
@@ -113,7 +113,7 @@ async fn run(b: Backend) {
         let moved = ids(&|k| k % 7 == 0);
         let r = mb.move_many(&moved, SENT).await.unwrap();
         assert_eq!(r.moved.len(), moved.len());
-        let gone = ids(&|k| k % 10 == 0);
+        let gone = ids(&|k| k.is_multiple_of(10));
         let r = mb.expunge_many(&gone).await.unwrap();
         assert_eq!(r.applied as usize, gone.len());
         expunged += gone.len();
@@ -152,7 +152,7 @@ async fn run(b: Backend) {
     assert_eq!(scalar(&b, "SELECT count(*) FROM messages").await, (total - expunged) as i64);
     assert_eq!(scalar(&b, "SELECT CAST(COALESCE(SUM(refcount), 0) AS BIGINT) FROM blobs").await, (total - expunged) as i64);
     let live: HashSet<String> = (0..MAILBOXES)
-        .flat_map(|m| (0..PER_MAILBOX).filter(|i| i % 10 != 0).map(move |i| (m, i)))
+        .flat_map(|m| (0..PER_MAILBOX).filter(|i| !i.is_multiple_of(10)).map(move |i| (m, i)))
         .map(|(m, i)| BlobHash::of(&body(m, i)).as_str().to_owned())
         .collect();
     // positions k % 10 == 0 were expunged; positions equal indexes i, so those i are gone. Shared

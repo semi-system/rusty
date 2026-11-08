@@ -21,7 +21,9 @@ mod gc;
 pub(crate) mod jobs;
 mod mailbox;
 #[cfg(feature = "postgres")]
+#[allow(clippy::needless_borrow)] // statement literals go through the mutation hook (see mutation.rs)
 pub mod pg;
+#[allow(clippy::needless_borrow)]
 pub mod sqlite;
 
 pub use gc::{GcRepo, PurgeBatch};
