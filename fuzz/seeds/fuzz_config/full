@@ -1,0 +1,16 @@
+database_path = "/a/db.sqlite"
+blob_dir = "/a/blobs"
+hostname = "mail.example.com"
+log_format = "json"
+[tls]
+cert_file = "/etc/rusty/c.pem"
+key_file = "/etc/rusty/k.pem"
+[smtp]
+listen_25 = "127.0.0.1:2525"
+listen_587 = ""
+max_recipients = 50
+max_message_bytes = 1048576
+[imap]
+listen_143 = "[::1]:1143"
+[limits]
+shutdown_grace_secs = 5

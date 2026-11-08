@@ -1,0 +1,68 @@
+# Rusty startup configuration. Every key except the two paths is optional.
+# Unknown keys are rejected.
+
+# Run the service under its own account with umask 077; /var/lib/rusty is owned by it, 0700.
+
+# SQLite metadata database (absolute path; created with mode 0600 if missing).
+database_path = "/var/lib/rusty/meta.sqlite"
+
+# Directory holding the content-addressed message blobs (absolute path). It must be
+# initialized once (FsBlobStore::init: mode 0700 plus a .rusty-blobs marker); startup
+# refuses a missing, unmarked, symlinked or group/world-writable directory.
+blob_dir = "/var/lib/rusty/blobs"
+
+# One of: error, warn, info, debug, trace. Default: info.
+# log_level = "info"
+
+# Largest accepted message in bytes, 1024..=1073741824. Default: 52428800 (50 MiB).
+# max_message_bytes = 52428800
+
+# Seconds an unreferenced blob is kept before GC may delete it. Minimum 3600. Default: 86400.
+# gc_grace_seconds = 86400
+
+# ---- Services (U1) ----------------------------------------------------------------------
+
+# Fully qualified name of this server: SMTP/IMAP greeting, certificate SAN, DKIM. Required
+# (except under `rusty d --dev`).
+# hostname = "mail.example.com"
+
+# "text" (default) or "json".
+# log_format = "text"
+
+# TLS terminated by the services themselves. One certificate/key pair (PEM; the certificate
+# file may hold the chain). The key file must be a regular file with mode 0600 owned by the
+# service account; anything else is refused at start-up. SIGHUP reloads both files; a failed
+# reload keeps the old certificate. Listeners that accept authentication (587, 465, 143, 993)
+# do not start without a certificate: there is no plaintext fallback.
+# [tls]
+# cert_file = "/etc/rusty/tls/fullchain.pem"
+# key_file  = "/etc/rusty/tls/privkey.pem"
+# Development only: generate a self-signed certificate in memory (logged loudly). This is what
+# `rusty d --dev` sets; it cannot be combined with cert_file/key_file.
+# dev_self_signed = false
+
+# Listener addresses are "host:port"; an empty string disables the listener.
+# [smtp]
+# listen_25  = "0.0.0.0:25"
+# listen_587 = "0.0.0.0:587"
+# listen_465 = "0.0.0.0:465"
+# max_message_bytes = 52428800   # <= the top-level max_message_bytes
+# max_recipients = 100
+# max_connections = 1000
+# max_connections_per_ip = 20
+# proxy_protocol = false          # true is rejected until an edge proxy is supported
+
+# [imap]
+# listen_143 = "0.0.0.0:143"
+# listen_993 = "0.0.0.0:993"
+# max_connections = 1000
+# max_connections_per_ip = 50
+# proxy_protocol = false
+
+# [outbound]            # keys arrive with the outbound queue
+
+# [limits]
+# shutdown_grace_secs = 30   # drain sessions this long on SIGTERM, then cut them (1..=600)
+# auth_failures_max = 5      # per (peer IP, identity) inside auth_window_secs
+# auth_window_secs = 300
+# auth_concurrent_max = 16   # authentication attempts running at once, process-wide

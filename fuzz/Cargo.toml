@@ -12,6 +12,8 @@ libfuzzer-sys = "0.4"
 unicode-general-category = "1"
 rusty-mime = { path = "../crates/rusty-mime" }
 rusty-directory = { path = "../crates/rusty-directory" }
+rusty-core = { path = "../crates/rusty-core" }
+rusty-svc = { path = "../crates/rusty-svc", default-features = false }
 
 # Not part of the main workspace (needs nightly); has its own lockfile.
 [workspace]
@@ -26,6 +28,20 @@ bench = false
 [[bin]]
 name = "parse_address"
 path = "fuzz_targets/parse_address.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_config"
+path = "fuzz_targets/fuzz_config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_pem"
+path = "fuzz_targets/fuzz_pem.rs"
 test = false
 doc = false
 bench = false
