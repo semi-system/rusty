@@ -59,7 +59,7 @@ impl Running {
 
 /// Dev profile only: the data directory is created 0700 (or must already be private and not a
 /// symlink) and the blob root is initialised. Production never creates anything implicitly.
-async fn prepare_dev_dirs(cfg: &StartupConfig) -> Result<()> {
+pub(crate) async fn prepare_dev_dirs(cfg: &StartupConfig) -> Result<()> {
     let dir = cfg
         .database_path
         .parent()
@@ -84,7 +84,7 @@ async fn prepare_dev_dirs(cfg: &StartupConfig) -> Result<()> {
     FsBlobStore::init(&cfg.blob_dir).await
 }
 
-fn sqlite_url(path: &Path) -> Result<String> {
+pub(crate) fn sqlite_url(path: &Path) -> Result<String> {
     let s = path.to_str().ok_or_else(|| Error::Invalid("database_path is not valid UTF-8".into()))?;
     if s.contains(['?', '#', '%']) {
         return Err(Error::Invalid("database_path must not contain '?', '#' or '%'".into()));
