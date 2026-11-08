@@ -442,3 +442,41 @@ async fn pg_map_db_error_messages_do_not_leak_server_text() {
     store.close().await;
     db.cleanup().await;
 }
+
+/// TRUNCATE of an owner table clears that kind's registry rows (mutations
+/// `accounts_addr_truncate` / `aliases_addr_truncate` / `lists_addr_truncate` dropped).
+#[tokio::test]
+async fn truncating_an_owner_table_clears_that_kinds_registry_rows() {
+    let Some((db, store)) = database().await else {
+        return;
+    };
+    let p = store.pool();
+    let s = seed(p).await;
+    let owners = |kind: &'static str| async move {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM address_owners WHERE owner_kind = $1")
+            .bind(kind)
+            .fetch_one(p)
+            .await
+            .unwrap()
+    };
+    sqlx::query("INSERT INTO aliases(local_part,domain_id,account_id) VALUES ('al',$1,$2)")
+        .bind(s.domain)
+        .bind(s.account_a)
+        .execute(p)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO lists(local_part,domain_id) VALUES ('li',$1)")
+        .bind(s.domain)
+        .execute(p)
+        .await
+        .unwrap();
+    assert_eq!((owners("account").await, owners("alias").await, owners("list").await), (2, 1, 1));
+    sqlx::query("TRUNCATE aliases").execute(p).await.unwrap();
+    assert_eq!((owners("account").await, owners("alias").await, owners("list").await), (2, 0, 1));
+    sqlx::query("TRUNCATE lists CASCADE").execute(p).await.unwrap();
+    assert_eq!((owners("account").await, owners("alias").await, owners("list").await), (2, 0, 0));
+    sqlx::query("TRUNCATE accounts CASCADE").execute(p).await.unwrap();
+    assert_eq!((owners("account").await, owners("alias").await, owners("list").await), (0, 0, 0));
+    store.close().await;
+    db.cleanup().await;
+}

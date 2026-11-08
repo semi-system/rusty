@@ -487,3 +487,20 @@ async fn the_repository_bounds_a_caller_supplied_cap() {
     })
     .await;
 }
+
+/// Mutation R03 (claim with the DATABASE clock treats a live lease as expired): the existing
+/// lease tests use the `_at(now)` twins, which bind the clock and never reach the clock default.
+#[tokio::test]
+async fn a_live_lease_is_not_reclaimed_by_the_database_clock_claim() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let jq = b.jobs();
+        let id = jq.enqueue("live", None, &json!({}), None).await.unwrap();
+        let first = jq.claim("w1", &["live"], 3600).await.unwrap().expect("first claim");
+        assert_eq!(first.id, id);
+        let second = jq.claim("w2", &["live"], 3600).await.unwrap();
+        assert!(second.is_none(), "{n}: a running job with a live lease must not be claimed again");
+        assert_eq!(col(&b, "epoch", id).await, 1, "{n}: the epoch did not move");
+    })
+    .await;
+}

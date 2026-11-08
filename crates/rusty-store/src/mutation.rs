@@ -71,11 +71,12 @@ pub const TABLE: &[Mutation] = &[
     text("D08-unnest-insert-unordered", PG, "FROM unnest($2::bigint[], $3::bigint[]) AS t(seq, item) ORDER BY t.seq", "FROM unnest($2::bigint[], $3::bigint[]) AS t(seq, item)", "change_log unnest insert loses its ORDER BY"),
     text("D09-blob-insert-unordered", PG, "AS t(h, s) ORDER BY t.h", "AS t(h, s)", "batch blob insert loses its ORDER BY (the ascending lock order)"),
     text("D10-blob-insert-no-conflict-clause", PG, " ON CONFLICT (hash) DO NOTHING", "", "ON CONFLICT DO NOTHING removed from the blob upsert"),
-    text("D11-account-insert-do-nothing", PG, "VALUES ($1, $2, $3, $4, 'active', rs_now()) RETURNING id", "VALUES ($1, $2, $3, $4, 'active', rs_now()) ON CONFLICT DO NOTHING RETURNING id", "ON CONFLICT DO NOTHING added to the account insert (a duplicate address no longer errors)"),
+    text("D11-list-member-insert-do-nothing", PG, "INSERT INTO list_members (list_id, account_id, external) VALUES ($1, $2, $3)", "INSERT INTO list_members (list_id, account_id, external) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING", "ON CONFLICT DO NOTHING added to the list member insert (a duplicate member no longer errors)"),
+    text("D12-account-insert-do-nothing", PG, "VALUES ($1, $2, $3, $4, 'active', rs_now()) RETURNING id", "VALUES ($1, $2, $3, $4, 'active', rs_now()) ON CONFLICT DO NOTHING RETURNING id", "ON CONFLICT DO NOTHING added to the account insert (a duplicate address no longer errors)"),
     // ---- repository SQL (plan step 3)
     text("R01-no-mailbox-row-lock", PG, "SELECT id FROM mailboxes WHERE id = $1 FOR UPDATE", "SELECT id FROM mailboxes WHERE id = $1", "the mailbox row lock (FOR UPDATE) dropped"),
     text("R02-no-skip-locked", PG, "FOR UPDATE OF j SKIP LOCKED", "FOR UPDATE OF j", "job claim without SKIP LOCKED"),
-    text("R03-claim-ignores-lease", PG, "lease_expires_at <= COALESCE($2, rs_now())", "lease_expires_at <= COALESCE($2, rs_now() + 1000000000)", "claim treats a live lease as expired (reclaims running jobs)"),
+    text("R03-claim-ignores-lease", PG, "lease_expires_at <= ", "lease_expires_at <= 1000000000 + ", "claim and its lock step treat a live lease as expired (reclaims running jobs)"),
     text("R04-fence-without-epoch", PG, "WHERE id = $1 AND epoch = $2 AND state = 'running' AND lease_expires_at > rs_now() AND (domain_id", "WHERE id = $1 AND state = 'running' AND lease_expires_at > rs_now() AND (domain_id", "the fence (COMPLETE_JOB) ignores the epoch"),
     text("R05-fence-without-lease", PG, "WHERE id = $1 AND epoch = $2 AND state = 'running' AND lease_expires_at > rs_now() AND (domain_id", "WHERE id = $1 AND epoch = $2 AND state = 'running' AND (domain_id", "the fence (COMPLETE_JOB) ignores lease expiry"),
     text("R06-transaction-clock", PG, "rs_now()", "extract(epoch FROM now())::bigint", "the database clock is the transaction start (now()) instead of the statement clock"),
@@ -109,6 +110,23 @@ fn active() -> &'static Active {
     })
 }
 
+static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Statement texts that went through the hook while a mutation was selected (debugging aid for a
+/// vacuous mutation: shows what the statements really look like).
+pub fn seen() -> Vec<String> {
+    SEEN.lock().unwrap_or_else(|p| p.into_inner()).clone()
+}
+
+fn note(sql: &str) {
+    if active().mutation.is_some() {
+        let mut s = SEEN.lock().unwrap_or_else(|p| p.into_inner());
+        if s.len() < 5000 {
+            s.push(sql.to_owned());
+        }
+    }
+}
+
 /// Statements changed so far in this process (a mutation that never matched is vacuous).
 static HITS: AtomicUsize = AtomicUsize::new(0);
 
@@ -123,6 +141,7 @@ pub fn active_id() -> Option<&'static str> {
 
 /// Apply the active text mutation to a statement of `dialect`.
 pub fn statement(dialect: Dialect, sql: &'static str) -> Cow<'static, str> {
+    note(sql);
     match active().mutation {
         Some(m) if m.dialect == dialect && !m.find.is_empty() && sql.contains(m.find) => {
             HITS.fetch_add(1, Ordering::SeqCst);
@@ -134,6 +153,7 @@ pub fn statement(dialect: Dialect, sql: &'static str) -> Cow<'static, str> {
 
 /// Same, for a statement that is already rendered at run time.
 pub fn rendered(dialect: Dialect, sql: String) -> String {
+    note(&sql);
     match active().mutation {
         Some(m) if m.dialect == dialect && !m.find.is_empty() && sql.contains(m.find) => {
             HITS.fetch_add(1, Ordering::SeqCst);

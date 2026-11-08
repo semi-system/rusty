@@ -93,7 +93,7 @@ async fn next_candidate(
         };
         let decided: i64 = first.try_get("now")?;
         let ids: Vec<i64> = window.iter().map(|w| w.try_get("id")).collect::<std::result::Result<_, sqlx::Error>>()?;
-        if let Some(row) = sqlx::query(CLAIM_LOCK)
+        if let Some(row) = sqlx::query(&crate::repo::pg_lit(CLAIM_LOCK))
             .bind(&ids)
             .bind(decided)
             .fetch_optional(&mut *c)
@@ -202,7 +202,7 @@ impl JobRepo for PgRepo {
                     };
                     let Candidate { id, state, attempts, max_attempts, now } = cand;
                     if attempts >= max_attempts {
-                        sqlx::query(sql::SETTLE_DEAD)
+                        sqlx::query(&crate::repo::pg_lit(sql::SETTLE_DEAD))
                             .bind(id)
                             .bind(exhausted_reason(state == "running"))
                             .bind(now)
@@ -235,7 +235,7 @@ impl JobRepo for PgRepo {
                         }
                         None => {
                             // A row that can never be handed to a worker: park it, keep going.
-                            sqlx::query(sql::SETTLE_DEAD)
+                            sqlx::query(&crate::repo::pg_lit(sql::SETTLE_DEAD))
                                 .bind(id)
                                 .bind("unreadable payload")
                                 .bind(now)

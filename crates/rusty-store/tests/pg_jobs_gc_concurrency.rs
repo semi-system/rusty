@@ -566,3 +566,44 @@ async fn purge_deleted_batch_continues_past_a_busy_mailbox() {
     assert_eq!(gc.purge_deleted(100).await.unwrap(), 1);
     assert_eq!(scalar(&b, "SELECT count(*) FROM messages").await, 0);
 }
+
+/// Mutation R06 (the database clock is the transaction start `now()` instead of the statement
+/// clock): a fenced delivery waits behind a held mailbox row lock past the lease expiry. The
+/// lease predicate is evaluated when the statement runs, AFTER the wait, so the fence must be
+/// refused. With `now()` (the start of the transaction, before the wait) the stale worker would
+/// still pass.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lease_that_expires_while_waiting_for_the_mailbox_lock_fails_the_fence() {
+    let Some(b) = pg_backend().await else {
+        return;
+    };
+    let (_d, _a, mb) = acct(&b, "waitlease").await;
+    let jq = b.jobs();
+    let id = jq.enqueue("waiter", None, &json!({}), None).await.unwrap();
+    let job = jq.claim("w", &["waiter"], 2).await.unwrap().expect("claim");
+    // Hold the mailbox row lock on another connection.
+    let (store, _) = b.pg.as_ref().unwrap();
+    let mut holder = store.begin_write().await.unwrap();
+    sqlx::query("SELECT id FROM mailboxes WHERE id = $1 FOR UPDATE")
+        .bind(mb.id().0)
+        .fetch_all(&mut *holder)
+        .await
+        .unwrap();
+    let fence = JobFence { id, epoch: job.epoch };
+    let waiter = {
+        let mb = mb.clone();
+        tokio::spawn(async move {
+            mb.deliver_fenced(INBOX, raw("late", None), Flags::empty(), rusty_core::DeliveryId([5; 32]), fence)
+                .await
+        })
+    };
+    // The lease (2 s) expires while the delivery waits.
+    tokio::time::sleep(Duration::from_millis(3500)).await;
+    holder.commit().await.unwrap();
+    let r = waiter.await.unwrap();
+    assert!(
+        matches!(&r, Err(Error::Conflict(m)) if m == "stale job epoch"),
+        "the lease expired during the wait, the fence must refuse: {r:?}"
+    );
+    assert_eq!(scalar(&b, "SELECT count(*) FROM messages").await, 0, "and nothing was delivered");
+}

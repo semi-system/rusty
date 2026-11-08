@@ -105,13 +105,55 @@ async fn the_selected_mutation_changed_at_least_one_statement() {
             let _ = mb.deliver_many(rusty_core::FolderId(1), items).await;
             let _ = mb.set_flags(rusty_core::MessageId(1), Flags::SEEN).await;
             let _ = mb.move_message(rusty_core::MessageId(1), rusty_core::FolderId(2)).await;
+            let _ = mb.add_keyword(rusty_core::MessageId(2), "probe").await;
             let _ = mb.expunge(rusty_core::MessageId(1)).await;
+            if let Ok(l) = b.drepo.create_list("probe-list", _d).await {
+                let _ = b.drepo.add_list_member(l, None, Some("m@other.org"), 100).await;
+                let _ = b.drepo.add_list_member(l, None, Some("m@other.org"), 100).await;
+            }
             let jq = b.jobs();
-            let _ = jq.enqueue("probe", None, &serde_json::json!({}), None).await;
-            if let Ok(Some(j)) = jq.claim("w", &["probe"], 30).await {
+            let r = jq.enqueue("probe", None, &serde_json::json!({}), None).await;
+            eprintln!("probe enqueue: {r:?}");
+            let claimed = jq.claim("w", &["probe"], 30).await;
+            eprintln!("probe claim: {:?}", claimed.as_ref().map(|j| j.as_ref().map(|j| j.id)));
+            if let Ok(Some(j)) = claimed {
+                // a fenced delivery reaches the fence statements, then the completion
+                let fence = rusty_store::JobFence { id: j.id, epoch: j.epoch };
+                let raw = bytes::Bytes::from_static(b"Subject: fenced\r\n\r\nbody\r\n");
+                let r = mb
+                    .deliver_fenced(rusty_core::FolderId(1), raw, Flags::empty(), rusty_core::DeliveryId([9; 32]), fence)
+                    .await;
+                eprintln!("probe fenced delivery: {r:?}");
+                // a refused (stale) fence reaches the ownership re-check
+                let stale = rusty_store::JobFence { id: j.id, epoch: j.epoch + 99 };
+                let raw2 = bytes::Bytes::from_static(b"Subject: stale
+
+body
+");
+                let _ = mb
+                    .deliver_fenced(rusty_core::FolderId(1), raw2, Flags::empty(), rusty_core::DeliveryId([8; 32]), stale)
+                    .await;
+                let _ = jq.heartbeat(j.id, j.epoch, 30).await;
                 let _ = jq.complete(j.id, j.epoch).await;
             }
             let _ = b.gc().purge_deleted(i64::MAX).await;
+            if let Ok(r) = mb
+                .append(rusty_core::FolderId(1), bytes::Bytes::from_static(b"Subject: gc-only blob
+
+unique
+"), Flags::empty())
+                .await
+            {
+                let _ = mb.expunge(r.id).await;
+                let _ = b.gc().purge_deleted(i64::MAX).await;
+            }
+            let far = std::time::SystemTime::now() + std::time::Duration::from_secs(10 * 86_400);
+            let r = b.gc().collect_blobs_at(b.blobs.as_ref(), std::time::Duration::ZERO, far).await;
+            eprintln!("probe gc: {:?}", r.as_ref().map(|r| (r.rows_deleted, r.files_deleted)));
+            let r = b.gc().purge_deleted(i64::MAX).await;
+            eprintln!("probe purge: {r:?}");
+            let _ = b.gc().purge_deliveries(i64::MAX).await;
+            let _ = b.gc().purge_capabilities(i64::MAX).await;
         }))
         .await
         else {
@@ -120,6 +162,13 @@ async fn the_selected_mutation_changed_at_least_one_statement() {
         let _ = r;
     }
     if m.flag.is_empty() {
+        if mutation::hits() == 0 {
+            let key: String = m.find.chars().take(18).collect();
+            for s in mutation::seen().iter().filter(|s| s.contains(key.trim())) {
+                eprintln!("near miss: {s}");
+            }
+            eprintln!("statements seen: {}", mutation::seen().len());
+        }
         assert!(mutation::hits() > 0, "mutation {id} matched no statement: it is vacuous");
     }
 }
@@ -182,5 +231,5 @@ fn the_committed_mutation_table_lists_every_dialect_mutation() {
     for m in TABLE {
         assert!(doc.contains(&format!("`{}`", m.id)), "mutation {} is not in the committed table; regenerate it", m.id);
     }
-    assert!(!doc.contains("| UNEXPLAINED"), "unexplained survivors in the table");
+    assert!(!doc.contains("(UNEXPLAINED)"), "unexplained survivors in the table");
 }
