@@ -1,6 +1,6 @@
 # Rusty - Tài liệu thiết kế và kế hoạch
 
-Mục lục của mọi spec (thiết kế) và plan (kế hoạch) trong `docs/superpowers/`. Cập nhật lần cuối: 2026-11-03.
+Mục lục của mọi spec (thiết kế) và plan (kế hoạch) trong `docs/superpowers/`. Cập nhật lần cuối: 2026-11-08.
 
 **Quy ước trạng thái**
 - **Đã triển khai**: có mã và test trong repo.
@@ -36,6 +36,7 @@ Mục lục của mọi spec (thiết kế) và plan (kế hoạch) trong `docs/
 | [plans/2026-11-03-distributed-prep.md](superpowers/plans/2026-11-03-distributed-prep.md) | Đang làm | P0-P4 xong; P6 đang sửa sau review; P5 đang chạy |
 | [plans/2026-11-03-edge-haproxy.md](superpowers/plans/2026-11-03-edge-haproxy.md) | Sẵn sàng thực thi | Biên HAProxy cách A (H1-H3), có báo cáo go/no-go |
 | [plans/2026-11-03-postgres-backend.md](superpowers/plans/2026-11-03-postgres-backend.md) | Phần 1 (PG0-PG2) xong, GO; phần 2 (PG3-PG8) sẵn sàng thực thi | Backend Postgres 18: hạ tầng test, schema + parity, spike (GO); phần 2: Busy + chính sách đồng hồ + repo Directory, repo Mailbox, Jobs/GC, chạy toàn bộ test trên 2 backend + mutation, benchmark quy mô, hardening (role, pool, hàng đợi), PG8a: lớp PgBouncer (transaction pooling), kiểm kê trạng thái phiên, chạy bộ test qua bouncer |
+| [plans/2026-11-08-usable-mailserver.md](superpowers/plans/2026-11-08-usable-mailserver.md) | Chờ duyệt | Ưu tiên mới (2026-11-08): dùng được trước, hiệu năng/hardening sau. M1 một tiến trình `rustyd`, SQLite, TLS tại dịch vụ; U1-U9 (skeleton, `rustyctl`, SMTP vào/submission, hàng đợi gửi + DKIM, IMAP, nghiệm thu, đóng gói); mục 1b: bất biến kiến trúc và bảng điểm cắm. **Tạm hoãn (backlog): PG6 sửa review, PG7, PG8, PG8a** |
 | [plans/2026-11-03-edge-skeleton.md](superpowers/plans/2026-11-03-edge-skeleton.md) | Đã thay thế | Kế hoạch Traefik cũ; **không thực thi** |
 
 ## Việc cần viết tiếp (chưa có tài liệu)
