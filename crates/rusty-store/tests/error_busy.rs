@@ -358,4 +358,69 @@ mod pg {
         drop(held);
         db.cleanup().await;
     }
+
+    /// SQLSTATEs the schema can raise for values it cannot store or a primary that cannot write,
+    /// each produced by a real statement and judged through the production mapping (review PG6
+    /// finding 4): 54000 (index row too large), 22021 (NUL in text), 22003 (numeric overflow) and
+    /// 22001 are `Invalid`, never `Storage`; 25006 (a write on a read-only server, as after a
+    /// failover to a standby) is `Busy`: the statement did not happen and a retry reaches the new
+    /// primary, which is what `Busy` promises.
+    #[tokio::test]
+    async fn unstorable_values_and_a_read_only_server_map_by_sqlstate() {
+        let Some(admin) = pg_admin_url() else { return };
+        let db = PgTestDb::create(&admin).await;
+        let store = db.connect().await;
+        let p = store.pool();
+        let code = |e: &sqlx::Error| e.as_database_error().unwrap().code().map(|c| c.to_string());
+
+        // 54000: a 4000-character incompressible name under the unique btree index.
+        let too_big = sqlx::query(
+            "INSERT INTO domains(name, created_at) \
+             VALUES ((SELECT string_agg(md5(i::text), '') FROM generate_series(1, 125) i), 0)",
+        )
+        .execute(p)
+        .await
+        .unwrap_err();
+        assert_eq!(code(&too_big).as_deref(), Some("54000"));
+        assert!(matches!(map_db_error(too_big), Error::Invalid(_)));
+
+        // 22021: a NUL byte in a text parameter.
+        let nul = sqlx::query("INSERT INTO domains(name, created_at) VALUES ($1, 0)")
+            .bind("a\0b")
+            .execute(p)
+            .await
+            .unwrap_err();
+        assert_eq!(code(&nul).as_deref(), Some("22021"));
+        assert!(matches!(map_db_error(nul), Error::Invalid(_)));
+
+        // 22003: a counter that overflows bigint.
+        let overflow = sqlx::query("SELECT 9223372036854775807::bigint + 1")
+            .execute(p)
+            .await
+            .unwrap_err();
+        assert_eq!(code(&overflow).as_deref(), Some("22003"));
+        assert!(matches!(map_db_error(overflow), Error::Invalid(_)));
+
+        // 22001: a value too long for a sized column.
+        let mut conn = p.acquire().await.unwrap();
+        sqlx::query("CREATE TEMP TABLE narrow(a varchar(2))").execute(&mut *conn).await.unwrap();
+        let truncated = sqlx::query("INSERT INTO narrow VALUES ('abc')").execute(&mut *conn).await.unwrap_err();
+        assert_eq!(code(&truncated).as_deref(), Some("22001"));
+        assert!(matches!(map_db_error(truncated), Error::Invalid(_)));
+        drop(conn);
+
+        // 25006: a write inside a read-only transaction.
+        let mut tx = p.begin().await.unwrap();
+        sqlx::query("SET TRANSACTION READ ONLY").execute(&mut *tx).await.unwrap();
+        let ro = sqlx::query("INSERT INTO domains(name, created_at) VALUES ('ro.test', 0)")
+            .execute(&mut *tx)
+            .await
+            .unwrap_err();
+        assert_eq!(code(&ro).as_deref(), Some("25006"));
+        assert_fixed_busy(&map_db_error(ro));
+        drop(tx);
+
+        store.close().await;
+        db.cleanup().await;
+    }
 }

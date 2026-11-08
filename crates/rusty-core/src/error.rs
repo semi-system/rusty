@@ -32,7 +32,9 @@ pub enum Error {
     /// recovery (57P01, 57P02, 57P03), idle-in-transaction timeout (25P03) and connection
     /// exceptions (08xxx) map to [`Error::Storage`], as the D1 list does not name them. For a
     /// failover-oriented deployment `Busy` is arguably the better class for 57P0x; revisit in PG8
-    /// together with the failover tests. Single-statement pool operations run without
+    /// together with the failover tests. `25006`
+    /// (read_only_sql_transaction: a write reached a standby) already maps to `Busy`: the statement did
+    /// not happen and a retry reaches the new primary. Single-statement pool operations run without
     /// `lock_timeout` (only write transactions set it) and are bounded by `statement_timeout`.
     #[error("busy: {0}")]
     Busy(String),

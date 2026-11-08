@@ -172,6 +172,16 @@ pub fn map_db_error(e: sqlx::Error) -> Error {
             Some("23001") => {
                 return Error::Conflict("referenced row missing or still in use".into());
             }
+            // Values the database cannot store or index: 54000 index row too large, 22021 NUL in
+            // text, 22003 numeric overflow, 22001 value too long, 22P05 untranslatable character.
+            // The repositories validate such input first (repo::directory::check_text); this is
+            // the defence in depth, so a lax caller gets a validation error, never `Storage`.
+            Some("54000") | Some("22021") | Some("22003") | Some("22001") | Some("22P05") => {
+                return Error::Invalid("invalid value".into());
+            }
+            // read_only_sql_transaction: a write reached a standby (failover in progress). The
+            // statement did not happen and a retry reaches the new primary: `Busy`.
+            Some("25006") => return busy("database read-only"),
             // Transient classes (D1). 40P01/40001 reach this function only after the retry loop
             // gave up (or outside it): the caller may retry later.
             Some("55P03") => return busy("lock timeout"),
