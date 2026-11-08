@@ -113,6 +113,24 @@ impl SqliteStore {
             .map_err(map_db_error)
     }
 
+    /// Graceful shutdown: fold the write-ahead log into the database file (a `TRUNCATE`
+    /// checkpoint, so the one file is complete) and close every pooled connection. Further use
+    /// fails with a storage error. Closing twice is harmless. The checkpoint is best effort when
+    /// another process still reads the database; the pool is closed either way.
+    pub async fn close(&self) -> Result<()> {
+        let checkpoint = if self.pool.is_closed() {
+            Ok(())
+        } else {
+            sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+                .execute(&self.pool)
+                .await
+                .map(|_| ())
+                .map_err(map_db_error)
+        };
+        self.pool.close().await;
+        checkpoint
+    }
+
     async fn verify_foreign_keys(&self) -> Result<()> {
         let on: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
             .fetch_one(&self.pool)

@@ -127,6 +127,19 @@ impl Store {
         &self.repos
     }
 
+    /// Graceful shutdown of the backend (SQLite: WAL checkpointed, then connections closed;
+    /// Postgres: pool closed). Call once after every service holding `Repos` has stopped.
+    pub async fn close(&self) -> Result<()> {
+        if let Some(s) = &self.sqlite {
+            s.close().await?;
+        }
+        #[cfg(feature = "postgres")]
+        if let Some(p) = &self.pg {
+            p.close().await?;
+        }
+        Ok(())
+    }
+
     /// The SQLite handle, `None` on Postgres. For facades that are not converted yet.
     pub fn sqlite(&self) -> Option<&SqliteStore> {
         self.sqlite.as_ref()
