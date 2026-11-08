@@ -1070,6 +1070,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusty-ctl"
+version = "0.1.0"
+dependencies = [
+ "rusty-core",
+ "rusty-directory",
+ "serde_json",
+]
+
+[[package]]
 name = "rusty-directory"
 version = "0.1.0"
 dependencies = [
@@ -1092,6 +1101,7 @@ version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "rusty-core",
+ "rusty-ctl",
  "rusty-directory",
  "rusty-mime",
  "rusty-svc",

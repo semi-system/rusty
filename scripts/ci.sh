@@ -169,7 +169,7 @@ stage "static linking" check_static
 fuzz_all() {
   if command -v cargo-fuzz >/dev/null 2>&1 && rustup toolchain list | grep -q "^nightly"; then
     local t
-    for t in parse_envelope parse_address fuzz_config fuzz_pem; do
+    for t in parse_envelope parse_address fuzz_config fuzz_pem fuzz_ctl_args; do
       mkdir -p "fuzz/corpus/$t"
       # Working corpus first (new finds are written there), committed seeds second.
       (cd fuzz && cargo +nightly fuzz run "$t" "corpus/$t" "seeds/$t" -- "-max_total_time=$FUZZ_SECS" -rss_limit_mb=2048) || return 1
@@ -177,7 +177,7 @@ fuzz_all() {
   else
     FUZZ_DEGRADED=1
     echo "WARNING: cargo-fuzz and/or the nightly toolchain are missing; running the proptest fallback only (NOT real fuzzing)." >&2
-    cargo test -p rusty-mime -p rusty-directory -p rusty-core -p rusty-svc --test fuzz_smoke
+    cargo test -p rusty-mime -p rusty-directory -p rusty-core -p rusty-svc -p rusty-ctl --test fuzz_smoke
   fi
 }
 
