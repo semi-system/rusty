@@ -134,7 +134,7 @@ impl PgRepo {
         c: &mut PgConnection,
         mb: MailboxId,
     ) -> TxResult<()> {
-        sqlx::query_scalar::<_, i64>("SELECT id FROM mailboxes WHERE id = $1 FOR UPDATE")
+        sqlx::query_scalar::<_, i64>(&crate::repo::pg_lit("SELECT id FROM mailboxes WHERE id = $1 FOR UPDATE"))
             .bind(mb.0)
             .fetch_optional(&mut *c)
             .await?
@@ -163,7 +163,7 @@ impl PgRepo {
         }
         if armed {
             sqlx::query(
-                "DO $$ BEGIN RAISE EXCEPTION 'injected' USING ERRCODE = '40P01'; END $$",
+                &crate::repo::pg_lit("DO $$ BEGIN RAISE EXCEPTION 'injected' USING ERRCODE = '40P01'; END $$"),
             )
             .execute(&mut *c)
             .await?;
@@ -205,7 +205,11 @@ impl PgRepo {
                 if is_deadlock(&e) {
                     self.stats.deadlocks.fetch_add(1, Ordering::Relaxed);
                 }
-                if attempt + 1 >= MAX_ATTEMPTS {
+                #[cfg(feature = "mutation-testing")]
+                let max_attempts = if crate::mutation::flag("no-retry") { 1 } else { MAX_ATTEMPTS };
+                #[cfg(not(feature = "mutation-testing"))]
+                let max_attempts = MAX_ATTEMPTS;
+                if attempt + 1 >= max_attempts {
                     self.stats.exhausted.fetch_add(1, Ordering::Relaxed);
                     return Step::Fail(busy("transaction conflict"));
                 }

@@ -22,7 +22,7 @@ const UV_MAX_BASE: i64 = u32::MAX as i64 - SYSTEM_FOLDERS;
 /// account serialize. `FOR NO KEY UPDATE` does not block the key-share locks of foreign-key
 /// checks (aliases, capabilities) against the account.
 async fn lock_account(c: &mut PgConnection, account: AccountId) -> TxResult<bool> {
-    let found = sqlx::query_scalar::<_, i64>("SELECT id FROM accounts WHERE id = $1 FOR NO KEY UPDATE")
+    let found = sqlx::query_scalar::<_, i64>(&crate::repo::pg_lit("SELECT id FROM accounts WHERE id = $1 FOR NO KEY UPDATE"))
         .bind(account.0)
         .fetch_optional(&mut *c)
         .await?;
@@ -73,9 +73,9 @@ impl DirectoryRepo for PgRepo {
                 .await?;
             // uid_validity high-water mark = clamped DATABASE clock + 5 (largest value issued).
             let (mb, uv_base): (i64, i64) = sqlx::query_as(
-                "INSERT INTO mailboxes (account_id, uid_validity, next_folder_id) \
+                &crate::repo::pg_lit("INSERT INTO mailboxes (account_id, uid_validity, next_folder_id) \
                  VALUES ($1, LEAST(GREATEST(rs_now(), 1), $2) + $3, $4) \
-                 RETURNING id, uid_validity - $3",
+                 RETURNING id, uid_validity - $3"),
             )
             .bind(acc)
             .bind(UV_MAX_BASE)
@@ -84,9 +84,9 @@ impl DirectoryRepo for PgRepo {
             .fetch_one(&mut *c)
             .await?;
             sqlx::query(
-                "INSERT INTO folders (mailbox_id, id, parent_id, name, role, uid_validity) \
+                &crate::repo::pg_lit("INSERT INTO folders (mailbox_id, id, parent_id, name, role, uid_validity) \
                  SELECT $1, t.id, NULL, t.name, t.role, $2 + t.id \
-                 FROM unnest($3::bigint[], $4::text[], $5::text[]) AS t(id, name, role)",
+                 FROM unnest($3::bigint[], $4::text[], $5::text[]) AS t(id, name, role)"),
             )
             .bind(mb)
             .bind(uv_base)
@@ -186,7 +186,7 @@ impl DirectoryRepo for PgRepo {
             // Lock the list row first: the count and the per-list `seq` (assigned by the
             // list_members trigger under the same lock) must not interleave. A missing list
             // is not special-cased: the insert fails on the foreign key like on SQLite.
-            sqlx::query_scalar::<_, i64>("SELECT id FROM lists WHERE id = $1 FOR UPDATE")
+            sqlx::query_scalar::<_, i64>(&crate::repo::pg_lit("SELECT id FROM lists WHERE id = $1 FOR UPDATE"))
                 .bind(list.0)
                 .fetch_optional(&mut *c)
                 .await?;
@@ -195,7 +195,7 @@ impl DirectoryRepo for PgRepo {
                 .fetch_one(&mut *c)
                 .await?;
             check_list_capacity(members, max_members).map_err(TxError::Domain)?;
-            sqlx::query("INSERT INTO list_members (list_id, account_id, external) VALUES ($1, $2, $3)")
+            sqlx::query(&crate::repo::pg_lit("INSERT INTO list_members (list_id, account_id, external) VALUES ($1, $2, $3)"))
                 .bind(list.0)
                 .bind(account.map(|a| a.0))
                 .bind(external)
@@ -314,13 +314,13 @@ impl DirectoryRepo for PgRepo {
             // candidate. Ties on `issued_at` (second granularity) are broken by `token_hash`, the
             // same order as on SQLite.
             sqlx::query(
-                "UPDATE capabilities SET revoked_at = GREATEST($1, issued_at) WHERE token_hash IN (\
+                &crate::repo::pg_lit("UPDATE capabilities SET revoked_at = GREATEST($1, issued_at) WHERE token_hash IN (\
                    SELECT token_hash FROM capabilities \
                    WHERE account_id = $2 AND revoked_at IS NULL AND expires_at > $1 \
                      AND token_hash <> $4 \
                    ORDER BY issued_at, token_hash \
                    LIMIT GREATEST(0, (SELECT count(*) FROM capabilities \
-                         WHERE account_id = $2 AND revoked_at IS NULL AND expires_at > $1) - $3))",
+                         WHERE account_id = $2 AND revoked_at IS NULL AND expires_at > $1) - $3))"),
             )
             .bind(now)
             .bind(account.0)

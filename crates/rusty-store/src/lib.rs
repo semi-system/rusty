@@ -6,6 +6,8 @@ mod jobs;
 mod mailbox;
 mod store;
 pub mod repo;
+#[cfg(feature = "mutation-testing")]
+pub mod mutation;
 #[cfg(feature = "test-fixtures")]
 pub mod fixtures;
 #[cfg(feature = "postgres")]

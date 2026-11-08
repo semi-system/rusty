@@ -65,6 +65,9 @@ stage "no raw pool outside store" bash scripts/check-raw-db.sh
 # Raw SQL fixtures for other crates (rusty_store::fixtures) exist only in dev-dependency builds.
 stage "test-fixtures gate self-test" bash scripts/tests/test-fixtures-gate.sh
 stage "no test fixtures outside dev-dependencies" bash scripts/check-test-fixtures.sh static
+# The SQL mutation hook (scripts/pg-mutate.sh) is enabled by no manifest and absent from release builds.
+stage "mutation-hook gate self-test" bash scripts/tests/mutation-hook-gate.sh
+stage "no mutation hook anywhere" bash scripts/check-mutation-hook.sh static
 # Every behaviour test of the database crates runs on both backends or carries a reasoned marker.
 stage "parametrised gate self-test" bash scripts/tests/parametrised-gate.sh
 stage "every test runs on both backends" bash scripts/check-parametrised.sh
@@ -105,6 +108,11 @@ postgres_tests() {
     RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
       cargo test -p rusty-directory --features postgres || rc=$?
   fi
+  # The mutation hook's table and probes (the full mutation run is scripts/pg-mutate.sh, not a CI stage).
+  if [ "$rc" -eq 0 ]; then
+    RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
+      cargo test -p rusty-store --features postgres,mutation-testing --test pg_dialect_mutations || rc=$?
+  fi
   if [ "$rc" -eq 0 ]; then
     RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
       cargo clippy -p rusty-store -p rusty-directory --features postgres --all-targets -- -D warnings || rc=$?
@@ -133,6 +141,7 @@ stage "build (musl release)" cargo build --release --workspace --target "$MUSL"
 # A release build of rusty-store contains none of the knob code (positive control included).
 stage "no test knobs in release" bash scripts/check-test-knobs.sh symbols "$MUSL"
 stage "no test fixtures in release" bash scripts/check-test-fixtures.sh symbols "$MUSL"
+stage "no mutation hook in release" bash scripts/check-mutation-hook.sh symbols "$MUSL"
 
 check_static() {
   local found=0 f

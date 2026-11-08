@@ -30,7 +30,7 @@ impl SqliteRepo {
     /// the row-locking backend relies on.
     async fn begin_locked(&self, mb: MailboxId) -> Result<Transaction<'static, Sqlite>> {
         let mut tx = self.store.begin_write().await?;
-        sqlx::query_scalar::<_, i64>("SELECT id FROM mailboxes WHERE id = ?1")
+        sqlx::query_scalar::<_, i64>(&crate::repo::sqlite_lit("SELECT id FROM mailboxes WHERE id = ?1"))
             .bind(mb.0)
             .fetch_optional(&mut *tx)
             .await

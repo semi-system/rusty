@@ -19,7 +19,7 @@ fn hash_of(bytes: &[u8]) -> Option<BlobHash> {
 #[async_trait]
 impl GcRepo for PgRepo {
     async fn db_now(&self) -> Result<i64> {
-        sqlx::query_scalar("SELECT rs_now()")
+        sqlx::query_scalar(&crate::repo::pg_lit("SELECT rs_now()"))
             .fetch_one(self.store.pool())
             .await
             .map_err(map_db_error)
@@ -36,8 +36,8 @@ impl GcRepo for PgRepo {
             None => Vec::new(),
         };
         let rows: Vec<Vec<u8>> = sqlx::query_scalar(
-            "SELECT hash FROM blobs \
-             WHERE refcount = 0 AND zero_since < $1 AND hash > $2 ORDER BY hash LIMIT $3",
+            &crate::repo::pg_lit("SELECT hash FROM blobs \
+             WHERE refcount = 0 AND zero_since < $1 AND hash > $2 ORDER BY hash LIMIT $3"),
         )
         .bind(cutoff_secs)
         .bind(after)
@@ -60,8 +60,8 @@ impl GcRepo for PgRepo {
                 // that each row is still unreferenced and past the cutoff.
                 lock_existing_blobs(c, &raw, knobs).await?;
                 let gone: Vec<Vec<u8>> = sqlx::query_scalar(
-                    "DELETE FROM blobs WHERE hash = ANY($1) AND refcount = 0 \
-                     AND zero_since IS NOT NULL AND zero_since < $2 RETURNING hash",
+                    &crate::repo::pg_lit("DELETE FROM blobs WHERE hash = ANY($1) AND refcount = 0 \
+                     AND zero_since IS NOT NULL AND zero_since < $2 RETURNING hash"),
                 )
                 .bind(&raw)
                 .bind(cutoff_secs)
@@ -81,7 +81,7 @@ impl GcRepo for PgRepo {
         lo[0] = shard;
         hi[0] = shard;
         let rows: Vec<Vec<u8>> =
-            sqlx::query_scalar("SELECT hash FROM blobs WHERE hash >= $1 AND hash <= $2")
+            sqlx::query_scalar(&crate::repo::pg_lit("SELECT hash FROM blobs WHERE hash >= $1 AND hash <= $2"))
                 .bind(lo.to_vec())
                 .bind(hi.to_vec())
                 .fetch_all(self.store.pool())
@@ -91,7 +91,7 @@ impl GcRepo for PgRepo {
     }
 
     async fn blob_row_exists(&self, hash: &BlobHash) -> Result<bool> {
-        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM blobs WHERE hash = $1)")
+        sqlx::query_scalar(&crate::repo::pg_lit("SELECT EXISTS (SELECT 1 FROM blobs WHERE hash = $1)"))
             .bind(hash_bytes(hash)?)
             .fetch_one(self.store.pool())
             .await
@@ -108,11 +108,11 @@ impl GcRepo for PgRepo {
             // loop), a page at a time behind a keyset cursor: a mailbox that is busy is skipped
             // and the walk goes on behind it (review PG5 M-e).
             let boxes: Vec<i64> = sqlx::query_scalar(
-                "SELECT DISTINCT mailbox_id FROM messages m \
+                &crate::repo::pg_lit("SELECT DISTINCT mailbox_id FROM messages m \
                  WHERE deleted_at IS NOT NULL AND deleted_at < $1 AND mailbox_id > $3 \
                  AND NOT EXISTS (SELECT 1 FROM deliveries d \
                    WHERE d.mailbox_id = m.mailbox_id AND d.message_id = m.id) \
-                 ORDER BY mailbox_id LIMIT $2",
+                 ORDER BY mailbox_id LIMIT $2"),
             )
             .bind(older_than)
             .bind(MAILBOXES_PER_BATCH)
@@ -145,9 +145,9 @@ impl GcRepo for PgRepo {
         let n = tx_retry!(self, None, |c| {
             {
                 Ok(sqlx::query(
-                    "DELETE FROM deliveries WHERE (mailbox_id, delivery_id) IN (\
+                    &crate::repo::pg_lit("DELETE FROM deliveries WHERE (mailbox_id, delivery_id) IN (\
                        SELECT mailbox_id, delivery_id FROM deliveries WHERE created_at < $1 \
-                       ORDER BY created_at LIMIT $2 FOR UPDATE SKIP LOCKED)",
+                       ORDER BY created_at LIMIT $2 FOR UPDATE SKIP LOCKED)"),
                 )
                 .bind(older_than)
                 .bind(limit)
@@ -163,10 +163,10 @@ impl GcRepo for PgRepo {
         let n = tx_retry!(self, None, |c| {
             {
                 Ok(sqlx::query(
-                    "DELETE FROM capabilities WHERE token_hash IN (\
+                    &crate::repo::pg_lit("DELETE FROM capabilities WHERE token_hash IN (\
                        SELECT token_hash FROM capabilities \
                        WHERE expires_at < $1 OR revoked_at < $1 \
-                       ORDER BY token_hash LIMIT $2 FOR UPDATE SKIP LOCKED)",
+                       ORDER BY token_hash LIMIT $2 FOR UPDATE SKIP LOCKED)"),
                 )
                 .bind(older_than)
                 .bind(limit)

@@ -111,6 +111,13 @@ impl PgStore {
             .run(&pool)
             .await
             .map_err(|_| Error::storage("Postgres migration failed"))?;
+        #[cfg(feature = "mutation-testing")]
+        for stmt in crate::mutation::post_migrate(crate::mutation::Dialect::Postgres) {
+            sqlx::query(&stmt)
+                .execute(&pool)
+                .await
+                .map_err(|_| Error::storage("mutation statement failed"))?;
+        }
 
         Ok(Self { pool, lock_timeout })
     }

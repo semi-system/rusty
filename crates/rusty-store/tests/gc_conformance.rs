@@ -360,8 +360,17 @@ async fn gc_report_errors_carry_no_database_detail() {
             }
             assert!(e.contains(h.as_str()), "{n}: names the blob: {e}");
         }
+        // KNOWN_DIFFS D2: the same corrupted-refcount delete is a Conflict with the fixed text on
+        // Postgres (SQLSTATE 23001 mapped by map_db_error) and the SQLite foreign-key failure text on
+        // SQLite; neither names the table, constraint or key.
         if n == "postgres" {
-            assert!(rep.errors[0].contains("SQLSTATE class 23"), "{n}: {}", rep.errors[0]);
+            assert!(
+                rep.errors[0].contains("referenced row missing or still in use"),
+                "{n}: {}",
+                rep.errors[0]
+            );
+        } else {
+            assert!(rep.errors[0].contains("FOREIGN KEY constraint failed"), "{n}: {}", rep.errors[0]);
         }
     })
     .await;

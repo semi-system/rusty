@@ -61,6 +61,13 @@ impl SqliteStore {
             .run(&pool)
             .await
             .map_err(|e| Error::storage_with("migration failed", e))?;
+        #[cfg(feature = "mutation-testing")]
+        for stmt in crate::mutation::post_migrate(crate::mutation::Dialect::Sqlite) {
+            sqlx::query(&stmt)
+                .execute(&pool)
+                .await
+                .map_err(|e| Error::storage_with("mutation statement failed", e))?;
+        }
         let store = SqliteStore { pool };
         store.verify_foreign_keys().await?;
         Ok(store)

@@ -63,8 +63,8 @@ impl DirectoryRepo for SqliteRepo {
             .map_err(map_db_error)?;
         // uid_validity high-water mark = clamped DATABASE clock + 5 (largest value issued below).
         let (mb, uv_base): (i64, i64) = sqlx::query_as(
-            "INSERT INTO mailboxes (account_id, uid_validity, next_folder_id) \
-             VALUES (?1, min(max(unixepoch(), 1), ?2) + ?3, ?4) RETURNING id, uid_validity - ?3",
+            &crate::repo::sqlite_lit("INSERT INTO mailboxes (account_id, uid_validity, next_folder_id) \
+             VALUES (?1, min(max(unixepoch(), 1), ?2) + ?3, ?4) RETURNING id, uid_validity - ?3"),
         )
         .bind(acc)
         .bind(UV_MAX_BASE)
@@ -75,8 +75,8 @@ impl DirectoryRepo for SqliteRepo {
         .map_err(map_db_error)?;
         for (id, name, role) in SYSTEM_FOLDER_TABLE {
             sqlx::query(
-                "INSERT INTO folders (mailbox_id, id, parent_id, name, role, uid_validity) \
-                 VALUES (?1, ?2, NULL, ?3, ?4, ?5)",
+                &crate::repo::sqlite_lit("INSERT INTO folders (mailbox_id, id, parent_id, name, role, uid_validity) \
+                 VALUES (?1, ?2, NULL, ?3, ?4, ?5)"),
             )
             .bind(mb)
             .bind(id)
@@ -188,8 +188,8 @@ impl DirectoryRepo for SqliteRepo {
             .map_err(map_db_error)?;
         check_list_capacity(members, max_members)?;
         sqlx::query(
-            "INSERT INTO list_members (list_id, account_id, external, seq) \
-             SELECT ?1, ?2, ?3, COALESCE(MAX(seq), 0) + 1 FROM list_members WHERE list_id = ?1",
+            &crate::repo::sqlite_lit("INSERT INTO list_members (list_id, account_id, external, seq) \
+             SELECT ?1, ?2, ?3, COALESCE(MAX(seq), 0) + 1 FROM list_members WHERE list_id = ?1"),
         )
         .bind(list.0)
         .bind(account.map(|a| a.0))
@@ -310,13 +310,13 @@ impl DirectoryRepo for SqliteRepo {
         // granularity) are broken by `token_hash`, exactly as on Postgres, and the new row is
         // never a candidate.
         sqlx::query(
-            "UPDATE capabilities SET revoked_at = MAX(?1, issued_at) WHERE rowid IN (\
+            &crate::repo::sqlite_lit("UPDATE capabilities SET revoked_at = MAX(?1, issued_at) WHERE rowid IN (\
                SELECT rowid FROM capabilities \
                WHERE account_id = ?2 AND revoked_at IS NULL AND expires_at > ?1 \
                  AND token_hash <> ?4 \
                ORDER BY issued_at, token_hash \
                LIMIT MAX(0, (SELECT count(*) FROM capabilities \
-                             WHERE account_id = ?2 AND revoked_at IS NULL AND expires_at > ?1) - ?3))",
+                             WHERE account_id = ?2 AND revoked_at IS NULL AND expires_at > ?1) - ?3))"),
         )
         .bind(now)
         .bind(account.0)

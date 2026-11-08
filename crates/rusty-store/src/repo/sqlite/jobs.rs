@@ -14,7 +14,7 @@ use crate::map_db_error;
 async fn clock(conn: &mut SqliteConnection, now: Option<i64>) -> Result<i64> {
     match now {
         Some(n) => Ok(n),
-        None => sqlx::query_scalar("SELECT unixepoch()")
+        None => sqlx::query_scalar(&crate::repo::sqlite_lit("SELECT unixepoch()"))
             .fetch_one(conn)
             .await
             .map_err(map_db_error),
@@ -35,7 +35,7 @@ async fn settle_dead(conn: &mut SqliteConnection, id: i64, why: &str, now: i64) 
 #[async_trait]
 impl JobRepo for SqliteRepo {
     async fn db_now(&self) -> Result<i64> {
-        sqlx::query_scalar("SELECT unixepoch()")
+        sqlx::query_scalar(&crate::repo::sqlite_lit("SELECT unixepoch()"))
             .fetch_one(self.store.pool())
             .await
             .map_err(map_db_error)
@@ -48,13 +48,13 @@ impl JobRepo for SqliteRepo {
         // slip under the cap.
         let pending: i64 = match job.domain {
             Some(d) => sqlx::query_scalar(
-                "SELECT count(*) FROM jobs WHERE domain_id = ? AND state IN ('queued', 'running')",
+                &crate::repo::sqlite_lit("SELECT count(*) FROM jobs WHERE domain_id = ? AND state IN ('queued', 'running')"),
             )
             .bind(d.0)
             .fetch_one(&mut *tx)
             .await,
             None => sqlx::query_scalar(
-                "SELECT count(*) FROM jobs WHERE domain_id IS NULL AND state IN ('queued', 'running')",
+                &crate::repo::sqlite_lit("SELECT count(*) FROM jobs WHERE domain_id IS NULL AND state IN ('queued', 'running')"),
             )
             .fetch_one(&mut *tx)
             .await,
@@ -64,9 +64,9 @@ impl JobRepo for SqliteRepo {
             return Err(Error::Quota("job queue full".into()));
         }
         let id: i64 = sqlx::query_scalar(
-            "INSERT INTO jobs (kind, domain_id, state, payload, attempts, max_attempts, \
+            &crate::repo::sqlite_lit("INSERT INTO jobs (kind, domain_id, state, payload, attempts, max_attempts, \
                                run_after, epoch, created_at, updated_at) \
-             VALUES (?, ?, 'queued', ?, 0, ?, ?, 0, ?, ?) RETURNING id",
+             VALUES (?, ?, 'queued', ?, 0, ?, ?, 0, ?, ?) RETURNING id"),
         )
         .bind(job.kind)
         .bind(job.domain.map(|d: DomainId| d.0))
@@ -215,9 +215,9 @@ impl JobRepo for SqliteRepo {
     async fn purge_finished_batch(&self, older_than: i64, limit: i64) -> Result<u64> {
         let mut tx = self.store.begin_write().await?;
         let n = sqlx::query(
-            "DELETE FROM jobs WHERE rowid IN (\
+            &crate::repo::sqlite_lit("DELETE FROM jobs WHERE rowid IN (\
                SELECT rowid FROM jobs \
-               WHERE state IN ('done', 'failed', 'dead') AND updated_at < ? LIMIT ?)",
+               WHERE state IN ('done', 'failed', 'dead') AND updated_at < ? LIMIT ?)"),
         )
         .bind(older_than)
         .bind(limit)

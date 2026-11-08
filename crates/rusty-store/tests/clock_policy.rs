@@ -241,7 +241,10 @@ async fn gc_grace_cutoff_comes_from_the_database_clock() {
 fn no_rust_clock_in_correctness_paths() {
     // File modification times are stamped by the operating system, so the blob store compares
     // them against the OS clock (temp-file sweep, quarantine healing).
-    const ALLOWED: &[(&str, &str)] = &[("rusty-store/src/blob.rs", "file mtimes use the OS clock")];
+    const ALLOWED: &[(&str, &str)] = &[
+        ("rusty-store/src/blob.rs", "file mtimes use the OS clock"),
+        ("rusty-store/src/fixtures/pg_db.rs", "test-only (feature test-fixtures): names and reaps stale test databases"),
+    ];
     let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut offenders = Vec::new();
     for krate in ["rusty-store", "rusty-directory"] {

@@ -132,14 +132,14 @@ impl JobRepo for PgRepo {
                 match job.domain {
                     Some(d) => {
                         sqlx::query_scalar::<_, i64>(
-                            "SELECT id FROM domains WHERE id = $1 FOR NO KEY UPDATE",
+                            &crate::repo::pg_lit("SELECT id FROM domains WHERE id = $1 FOR NO KEY UPDATE"),
                         )
                         .bind(d.0)
                         .fetch_optional(&mut *c)
                         .await?;
                     }
                     None => {
-                        sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
+                        sqlx::query(&crate::repo::pg_lit("SELECT pg_advisory_xact_lock($1, $2)"))
                             .bind(NO_DOMAIN_LOCK_CLASS)
                             .bind(NO_DOMAIN_LOCK_KEY)
                             .execute(&mut *c)
@@ -149,8 +149,8 @@ impl JobRepo for PgRepo {
                 let pending: i64 = match job.domain {
                     Some(d) => {
                         sqlx::query_scalar(
-                            "SELECT count(*) FROM jobs WHERE domain_id = $1 \
-                             AND state IN ('queued', 'running')",
+                            &crate::repo::pg_lit("SELECT count(*) FROM jobs WHERE domain_id = $1 \
+                             AND state IN ('queued', 'running')"),
                         )
                         .bind(d.0)
                         .fetch_one(&mut *c)
@@ -158,8 +158,8 @@ impl JobRepo for PgRepo {
                     }
                     None => {
                         sqlx::query_scalar(
-                            "SELECT count(*) FROM jobs WHERE domain_id IS NULL \
-                             AND state IN ('queued', 'running')",
+                            &crate::repo::pg_lit("SELECT count(*) FROM jobs WHERE domain_id IS NULL \
+                             AND state IN ('queued', 'running')"),
                         )
                         .fetch_one(&mut *c)
                         .await?
@@ -313,10 +313,10 @@ impl JobRepo for PgRepo {
         let n = tx_retry!(self, None, |c| {
             {
                 Ok(sqlx::query(
-                    "DELETE FROM jobs WHERE id IN (\
+                    &crate::repo::pg_lit("DELETE FROM jobs WHERE id IN (\
                        SELECT id FROM jobs \
                        WHERE state IN ('done', 'failed', 'dead') AND updated_at < $1 \
-                       ORDER BY id LIMIT $2 FOR UPDATE SKIP LOCKED)",
+                       ORDER BY id LIMIT $2 FOR UPDATE SKIP LOCKED)"),
                 )
                 .bind(older_than)
                 .bind(limit)

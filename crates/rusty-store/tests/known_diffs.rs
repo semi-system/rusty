@@ -20,7 +20,8 @@ pub struct KnownDiff {
     pub postgres_pin: (&'static str, &'static str),
 }
 
-pub const KNOWN_DIFFS: &[KnownDiff] = &[KnownDiff {
+pub const KNOWN_DIFFS: &[KnownDiff] = &[
+    KnownDiff {
     id: "D1",
     what: "blobs.zero_since on a referenced blob (refcount > 0)",
     sqlite: "accepted: the column is plain data; GC must not trust it (gc.rs never_deletes_referenced_blob_even_if_zero_since_is_old)",
@@ -28,7 +29,17 @@ pub const KNOWN_DIFFS: &[KnownDiff] = &[KnownDiff {
     reason: "PG1/PG5: Postgres stamps zero_since in a BEFORE trigger and binds it with a CHECK; the SQLite schema is frozen (migrations are never edited) and cannot express the check on existing databases",
     sqlite_pin: ("known_diffs.rs", "sqlite_accepts_zero_since_on_a_referenced_blob"),
     postgres_pin: ("known_diffs.rs", "postgres_refuses_zero_since_on_a_referenced_blob"),
-}];
+},
+    KnownDiff {
+        id: "D2",
+        what: "error text of a GC row delete refused by the RESTRICT foreign key",
+        sqlite: "the SQLite foreign-key failure text ('FOREIGN KEY constraint failed')",
+        postgres: "Conflict with the fixed text 'referenced row missing or still in use' (SQLSTATE 23001 mapped by map_db_error)",
+        reason: "the SQLite driver reports the failure through its own message, Postgres through SQLSTATE; both are fixed texts that name no table, constraint or key (review PG5 M-i)",
+        sqlite_pin: ("gc_conformance.rs", "gc_report_errors_carry_no_database_detail"),
+        postgres_pin: ("gc_conformance.rs", "gc_report_errors_carry_no_database_detail"),
+    },
+];
 
 async fn referenced_blob(e: &Env) -> String {
     let msg = raw("referenced", Some("r@x"));

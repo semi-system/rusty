@@ -150,8 +150,8 @@ async fn log_message_changes(
 /// transaction rolls back and the mark is unchanged).
 async fn take_uid_validity(c: &mut SqliteConnection, mb: i64) -> Result<i64> {
     let uv: i64 = sqlx::query_scalar(
-        "UPDATE mailboxes SET uid_validity = max(unixepoch(), uid_validity + 1) \
-         WHERE id = ?1 RETURNING uid_validity",
+        &crate::repo::sqlite_lit("UPDATE mailboxes SET uid_validity = max(unixepoch(), uid_validity + 1) \
+         WHERE id = ?1 RETURNING uid_validity"),
     )
     .bind(mb)
     .fetch_optional(&mut *c)
@@ -272,7 +272,7 @@ async fn insert_message(
     m: &NewMessage,
     delivery: Option<&Delivery>,
 ) -> Result<(MessageRef, i64)> {
-    sqlx::query("INSERT INTO blobs (hash, size) VALUES (?1, ?2) ON CONFLICT (hash) DO NOTHING")
+    sqlx::query(&crate::repo::sqlite_lit("INSERT INTO blobs (hash, size) VALUES (?1, ?2) ON CONFLICT (hash) DO NOTHING"))
         .bind(m.hash.as_str())
         .bind(m.size)
         .execute(&mut *c)
@@ -296,9 +296,9 @@ async fn insert_message(
     // internal_date: the database clock, or the caller's `_at(now)` value verbatim (D2).
     let at = delivery.and_then(|d| d.created_at);
     sqlx::query(
-        "INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, size, internal_date, \
+        &crate::repo::sqlite_lit("INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, size, internal_date, \
          subject, from_addr, to_addrs, message_id_hdr, thread_id, flags) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, COALESCE(?13, unixepoch()), ?7, ?8, ?9, ?10, ?11, ?12)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, COALESCE(?13, unixepoch()), ?7, ?8, ?9, ?10, ?11, ?12)"),
     )
     .bind(mb)
     .bind(id)
@@ -318,8 +318,8 @@ async fn insert_message(
     .map_err(map_db_error)?;
     if let Some(d) = delivery {
         sqlx::query(
-            "INSERT INTO deliveries (mailbox_id, delivery_id, message_id, blob_hash, created_at) \
-             VALUES (?1, ?2, ?3, ?4, COALESCE(?5, unixepoch()))",
+            &crate::repo::sqlite_lit("INSERT INTO deliveries (mailbox_id, delivery_id, message_id, blob_hash, created_at) \
+             VALUES (?1, ?2, ?3, ?4, COALESCE(?5, unixepoch()))"),
         )
         .bind(mb)
         .bind(&d.id.0[..])
@@ -647,8 +647,8 @@ impl MailboxRepo for SqliteRepo {
         if !creates.is_empty() {
             let n = creates.len() as i64;
             first_id = sqlx::query_scalar(
-                "UPDATE mailboxes SET next_msg_id = next_msg_id + ?1 WHERE id = ?2 \
-                 RETURNING next_msg_id - ?1",
+                &crate::repo::sqlite_lit("UPDATE mailboxes SET next_msg_id = next_msg_id + ?1 WHERE id = ?2 \
+                 RETURNING next_msg_id - ?1"),
             )
             .bind(n)
             .bind(mb.0)
@@ -1069,12 +1069,12 @@ impl MailboxRepo for SqliteRepo {
         check_purge_limit(limit)?;
         let mut tx = self.begin_locked(mb).await?;
         let n = sqlx::query(
-            "DELETE FROM messages WHERE rowid IN (\
+            &crate::repo::sqlite_lit("DELETE FROM messages WHERE rowid IN (\
                SELECT rowid FROM messages \
                WHERE mailbox_id = ?1 AND deleted_at IS NOT NULL AND deleted_at < ?2 \
                AND NOT EXISTS (SELECT 1 FROM deliveries d \
                  WHERE d.mailbox_id = messages.mailbox_id AND d.message_id = messages.id) \
-               ORDER BY id LIMIT ?3)",
+               ORDER BY id LIMIT ?3)"),
         )
         .bind(mb.0)
         .bind(older_than)
@@ -1090,8 +1090,8 @@ impl MailboxRepo for SqliteRepo {
     async fn get_message(&self, mb: MailboxId, id: MessageId) -> Result<MessageDetail> {
         let (mid, uid, size, internal_date, subject, from_addr, flags, thread, folder, hash, deleted): DetailRow =
             sqlx::query_as(
-                "SELECT id, uid, size, internal_date, subject, from_addr, flags, thread_id, \
-                 folder_id, blob_hash, deleted_at FROM messages WHERE mailbox_id = ?1 AND id = ?2",
+                &crate::repo::sqlite_lit("SELECT id, uid, size, internal_date, subject, from_addr, flags, thread_id, \
+                 folder_id, blob_hash, deleted_at FROM messages WHERE mailbox_id = ?1 AND id = ?2"),
             )
             .bind(mb.0)
             .bind(id.0)
@@ -1109,8 +1109,8 @@ impl MailboxRepo for SqliteRepo {
 
     async fn get_raw_ref(&self, mb: MailboxId, id: MessageId) -> Result<RawRef> {
         let (hash, size): (String, i64) = sqlx::query_as(
-            "SELECT blob_hash, size FROM messages \
-             WHERE mailbox_id = ?1 AND id = ?2 AND deleted_at IS NULL",
+            &crate::repo::sqlite_lit("SELECT blob_hash, size FROM messages \
+             WHERE mailbox_id = ?1 AND id = ?2 AND deleted_at IS NULL"),
         )
         .bind(mb.0)
         .bind(id.0)

@@ -62,13 +62,43 @@ pub(crate) fn hash_bytes(h: &rusty_core::BlobHash) -> rusty_core::Result<Vec<u8>
 /// sqlx-sqlite maps `$N` to the N-th bound value (see the tripwire test
 /// `sqlite_dollar_placeholders_follow_their_number`), so no placeholder rewriting is needed.
 pub(crate) fn render_sqlite(sql: &str) -> String {
-    sql.replace("{NOW}", "unixepoch()").replace("{JSONB}", "")
+    let s = sql.replace("{NOW}", "unixepoch()").replace("{JSONB}", "");
+    #[cfg(feature = "mutation-testing")]
+    let s = crate::mutation::rendered(crate::mutation::Dialect::Sqlite, s);
+    s
 }
 
 /// Postgres text: the database clock is `rs_now()` (`statement_timestamp()`).
 #[cfg(any(test, feature = "postgres"))]
 pub(crate) fn render_pg(sql: &str) -> String {
-    sql.replace("{NOW}", "rs_now()").replace("{JSONB}", "::jsonb")
+    let s = sql.replace("{NOW}", "rs_now()").replace("{JSONB}", "::jsonb");
+    #[cfg(feature = "mutation-testing")]
+    let s = crate::mutation::rendered(crate::mutation::Dialect::Postgres, s);
+    s
+}
+
+/// A Postgres-only statement literal. Identity in every build except `mutation-testing`, where
+/// the active text mutation (src/mutation.rs) may rewrite it.
+#[cfg(feature = "mutation-testing")]
+pub(crate) fn pg_lit(sql: &'static str) -> std::borrow::Cow<'static, str> {
+    crate::mutation::statement(crate::mutation::Dialect::Postgres, sql)
+}
+#[cfg(not(feature = "mutation-testing"))]
+#[allow(dead_code)]
+#[inline(always)]
+pub(crate) fn pg_lit(sql: &'static str) -> &'static str {
+    sql
+}
+
+/// A SQLite-only statement literal (see [`pg_lit`]).
+#[cfg(feature = "mutation-testing")]
+pub(crate) fn sqlite_lit(sql: &'static str) -> std::borrow::Cow<'static, str> {
+    crate::mutation::statement(crate::mutation::Dialect::Sqlite, sql)
+}
+#[cfg(not(feature = "mutation-testing"))]
+#[inline(always)]
+pub(crate) fn sqlite_lit(sql: &'static str) -> &'static str {
+    sql
 }
 
 #[cfg(test)]
