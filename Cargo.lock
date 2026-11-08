@@ -1372,9 +1372,11 @@ dependencies = [
  "rustix",
  "rustls",
  "rusty-core",
+ "rusty-ctl",
  "rusty-directory",
  "rusty-store",
  "rusty-svc",
+ "serde_json",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -1393,6 +1395,19 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "toml",
+]
+
+[[package]]
+name = "rusty-ctl"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "rusty-core",
+ "rusty-directory",
+ "rusty-store",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
