@@ -54,6 +54,10 @@ fn daemon_arguments() {
     assert!(d(&["rusty", "d", "--config"]).is_err());
     assert!(d(&["rusty", "d", "--dev", "--port-offset", "x"]).is_err());
     assert!(d(&["rusty", "d", "--dev", "--port-offset", "70000"]).is_err());
+    // --bind (dev only): an IP address
+    assert_eq!(d(&["rusty", "d", "--dev", "--bind", "0.0.0.0"]).unwrap().bind, Some("0.0.0.0".parse().unwrap()));
+    assert!(d(&["rusty", "d", "--dev", "--bind", "not-an-ip"]).is_err());
+    assert!(d(&["rusty", "d", "--bind", "0.0.0.0"]).is_err());
     // the production default config path
     assert_eq!(d(&["rusty", "d"]).unwrap().config, None);
 }

@@ -226,3 +226,16 @@ fn the_listener_plan_follows_the_configuration() {
     c.imap.listen_143 = Listen::off();
     assert_eq!(rusty_svc::listener_plan(&c).len(), 3);
 }
+
+// backend-neutral: the helpers only rewrite listener addresses
+#[test]
+fn port_offset_and_bind_rewrite_every_dev_listener() {
+    let c = StartupConfig::dev(std::path::Path::new("/tmp/x"));
+    let moved = rusty::daemon::with_port_offset(c.clone(), 100).unwrap();
+    assert_eq!(moved.smtp.listen_25.addr(), Some("127.0.0.1:2625".parse().unwrap()));
+    assert_eq!(moved.imap.listen_993.addr(), Some("127.0.0.1:10093".parse().unwrap()));
+    assert!(rusty::daemon::with_port_offset(c.clone(), 60_000).is_err(), "9993 + 60000 does not fit a port");
+    let all = rusty::daemon::with_bind(c, "0.0.0.0".parse().unwrap());
+    assert_eq!(all.smtp.listen_587.addr(), Some("0.0.0.0:5587".parse().unwrap()));
+    assert_eq!(all.imap.listen_143.addr(), Some("0.0.0.0:1143".parse().unwrap()));
+}

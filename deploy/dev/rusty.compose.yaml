@@ -1,0 +1,28 @@
+# Optional: run the development profile in a container (a Rust toolchain image builds and runs it).
+#   docker compose -f deploy/dev/rusty.compose.yaml up
+# The ports are published on 127.0.0.1 only. Dev profile: self-signed certificate, no real
+# mail yet; never expose these ports. The production image and compose file arrive with U9.
+services:
+  rusty:
+    image: rust:1.89-bookworm
+    working_dir: /src
+    # exec: the daemon is PID 1 and receives SIGTERM itself (drains, closes the store, exits 0).
+    command: ["sh", "-c", "cargo build -p rusty && exec /target/debug/rusty d --dev --data-dir /data/dev --bind 0.0.0.0"]
+    environment:
+      CARGO_TARGET_DIR: /target
+    volumes:
+      - ../..:/src:ro
+      - rusty-target:/target
+      - rusty-data:/data
+    ports:
+      - "127.0.0.1:2525:2525"
+      - "127.0.0.1:5587:5587"
+      - "127.0.0.1:4465:4465"
+      - "127.0.0.1:1143:1143"
+      - "127.0.0.1:9993:9993"
+    stop_signal: SIGTERM
+    stop_grace_period: 40s
+
+volumes:
+  rusty-target: {}
+  rusty-data: {}

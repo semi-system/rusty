@@ -79,6 +79,8 @@ stage "test-knobs gate self-test" bash scripts/tests/test-knobs-gate.sh
 stage "no test knobs outside tests" bash scripts/check-test-knobs.sh static
 stage "clippy"       cargo clippy --workspace --all-targets -- -D warnings
 stage "test (glibc)" cargo test --workspace
+# The dev quickstart works from a clean checkout: build, start on spare ports, banner, SIGTERM, exit 0.
+stage "dev quickstart smoke" bash deploy/dev/quickstart.sh --smoke
 
 postgres_tests() {
   if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then

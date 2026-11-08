@@ -173,3 +173,20 @@ pub fn with_port_offset(mut cfg: StartupConfig, offset: u16) -> Result<StartupCo
     cfg.imap.listen_993 = shift(cfg.imap.listen_993)?;
     Ok(cfg)
 }
+
+/// Put every dev listener on `ip` (the dev profile binds 127.0.0.1; a container needs 0.0.0.0).
+pub fn with_bind(mut cfg: StartupConfig, ip: std::net::IpAddr) -> StartupConfig {
+    let on = |l: Listen| match l.addr() {
+        None => l,
+        Some(mut a) => {
+            a.set_ip(ip);
+            Listen::on(a)
+        }
+    };
+    cfg.smtp.listen_25 = on(cfg.smtp.listen_25);
+    cfg.smtp.listen_587 = on(cfg.smtp.listen_587);
+    cfg.smtp.listen_465 = on(cfg.smtp.listen_465);
+    cfg.imap.listen_143 = on(cfg.imap.listen_143);
+    cfg.imap.listen_993 = on(cfg.imap.listen_993);
+    cfg
+}

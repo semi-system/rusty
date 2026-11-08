@@ -10,13 +10,13 @@ use rusty_svc::init_logging;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio_util::sync::CancellationToken;
 
-use crate::daemon::{start, with_port_offset};
+use crate::daemon::{start, with_bind, with_port_offset};
 
 const DEFAULT_CONFIG: &str = "/etc/rusty/rusty.toml";
 const DEFAULT_DEV_DIR: &str = "rusty-dev-data";
 
 pub const USAGE: &str = "usage:\n  \
-rusty d [--dev [--data-dir DIR] [--port-offset N]] [--config FILE] [--log-format text|json]\n  \
+rusty d [--dev [--data-dir DIR] [--port-offset N] [--bind IP]] [--config FILE] [--log-format text|json]\n  \
 rusty ctl <command> ...        (rustyctl)\n\
 \n\
   rusty d --dev      development profile: data under ./rusty-dev-data, high ports on 127.0.0.1\n\
@@ -30,6 +30,7 @@ pub struct DaemonArgs {
     pub config: Option<PathBuf>,
     pub data_dir: Option<PathBuf>,
     pub port_offset: u16,
+    pub bind: Option<std::net::IpAddr>,
     pub log_format: Option<LogFormat>,
 }
 
@@ -58,6 +59,14 @@ fn parse_daemon(args: &[OsString]) -> Result<Invocation, String> {
                     .and_then(|s| s.parse::<u16>().ok())
                     .ok_or_else(|| "--port-offset must be a number 0..=65535".to_owned())?;
             }
+            Some("--bind") => {
+                a.bind = Some(
+                    value(&mut it, "--bind")?
+                        .to_str()
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| "--bind must be an IP address".to_owned())?,
+                );
+            }
             Some("--log-format") => {
                 a.log_format = match value(&mut it, "--log-format")?.to_str() {
                     Some("text") => Some(LogFormat::Text),
@@ -72,8 +81,8 @@ fn parse_daemon(args: &[OsString]) -> Result<Invocation, String> {
     if a.dev && a.config.is_some() {
         return Err("--dev and --config exclude each other".into());
     }
-    if !a.dev && (a.data_dir.is_some() || a.port_offset != 0) {
-        return Err("--data-dir and --port-offset need --dev".into());
+    if !a.dev && (a.data_dir.is_some() || a.port_offset != 0 || a.bind.is_some()) {
+        return Err("--data-dir, --port-offset and --bind need --dev".into());
     }
     Ok(Invocation::Daemon(a))
 }
@@ -145,7 +154,10 @@ fn load_config(args: &DaemonArgs) -> Result<(StartupConfig, Profile), String> {
         } else {
             std::env::current_dir().map_err(|e| format!("cannot read the current directory: {e}"))?.join(dir)
         };
-        let cfg = with_port_offset(StartupConfig::dev(&dir), args.port_offset).map_err(|e| e.to_string())?;
+        let mut cfg = with_port_offset(StartupConfig::dev(&dir), args.port_offset).map_err(|e| e.to_string())?;
+        if let Some(ip) = args.bind {
+            cfg = with_bind(cfg, ip);
+        }
         Ok((cfg, Profile::Dev))
     } else {
         let path = args.config.clone().unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG));
