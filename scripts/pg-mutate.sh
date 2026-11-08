@@ -238,8 +238,8 @@ case "$MODE" in
         else echo "| id | outcome | first failing test | mutation | commit |"; echo "|---|---|---|---|---|"; fi
         grep "^$class"$'\t' "$RES" | while IFS=$'\t' read -r _ id outcome killer what par commit; do
           what="${what//|/\|}"
-          if [ "$class" = schema ]; then echo "| \`$id\` | $outcome | \`$killer\` | ${par:-n/a} | \`$what\` | \`${commit:-unknown}\` |"
-          else echo "| \`$id\` | $outcome | \`$killer\` | $what | \`${commit:-unknown}\` |"; fi
+          if [ "$class" = schema ]; then echo "| \`$id\` | $outcome | \`$killer\` | ${par:-n/a} | \`$what\` | \`${commit:-before per-row stamps}\` |"
+          else echo "| \`$id\` | $outcome | \`$killer\` | $what | \`${commit:-before per-row stamps}\` |"; fi
         done; echo
       done
       echo "## Survivors"; echo
