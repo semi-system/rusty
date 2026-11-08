@@ -400,6 +400,7 @@ impl Env {
 }
 
 /// Run `f` once per available backend (SQLite always; Postgres when `RUSTY_TEST_PG_URL` is set).
+#[allow(clippy::await_holding_lock)] // the probe lock is deliberately held while an environment is built
 pub async fn for_each_env<F, Fut>(f: F)
 where
     F: Fn(Env) -> Fut,
