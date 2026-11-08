@@ -1,0 +1,25 @@
+[package]
+name = "rusty-imap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+rusty-core = { path = "../rusty-core" }
+rusty-store = { path = "../rusty-store" }
+rusty-svc = { path = "../rusty-svc", default-features = false }
+# Pinned exactly: the decoder is a security boundary (evaluation in tests/codec_table.rs).
+imap-codec = { version = "=1.0.0", features = ["starttls"] }
+async-trait.workspace = true
+bytes.workspace = true
+tokio = { workspace = true, features = ["rt", "io-util", "time", "sync", "macros"] }
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
+rusty-directory = { path = "../rusty-directory" }
