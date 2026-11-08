@@ -14,7 +14,7 @@
 set -euo pipefail
 
 mode="${1:-}"
-MARKER="rusty-mutation-testing-marker"
+MARKER="rusty-sql-mutation-hook-marker"
 
 static_check() {
   local ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
