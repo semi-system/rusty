@@ -892,3 +892,27 @@ async fn capability_eviction_tie_break_is_token_hash_order_on_both_backends() {
     })
     .await;
 }
+
+// ---------------------------------------------------------------- registry drift (Postgres)
+
+/// Drift state: the account row exists, its registry row does not (what `pg_restore
+/// --disable-triggers`, `session_replication_role = replica`, logical-replication apply or an
+/// operator `DISABLE TRIGGER` leave behind). The insert's own conflict handling must still turn a
+/// duplicate into `Conflict`; an `ON CONFLICT DO NOTHING` would surface as a storage error.
+#[tokio::test]
+async fn account_create_conflicts_when_the_registry_row_is_missing() {
+    for b in common::backends().await {
+        if b.is_sqlite() {
+            continue; // SQLite has no registry; its unique key is exercised by every duplicate test
+        }
+        let dom = b.dir.create_domain("drift.test").await.unwrap();
+        b.run("ALTER TABLE accounts DISABLE TRIGGER accounts_addr_unique_ins", &[]).await;
+        b.run(
+            "INSERT INTO accounts(local_part, domain_id, status, created_at) VALUES ('dup', ?1, 'active', 0)",
+            &[Bind::I(dom.0)],
+        )
+        .await;
+        b.run("ALTER TABLE accounts ENABLE TRIGGER accounts_addr_unique_ins", &[]).await;
+        kind!(b.dir.create_account("dup", dom, None, None).await, Error::Conflict(_));
+    }
+}
