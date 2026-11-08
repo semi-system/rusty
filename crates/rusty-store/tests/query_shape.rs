@@ -61,11 +61,11 @@ fn id_str(n: u8) -> String {
 }
 
 async fn thread_equivalence(msgs: Vec<Msg>) {
-    let _p = stmts::probe();
     for_each_env(|e| thread_equivalence_on(e, msgs.clone())).await;
 }
 
 async fn thread_equivalence_on(e: Env, msgs: Vec<Msg>) {
+    let _p = stmts::probe();
     for m in msgs {
         let refs: Vec<String> = m.refs.iter().map(|&r| id_str(r)).collect();
         let irt = m.irt.map(id_str);
@@ -218,11 +218,11 @@ fn too_deep(d: usize, extra: usize) -> Result<(), Error> {
 }
 
 async fn folder_equivalence(ops: Vec<FOp>) {
-    let _p = stmts::probe();
     for_each_env(|e| folder_equivalence_on(e, ops.clone())).await;
 }
 
 async fn folder_equivalence_on(e: Env, ops: Vec<FOp>) {
+    let _p = stmts::probe();
     let mut tree: HashMap<i64, Option<i64>> = HashMap::new();
     let mut order: Vec<i64> = vec![];
     for op in ops {

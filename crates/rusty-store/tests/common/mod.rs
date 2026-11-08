@@ -300,6 +300,12 @@ pub mod stmts {
         Probe { _lock: lock }
     }
 
+    /// Hold the probe lock while a test environment is built: opening a connection runs
+    /// statements (PRAGMA, migrations) that must not be counted by a test holding the probe.
+    pub fn setup_guard() -> MutexGuard<'static, ()> {
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     impl Probe {
         pub fn count(&self) -> usize {
             COUNT.load(Ordering::SeqCst)
@@ -399,9 +405,17 @@ where
     F: Fn(Env) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
-    for b in backends::backends().await {
+    let all = {
+        let _g = stmts::setup_guard();
+        backends::backends().await
+    };
+    for b in all {
         eprintln!("-- backend {}", b.name);
-        f(Env::new(b).await).await;
+        let e = {
+            let _g = stmts::setup_guard();
+            Env::new(b).await
+        };
+        f(e).await;
     }
 }
 
