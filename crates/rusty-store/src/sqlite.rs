@@ -75,10 +75,16 @@ impl SqliteStore {
 
     /// The underlying connection pool.
     ///
-    /// Internal: public only because `rusty-directory` and tests issue queries directly. It
-    /// will be removed once the store service owns all database access; do not build new
-    /// callers on it.
+    /// Public only with the `test-fixtures` feature (dev-dependencies only, see
+    /// scripts/check-test-fixtures.sh); production builds keep it crate-private, so raw SQL
+    /// access from another crate needs a feature no production build enables.
+    #[cfg(feature = "test-fixtures")]
     pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
+    #[cfg(not(feature = "test-fixtures"))]
+    pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
     }
 

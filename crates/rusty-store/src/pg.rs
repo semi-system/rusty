@@ -122,8 +122,16 @@ impl PgStore {
         Ok(Self { pool, lock_timeout })
     }
 
-    /// The underlying pool, temporarily public for PG0 tests and the backend port.
+    /// The underlying pool. Public only with the `test-fixtures` feature (dev-dependencies only,
+    /// see scripts/check-test-fixtures.sh); production builds keep it crate-private, so raw SQL
+    /// access from another crate needs a feature no production build enables.
+    #[cfg(feature = "test-fixtures")]
     pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
+    #[cfg(not(feature = "test-fixtures"))]
+    pub(crate) fn pool(&self) -> &PgPool {
         &self.pool
     }
 
