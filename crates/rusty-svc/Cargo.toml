@@ -1,0 +1,36 @@
+[package]
+name = "rusty-svc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+# The self-signed development certificate (`[tls] dev_self_signed`). A production build can
+# omit it with --no-default-features; the option is then refused at start-up.
+default = ["dev-cert"]
+dev-cert = ["dep:rcgen"]
+
+[dependencies]
+rusty-core = { path = "../rusty-core" }
+rusty-store = { path = "../rusty-store" }
+rusty-directory = { path = "../rusty-directory" }
+async-trait.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "sync", "signal", "io-util", "macros"] }
+tokio-util.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
+tokio-rustls.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rustix = { workspace = true, features = ["process"] }
+rcgen = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
+rcgen = { workspace = true, features = ["pem"] }
+rustix.workspace = true
+bytes.workspace = true
+proptest.workspace = true

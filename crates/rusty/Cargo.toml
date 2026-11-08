@@ -1,0 +1,28 @@
+[package]
+name = "rusty"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+# Production builds may use --no-default-features to leave the self-signed dev certificate out.
+default = ["dev-cert"]
+dev-cert = ["rusty-svc/dev-cert"]
+
+[dependencies]
+rusty-core = { path = "../rusty-core" }
+rusty-store = { path = "../rusty-store" }
+rusty-directory = { path = "../rusty-directory" }
+rusty-svc = { path = "../rusty-svc", default-features = false }
+async-trait.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time", "sync", "signal", "io-util", "macros"] }
+tokio-util.workspace = true
+tracing.workspace = true
+rustix = { workspace = true, features = ["process"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
+rusty-store = { path = "../rusty-store" }

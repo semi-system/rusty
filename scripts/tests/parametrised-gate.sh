@@ -80,4 +80,11 @@ mk; printf 'async fn helper() {\n    println!("x");\n}\n#[tokio::test]\nasync fn
 mk; printf 'async fn helper(n: u8) {\n    for_each_env(|e| async move { let _ = e; }).await;\n}\nproptest! {\n    #[test]\n    fn prop(n in 0u8..4) {\n        block_on(helper(n));\n    }\n}\n' > "$tmp/t/crates/rusty-store/tests/b.rs"; expect "proptest through a helper" 0
 mk; printf 'proptest! {\n    #[test]\n    fn prop(n in 0u8..4) {\n        assert!(n < 4);\n    }\n}\n' > "$tmp/t/crates/rusty-store/tests/b.rs"; expect "unmarked proptest" 1
 mk; printf '#[tokio::test]\nasync fn single() { for_each_backend(|b| async move { let _ = b; }).await; }\n' > "$tmp/t/crates/rusty-store/tests/b.rs"; expect "one-line fn" 0
+# The service crates (U1) are scanned too, with no exemption.
+mk; mkdir -p "$tmp/t/crates/rusty-svc/tests" "$tmp/t/crates/rusty/tests"
+printf '#[tokio::test]\nasync fn bare() {\n    assert_eq!(1, 1);\n}\n' > "$tmp/t/crates/rusty-svc/tests/s.rs"; expect "unmarked test in rusty-svc" 1
+mk; mkdir -p "$tmp/t/crates/rusty-svc/tests" "$tmp/t/crates/rusty/tests"
+printf '#[tokio::test]\nasync fn bare() {\n    assert_eq!(1, 1);\n}\n' > "$tmp/t/crates/rusty/tests/d.rs"; expect "unmarked test in the rusty binary crate" 1
+mk; mkdir -p "$tmp/t/crates/rusty-svc/tests" "$tmp/t/crates/rusty/tests"
+printf '// backend-neutral: no database involved, TLS only\n#[tokio::test]\nasync fn ok() {\n    assert_eq!(1, 1);\n}\n' > "$tmp/t/crates/rusty-svc/tests/s.rs"; expect "marked test in rusty-svc" 0
 echo "parametrised-gate: OK"
