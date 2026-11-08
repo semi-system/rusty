@@ -9,7 +9,8 @@ use super::tx::{tx_retry, TxError, TxResult};
 use super::PgRepo;
 use crate::map_db_error;
 use crate::repo::directory::{
-    capability_expiry, check_list_capacity, list_resolution, sql,
+    capability_expiry, check_list_capacity, check_no_nul, check_text, list_resolution, sql,
+    MAX_DOMAIN_BYTES, MAX_EXTERNAL_MEMBER_BYTES, MAX_LOCAL_PART_BYTES, MAX_PLAN_NAME_BYTES,
 };
 use crate::repo::{
     render_pg as r, AccountStatus, AuthRow, CapabilityGrant, ConfigLayers, ConfigTarget,
@@ -41,6 +42,7 @@ async fn revoke_all_in(c: &mut PgConnection, account: AccountId, now: Option<i64
 #[async_trait]
 impl DirectoryRepo for PgRepo {
     async fn create_domain(&self, name: &str) -> Result<DomainId> {
+        check_text(name, MAX_DOMAIN_BYTES)?;
         let id: i64 = sqlx::query_scalar(&r(sql::INSERT_DOMAIN))
             .bind(name)
             .fetch_one(self.store.pool())
@@ -50,6 +52,8 @@ impl DirectoryRepo for PgRepo {
     }
 
     async fn create_plan(&self, name: &str, config: &str) -> Result<PlanId> {
+        check_text(name, MAX_PLAN_NAME_BYTES)?;
+        check_no_nul(config)?;
         let id: i64 = sqlx::query_scalar(&r(sql::INSERT_PLAN))
             .bind(name)
             .bind(config)
@@ -60,6 +64,10 @@ impl DirectoryRepo for PgRepo {
     }
 
     async fn create_account(&self, new: &NewAccount) -> Result<AccountId> {
+        check_text(&new.local, MAX_LOCAL_PART_BYTES)?;
+        if let Some(hash) = &new.password_hash {
+            check_no_nul(hash)?;
+        }
         let ids: Vec<i64> = SYSTEM_FOLDER_TABLE.iter().map(|f| f.0).collect();
         let names: Vec<&str> = SYSTEM_FOLDER_TABLE.iter().map(|f| f.1).collect();
         let roles: Vec<&str> = SYSTEM_FOLDER_TABLE.iter().map(|f| f.2).collect();
@@ -111,6 +119,7 @@ impl DirectoryRepo for PgRepo {
     }
 
     async fn set_password_hash(&self, account: AccountId, hash: &str) -> Result<()> {
+        check_no_nul(hash)?;
         tx_retry!(self, None, |c| {
             if !lock_account(&mut *c, account).await? {
                 return Err(TxError::Domain(Error::NotFound("account".into())));
@@ -155,6 +164,7 @@ impl DirectoryRepo for PgRepo {
     }
 
     async fn add_alias(&self, local: &str, domain: DomainId, account: AccountId) -> Result<()> {
+        check_text(local, MAX_LOCAL_PART_BYTES)?;
         sqlx::query(&r(sql::INSERT_ALIAS))
             .bind(local)
             .bind(domain.0)
@@ -166,6 +176,7 @@ impl DirectoryRepo for PgRepo {
     }
 
     async fn create_list(&self, local: &str, domain: DomainId) -> Result<ListId> {
+        check_text(local, MAX_LOCAL_PART_BYTES)?;
         let id: i64 = sqlx::query_scalar(&r(sql::INSERT_LIST))
             .bind(local)
             .bind(domain.0)
@@ -182,6 +193,9 @@ impl DirectoryRepo for PgRepo {
         external: Option<&str>,
         max_members: usize,
     ) -> Result<()> {
+        if let Some(external) = external {
+            check_text(external, MAX_EXTERNAL_MEMBER_BYTES)?;
+        }
         tx_retry!(self, None, |c| {
             // Lock the list row first: the count and the per-list `seq` (assigned by the
             // list_members trigger under the same lock) must not interleave. A missing list
@@ -211,6 +225,8 @@ impl DirectoryRepo for PgRepo {
         domain: &str,
         max_members: usize,
     ) -> Result<Option<Resolution>> {
+        check_text(local, MAX_LOCAL_PART_BYTES)?;
+        check_text(domain, MAX_DOMAIN_BYTES)?;
         let pool = self.store.pool();
         let Some((kind, id)): Option<(i64, i64)> = sqlx::query_as(&r(sql::RESOLVE_KIND))
             .bind(domain)
@@ -234,6 +250,7 @@ impl DirectoryRepo for PgRepo {
     }
 
     async fn set_config(&self, target: ConfigTarget, config: &str) -> Result<()> {
+        check_no_nul(config)?;
         let pool = self.store.pool();
         let (stmt, id, what) = match target {
             ConfigTarget::Domain(d) => (sql::SET_DOMAIN_CONFIG, d.0, "domain"),

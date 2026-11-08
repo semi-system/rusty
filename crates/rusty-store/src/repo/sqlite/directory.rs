@@ -7,7 +7,10 @@ use sqlx::SqliteConnection;
 
 use super::SqliteRepo;
 use crate::map_db_error;
-use crate::repo::directory::{capability_expiry, check_list_capacity, list_resolution, sql};
+use crate::repo::directory::{
+    capability_expiry, check_list_capacity, check_no_nul, check_text, list_resolution, sql,
+    MAX_DOMAIN_BYTES, MAX_EXTERNAL_MEMBER_BYTES, MAX_LOCAL_PART_BYTES, MAX_PLAN_NAME_BYTES,
+};
 use crate::repo::{
     render_sqlite as r, AccountStatus, AuthRow, CapabilityGrant, ConfigLayers, ConfigTarget,
     DirectoryRepo, NewAccount, Resolution, GLOBAL_PLAN, SYSTEM_FOLDERS, SYSTEM_FOLDER_TABLE,
@@ -33,6 +36,7 @@ async fn revoke_all_in(
 #[async_trait]
 impl DirectoryRepo for SqliteRepo {
     async fn create_domain(&self, name: &str) -> Result<DomainId> {
+        check_text(name, MAX_DOMAIN_BYTES)?;
         let id: i64 = sqlx::query_scalar(&r(sql::INSERT_DOMAIN))
             .bind(name)
             .fetch_one(self.store.pool())
@@ -42,6 +46,8 @@ impl DirectoryRepo for SqliteRepo {
     }
 
     async fn create_plan(&self, name: &str, config: &str) -> Result<PlanId> {
+        check_text(name, MAX_PLAN_NAME_BYTES)?;
+        check_no_nul(config)?;
         let id: i64 = sqlx::query_scalar(&r(sql::INSERT_PLAN))
             .bind(name)
             .bind(config)
@@ -52,6 +58,10 @@ impl DirectoryRepo for SqliteRepo {
     }
 
     async fn create_account(&self, new: &NewAccount) -> Result<AccountId> {
+        check_text(&new.local, MAX_LOCAL_PART_BYTES)?;
+        if let Some(hash) = &new.password_hash {
+            check_no_nul(hash)?;
+        }
         let mut tx = self.store.begin_write().await?;
         let acc: i64 = sqlx::query_scalar(&r(sql::INSERT_ACCOUNT))
             .bind(&new.local)
@@ -102,6 +112,7 @@ impl DirectoryRepo for SqliteRepo {
     }
 
     async fn set_password_hash(&self, account: AccountId, hash: &str) -> Result<()> {
+        check_no_nul(hash)?;
         // One transaction: a new password and the revocation of every capability issued under
         // the old one become visible together.
         let mut tx = self.store.begin_write().await?;
@@ -151,6 +162,7 @@ impl DirectoryRepo for SqliteRepo {
     }
 
     async fn add_alias(&self, local: &str, domain: DomainId, account: AccountId) -> Result<()> {
+        check_text(local, MAX_LOCAL_PART_BYTES)?;
         sqlx::query(&r(sql::INSERT_ALIAS))
             .bind(local)
             .bind(domain.0)
@@ -162,6 +174,7 @@ impl DirectoryRepo for SqliteRepo {
     }
 
     async fn create_list(&self, local: &str, domain: DomainId) -> Result<ListId> {
+        check_text(local, MAX_LOCAL_PART_BYTES)?;
         let id: i64 = sqlx::query_scalar(&r(sql::INSERT_LIST))
             .bind(local)
             .bind(domain.0)
@@ -178,6 +191,9 @@ impl DirectoryRepo for SqliteRepo {
         external: Option<&str>,
         max_members: usize,
     ) -> Result<()> {
+        if let Some(external) = external {
+            check_text(external, MAX_EXTERNAL_MEMBER_BYTES)?;
+        }
         // The count and the insert share one write transaction, so concurrent adds cannot
         // both take the last slot or the same `seq`.
         let mut tx = self.store.begin_write().await?;
@@ -206,6 +222,8 @@ impl DirectoryRepo for SqliteRepo {
         domain: &str,
         max_members: usize,
     ) -> Result<Option<Resolution>> {
+        check_text(local, MAX_LOCAL_PART_BYTES)?;
+        check_text(domain, MAX_DOMAIN_BYTES)?;
         let pool = self.store.pool();
         let Some((kind, id)): Option<(i64, i64)> = sqlx::query_as(&r(sql::RESOLVE_KIND))
             .bind(domain)
@@ -229,6 +247,7 @@ impl DirectoryRepo for SqliteRepo {
     }
 
     async fn set_config(&self, target: ConfigTarget, config: &str) -> Result<()> {
+        check_no_nul(config)?;
         let pool = self.store.pool();
         let (stmt, id, what) = match target {
             ConfigTarget::Domain(d) => (sql::SET_DOMAIN_CONFIG, d.0, "domain"),

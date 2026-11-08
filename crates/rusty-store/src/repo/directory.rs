@@ -293,3 +293,30 @@ pub(crate) fn capability_expiry(now: i64, ttl_secs: i64) -> Result<i64> {
     now.checked_add(ttl_secs)
         .ok_or_else(|| Error::Invalid("capability time out of range".into()))
 }
+
+// ---------------------------------------------------------------- input validation
+
+/// Longest domain name in octets (RFC 1035 §2.3.4).
+pub const MAX_DOMAIN_BYTES: usize = 253;
+/// Longest local part in octets (RFC 5321 §4.5.3.1.1; the same limit as `rusty-directory`).
+pub const MAX_LOCAL_PART_BYTES: usize = 64;
+/// Longest external list member address: local part, `@` and a 255-octet domain.
+pub const MAX_EXTERNAL_MEMBER_BYTES: usize = 64 + 1 + 255;
+/// Longest plan name.
+pub const MAX_PLAN_NAME_BYTES: usize = 255;
+
+/// Refuse a text value that Postgres cannot store (a NUL byte, SQLSTATE 22021) or cannot index
+/// (a btree row over about 2.7 kB, SQLSTATE 54000) before any statement runs, so both backends
+/// answer identically (`Invalid`) instead of SQLite storing what Postgres refuses with `Storage`.
+/// The message is fixed and never echoes the value.
+pub(crate) fn check_text(value: &str, max_bytes: usize) -> Result<()> {
+    if value.len() > max_bytes || value.contains('\0') {
+        return Err(Error::Invalid("invalid value".into()));
+    }
+    Ok(())
+}
+
+/// A NUL byte is the only thing refused in unindexed free text (hashes, JSON text).
+pub(crate) fn check_no_nul(value: &str) -> Result<()> {
+    check_text(value, usize::MAX)
+}
