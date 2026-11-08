@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod config;
+mod config_sections;
 mod error;
 mod ids;
 pub mod proto;
