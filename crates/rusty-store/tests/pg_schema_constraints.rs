@@ -480,3 +480,140 @@ async fn truncating_an_owner_table_clears_that_kinds_registry_rows() {
     store.close().await;
     db.cleanup().await;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Drift: the table's own constraints when the registry triggers do not run.
+//
+// The address registry triggers are the first line of defence, but they are not always on:
+// `pg_restore --disable-triggers`, `session_replication_role = replica`, logical-replication
+// apply and an operator's `ALTER TABLE .. DISABLE TRIGGER` all bypass them. Then the unique keys
+// and foreign keys of the owner tables are the ONLY barrier, so each is pinned here by name
+// (review PG6 findings 1 and 2). Each helper reproduces the bypass with DISABLE TRIGGER.
+
+/// SQLSTATE and constraint name of a rejected statement.
+fn code_and_constraint(e: &sqlx::Error) -> (Option<String>, Option<String>) {
+    let d = e.as_database_error().expect("a database error");
+    (d.code().map(|c| c.to_string()), d.constraint().map(str::to_owned))
+}
+
+async fn without_trigger(pool: &PgPool, table: &str, trigger: &str) {
+    sqlx::query(&format!("ALTER TABLE {table} DISABLE TRIGGER {trigger}"))
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn owner_table_unique_keys_hold_when_the_registry_triggers_are_off() {
+    let Some((db, store)) = database().await else {
+        return;
+    };
+    let p = store.pool();
+    let s = seed(p).await;
+    sqlx::query("INSERT INTO aliases(local_part,domain_id,account_id) VALUES ('taken',$1,$2)")
+        .bind(s.domain)
+        .bind(s.account_a)
+        .execute(p)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO lists(local_part,domain_id) VALUES ('taken-list',$1)")
+        .bind(s.domain)
+        .execute(p)
+        .await
+        .unwrap();
+    without_trigger(p, "accounts", "accounts_addr_unique_ins").await;
+    without_trigger(p, "aliases", "aliases_addr_unique_ins").await;
+    without_trigger(p, "lists", "lists_addr_unique_ins").await;
+
+    let dup_account = bad(
+        p,
+        &format!("INSERT INTO accounts(local_part,domain_id,status,created_at) VALUES ('a',{},'active',0)", s.domain),
+    )
+    .await;
+    assert_eq!(
+        code_and_constraint(&dup_account),
+        (Some("23505".into()), Some("accounts_local_part_domain_id_key".into()))
+    );
+    let dup_alias = bad(
+        p,
+        &format!("INSERT INTO aliases(local_part,domain_id,account_id) VALUES ('taken',{},{})", s.domain, s.account_a),
+    )
+    .await;
+    assert_eq!(
+        code_and_constraint(&dup_alias),
+        (Some("23505".into()), Some("aliases_local_part_domain_id_key".into()))
+    );
+    let dup_list = bad(
+        p,
+        &format!("INSERT INTO lists(local_part,domain_id) VALUES ('taken-list',{})", s.domain),
+    )
+    .await;
+    assert_eq!(
+        code_and_constraint(&dup_list),
+        (Some("23505".into()), Some("lists_local_part_domain_id_key".into()))
+    );
+    store.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn alias_and_list_domain_foreign_keys_hold_when_the_registry_triggers_are_off() {
+    let Some((db, store)) = database().await else {
+        return;
+    };
+    let p = store.pool();
+    let s = seed(p).await;
+    without_trigger(p, "aliases", "aliases_addr_unique_ins").await;
+    without_trigger(p, "lists", "lists_addr_unique_ins").await;
+    let no_domain = s.domain + 1000;
+    let alias = bad(
+        p,
+        &format!("INSERT INTO aliases(local_part,domain_id,account_id) VALUES ('x',{no_domain},{})", s.account_a),
+    )
+    .await;
+    assert_eq!(
+        code_and_constraint(&alias),
+        (Some("23503".into()), Some("aliases_domain_id_fkey".into()))
+    );
+    let list = bad(p, &format!("INSERT INTO lists(local_part,domain_id) VALUES ('x',{no_domain})")).await;
+    assert_eq!(
+        code_and_constraint(&list),
+        (Some("23503".into()), Some("lists_domain_id_fkey".into()))
+    );
+    store.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn registry_table_constraints_hold_when_its_guard_trigger_is_off() {
+    let Some((db, store)) = database().await else {
+        return;
+    };
+    let p = store.pool();
+    let s = seed(p).await;
+    without_trigger(p, "address_owners", "address_owners_guard").await;
+    let kind = bad(
+        p,
+        &format!("INSERT INTO address_owners(domain_id,local_part,owner_kind,owner_id) VALUES ({},'k','bogus',1)", s.domain),
+    )
+    .await;
+    assert_eq!(
+        code_and_constraint(&kind),
+        (Some("23514".into()), Some("address_owners_owner_kind_check".into()))
+    );
+    // account 'a' already owns (account, id): a second registry row for the same owner.
+    let owner = bad(
+        p,
+        &format!(
+            "INSERT INTO address_owners(domain_id,local_part,owner_kind,owner_id) VALUES ({},'again','account',{})",
+            s.domain, s.account_a
+        ),
+    )
+    .await;
+    assert_eq!(
+        code_and_constraint(&owner),
+        (Some("23505".into()), Some("address_owners_owner_kind_owner_id_key".into()))
+    );
+    store.close().await;
+    db.cleanup().await;
+}
