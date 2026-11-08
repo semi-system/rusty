@@ -48,6 +48,7 @@ COLUMN folders.name text nullable=NO identity=NO/ collation=C default=
 COLUMN folders.role text nullable=NO identity=NO/ collation= default='custom'::text
 COLUMN folders.uid_validity bigint nullable=NO identity=NO/ collation= default=
 COLUMN folders.next_uid bigint nullable=NO identity=NO/ collation= default=1
+COLUMN folders.subscribed bigint nullable=NO identity=NO/ collation= default=1
 COLUMN jobs.id bigint nullable=NO identity=YES/ALWAYS collation= default=
 COLUMN jobs.kind text nullable=NO identity=NO/ collation=C default=
 COLUMN jobs.domain_id bigint nullable=YES identity=NO/ collation= default=
@@ -185,6 +186,8 @@ CONSTRAINT folders.folders_parent_not_self CHECK (parent_id IS NULL OR parent_id
 CONSTRAINT folders.folders_pkey PRIMARY KEY (mailbox_id, id)
 CONSTRAINT folders.folders_role_not_null NOT NULL role
 CONSTRAINT folders.folders_role_valid CHECK (role = ANY (ARRAY['inbox'::text, 'sent'::text, 'drafts'::text, 'trash'::text, 'spam'::text, 'archive'::text, 'custom'::text]))
+CONSTRAINT folders.folders_subscribed_not_null NOT NULL subscribed
+CONSTRAINT folders.folders_subscribed_valid CHECK (subscribed = ANY (ARRAY[0::bigint, 1::bigint]))
 CONSTRAINT folders.folders_uid_validity_not_null NOT NULL uid_validity
 CONSTRAINT folders.folders_uid_validity_valid CHECK (uid_validity > 0)
 CONSTRAINT jobs.jobs_attempts_not_null NOT NULL attempts

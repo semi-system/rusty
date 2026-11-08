@@ -39,7 +39,7 @@ use rusty_mime::Envelope;
 use crate::gc::PURGE_BATCH;
 use crate::repo::sqlite::SqliteRepo;
 use crate::repo::{
-    DeliverEntry, Delivery, FolderInfo, JobFence, MailboxRepo, MessageDetail, NewMessage, RawRef,
+    DeliverEntry, Delivery, FolderCounts, FolderInfo, JobFence, MailboxRepo, MessageDetail, NewMessage, RawRef,
 };
 use crate::{BlobStore, SqliteStore};
 
@@ -118,6 +118,15 @@ pub struct MoveBatch {
     /// `(id, new ref)` in input order. A message already in the destination is listed with
     /// its current ref and is not changed.
     pub moved: Vec<(MessageId, MessageRef)>,
+    pub missing: Vec<MessageId>,
+}
+
+/// Result of [`Mailbox::copy_many`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopyBatch {
+    /// `(source id, ref of the new copy)` in input order.
+    pub copied: Vec<(MessageId, MessageRef)>,
+    /// Ids that are not live messages of this mailbox, in input order (at most [`MAX_BATCH`]).
     pub missing: Vec<MessageId>,
 }
 
@@ -374,6 +383,19 @@ impl Mailbox {
         Ok(())
     }
 
+    /// Live and unseen message counts of `folder` (IMAP STATUS); `NotFound` for a folder of
+    /// another mailbox.
+    pub async fn folder_counts(&self, folder: FolderId) -> Result<FolderCounts> {
+        self.repo.folder_counts(self.id, folder).await
+    }
+
+    /// Set the IMAP subscription state of a folder (idempotent). System folders may be
+    /// unsubscribed too: it is the client's list, not a property of the folder.
+    pub async fn set_subscribed(&self, folder: FolderId, subscribed: bool) -> Result<()> {
+        self.repo.set_subscribed(self.id, folder, subscribed).await?;
+        Ok(())
+    }
+
     /// All folders of the mailbox in id order.
     pub async fn list_folders(&self) -> Result<Vec<FolderInfo>> {
         self.repo.list_folders(self.id).await
@@ -611,6 +633,16 @@ impl Mailbox {
         Ok(self.repo.expunge_many(self.id, &ids, Some(now)).await?.value)
     }
 
+    /// Copy live messages into `to` (IMAP COPY): each copy is a NEW message with a fresh id and
+    /// consecutive uids in input order, sharing the blob and carrying flags, keywords, internal
+    /// date and thread of its source. Duplicate ids copy once; ids that are not live messages of
+    /// this mailbox are `missing`; an unknown destination is `NotFound` even if every id is
+    /// missing. One transaction, all or nothing.
+    pub async fn copy_many(&self, ids: &[MessageId], to: FolderId) -> Result<CopyBatch> {
+        let ids = batch_ids(ids)?;
+        Ok(self.repo.copy_many(self.id, &ids, to).await?.value)
+    }
+
     /// [`Mailbox::move_message`] for many messages: the moved ones get contiguous fresh uids
     /// in `to`, in input order. A message already in `to` keeps its uid and logs nothing. An
     /// unknown destination folder is `NotFound` even if every id is missing.
@@ -742,6 +774,35 @@ impl Mailbox {
     /// Where the raw bytes of a live message are (blob hash and size).
     pub async fn get_raw_ref(&self, id: MessageId) -> Result<RawRef> {
         self.repo.get_raw_ref(self.id, id).await
+    }
+
+    /// The raw bytes of a live message (`NotFound` for an id of another mailbox or a deleted
+    /// message). The size is the stored size; the blob is read in one piece, so callers bound
+    /// what they ask for by the mailbox size limit.
+    pub async fn get_raw(&self, id: MessageId) -> Result<Bytes> {
+        let r = self.repo.get_raw_ref(self.id, id).await?;
+        self.blobs.get(&r.blob).await
+    }
+
+    /// Keywords of the live messages among `ids` in one call (`1..=MAX_BATCH` ids, else `Invalid`);
+    /// messages without keywords are absent from the map.
+    pub async fn keywords_many(
+        &self,
+        ids: &[MessageId],
+    ) -> Result<std::collections::HashMap<MessageId, Vec<String>>> {
+        let ids = batch_ids(ids)?;
+        let mut out: std::collections::HashMap<MessageId, Vec<String>> = std::collections::HashMap::new();
+        for (id, kw) in self.repo.keywords_many(self.id, &ids).await? {
+            out.entry(MessageId(id)).or_default().push(kw);
+        }
+        Ok(out)
+    }
+
+    /// The change seq of the last change of this mailbox (`0` before the first). A reader that
+    /// takes this number BEFORE it reads a snapshot can then follow `changes_since(seq)` without
+    /// missing anything.
+    pub async fn latest_change_seq(&self) -> Result<i64> {
+        self.repo.latest_change_seq(self.id).await
     }
 
     /// The keywords of a live message, sorted.
