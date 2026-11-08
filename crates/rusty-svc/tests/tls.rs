@@ -277,3 +277,21 @@ fn pem_loader_rejects_what_it_cannot_use() {
     write!(w, "{cert}").unwrap();
     assert!(certified_key(&w, b"garbage").is_err());
 }
+
+// backend-neutral: no database involved, TLS only
+#[tokio::test]
+async fn an_unavailable_provider_says_so_and_never_completes_a_handshake() {
+    let p = TlsProvider::unavailable().unwrap();
+    assert!(!p.is_available());
+    let addr = echo_server(p).await;
+    let (cert, _) = make_pems(&["mail.example.test"]);
+    let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let r = tokio_rustls::TlsConnector::from(client_config(&cert))
+        .connect(rustls::pki_types::ServerName::try_from("mail.example.test".to_string()).unwrap(), tcp)
+        .await;
+    assert!(r.is_err(), "no certificate, no handshake");
+    // a configured provider is available
+    let (cert, key) = make_pems(&["mail.example.test"]);
+    let ck = certified_key(cert.as_bytes(), key.as_bytes()).unwrap();
+    assert!(TlsProvider::from_resolver(Arc::new(rusty_svc::StaticCertResolver::new(ck))).unwrap().is_available());
+}

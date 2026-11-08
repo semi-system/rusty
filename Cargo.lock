@@ -1368,7 +1368,9 @@ name = "rusty"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "rcgen",
  "rustix",
+ "rustls",
  "rusty-core",
  "rusty-directory",
  "rusty-store",

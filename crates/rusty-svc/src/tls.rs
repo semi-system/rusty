@@ -158,6 +158,17 @@ impl CertResolver for FileCertResolver {
     }
 }
 
+/// No certificate at all: every handshake fails. Used when only listeners that never accept
+/// authentication run (port 25 then simply does not offer STARTTLS).
+#[derive(Debug)]
+struct NoCertResolver;
+
+impl CertResolver for NoCertResolver {
+    fn resolve(&self, _sni: Option<&str>) -> Option<Arc<CertifiedKey>> {
+        None
+    }
+}
+
 struct Adapter(Arc<dyn CertResolver>);
 
 impl fmt::Debug for Adapter {
@@ -179,6 +190,7 @@ impl ResolvesServerCert for Adapter {
 pub struct TlsProvider {
     resolver: Arc<dyn CertResolver>,
     config: Arc<ServerConfig>,
+    available: bool,
 }
 
 impl fmt::Debug for TlsProvider {
@@ -195,7 +207,7 @@ impl TlsProvider {
             .map_err(|e| Error::storage_with("TLS protocol versions are not available", e))?
             .with_no_client_auth()
             .with_cert_resolver(Arc::new(Adapter(resolver.clone())));
-        Ok(TlsProvider { resolver, config: Arc::new(config) })
+        Ok(TlsProvider { resolver, config: Arc::new(config), available: true })
     }
 
     /// From `[tls]`: the configured pair, or the explicit dev certificate; anything else is an
@@ -238,6 +250,19 @@ impl TlsProvider {
     #[cfg(not(feature = "dev-cert"))]
     fn dev_self_signed(_hostname: &str) -> Result<TlsProvider> {
         Err(bad("dev_self_signed needs a build with the dev-cert feature"))
+    }
+
+    /// A provider without any certificate: [`is_available`](Self::is_available) is false and no
+    /// handshake completes. Only for a start-up that runs no listener accepting authentication.
+    pub fn unavailable() -> Result<TlsProvider> {
+        let mut p = Self::from_resolver(Arc::new(NoCertResolver))?;
+        p.available = false;
+        Ok(p)
+    }
+
+    /// Sessions advertise STARTTLS only when this is true.
+    pub fn is_available(&self) -> bool {
+        self.available
     }
 
     pub fn acceptor(&self) -> TlsAcceptor {
