@@ -380,3 +380,38 @@ async fn every_write_method_takes_the_mailbox_row_first_on_sqlite() {
         common::shapes::assert_lock_first("sqlite", s);
     }
 }
+
+// ---------- GC orphan sweep ----------
+
+/// The orphan phase lists the `blobs` rows of a shard once and only re-checks files that the
+/// listing does not name. With every old file referenced by a row there are NO per-file row
+/// checks; an empty listing (mutation R08) would turn them into one statement per file, and the
+/// answer would be identical, so only the statement count can tell (review PG6, R08).
+#[tokio::test]
+async fn gc_orphan_sweep_reads_the_shard_listing_instead_of_checking_every_file() {
+    for_each_env(|e| async move {
+        let p = stmts::probe(); // first: serializes this test, setup included
+        let n = e.b.name;
+        for i in 0..6 {
+            e.mb.append(INBOX, raw(&format!("gc-shape-{i}"), None), Flags::default())
+                .await
+                .unwrap();
+        }
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(10 * 86_400);
+        p.reset();
+        let rep = e
+            .b
+            .gc()
+            .collect_blobs_at(e.blobs.as_ref(), std::time::Duration::from_secs(3600), future)
+            .await
+            .unwrap();
+        assert_eq!((rep.rows_deleted, rep.files_deleted), (0, 0), "{n}: {rep:?}");
+        let texts = p.statements();
+        let rechecks = texts
+            .iter()
+            .filter(|s| s.contains("SELECT EXISTS (SELECT 1 FROM blobs WHERE hash"))
+            .count();
+        assert_eq!(rechecks, 0, "{n}: per-file row checks although every row is listed: {texts:#?}");
+    })
+    .await;
+}
