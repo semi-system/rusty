@@ -21,4 +21,9 @@ mk; printf '[features]\nm = ["rusty-store/mutation-testing"]\n' >> "$tmp/t/crate
 mk; echo 'use rusty_store::mutation::TABLE;' > "$tmp/t/crates/app/src/a.rs"; expect "hook API in another crate" 1
 mk; echo 'RUN cargo build --features rusty-store/mutation-testing' > "$tmp/t/deploy/Dockerfile"; expect "Dockerfile" 1
 mk; echo 'pub fn mutation_style() {}' > "$tmp/t/crates/app/src/a.rs"; expect "unrelated text" 0
+# binary mode: the marker anywhere in an executable fails the gate (a linked binary carries it as plain data).
+printf 'ELF....\0\0%s\0\0tail' "rusty-sql-mutation-hook-marker" > "$tmp/with"; printf 'ELF....\0\0nothing\0\0' > "$tmp/without"
+bin_expect() { bash "$GATE" binary "$1" >/dev/null 2>&1; local rc=$?
+  if [ "$rc" -ne "$2" ]; then echo "mutation-hook-gate: binary '$1': expected rc $2, got $rc" >&2; exit 1; fi; }
+bin_expect "$tmp/with" 1; bin_expect "$tmp/without" 0
 echo "mutation-hook-gate: OK"

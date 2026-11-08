@@ -19,6 +19,12 @@ use rusty_core::Error;
 /// Marker string that exists only in builds with this feature (checked by the release gate).
 pub const FIXTURES_MARKER: &str = "rusty-test-fixtures-marker";
 
+/// Keeps the marker string in the object code of every binary that builds a `Fixtures` (a const
+/// used only by tests never lands in a binary: `scripts/check-test-fixtures.sh` greps one).
+fn keep_marker() {
+    std::hint::black_box(FIXTURES_MARKER);
+}
+
 /// One statement argument.
 #[derive(Debug, Clone, Copy)]
 pub enum Arg<'a> {
@@ -123,6 +129,7 @@ macro_rules! on_backend {
 
 impl Fixtures {
     pub fn of(store: &Store) -> Fixtures {
+        keep_marker();
         Fixtures {
             sqlite: store.sqlite().cloned(),
             #[cfg(feature = "postgres")]
@@ -131,6 +138,7 @@ impl Fixtures {
     }
 
     pub fn from_sqlite(store: SqliteStore) -> Fixtures {
+        keep_marker();
         Fixtures {
             sqlite: Some(store),
             #[cfg(feature = "postgres")]
@@ -140,6 +148,7 @@ impl Fixtures {
 
     #[cfg(feature = "postgres")]
     pub fn from_postgres(store: crate::PgStore) -> Fixtures {
+        keep_marker();
         Fixtures {
             sqlite: None,
             pg: Some(store),

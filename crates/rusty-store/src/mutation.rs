@@ -94,6 +94,9 @@ struct Active {
 fn active() -> &'static Active {
     static ACTIVE: OnceLock<Active> = OnceLock::new();
     ACTIVE.get_or_init(|| {
+        // Keeps the marker string in the object code of every binary that reaches the hook (a
+        // const used only by tests never lands in a binary; scripts/check-mutation-hook.sh).
+        std::hint::black_box(HOOK_MARKER);
         let id = std::env::var("RUSTY_SQL_MUTATION").unwrap_or_default();
         let mutation = TABLE.iter().find(|m| !id.is_empty() && m.id == id);
         // Schema mutations: "<dialect>|<sql>" entries separated by a line with only ";;".

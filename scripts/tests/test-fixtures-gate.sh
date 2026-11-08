@@ -29,4 +29,9 @@ mk; echo 'use rusty_store::fixtures::Fixtures;' > "$tmp/t/tools/x/m.rs"; expect 
 mk; echo 'RUN cargo build --features rusty-store/test-fixtures' > "$tmp/t/deploy/Dockerfile"; expect "Dockerfile under deploy" 1
 mk; mkdir -p "$tmp/t/.github/workflows"; echo '      - run: cargo build --features test-fixtures' > "$tmp/t/.github/workflows/ci.yml"; expect "GitHub workflow" 1
 mk; echo 'pub fn fixture_style() {}' > "$tmp/t/crates/app/src/a.rs"; expect "unrelated text is not a hit" 0
+# binary mode: the marker anywhere in an executable fails the gate (a linked binary carries it as plain data).
+printf 'ELF....\0\0%s\0\0tail' "rusty-test-fixtures-marker" > "$tmp/with"; printf 'ELF....\0\0nothing\0\0' > "$tmp/without"
+bin_expect() { bash "$GATE" binary "$1" >/dev/null 2>&1; local rc=$?
+  if [ "$rc" -ne "$2" ]; then echo "test-fixtures-gate: binary '$1': expected rc $2, got $rc" >&2; exit 1; fi; }
+bin_expect "$tmp/with" 1; bin_expect "$tmp/without" 0
 echo "test-fixtures-gate: OK"
