@@ -353,3 +353,18 @@ impl Client {
         c
     }
 }
+
+pub mod fake_mta;
+
+/// A `Context` over the backend (no listener), with a blob store in the backend's temp dir.
+pub async fn make_context(b: &Backend) -> (Context, Arc<dyn BlobStore>) {
+    let blobs_root = b.tmp.path().join("blobs");
+    if !blobs_root.exists() {
+        FsBlobStore::init(&blobs_root).await.unwrap();
+    }
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::open(&blobs_root).await.unwrap());
+    let mut cfg = StartupConfig::dev(b.tmp.path());
+    cfg.hostname = Some(HOST.into());
+    let ctx = Context::new(b.store.repos(), blobs.clone(), Arc::new(cfg), TlsProvider::unavailable().unwrap()).await.unwrap();
+    (ctx, blobs)
+}

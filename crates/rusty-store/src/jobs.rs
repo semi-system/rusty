@@ -575,6 +575,11 @@ impl JobQueue {
         self.repo.reschedule(id, epoch, &text, &error, retry, now).await
     }
 
+    /// The database clock in unix seconds: the time every lease and schedule decision uses.
+    pub async fn now(&self) -> Result<i64> {
+        self.repo.db_now().await
+    }
+
     /// Check, in its own transaction, that the job is `running` with this `epoch` and an
     /// unexpired lease; otherwise `Conflict("stale job epoch")`. A check is not a fence: it
     /// holds nothing after it returns. A step with a database effect passes the [`JobFence`] to

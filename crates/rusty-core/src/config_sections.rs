@@ -312,6 +312,9 @@ impl OutboundConfig {
             if r.port == 0 {
                 return Err(bad("outbound.relay.port must be set"));
             }
+            if r.tls == RelayTls::None && r.username.is_some() {
+                return Err(bad("outbound.relay credentials need TLS (tls = starttls or implicit)"));
+            }
             match (&r.username, &r.password_file) {
                 (None, None) => {}
                 (Some(u), Some(p)) => {

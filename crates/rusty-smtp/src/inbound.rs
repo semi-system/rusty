@@ -124,7 +124,7 @@ pub struct InboundHandler {
     options: InboundOptions,
 }
 
-fn system_folder(role: &str) -> FolderId {
+pub(crate) fn system_folder(role: &str) -> FolderId {
     let id = SYSTEM_FOLDER_TABLE.iter().find(|(_, _, r)| *r == role).map_or(1, |(id, _, _)| *id);
     FolderId(id)
 }

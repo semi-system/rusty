@@ -23,6 +23,7 @@ pub mod fuzzing;
 pub mod inbound;
 pub mod limits;
 pub mod message;
+pub mod outbound;
 pub mod outbound_queue;
 pub mod reply;
 pub mod resolve;
