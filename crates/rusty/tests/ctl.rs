@@ -120,7 +120,7 @@ fn failures_exit_one_and_leave_nothing_behind() {
 fn ctl_and_a_running_daemon_write_the_same_database_concurrently() {
     let tmp = private_tmp();
     let data = tmp.path().join("data");
-    let off = 20_000 + (std::process::id() % 20_000) as u16;
+    let off = 1_000 + (std::process::id() % 15_000) as u16;
     let mut daemon = Command::new(BIN)
         .args(["d", "--dev", "--data-dir", data.to_str().unwrap(), "--port-offset", &off.to_string()])
         .stdout(Stdio::null())

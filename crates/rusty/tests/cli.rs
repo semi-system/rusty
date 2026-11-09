@@ -85,8 +85,9 @@ fn wait_for_port(port: u16, child: &mut Child) {
 }
 
 fn offset() -> u16 {
-    // spread concurrent test processes over the port space
-    20_000 + (std::process::id() % 20_000) as u16
+    // spread concurrent test processes over the port space, below the ephemeral range (32768+) so that
+    // client sockets of other tests cannot hold one of our listener ports
+    1_000 + (std::process::id() % 15_000) as u16
 }
 
 fn signal(child: &Child, sig: &str) {
