@@ -637,3 +637,37 @@ async fn the_memory_budget_refuses_data_and_deliveries_it_cannot_cover() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn postmaster_is_always_deliverable_where_there_is_somebody_to_give_it_to() {
+    for_each_backend(|b| async move {
+        let (alice, bob) = b.seed().await; // seed: postmaster@ alias -> alice; host name mx.example.net
+        let s = start(&b, Opts::default()).await;
+        let mut c = Client::hello(s.addr).await;
+        // RFC 5321 4.5.1: the bare form, resolved against the own domain of the server (mx.example.net -> example.net)
+        let r = c.mail("s@remote.example", &["postmaster"], MSG).await;
+        assert!(r.starts_with("250"), "{r}");
+        assert_eq!(b.inbox(alice, &s.blobs).await.len(), 1);
+        // a domain without the alias: the oldest active account receives it
+        b.dir.remove_alias("postmaster@example.net").await.unwrap();
+        let r = c.mail("s@remote.example", &["postmaster@example.net"], b"Subject: two\r\n\r\nx").await;
+        assert!(r.starts_with("250"), "{r}");
+        assert_eq!(b.inbox(alice, &s.blobs).await.len(), 2);
+        // the oldest is disabled: the next active one
+        b.dir.set_status(alice, AccountStatus::Disabled).await.unwrap();
+        let r = c.mail("s@remote.example", &["POSTMASTER@example.net"], b"Subject: three\r\n\r\nx").await;
+        assert!(r.starts_with("250"), "{r}");
+        assert_eq!(b.inbox(bob, &s.blobs).await.len(), 1);
+        // nobody active at all: there is nobody to deliver to
+        b.dir.set_status(bob, AccountStatus::Disabled).await.unwrap();
+        c.cmd("MAIL FROM:<s@remote.example>").await;
+        let r = c.cmd("RCPT TO:<postmaster@example.net>").await;
+        assert!(r.starts_with("550"), "{r}");
+        // a domain with no accounts at all
+        b.dir.create_domain("empty.test").await.unwrap();
+        let r = c.cmd("RCPT TO:<postmaster@empty.test>").await;
+        assert!(r.starts_with("550 5.1.1"), "{r}");
+        s.stop().await;
+    })
+    .await;
+}

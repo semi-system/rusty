@@ -106,8 +106,11 @@ fn mail_and_rcpt_paths() {
         other => panic!("{other:?}"),
     }
     assert_eq!(cmd("RCPT TO:<bob@example.com>").unwrap(), Command::Rcpt { path: "bob@example.com".into() });
-    // a forward path is never empty; a bare `<postmaster>` (no domain) is not supported yet
-    assert_eq!(cmd("rcpt to:<Postmaster>").unwrap_err(), ParseError::BadAddress);
+    // RFC 5321 4.5.1: a bare `<postmaster>` (no domain) must be accepted; the server decides which domain
+    assert_eq!(cmd("rcpt to:<Postmaster>").unwrap(), Command::Rcpt { path: "postmaster".into() });
+    assert_eq!(cmd("RCPT TO: <POSTMASTER>").unwrap(), Command::Rcpt { path: "postmaster".into() });
+    // but a bare name that is not postmaster is not an address
+    assert_eq!(cmd("RCPT TO:<alice>").unwrap_err(), ParseError::BadAddress);
     assert_eq!(cmd("RCPT TO:<>").unwrap_err(), ParseError::BadAddress);
     // the 8-bit local part / domain travels as UTF-8
     assert_eq!(cmd("RCPT TO:<ünal@bücher.example>").unwrap(), Command::Rcpt { path: "ünal@bücher.example".into() });

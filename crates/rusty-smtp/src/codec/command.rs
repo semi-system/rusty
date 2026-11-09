@@ -65,5 +65,13 @@ pub fn parse_command(line: &[u8]) -> Result<Command, ParseError> {
     if text.trim().is_empty() {
         return Err(ParseError::Unknown);
     }
+    // The one forward path without a domain that RFC 5321 requires: `RCPT TO:<postmaster>`. The library
+    // reports it as an empty path, so it is recognised here, in the codec, and the library stays interchangeable.
+    let trimmed = text.trim();
+    if trimmed.get(..8).is_some_and(|p| p.eq_ignore_ascii_case("rcpt to:"))
+        && trimmed.get(8..).is_some_and(|r| r.trim().eq_ignore_ascii_case("<postmaster>"))
+    {
+        return Ok(Command::Rcpt { path: "postmaster".to_owned() });
+    }
     crate::adapter::smtp::parse_request(line)
 }

@@ -176,8 +176,59 @@ impl InboundHandler {
     }
 
     /// Is `address` a recipient this server accepts mail for, and which accounts get it?
+    /// `postmaster` without a domain: the first domain this server hosts that the host name belongs to
+    /// (`mail.example.net` -> `example.net`).
+    async fn bare_postmaster_domain(&self) -> Option<String> {
+        let labels: Vec<&str> = self.hostname.split('.').collect();
+        for i in 0..labels.len().saturating_sub(1) {
+            let candidate = labels.get(i..)?.join(".");
+            if let Ok(Some(d)) = self.directory.find_domain(&candidate).await {
+                if d.status == DomainStatus::Active {
+                    return Some(candidate);
+                }
+            }
+        }
+        None
+    }
+
+    /// RFC 5321 4.5.1: `postmaster` is always deliverable. When the alias is missing or its target is not
+    /// active, the oldest active account of the (active) domain receives it; a domain without any active
+    /// account has nobody to give it to.
+    async fn postmaster_fallback(&self, domain: &str) -> Option<AccountId> {
+        let dom = self.directory.find_domain(domain).await.ok().flatten().filter(|d| d.status == DomainStatus::Active)?;
+        let mut after = None;
+        for _ in 0..5 {
+            let page = self.directory.list_accounts(dom.id, after, 100).await.ok()?;
+            if let Some(a) = page.iter().find(|a| a.status == AccountStatus::Active) {
+                return Some(a.id);
+            }
+            after = Some(page.last()?.id);
+        }
+        None
+    }
+
+    async fn postmaster_target(&self, local: &str, domain: &str) -> Option<AccountId> {
+        if local == "postmaster" {
+            self.postmaster_fallback(domain).await
+        } else {
+            None
+        }
+    }
+
     async fn resolve_rcpt(&self, address: &str) -> RcptVerdict {
         let reject = |code, enh, text: &str| RcptVerdict::Reject(Reply::new(code, enh, text));
+        let bare;
+        let address = if !address.contains('@') && address.eq_ignore_ascii_case("postmaster") {
+            match self.bare_postmaster_domain().await {
+                Some(d) => {
+                    bare = format!("postmaster@{d}");
+                    bare.as_str()
+                }
+                None => return reject(550, "5.1.1", "No such user here"),
+            }
+        } else {
+            address
+        };
         let Ok((local, domain)) = parse_address(address) else {
             return RcptVerdict::Reject(map_error(&Error::Invalid(String::new()), ErrorContext::Rcpt));
         };
@@ -191,7 +242,10 @@ impl InboundHandler {
             Ok(Resolved::External(_)) => Vec::new(),
             Err(Error::NotFound(_)) => {
                 return match self.directory.find_domain(&domain).await {
-                    Ok(Some(d)) if d.status == DomainStatus::Active => reject(550, "5.1.1", "No such user here"),
+                    Ok(Some(d)) if d.status == DomainStatus::Active => match self.postmaster_target(&local, &domain).await {
+                        Some(id) => RcptVerdict::Accept(Recipient { address: normal, accounts: vec![id] }),
+                        None => reject(550, "5.1.1", "No such user here"),
+                    },
                     // An authenticated user may send to the world; port 25 is never an open relay.
                     Ok(_) if self.submission.is_some() => RcptVerdict::AcceptRemote(normal),
                     Ok(_) => reject(554, "5.7.1", "Relay access denied"),
@@ -220,6 +274,10 @@ impl InboundHandler {
         }
         match (active.is_empty(), inactive) {
             (false, _) => RcptVerdict::Accept(Recipient { address: normal, accounts: active }),
+            (true, _) if local == "postmaster" => match self.postmaster_fallback(&domain).await {
+                Some(id) => RcptVerdict::Accept(Recipient { address: normal, accounts: vec![id] }),
+                None => reject(550, "5.2.1", "Mailbox disabled"),
+            },
             (true, 0) => reject(550, "5.1.1", "No such user here"),
             (true, _) => reject(550, "5.2.1", "Mailbox disabled"),
         }

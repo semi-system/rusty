@@ -43,7 +43,7 @@ impl Wire {
             match a {
                 Action::Reply(r) => self.out.extend(r.render()),
                 Action::CheckRcpt { address } => {
-                    let v = match address.split('@').next().unwrap_or("") {
+                    let v = match address.to_ascii_lowercase().split('@').next().unwrap_or("") {
                         "alice" => RcptVerdict::Accept(Recipient { address, accounts: vec![AccountId(1)] }),
                         "nobody" => RcptVerdict::Reject(Reply::new(550, "5.1.1", "No such user here")),
                         _ => RcptVerdict::Reject(Reply::new(554, "5.7.1", "Relay access denied")),
@@ -197,4 +197,57 @@ proptest! {
             prop_assert!(b.len() >= 4 && b[..3].iter().all(u8::is_ascii_digit) && (b[3] == b' ' || b[3] == b'-'), "{:?}", l);
         }
     }
+}
+
+/// Address and parameter edge cases: (command, a MAIL is open first, the status the reply must start with).
+/// These pin behaviour a replacement command parser must keep.
+const EDGE: &[(&str, bool, &str)] = &[
+    ("MAIL FROM:<@relay.example:user@example.org>", false, "250 2.1.0"), // source routes are accepted and ignored
+    ("MAIL FROM:<\"quoted local\"@example.org>", false, "250 2.1.0"),
+    ("MAIL FROM:<a@b.c> trailing", false, "555 5.5.4"),
+    ("MAIL FROM:<a@b.c>junk", false, "555 5.5.4"),
+    ("MAIL FROM: <a@b.c>", false, "250 2.1.0"),
+    ("MAIL FROM :<a@b.c>", false, "250 2.1.0"),
+    ("MAIL FROM:<a@@b.c>", false, "501 5.1.7"),
+    ("MAIL FROM:<a@b.c", false, "501 5.5.4"),
+    ("MAIL FROM:a@b.c", false, "501 5.5.4"),
+    ("MAIL FROM:<a b@c.d>", false, "501 5.1.7"),
+    ("MAIL FROM:<>  SIZE=5", false, "250 2.1.0"),
+    ("MAIL FROM:<a@b.c> SIZE=99999999999999999999", false, "501 5.5.4"),
+    ("MAIL FROM:<a@b.c> SIZE=-1", false, "501 5.5.4"),
+    ("RCPT TO:<@relay.example:alice@example.net>", true, "250 2.1.5"),
+    ("RCPT TO:<ALICE@EXAMPLE.NET>", true, "250 2.1.5"),
+    ("RCPT TO:<alice@example.net> ORCPT=rfc822;x@y.z", true, "555 5.5.4"),
+    ("RCPT TO:<alice@[192.0.2.1]>", true, "501 5.1.7"),
+    ("RCPT TO:<alice@example.net>>", true, "501 5.5.4"),
+    ("RCPT TO:", true, "501 5.5.4"),
+    ("RCPT TO:<>", true, "501 5.1.7"),
+];
+
+// backend-neutral: byte-level session dialogue, no database
+#[test]
+fn address_and_parameter_edge_cases_keep_their_statuses() {
+    for (line, mail_first, expect) in EDGE {
+        let mut w = Wire::new();
+        w.send(b"EHLO c.example\r\n");
+        w.take();
+        if *mail_first {
+            w.send(b"MAIL FROM:<a@b.c>\r\n");
+            w.take();
+        }
+        w.send(format!("{line}\r\n").as_bytes());
+        let out = w.take();
+        assert!(out.starts_with(expect), "{line:?} -> {out:?}, wanted {expect:?}");
+    }
+}
+
+// backend-neutral: byte-level session dialogue, no database
+#[test]
+fn a_bare_postmaster_reaches_the_recipient_check() {
+    let mut w = Wire::new();
+    w.send(b"EHLO c.example\r\nMAIL FROM:<a@b.c>\r\n");
+    w.take();
+    w.send(b"RCPT TO:<Postmaster>\r\n");
+    // the session hands the bare name to the driver, which decides the domain (the sim here refuses unknown names)
+    assert!(w.take().starts_with("554 5.7.1"));
 }
