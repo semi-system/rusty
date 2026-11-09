@@ -14,10 +14,12 @@ use rusty_core::{Error, Result};
 use rusty_store::{BlobStore, FsBlobStore, Store, StoreConfig};
 use rusty_svc::{
     listener_plan, run_services, Accept, BoundListener, Context, DirectTcp, DirectTls, FileSecretSource,
-    GcService, ListenerKind, ListenerService, Service, TlsProvider,
+    GcService, ListenerKind, ListenerService, Service, SessionHandler, TlsProvider,
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+
+use rusty_smtp::inbound::{InboundHandler, InboundOptions};
 
 use crate::banner::BannerSession;
 
@@ -143,7 +145,11 @@ async fn build(
         } else {
             Arc::new(DirectTcp)
         };
-        let handler = Arc::new(BannerSession::new(planned.kind, hostname));
+        let handler: Arc<dyn SessionHandler> = if planned.kind == ListenerKind::Smtp25 {
+            Arc::new(InboundHandler::new(&ctx, InboundOptions::default()))
+        } else {
+            Arc::new(BannerSession::new(planned.kind, hostname))
+        };
         services.push(Box::new(ListenerService::new(bound, accept, handler)));
     }
     services.push(Box::new(GcService::new(GC_EVERY)));

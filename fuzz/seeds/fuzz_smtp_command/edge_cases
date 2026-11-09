@@ -1,0 +1,4 @@
+MAIL FROM:<>
+RCPT TO:<postmaster>
+MAIL FROM:<a@b.c> SMTPUTF8
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx

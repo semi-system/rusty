@@ -16,6 +16,7 @@ rusty-core = { path = "../rusty-core" }
 rusty-store = { path = "../rusty-store" }
 rusty-directory = { path = "../rusty-directory" }
 rusty-ctl = { path = "../rusty-ctl" }
+rusty-smtp = { path = "../rusty-smtp" }
 rusty-svc = { path = "../rusty-svc", default-features = false }
 async-trait.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time", "sync", "signal", "io-util", "macros"] }

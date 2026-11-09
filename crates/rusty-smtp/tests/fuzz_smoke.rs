@@ -14,7 +14,7 @@ const DATA_SEEDS: [&[u8]; 4] = [
     include_bytes!("../../../fuzz/seeds/fuzz_smtp_data/simple"),
     include_bytes!("../../../fuzz/seeds/fuzz_smtp_data/smuggling"),
     include_bytes!("../../../fuzz/seeds/fuzz_smtp_data/empty"),
-    include_bytes!("../../../fuzz/seeds/fuzz_smtp_data/nul"),
+    include_bytes!("../../../fuzz/seeds/fuzz_smtp_data/nul_byte"),
 ];
 const PATH_SEEDS: [&[u8]; 4] = [
     include_bytes!("../../../fuzz/seeds/fuzz_smtp_path/mail_full"),
