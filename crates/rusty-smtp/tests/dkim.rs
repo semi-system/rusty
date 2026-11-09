@@ -162,3 +162,16 @@ fn the_dns_generator_record_matches_the_generated_key() {
     .unwrap();
     assert!(recs.iter().any(|r| r.value == k.txt_value()), "{recs:?}");
 }
+
+#[tokio::test]
+async fn a_message_without_a_trailing_blank_is_still_checked() {
+    let mut dns = StaticDns::default();
+    dns.txt.insert("sender.example".into(), "v=spf1 ip4:127.0.0.1 -all".into());
+    let stack = DnsStack::with_static(dns, "mx.local.test").unwrap();
+    let msg = b"From: x@sender.example\r\nTo: alice@example.net\r\nSubject: spf\r\n\r\nbody\r\n";
+    let r = stack
+        .checker
+        .check(&AuthInput { peer: "127.0.0.1".parse().unwrap(), helo: "client.example.org", mail_from: "x@sender.example", message: msg })
+        .await;
+    assert_eq!(r.spf, "pass", "{r:?}");
+}

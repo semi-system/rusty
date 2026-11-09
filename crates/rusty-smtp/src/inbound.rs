@@ -20,6 +20,7 @@ use rusty_svc::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
+use crate::authres::{AuthInput, InboundAuthChecker};
 use crate::filter::{run_filters, FilterContext, InboundFilter, QuarantineFolder};
 use crate::limits::{MemoryBudget, SubmissionLimiter};
 use crate::message::{
@@ -60,6 +61,8 @@ impl WallClock for SystemWallClock {
 pub struct InboundOptions {
     /// The inbound filter pipeline (empty by default).
     pub filters: Vec<Arc<dyn InboundFilter>>,
+    /// SPF/DKIM/DMARC checks for port 25 (log-only); `None` writes `none` in `Authentication-Results`.
+    pub auth: Option<Arc<dyn InboundAuthChecker>>,
     pub clock: Arc<dyn WallClock>,
     /// Idle limit while waiting for a command.
     pub command_idle: Duration,
@@ -83,6 +86,7 @@ impl Default for InboundOptions {
     fn default() -> InboundOptions {
         InboundOptions {
             filters: Vec::new(),
+            auth: None,
             clock: Arc::new(SystemWallClock),
             command_idle: Duration::from_secs(300),
             data_idle: Duration::from_secs(600),
@@ -332,6 +336,17 @@ impl InboundHandler {
             Some(QuarantineFolder::Spam) => system_folder("spam"),
             None => system_folder("inbox"),
         };
+        // Log-only SPF/DKIM/DMARC: the verdicts go into the header and the log, never into a decision.
+        let auth = match &self.options.auth {
+            Some(checker) => {
+                let r = checker
+                    .check(&AuthInput { peer: t.peer.ip, helo: &t.helo, mail_from: &t.mail_from, message: &t.data })
+                    .await;
+                tracing::info!(peer = %t.peer.ip, spf = %r.spf, dkim = %r.dkim, dmarc = %r.dmarc, "inbound authentication results");
+                Some(r)
+            }
+            None => None,
+        };
         let queue_id = hex12(&BlobHash::of(&t.data));
         let trace = Trace {
             hostname: &self.hostname,
@@ -342,6 +357,7 @@ impl InboundHandler {
             queue_id: &queue_id,
             received_unix: self.options.clock.now_unix(),
             authenticated: false,
+            auth_results: auth.as_ref().map(|a| a.header_value.as_str()),
         };
         let stored = Bytes::from(prepare_message_with(&t.data, &trace, &outcome.tags));
         let mut seen = HashSet::new();
@@ -449,6 +465,7 @@ impl InboundHandler {
             queue_id: &queue_id,
             received_unix: now,
             authenticated: true,
+            auth_results: None,
         };
         let mut extra = Vec::new();
         if !has_header(&t.data, "message-id") {

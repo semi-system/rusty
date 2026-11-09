@@ -86,6 +86,7 @@ pub fn check_headers(data: &[u8]) {
         queue_id: "000000000000",
         received_unix: 0,
         authenticated: false,
+        auth_results: None,
     };
     let out = prepare_message(data, &trace);
     assert!(out.starts_with(b"Return-Path: <a@b.c>\r\nReceived: from "));

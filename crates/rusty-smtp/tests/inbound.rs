@@ -671,3 +671,47 @@ async fn postmaster_is_always_deliverable_where_there_is_somebody_to_give_it_to(
     })
     .await;
 }
+
+/// U5: the `none` stub of U3 is replaced by the real SPF/DKIM/DMARC results (log-only: the message is
+/// delivered whatever they say).
+#[tokio::test]
+async fn authentication_results_carry_the_real_spf_dkim_and_dmarc_verdicts() {
+    use rusty_smtp::resolve::StaticDns;
+    use rusty_smtp::stack::DnsStack;
+    for_each_backend(|b| async move {
+        let (alice, _) = b.seed().await;
+        let mut dns = StaticDns::default();
+        dns.txt.insert("sender.example".into(), "v=spf1 ip4:127.0.0.1 -all".into());
+        dns.txt.insert("_dmarc.sender.example".into(), "v=DMARC1; p=reject".into());
+        let stack = DnsStack::with_static(dns, HOST).unwrap();
+        let mut opts = Opts::default();
+        opts.options.auth = Some(stack.checker.clone());
+        let s = start(&b, opts).await;
+
+        // From the address the SPF record authorises.
+        let mut c = Client::hello(s.addr).await;
+        let msg = b"From: x@sender.example\r\nTo: alice@example.net\r\nSubject: spf\r\n\r\nbody";
+        let r = c.mail("x@sender.example", &["alice@example.net"], msg).await;
+        assert!(r.starts_with("250"), "{r}");
+        let _ = c.cmd("QUIT").await;
+        // A forged Authentication-Results from the sender is replaced, a mismatching identity is
+        // reported (and still delivered: log-only).
+        let mut c = Client::hello(s.addr).await;
+        let forged = b"Authentication-Results: mx.example.net; spf=pass dkim=pass dmarc=pass\r\nFrom: y@other.example\r\nTo: alice@example.net\r\nSubject: forged\r\n\r\nbody";
+        let r = c.mail("y@other.example", &["alice@example.net"], forged).await;
+        assert!(r.starts_with("250"), "{r}");
+        let _ = c.cmd("QUIT").await;
+
+        let inbox = b.inbox(alice, &s.blobs).await;
+        assert_eq!(inbox.len(), 2);
+        let first = String::from_utf8_lossy(&inbox[0]).replace("\r\n\t", " ").replace("\r\n ", " ");
+        let line = first.lines().find(|l| l.starts_with("Authentication-Results:")).unwrap().to_owned();
+        assert!(line.contains(&format!("{HOST};")) && line.contains("spf=pass") && line.contains("dmarc=pass"), "{line}");
+        let second = String::from_utf8_lossy(&inbox[1]).replace("\r\n\t", " ").replace("\r\n ", " ");
+        assert_eq!(second.matches("Authentication-Results:").count(), 1, "the forged one is gone: {second}");
+        let line2 = second.lines().find(|l| l.starts_with("Authentication-Results:")).unwrap();
+        assert!(!line2.contains("dkim=pass") && !line2.contains("dmarc=pass"), "{line2}");
+        s.stop().await;
+    })
+    .await;
+}

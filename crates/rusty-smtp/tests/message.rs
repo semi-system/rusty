@@ -15,6 +15,7 @@ fn trace<'a>() -> Trace<'a> {
         queue_id: "0123456789ab",
         received_unix: 1_794_139_200, // 2026-11-08 12:00:00 UTC
         authenticated: false,
+        auth_results: None,
     }
 }
 

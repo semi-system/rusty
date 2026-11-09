@@ -21,6 +21,9 @@ pub struct Trace<'a> {
     pub received_unix: i64,
     /// The sender authenticated (submission): the client address is not written to the trace.
     pub authenticated: bool,
+    /// The `Authentication-Results` value (after the field name) from the inbound SPF/DKIM/DMARC
+    /// checks; `None` writes `<hostname>; none`.
+    pub auth_results: Option<&'a str>,
 }
 
 /// The delivery id of `original` for the recipient account `account` from envelope sender
@@ -81,6 +84,11 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
 /// and it is cut at `max` characters.
 fn sanitize(s: &str, max: usize) -> String {
     s.chars().take(max).map(|c| if c.is_control() || c == '(' || c == ')' { '?' } else { c }).collect()
+}
+
+/// A header value on one line: control characters dropped, length capped (comments and parentheses stay).
+fn one_line(s: &str, max: usize) -> String {
+    s.chars().filter(|c| !c.is_control()).take(max).collect()
 }
 
 fn is_stripped(name: &[u8]) -> bool {
@@ -164,7 +172,10 @@ pub fn prepare_message_with(original: &[u8], trace: &Trace<'_>, extra: &[(String
         )
         .as_bytes(),
     );
-    out.extend_from_slice(format!("Authentication-Results: {}; none\r\n", sanitize(trace.hostname, 255)).as_bytes());
+    match trace.auth_results {
+        Some(v) => out.extend_from_slice(format!("Authentication-Results: {}\r\n", one_line(v, 900)).as_bytes()),
+        None => out.extend_from_slice(format!("Authentication-Results: {}; none\r\n", sanitize(trace.hostname, 255)).as_bytes()),
+    }
     for (name, value) in extra {
         out.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
     }
