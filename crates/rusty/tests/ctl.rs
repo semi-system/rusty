@@ -161,3 +161,79 @@ fn ctl_and_a_running_daemon_write_the_same_database_concurrently() {
     let mut err = String::new();
     daemon.stderr.take().unwrap().read_to_string(&mut err).unwrap();
 }
+
+/// A production-style configuration under `dir` (only port 25 enabled, so no TLS material is needed).
+fn prod_config(dir: &Path) -> PathBuf {
+    let data = dir.join("data");
+    let cfg = dir.join("rusty.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "database_path = \"{}\"\nblob_dir = \"{}\"\nhostname = \"mx.example.test\"\n[smtp]\nlisten_587 = \"\"\nlisten_465 = \"\"\n[imap]\nlisten_143 = \"\"\nlisten_993 = \"\"\n",
+            data.join("meta.sqlite").display(),
+            data.join("blobs").display()
+        ),
+    )
+    .unwrap();
+    cfg
+}
+
+fn ctl_cfg(cfg: &Path, args: &[&str]) -> Out {
+    let o = Command::new(BIN).args(["ctl", "--config", cfg.to_str().unwrap()]).args(args).stdin(Stdio::null()).output().unwrap();
+    Out { code: o.status.code(), stdout: String::from_utf8_lossy(&o.stdout).into_owned(), stderr: String::from_utf8_lossy(&o.stderr).into_owned() }
+}
+
+// backend-neutral: process-level test of the binary over its default SQLite store
+#[test]
+fn production_mode_never_creates_a_database_by_accident() {
+    // review I9: a typo in the path used to create an empty database (as root: one the service cannot open)
+    let tmp = private_tmp();
+    let cfg = prod_config(tmp.path());
+    std::fs::create_dir(tmp.path().join("data")).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(tmp.path().join("data"), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let o = ctl_cfg(&cfg, &["domain", "list"]);
+    assert_eq!(o.code, Some(1), "{}", o.stderr);
+    assert!(o.stderr.contains("does not exist") && o.stderr.contains("--create"), "{}", o.stderr);
+    assert!(!tmp.path().join("data/meta.sqlite").exists(), "nothing was created");
+    // an explicit --create initialises it, private (0600)
+    let o = ctl_cfg(&cfg, &["--create", "domain", "add", "example.test"]);
+    assert_eq!(o.code, Some(0), "{}", o.stderr);
+    let mode = std::fs::metadata(tmp.path().join("data/meta.sqlite")).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode, 0o600);
+    // and from now on it simply works without the flag
+    let o = ctl_cfg(&cfg, &["domain", "list"]);
+    assert_eq!((o.code, o.stdout.trim()), (Some(0), "example.test\tactive"), "{}", o.stderr);
+}
+
+// backend-neutral: process-level test of the binary over its default SQLite store
+#[test]
+fn production_mode_runs_the_daemons_startup_checks_and_refuses_unsafe_files() {
+    let tmp = private_tmp();
+    let cfg = prod_config(tmp.path());
+    let data = tmp.path().join("data");
+    std::fs::create_dir(&data).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(ctl_cfg(&cfg, &["--create", "domain", "add", "example.test"]).code, Some(0));
+    // a database other users can read is refused (same posture as the daemon's blob dir)
+    let db = data.join("meta.sqlite");
+    std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let o = ctl_cfg(&cfg, &["domain", "list"]);
+    assert_eq!(o.code, Some(1), "{}", o.stderr);
+    assert!(o.stderr.contains("permissions"), "{}", o.stderr);
+    std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(ctl_cfg(&cfg, &["domain", "list"]).code, Some(0));
+    // a configuration the daemon would refuse (no hostname) is refused here too
+    let bad = tmp.path().join("bad.toml");
+    std::fs::write(&bad, format!("database_path = \"{}\"\nblob_dir = \"{}\"\n", db.display(), data.join("blobs").display())).unwrap();
+    let o = ctl_cfg(&bad, &["domain", "list"]);
+    assert_eq!(o.code, Some(1), "{}", o.stderr);
+    assert!(o.stderr.contains("hostname"), "{}", o.stderr);
+    // a symlinked database is refused
+    let link = tmp.path().join("link.toml");
+    std::os::unix::fs::symlink(&db, tmp.path().join("link.sqlite")).unwrap();
+    std::fs::write(&link, format!("database_path = \"{}\"\nblob_dir = \"{}\"\nhostname = \"mx.example.test\"\n[smtp]\nlisten_587 = \"\"\nlisten_465 = \"\"\n[imap]\nlisten_143 = \"\"\nlisten_993 = \"\"\n", tmp.path().join("link.sqlite").display(), data.join("blobs").display())).unwrap();
+    let o = ctl_cfg(&link, &["domain", "list"]);
+    assert_eq!(o.code, Some(1), "{}", o.stderr);
+}

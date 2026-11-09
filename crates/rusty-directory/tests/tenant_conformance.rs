@@ -95,7 +95,7 @@ async fn disabling_a_domain_revokes_its_capabilities_and_stops_validation_for_go
         d.set_domain_status(a, DomainStatus::Active).await.unwrap();
         assert!(d.validate_capability(&shown, CapabilityRole::Imap).await.unwrap().is_none());
         // the other tenant is untouched
-        assert!(d.validate_capability(&other.expose_secret(), CapabilityRole::Imap).await.unwrap().is_some());
+        assert!(d.validate_capability(other.expose_secret(), CapabilityRole::Imap).await.unwrap().is_some());
         // and new tokens can be issued after re-enabling
         assert!(d.issue_capability(alice, CapabilityRole::Imap, 600).await.is_ok());
     })

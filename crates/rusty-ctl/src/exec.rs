@@ -5,6 +5,7 @@
 
 use std::fmt;
 
+use rusty_core::dns::{records_for_domain, zone_line, DnsInputs};
 use rusty_core::Error;
 use rusty_directory::{
     parse_address, AccountInfo, AccountStatus, Directory, DomainInfo, DomainStatus,
@@ -399,16 +400,24 @@ async fn check(env: &mut CtlEnv<'_>) -> Result<Outcome, CtlError> {
         None => lines.push("hostname: not set (required outside the dev profile)".to_owned()),
     }
     for dom in domains.iter().filter(|d| d.status == DomainStatus::Active) {
-        let mut recs = Vec::new();
-        if let Some(h) = env.hostname {
-            recs.push(format!("{}. MX 10 {h}.", dom.name));
-        }
-        recs.push(format!("{}. TXT \"v=spf1 mx -all\"", dom.name));
-        recs.push(format!("_dmarc.{}. TXT \"v=DMARC1; p=none\"", dom.name));
-        recs.push("DKIM: not generated yet (`dkim generate` arrives with the outbound queue)".to_owned());
+        // The records come from the pure generator (rusty_core::dns), the same one the web setup page will
+        // use; this command only formats them. Without a mail host name there is nothing to point them at.
+        let Some(host) = env.hostname else { continue };
+        let inputs = DnsInputs { domain: &dom.name, mail_host: host, outbound_ips: &[], dkim: None, dmarc_rua: None };
+        let records = records_for_domain(&inputs).map_err(|e| map_error(&e, "dns records"))?;
         lines.push(format!("domain {}:", dom.name));
-        lines.extend(recs.iter().map(|r| format!("  {r}")));
-        jd.push(json!({ "domain": dom.name, "records": recs }));
+        lines.extend(records.iter().map(|r| format!("  {}", zone_line(r))));
+        let j: Vec<Value> = records
+            .iter()
+            .map(|r| {
+                json!({
+                    "name": r.name, "type": r.rtype.as_str(), "value": r.value, "ttl": r.ttl_hint,
+                    "purpose": r.purpose, "required": format!("{:?}", r.required).to_lowercase(),
+                    "zone_line": zone_line(r),
+                })
+            })
+            .collect();
+        jd.push(json!({ "domain": dom.name, "records": j }));
     }
     lines.push("reverse DNS (PTR) of the sending address must match the hostname; it is set at your provider".to_owned());
     Ok(Outcome::new(

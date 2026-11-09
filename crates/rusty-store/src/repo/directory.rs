@@ -319,6 +319,7 @@ pub(crate) mod sql {
     /// an int8 array on Postgres (two statement texts, same result).
     pub const ACCOUNT_STATUSES_SQLITE: &str = "SELECT a.id, CASE WHEN d.status <> 'active' THEN 'disabled' ELSE a.status END \
         FROM accounts a JOIN domains d ON d.id = a.domain_id WHERE a.id IN (SELECT value FROM json_each($1))";
+    #[cfg(feature = "postgres")]
     pub const ACCOUNT_STATUSES_PG: &str = "SELECT a.id, CASE WHEN d.status <> 'active' THEN 'disabled' ELSE a.status END \
         FROM accounts a JOIN domains d ON d.id = a.domain_id WHERE a.id = ANY($1)";
     pub const INSERT_ALIAS: &str =

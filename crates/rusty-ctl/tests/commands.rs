@@ -265,7 +265,7 @@ async fn check_lists_dns_hints_for_active_domains_only() {
         b.run(dom_add("off.test"), &[]).await.unwrap();
         b.run(Command::DomainDisable { name: "off.test".into() }, &[]).await.unwrap();
         let o = b.run(Command::Check, &[]).await.unwrap();
-        assert!(o.text.contains("on.test. MX 10 mail.example.net."), "{}", o.text);
+        assert!(o.text.contains("on.test. 3600 IN MX 10 mail.example.net."), "{}", o.text);
         assert!(o.text.contains("v=spf1 mx -all") && o.text.contains("_dmarc.on.test."), "{}", o.text);
         assert!(!o.text.contains("off.test"), "{}", o.text);
         let o = b.run_with_host(Command::Check, &[], None).await.unwrap();

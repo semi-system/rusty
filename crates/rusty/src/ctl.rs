@@ -8,10 +8,11 @@
 use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::io::{BufRead, Read, Write};
-use std::path::PathBuf;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use rusty_core::config::StartupConfig;
+use rusty_core::config::{Profile, StartupConfig};
 use rusty_ctl::{
     execute, parse_args, render, CtlEnv, CtlError, PasswordReader, PasswordSource, Secret, Source, USAGE,
 };
@@ -101,14 +102,58 @@ fn config_for(source: &Source) -> Result<(StartupConfig, bool, String), String> 
         Source::Config(path) => {
             let path = path.clone().unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH));
             let cfg = StartupConfig::load(&path).map_err(|e| format!("configuration: {e}"))?;
+            // The same start-up rules as the daemon (hostname, TLS for authenticated listeners, ...).
+            cfg.check_startup(Profile::Production).map_err(|e| format!("configuration: {e}"))?;
             Ok((cfg, false, "read".to_owned()))
         }
     }
 }
 
-async fn open_directory(cfg: &StartupConfig, dev: bool) -> Result<(Store, Directory), String> {
+/// The safety checks of `rusty d` that apply to the database file, plus two that only an operator tool needs:
+/// it never creates a database unless asked (a typo must not silently make an empty one), and it refuses to
+/// run as a user that does not own the files (running as root would leave root-owned files the service cannot
+/// open). Nothing is created or changed here.
+fn check_database_files(path: &Path, create: bool) -> Result<(), String> {
+    let euid = rustix::process::geteuid().as_raw();
+    match std::fs::symlink_metadata(path) {
+        Ok(m) => {
+            if !m.file_type().is_file() {
+                return Err("the database path is not a regular file (symlinks are refused)".to_owned());
+            }
+            if m.uid() != euid {
+                return Err("the database file belongs to another user; run rustyctl as the service user".to_owned());
+            }
+            if m.permissions().mode() & 0o077 != 0 {
+                return Err("the database file permissions allow other users (must be 0600)".to_owned());
+            }
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if !create {
+                return Err("the database does not exist (a typo in the path? use --create to initialise a new one)".to_owned());
+            }
+            let dir = path.parent().ok_or_else(|| "the database path has no directory".to_owned())?;
+            let m = std::fs::symlink_metadata(dir).map_err(|_| "the database directory does not exist".to_owned())?;
+            if !m.file_type().is_dir() {
+                return Err("the database directory is not a directory".to_owned());
+            }
+            if m.uid() != euid {
+                return Err("the database directory belongs to another user; run rustyctl as the service user".to_owned());
+            }
+            if m.permissions().mode() & 0o022 != 0 {
+                return Err("the database directory is writable by other users".to_owned());
+            }
+            Ok(())
+        }
+        Err(_) => Err("cannot inspect the database file".to_owned()),
+    }
+}
+
+async fn open_directory(cfg: &StartupConfig, dev: bool, create: bool) -> Result<(Store, Directory), String> {
     if dev {
         prepare_dev_dirs(cfg).await.map_err(|e| e.to_string())?;
+    } else {
+        check_database_files(&cfg.database_path, create)?;
     }
     let url = sqlite_url(&cfg.database_path).map_err(|e| e.to_string())?;
     let store = Store::open(StoreConfig::sqlite(url)).await.map_err(|e| format!("cannot open the database: {e}"))?;
@@ -149,7 +194,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
                 return 1;
             }
         };
-        let (store, directory) = match open_directory(&cfg, dev).await {
+        let (store, directory) = match open_directory(&cfg, dev, parsed.create).await {
             Ok(x) => x,
             Err(e) => {
                 eprintln!("{prog}: {e}");
