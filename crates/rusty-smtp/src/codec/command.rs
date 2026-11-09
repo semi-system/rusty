@@ -13,7 +13,7 @@ pub struct MailParams {
     pub smtputf8: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Command {
     Ehlo(String),
     Helo(String),
@@ -32,6 +32,33 @@ pub enum Command {
     StartTls,
     /// `AUTH mechanism [initial-response]`. `initial` is `Some("")` for the `=` empty response.
     Auth { mechanism: AuthMechanism, initial: Option<String> },
+}
+
+/// `Debug` never shows the AUTH initial response (a base64 password): a future `?command` in a log
+/// line must not leak it.
+impl std::fmt::Debug for Command {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Command::Ehlo(h) => f.debug_tuple("Ehlo").field(h).finish(),
+            Command::Helo(h) => f.debug_tuple("Helo").field(h).finish(),
+            Command::Mail { path, params } => f.debug_struct("Mail").field("path", path).field("params", params).finish(),
+            Command::Rcpt { path } => f.debug_struct("Rcpt").field("path", path).finish(),
+            Command::Data => f.write_str("Data"),
+            Command::Bdat => f.write_str("Bdat"),
+            Command::Rset => f.write_str("Rset"),
+            Command::Noop => f.write_str("Noop"),
+            Command::Quit => f.write_str("Quit"),
+            Command::Vrfy => f.write_str("Vrfy"),
+            Command::Expn => f.write_str("Expn"),
+            Command::Help => f.write_str("Help"),
+            Command::StartTls => f.write_str("StartTls"),
+            Command::Auth { mechanism, initial } => f
+                .debug_struct("Auth")
+                .field("mechanism", mechanism)
+                .field("initial", &initial.as_ref().map(|_| "<redacted>"))
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,4 +101,18 @@ pub fn parse_command(line: &[u8]) -> Result<Command, ParseError> {
         return Ok(Command::Rcpt { path: "postmaster".to_owned() });
     }
     crate::adapter::smtp::parse_request(line)
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+
+    #[test]
+    fn debug_never_shows_the_auth_initial_response() {
+        let c = Command::Auth { mechanism: AuthMechanism::Plain, initial: Some("AGFsaWNlAHN1cGVyLXNlY3JldA==".into()) };
+        let shown = format!("{c:?} {:#?}", c);
+        assert!(!shown.contains("AGFsaWNl") && shown.contains("<redacted>"), "{shown}");
+        let none = format!("{:?}", Command::Auth { mechanism: AuthMechanism::Plain, initial: None });
+        assert!(none.contains("None"), "{none}");
+    }
 }
