@@ -1,7 +1,7 @@
 //! SMTP server logic for Rusty. Three layers, kept apart so each can be fuzzed and moved:
 //!
 //! * [`codec`]: bytes to typed values (line framing, command parsing, DATA framing). No I/O and no
-//!   state beyond the reader buffers. Command parsing is `smtp-proto`; framing is ours.
+//!   state beyond the reader buffers. Command grammar comes from a wrapped library behind `adapter`; framing is ours.
 //! * [`session`]: the sans-I/O state machine. Bytes and answers in, actions out. No sockets, no
 //!   clock, no database; the driver answers the asynchronous questions (is this recipient local?
 //!   store this message).
@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing))]
 
+mod adapter;
 pub mod codec;
 pub mod filter;
 pub mod fuzzing;
