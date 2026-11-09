@@ -483,3 +483,272 @@ async fn a_worker_that_dies_loses_its_lease_and_another_worker_delivers_once() {
     .await;
 }
 
+
+// ------------------------------------------------------------------------------------------------ TLS
+
+fn write_bundle(r: &tempfile::TempDir, pem: &str) -> std::path::PathBuf {
+    let p = r.path().join("ca.pem");
+    std::fs::write(&p, pem).unwrap();
+    p
+}
+
+#[tokio::test]
+async fn opportunistic_tls_is_used_even_with_an_untrusted_certificate() {
+    for_each_backend(|b| async move {
+        let pki = TestPki::new("mx.fake.test");
+        let sel = pki.stranger.clone();
+        let mta = FakeMta::start(move |_| Script { tls: Some(sel.clone()), ..Script::default() }).await;
+        let dialer = MapDialer::new(&[("192.0.2.10", mta.addr)]);
+        let mut r = rig(b, dialer, dns_one("mx.fake.test", "192.0.2.10"), fast_cfg()).await;
+        r.start();
+        r.submit("alice@example.net", &["bob@remote.test"], MSG).await;
+        r.wait_done(1).await;
+        let got = mta.messages();
+        assert_eq!(got.len(), 1);
+        assert!(got[0].tls, "STARTTLS was negotiated although the certificate chain is not trusted");
+        assert_eq!(lines(&got[0]), MSG);
+        r.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn opportunistic_falls_back_to_plain_text_when_the_tls_handshake_fails() {
+    for_each_backend(|b| async move {
+        let pki = TestPki::new("mx.fake.test");
+        let sel = pki.server.clone();
+        let mta = FakeMta::start(move |_| Script { tls: Some(sel.clone()), break_tls: true, ..Script::default() }).await;
+        let dialer = MapDialer::new(&[("192.0.2.10", mta.addr)]);
+        let mut r = rig(b, dialer, dns_one("mx.fake.test", "192.0.2.10"), fast_cfg()).await;
+        r.start();
+        r.submit("alice@example.net", &["bob@remote.test"], MSG).await;
+        r.wait_done(1).await;
+        let got = mta.messages();
+        assert_eq!(got.len(), 1);
+        assert!(!got[0].tls, "delivered in clear after the handshake failed");
+        assert_eq!(mta.connection_count(), 2);
+        r.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn required_tls_defers_when_the_server_does_not_offer_starttls() {
+    for_each_backend(|b| async move {
+        let mta = FakeMta::start(|_| Script::default()).await;
+        let dialer = MapDialer::new(&[("192.0.2.10", mta.addr)]);
+        let mut cfg = fast_cfg();
+        cfg.tls_policy.insert("remote.test".into(), TlsPolicy::Required);
+        cfg.backoff_secs = vec![3600];
+        let mut r = rig(b, dialer, dns_one("mx.fake.test", "192.0.2.10"), cfg).await;
+        r.start();
+        r.submit("alice@example.net", &["bob@remote.test"], MSG).await;
+        for _ in 0..100 {
+            if r.b.fx.scalar("SELECT count(*) FROM jobs WHERE state = 'queued' AND last_error LIKE '%TLS is required%'", &[]).await == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(r.jobs("queued").await, 1);
+        assert!(mta.messages().is_empty(), "never sent in clear");
+        assert!(r.inbox().await.is_empty(), "deferred, not bounced");
+        r.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn verified_tls_trusts_only_the_configured_ca_bundle() {
+    for_each_backend(|b| async move {
+        let pki = TestPki::new("mx.fake.test");
+        let dir = tempfile::tempdir().unwrap();
+        let (good, bad) = (pki.server.clone(), pki.stranger.clone());
+        let ok = FakeMta::start(move |_| Script { tls: Some(good.clone()), ..Script::default() }).await;
+        let wrong = FakeMta::start(move |_| Script { tls: Some(bad.clone()), ..Script::default() }).await;
+        let dialer = MapDialer::new(&[("192.0.2.10", ok.addr), ("192.0.2.11", wrong.addr)]);
+        let mut cfg = fast_cfg();
+        cfg.ca_bundle = Some(write_bundle(&dir, &pki.ca_pem));
+        cfg.tls_policy.insert("remote.test".into(), TlsPolicy::Verified);
+        cfg.tls_policy.insert("other.test".into(), TlsPolicy::Verified);
+        cfg.backoff_secs = vec![3600];
+        let mut dns = dns_one("mx.fake.test", "192.0.2.10");
+        // other.test is served by the same host name, but with a certificate from an unknown CA.
+        dns.mx.insert("other.test".into(), MxAnswer::Hosts(vec![MxHost { preference: 10, host: "mx2.fake.test".into() }]));
+        dns.addrs.insert("mx2.fake.test".into(), vec!["192.0.2.11".parse().unwrap()]);
+        let mut r = rig(b, dialer, dns, cfg).await;
+        r.start();
+        r.submit("alice@example.net", &["bob@remote.test"], MSG).await;
+        r.wait_done(1).await;
+        assert!(ok.messages()[0].tls, "chain and host name verified against the bundle");
+        r.submit("alice@example.net", &["carol@other.test"], MSG).await;
+        for _ in 0..100 {
+            if r.b.fx.scalar("SELECT count(*) FROM jobs WHERE state = 'queued' AND last_error LIKE '%TLS%'", &[]).await == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(r.jobs("queued").await, 1, "an untrusted certificate defers the mail");
+        assert!(wrong.messages().is_empty());
+        r.stop().await;
+    })
+    .await;
+}
+
+// ------------------------------------------------------------------------------------------------ DKIM, UTF-8, size
+
+#[tokio::test]
+async fn outgoing_mail_is_dkim_signed_for_the_sender_domain_and_verifies() {
+    for_each_backend(|b| async move {
+        let keys = tempfile::tempdir().unwrap();
+        let k = generate_key(keys.path(), "example.net", "rusty", DkimAlgo::Rsa2048).unwrap();
+        let mta = FakeMta::start(|_| Script::default()).await;
+        let dialer = MapDialer::new(&[("192.0.2.10", mta.addr)]);
+        let mut cfg = fast_cfg();
+        cfg.dkim_dir = Some(keys.path().to_owned());
+        let dns = dns_one("mx.fake.test", "192.0.2.10");
+        let mut r = rig(b, dialer, dns.clone(), cfg).await;
+        r.start();
+        r.submit("alice@example.net", &["bob@remote.test"], MSG).await;
+        r.wait_done(1).await;
+        let sent = mta.messages().remove(0);
+        let text = lines(&sent);
+        assert!(text.starts_with("DKIM-Signature: "), "{text}");
+        assert!(text.ends_with(MSG), "the original follows the signature unchanged");
+        // The receiving side verifies it with the published record.
+        let mut remote_dns = dns;
+        remote_dns.txt.insert("rusty._domainkey.example.net".into(), k.txt_value());
+        let stack = DnsStack::with_static(remote_dns, "mx.fake.test").unwrap();
+        let v = stack
+            .checker
+            .check(&rusty_smtp::authres::AuthInput { peer: "192.0.2.1".parse().unwrap(), helo: HOST, mail_from: "alice@example.net", message: &sent.data })
+            .await;
+        assert_eq!(v.dkim, "pass", "{v:?}");
+        assert!(v.header_value.contains("header.d=example.net"), "d= is the From domain: {}", v.header_value);
+        r.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn idn_domains_use_a_labels_and_smtputf8_is_negotiated_for_utf8_local_parts() {
+    for_each_backend(|b| async move {
+        let mta = FakeMta::start(|_| Script { extensions: vec!["8BITMIME".into(), "SMTPUTF8".into()], ..Script::default() }).await;
+        let dialer = MapDialer::new(&[("192.0.2.10", mta.addr)]);
+        let mut dns = StaticDns::default();
+        dns.mx.insert("xn--bcher-kva.example".into(), MxAnswer::Hosts(vec![MxHost { preference: 10, host: "mx.fake.test".into() }]));
+        dns.addrs.insert("mx.fake.test".into(), vec!["192.0.2.10".parse().unwrap()]);
+        let mut r = rig(b, dialer, dns, fast_cfg()).await;
+        r.start();
+        let body = "From: alice@example.net\r\nTo: j@b\u{fc}cher.example\r\nSubject: gr\u{fc}\u{df}e\r\nMessage-ID: <2@example.net>\r\n\r\nSch\u{f6}ne Gr\u{fc}\u{df}e\r\n";
+        r.submit("alice@example.net", &["j\u{f6}rg@b\u{fc}cher.example"], body).await;
+        r.wait_done(1).await;
+        let got = mta.messages();
+        assert_eq!(got.len(), 1);
+        assert!(got[0].rcpt_lines[0].contains("RCPT TO:<j\u{f6}rg@xn--bcher-kva.example>"), "{:?}", got[0].rcpt_lines);
+        assert!(got[0].mail_from_line.contains("SMTPUTF8") && got[0].mail_from_line.contains("BODY=8BITMIME"), "{}", got[0].mail_from_line);
+        assert_eq!(lines(&got[0]), body, "8-bit body byte exact");
+        r.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn utf8_without_remote_support_bounces_instead_of_mangling() {
+    for_each_backend(|b| async move {
+        let mta = FakeMta::start(|_| Script::default()).await; // offers neither SMTPUTF8 nor 8BITMIME
+        let dialer = MapDialer::new(&[("192.0.2.10", mta.addr)]);
+        let mut r = rig(b, dialer, dns_one("mx.fake.test", "192.0.2.10"), fast_cfg()).await;
+        r.start();
+        r.submit("alice@example.net", &["j\u{f6}rg@remote.test"], "From: alice@example.net\r\nSubject: x\r\n\r\nplain\r\n").await;
+        r.submit("alice@example.net", &["bob@remote.test"], "From: alice@example.net\r\nSubject: x\r\n\r\nGr\u{fc}\u{df}e\r\n").await;
+        r.wait_done(2).await;
+        assert!(mta.messages().iter().all(|m| !m.rcpts.iter().any(|a| a.contains('\u{f6}'))));
+        let inbox = r.inbox().await;
+        assert_eq!(inbox.len(), 2, "{inbox:?}");
+        assert!(inbox.iter().any(|m| m.contains("Status: 5.6.7")), "SMTPUTF8 missing");
+        assert!(inbox.iter().any(|m| m.contains("Status: 5.6.1")), "8BITMIME missing");
+        r.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_message_over_the_remote_size_limit_is_bounced() {
+    for_each_backend(|b| async move {
+        let mta = FakeMta::start(|_| Script { extensions: vec!["SIZE 100".into()], ..Script::default() }).await;
+        let dialer = MapDialer::new(&[("192.0.2.10", mta.addr)]);
+        let mut r = rig(b, dialer, dns_one("mx.fake.test", "192.0.2.10"), fast_cfg()).await;
+        r.start();
+        r.submit("alice@example.net", &["bob@remote.test"], MSG).await;
+        r.wait_done(1).await;
+        assert!(mta.messages().is_empty());
+        assert!(r.inbox().await[0].contains("Status: 5.3.4"));
+        r.stop().await;
+    })
+    .await;
+}
+
+// ------------------------------------------------------------------------------------------------ relay
+
+fn relay_cfg(dir: &tempfile::TempDir, pki: &TestPki, tls: RelayTls) -> OutboundConfig {
+    use std::os::unix::fs::PermissionsExt;
+    let pw = dir.path().join("relay.pw");
+    std::fs::write(&pw, "s3cret\n").unwrap();
+    std::fs::set_permissions(&pw, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let mut cfg = fast_cfg();
+    cfg.ca_bundle = Some(write_bundle(dir, &pki.ca_pem));
+    cfg.relay = Some(RelayConfig { host: "relay.fake.test".into(), port: 587, tls, username: Some("mailer".into()), password_file: Some(pw) });
+    cfg.backoff_secs = vec![3600];
+    cfg
+}
+
+#[tokio::test]
+async fn a_relay_gets_all_remote_mail_with_credentials_over_verified_tls() {
+    for_each_backend(|b| async move {
+        let pki = TestPki::new("relay.fake.test");
+        let dir = tempfile::tempdir().unwrap();
+        let sel = pki.server.clone();
+        let relay = FakeMta::start(move |_| Script { tls: Some(sel.clone()), require_auth: Some(("mailer".into(), "s3cret".into())), ..Script::default() }).await;
+        let dialer = MapDialer::new(&[("192.0.2.50", relay.addr)]);
+        let mut dns = StaticDns::default();
+        dns.addrs.insert("relay.fake.test".into(), vec!["192.0.2.50".parse().unwrap()]);
+        let mut r = rig(b, dialer, dns, relay_cfg(&dir, &pki, RelayTls::Starttls)).await;
+        r.start();
+        r.submit("alice@example.net", &["bob@anywhere.test"], MSG).await;
+        r.wait_done(1).await;
+        let got = relay.messages();
+        assert_eq!(got.len(), 1);
+        assert!(got[0].tls);
+        assert_eq!(got[0].auth.as_deref(), Some("|mailer|s3cret"));
+        assert_eq!(got[0].rcpts, vec!["bob@anywhere.test"]);
+        r.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn relay_credentials_are_never_sent_without_tls() {
+    for_each_backend(|b| async move {
+        let pki = TestPki::new("relay.fake.test");
+        let dir = tempfile::tempdir().unwrap();
+        // The relay does not offer STARTTLS: the worker must not send the password.
+        let relay = FakeMta::start(|_| Script { require_auth: Some(("mailer".into(), "s3cret".into())), ..Script::default() }).await;
+        let dialer = MapDialer::new(&[("192.0.2.50", relay.addr)]);
+        let mut dns = StaticDns::default();
+        dns.addrs.insert("relay.fake.test".into(), vec!["192.0.2.50".parse().unwrap()]);
+        let mut r = rig(b, dialer, dns, relay_cfg(&dir, &pki, RelayTls::Starttls)).await;
+        r.start();
+        r.submit("alice@example.net", &["bob@anywhere.test"], MSG).await;
+        for _ in 0..100 {
+            if r.jobs("queued").await == 1 && relay.connection_count() >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(relay.messages().is_empty());
+        assert_eq!(r.jobs("queued").await, 1);
+        r.stop().await;
+    })
+    .await;
+}

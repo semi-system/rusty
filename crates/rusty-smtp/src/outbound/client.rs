@@ -240,7 +240,7 @@ pub async fn run_session(
                 }
             } else {
                 if !conn.buf.is_empty() {
-                    return Err(temp("the server sent data before the TLS handshake"));
+                    return Err(HostFailure::TlsHandshake("the server sent data before the TLS handshake".into()));
                 }
                 let (s, info) = tls.upgrade(conn.stream, p.server_name, strict).await.map_err(HostFailure::TlsHandshake)?;
                 conn = Conn { stream: s, buf: Vec::new() };
