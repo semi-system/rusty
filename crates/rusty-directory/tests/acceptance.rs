@@ -338,7 +338,9 @@ async fn acceptance_10k_messages() {
     let elapsed = started.elapsed();
     eprintln!("acceptance_10k_messages elapsed: {elapsed:.2?}");
     let max_secs: u64 = match std::env::var("RUSTY_ACCEPTANCE_MAX_SECS") {
-        Err(std::env::VarError::NotPresent) => 60,
+        // Generous default: the test is a regression guard against super-linear blowups (minutes),
+        // not a benchmark; 60 s flaked when several CI lanes shared the machine (150 s needed).
+        Err(std::env::VarError::NotPresent) => 150,
         Ok(v) => v.parse().unwrap_or_else(|_| {
             panic!("RUSTY_ACCEPTANCE_MAX_SECS must be a whole number of seconds, got {v:?}")
         }),
