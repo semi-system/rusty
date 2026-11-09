@@ -10,6 +10,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing))]
 
 mod accept;
+mod budget;
 mod context;
 mod events;
 mod gc;
@@ -25,6 +26,7 @@ mod service;
 mod throttle;
 mod tls;
 
+pub use budget::MemoryBudget;
 pub use accept::{Accept, AsyncStream, BoxedStream, DirectTcp, DirectTls, PeerInfo, DEFAULT_HANDSHAKE_TIMEOUT};
 pub use context::Context;
 pub use events::{RejectReason, ServiceEvent, ServiceEvents, TracingEvents};

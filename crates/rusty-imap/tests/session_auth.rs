@@ -350,3 +350,72 @@ async fn append_before_login_is_refused_before_any_continuation_and_empty_litera
     })
     .await;
 }
+
+#[tokio::test]
+async fn append_draws_on_the_shared_memory_budget_and_gives_it_back() {
+    for_each_backend(|b| async move {
+        b.account("alice@a.test", "pw").await;
+        let budget = rusty_svc::MemoryBudget::new_mib(4);
+        let ctx = b.ctx().await;
+        let h = Arc::new(rusty_imap::ImapHandler::new(ctx).with_budget(budget.clone()));
+        let mut c = Conn::open(h, true);
+        c.line().await;
+        c.login("alice@a.test", "pw").await;
+        // A 2 MiB message needs about 3x that in flight: over the 4 MiB budget, refused BEFORE `+`.
+        let before = budget.available_kib();
+        c.send("a1 APPEND INBOX {2097152}\r\n").await;
+        let l = c.line().await;
+        assert!(l.starts_with("a1 NO [UNAVAILABLE]"), "{l}");
+        assert_eq!(budget.available_kib(), before, "nothing stays reserved");
+        // A small one goes through and releases its reservation afterwards.
+        let msg = message("small", "x");
+        c.send(&format!("a2 APPEND INBOX {{{}}}\r\n", msg.len())).await;
+        assert_eq!(c.line().await, "+ Ready for literal data");
+        assert!(budget.available_kib() < before, "reserved while the literal is in flight");
+        c.send(&format!("{msg}\r\n")).await;
+        assert!(c.line().await.starts_with("a2 OK"));
+        assert_eq!(budget.available_kib(), before, "released after the command");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn an_unauthenticated_connection_has_a_total_time_and_command_budget() {
+    for_each_backend(|b| async move {
+        // Total lifetime: a client that keeps the idle timer alive with NOOPs is still cut.
+        let limits = Limits { unauth_total: std::time::Duration::from_millis(700), ..Limits::default() };
+        let mut c = Conn::open(handler_with(b.ctx().await, limits), true);
+        c.line().await;
+        let t0 = std::time::Instant::now();
+        let mut cut = false;
+        while t0.elapsed() < std::time::Duration::from_secs(5) {
+            if !c.try_send_bytes(b"n NOOP\r\n").await {
+                cut = true;
+                break;
+            }
+            match c.try_line().await {
+                Some(l) if l.starts_with("* BYE") => {
+                    cut = true;
+                    break;
+                }
+                Some(_) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+                None => {
+                    cut = true;
+                    break;
+                }
+            }
+        }
+        assert!(cut, "a NOOP-feeding unauthenticated client was never cut");
+        // Command budget before login.
+        let limits = Limits { unauth_commands: 5, ..Limits::default() };
+        let mut d = Conn::open(handler_with(b.ctx().await, limits), true);
+        d.line().await;
+        for _ in 0..5 {
+            d.status("NOOP").await;
+        }
+        d.send("x NOOP\r\n").await;
+        let l = d.line().await;
+        assert!(l.starts_with("* BYE"), "{l}");
+    })
+    .await;
+}

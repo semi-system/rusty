@@ -28,6 +28,7 @@ tracing.workspace = true
 [dev-dependencies]
 rusty-store = { path = "../rusty-store", features = ["test-fixtures"] }
 rusty-directory = { path = "../rusty-directory" }
+rusty-smtp = { path = "../rusty-smtp" }
 # The dev certificate for the STARTTLS tests.
 rusty-svc = { path = "../rusty-svc" }
 proptest.workspace = true

@@ -76,8 +76,12 @@ pub enum Frame {
     Command(Vec<u8>),
     /// A raw line without its line ending (line mode only).
     Line(Vec<u8>),
-    /// A synchronising literal was accepted: send `+ ...` and keep reading.
-    SendContinuation,
+    /// A synchronising literal of `len` bytes was accepted: send `+ ...` (after reserving memory for
+    /// it, `append` marks the message-size path) and keep reading; [`Framer::reject_pending`] can
+    /// still refuse it.
+    SendContinuation { len: usize, append: bool },
+    /// A non-synchronising literal of `len` bytes was accepted and is already on its way.
+    NonSyncLiteral { len: usize, append: bool },
     /// Answer `tag NO [..]` (or `* BAD` without a tag); the command's bytes were dropped.
     Reject { tag: Option<String>, reason: RejectReason },
     /// Close the connection.
@@ -199,9 +203,8 @@ impl Framer {
                     self.literal_total += len;
                     self.scan = line_end;
                     self.state = State::Literal { remaining: len };
-                    if marker.sync {
-                        return Frame::SendContinuation;
-                    }
+                    let append = append && self.authed;
+                    return if marker.sync { Frame::SendContinuation { len, append } } else { Frame::NonSyncLiteral { len, append } };
                 }
             }
         }
@@ -224,6 +227,15 @@ impl Framer {
         }
         self.mode = Mode::Command;
         Frame::Line(line)
+    }
+
+    /// Drop the command whose literal was just announced (the caller refuses it, e.g. for lack of
+    /// memory); returns its tag. Only meaningful right after a `SendContinuation`.
+    pub fn reject_pending(&mut self) -> Option<String> {
+        let tag = tag_of(&self.buf);
+        self.buf = Vec::new();
+        self.reset();
+        tag
     }
 
     fn reset(&mut self) {
@@ -294,7 +306,7 @@ mod tests {
         FrameLimits { max_line: 128, max_literal: 64, max_append: 1000, max_command: 400, max_line_mode: 32 }
     }
 
-    fn drain(f: &mut Framer) -> Vec<Frame> {
+    fn drain_raw(f: &mut Framer) -> Vec<Frame> {
         let mut out = vec![];
         loop {
             match f.next() {
@@ -302,6 +314,13 @@ mod tests {
                 x => out.push(x),
             }
         }
+    }
+
+    /// Like `drain_raw` without the non-synchronising literal announcements.
+    fn drain(f: &mut Framer) -> Vec<Frame> {
+        let mut v = drain_raw(f);
+        v.retain(|x| !matches!(x, Frame::NonSyncLiteral { .. }));
+        v
     }
 
     #[test]
@@ -323,9 +342,9 @@ mod tests {
     fn sync_literals_ask_for_a_continuation_and_stay_in_one_command() {
         let mut f = Framer::new(lim());
         f.push(b"a LOGIN {5}\r\n");
-        assert_eq!(drain(&mut f), vec![Frame::SendContinuation]);
+        assert_eq!(drain(&mut f), vec![Frame::SendContinuation { len: 5, append: false }]);
         f.push(b"alice {4}\r\n");
-        assert_eq!(drain(&mut f), vec![Frame::SendContinuation]);
+        assert_eq!(drain(&mut f), vec![Frame::SendContinuation { len: 4, append: false }]);
         f.push(b"pass\r\n");
         assert_eq!(drain(&mut f), vec![Frame::Command(b"a LOGIN {5}\r\nalice {4}\r\npass\r\n".to_vec())]);
     }
@@ -335,8 +354,10 @@ mod tests {
         let mut f = Framer::new(lim());
         f.push(b"a LOGIN {5+}\r\nalice {4+}\r\npass\r\nb NOOP\r\n");
         assert_eq!(
-            drain(&mut f),
+            drain_raw(&mut f),
             vec![
+                Frame::NonSyncLiteral { len: 5, append: false },
+                Frame::NonSyncLiteral { len: 4, append: false },
                 Frame::Command(b"a LOGIN {5+}\r\nalice {4+}\r\npass\r\n".to_vec()),
                 Frame::Command(b"b NOOP\r\n".to_vec())
             ]
@@ -384,7 +405,7 @@ mod tests {
         let mut f = Framer::new(lim());
         f.set_authenticated(true);
         f.push(b"a APPEND INBOX {500}\r\n");
-        assert_eq!(drain(&mut f), vec![Frame::SendContinuation]);
+        assert_eq!(drain(&mut f), vec![Frame::SendContinuation { len: 500, append: true }]);
         let mut g = Framer::new(lim());
         g.set_authenticated(true);
         g.push(b"b APPEND INBOX {1001}\r\n");
@@ -487,7 +508,7 @@ mod tests {
         let mut h = Framer::new(lim());
         h.set_authenticated(true);
         h.push(b"x1 APPEND INBOX {900}\r\n");
-        assert_eq!(drain(&mut h), vec![Frame::SendContinuation]);
+        assert_eq!(drain(&mut h), vec![Frame::SendContinuation { len: 900, append: true }]);
     }
 
     #[test]
@@ -497,6 +518,19 @@ mod tests {
         f.set_authenticated(true);
         f.push(b"a SEARCH TEXT {200}\r\n");
         assert!(matches!(drain(&mut f)[..], [Frame::Reject { .. }]));
+    }
+
+
+    #[test]
+    fn a_pending_literal_can_be_refused_after_the_announcement() {
+        let mut f = Framer::new(lim());
+        f.set_authenticated(true);
+        f.push(b"t9 APPEND INBOX {500}\r\n");
+        assert_eq!(drain(&mut f), vec![Frame::SendContinuation { len: 500, append: true }]);
+        assert_eq!(f.reject_pending().as_deref(), Some("t9"));
+        assert_eq!(f.buffered(), 0);
+        f.push(b"t10 NOOP\r\n");
+        assert_eq!(drain(&mut f), vec![Frame::Command(b"t10 NOOP\r\n".to_vec())]);
     }
 
     #[test]

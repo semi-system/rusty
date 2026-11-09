@@ -11,12 +11,16 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
 use crate::command::ParseError;
+use rusty_svc::MemoryBudget;
 use crate::folders::{FolderResolver, PersonalNamespace};
 use crate::frame::{tag_of, FatalReason, Frame, FrameLimits, Framer, Mode, RejectReason};
 use crate::out::{Closed, Out, Sink};
 use crate::session::{Action, FramingError, IdleCaps, Limits, Session};
 
 /// How long a write may block before the peer is given up on.
+/// Live copies of an APPEND literal while it is handled: the framer buffer, the frame, the parsed
+/// command (the store takes the last one by move).
+const COPIES: u64 = 3;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a STARTTLS handshake may take.
 const STARTTLS_TIMEOUT: Duration = Duration::from_secs(15);
@@ -44,16 +48,23 @@ pub struct ImapHandler {
     resolver: Arc<dyn FolderResolver>,
     limits: Limits,
     caps: Arc<IdleCaps>,
+    budget: MemoryBudget,
 }
 
 impl ImapHandler {
     /// Built from the shared `Context`; the folder namespace defaults to the personal one.
     pub fn new(ctx: Context) -> ImapHandler {
-        ImapHandler { ctx, resolver: Arc::new(PersonalNamespace), limits: Limits::default(), caps: Arc::default() }
+        ImapHandler { ctx, resolver: Arc::new(PersonalNamespace), limits: Limits::default(), caps: Arc::default(), budget: MemoryBudget::new_mib(1024) }
     }
 
     pub fn with_resolver(mut self, resolver: Arc<dyn FolderResolver>) -> ImapHandler {
         self.resolver = resolver;
+        self
+    }
+
+    /// Share the process-wide in-flight message memory budget (SMTP DATA draws on it too).
+    pub fn with_budget(mut self, budget: MemoryBudget) -> ImapHandler {
+        self.budget = budget;
         self
     }
 
@@ -71,7 +82,7 @@ fn frame_limits(ctx: &Context) -> FrameLimits {
 impl SessionHandler for ImapHandler {
     async fn handle(&self, stream: BoxedStream, peer: PeerInfo, shutdown: CancellationToken) {
         let session = Session::new(self.ctx.clone(), peer, self.resolver.clone(), self.limits, self.caps.clone());
-        run(session, frame_limits(&self.ctx), stream, shutdown, &self.ctx).await;
+        run(session, frame_limits(&self.ctx), stream, shutdown, &self.ctx, &self.budget).await;
     }
 }
 
@@ -80,7 +91,9 @@ async fn write_bye(stream: &mut BoxedStream, text: &str) {
 }
 
 /// Serve one connection to its end.
-async fn run(mut session: Session, limits: FrameLimits, stream: BoxedStream, shutdown: CancellationToken, ctx: &Context) {
+async fn run(mut session: Session, limits: FrameLimits, stream: BoxedStream, shutdown: CancellationToken, ctx: &Context, budget: &MemoryBudget) {
+    // Memory reserved for the message literal of the command in flight (about three copies of it).
+    let mut reserved: Option<tokio::sync::OwnedSemaphorePermit> = None;
     let mut stream = stream;
     let mut framer = Framer::new(limits);
     {
@@ -93,11 +106,17 @@ async fn run(mut session: Session, limits: FrameLimits, stream: BoxedStream, shu
     }
     let mut buf = vec![0u8; 16 * 1024];
     let mut last_input = tokio::time::Instant::now();
+    let started = last_input;
+    let mut unauth_seen: u32 = 0;
+    let (unauth_total, unauth_max) = session.unauth_limits();
     loop {
         framer.set_authenticated(session.is_authenticated());
         match framer.next() {
             Frame::NeedMore => {
-                let deadline = last_input + session.idle_limit();
+                let mut deadline = last_input + session.idle_limit();
+                if !session.is_authenticated() {
+                    deadline = deadline.min(started + unauth_total);
+                }
                 let poll = session.idle_poll_every();
                 tokio::select! {
                     biased;
@@ -128,10 +147,37 @@ async fn run(mut session: Session, limits: FrameLimits, stream: BoxedStream, shu
                     }
                 }
             }
-            Frame::SendContinuation => {
+            Frame::SendContinuation { len, append } => {
+                if append {
+                    match budget.try_reserve(COPIES * len as u64) {
+                        Some(p) => reserved = Some(p),
+                        None => {
+                            // Refused before the client sends the data.
+                            let tag = framer.reject_pending();
+                            let mut sink = StreamSink(&mut stream);
+                            let mut out = Out::new(&mut sink);
+                            session.busy(tag.as_deref(), &mut out);
+                            if out.flush().await.is_err() {
+                                return;
+                            }
+                            continue;
+                        }
+                    }
+                }
                 let mut sink = StreamSink(&mut stream);
                 if sink.write(b"+ Ready for literal data\r\n").await.is_err() {
                     return;
+                }
+            }
+            Frame::NonSyncLiteral { len, append } => {
+                if append {
+                    match budget.try_reserve(COPIES * len as u64) {
+                        Some(p) => reserved = Some(p),
+                        None => {
+                            write_bye(&mut stream, "Server busy").await;
+                            return;
+                        }
+                    }
                 }
             }
             Frame::Fatal(why) => {
@@ -169,6 +215,14 @@ async fn run(mut session: Session, limits: FrameLimits, stream: BoxedStream, shu
                 // IDLE ended: back to commands.
             }
             Frame::Command(bytes) => {
+                if !session.is_authenticated() {
+                    unauth_seen += 1;
+                    if unauth_seen > unauth_max {
+                        write_bye(&mut stream, "Too many commands before login").await;
+                        return;
+                    }
+                }
+                let _held = reserved.take();
                 let decoded = crate::adapter::parse_command(&bytes);
                 let action = {
                     let mut sink = StreamSink(&mut stream);

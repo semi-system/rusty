@@ -33,7 +33,7 @@ pub fn command(data: &[u8]) {
                     // Any outcome but a panic is fine: a framed command is complete for the decoder.
                     let _ = parse_command(&c);
                 }
-                Frame::Line(_) | Frame::SendContinuation | Frame::Reject { .. } => {}
+                Frame::Line(_) | Frame::SendContinuation { .. } | Frame::NonSyncLiteral { .. } | Frame::Reject { .. } => {}
                 Frame::Fatal(_) => return,
             }
         }

@@ -189,7 +189,7 @@ impl Session {
         Ok(Done::ok_code(&format!("COPYUID {uv} {} {}", uid_set(&src_uids), uid_set(&dst_uids)), verb))
     }
 
-    pub(crate) async fn cmd_append(&mut self, dest: &str, flags: &[FlagArg], date: Option<i64>, data: &[u8]) -> Result<Done, Closed> {
+    pub(crate) async fn cmd_append(&mut self, dest: &str, flags: &[FlagArg], date: Option<i64>, data: Vec<u8>) -> Result<Done, Closed> {
         let Some(mb) = self.mailbox() else { return Ok(Done::bad("Not authenticated")) };
         let name = dest;
         let Ok(fs) = split_flags(flags) else { return Ok(Done::no("CANNOT", "Invalid keyword")) };
@@ -200,7 +200,7 @@ impl Session {
         let Some(folder) = self.resolver.lookup(&folders, name) else {
             return Ok(Done::no("TRYCREATE", "Mailbox does not exist"));
         };
-        let bytes = Bytes::copy_from_slice(data);
+        let bytes = Bytes::from(data); // moved, not copied
         let stored = match date {
             Some(d) => mb.append_dated(folder, bytes, fs.system, d).await,
             None => mb.append(folder, bytes, fs.system).await,

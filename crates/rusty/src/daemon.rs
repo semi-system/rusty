@@ -168,7 +168,7 @@ async fn build(
                 };
                 Arc::new(InboundHandler::submission(&ctx, options, deps))
             }
-            ListenerKind::Imap143 | ListenerKind::Imaps993 => Arc::new(rusty_imap::ImapHandler::new(ctx.clone())),
+            ListenerKind::Imap143 | ListenerKind::Imaps993 => Arc::new(rusty_imap::ImapHandler::new(ctx.clone()).with_budget(budget.clone())),
         };
         services.push(Box::new(ListenerService::new(bound, accept, handler)));
     }

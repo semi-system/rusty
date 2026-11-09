@@ -1509,6 +1509,7 @@ dependencies = [
  "rustls-pki-types",
  "rusty-core",
  "rusty-directory",
+ "rusty-smtp",
  "rusty-store",
  "rusty-svc",
  "tempfile",

@@ -35,6 +35,10 @@ pub struct Limits {
     pub idle_per_account: usize,
     /// How often an idling session looks at the change log, for writers the hub does not see.
     pub idle_poll: Duration,
+    /// Total lifetime of a connection that has not logged in (idle resets do not extend it).
+    pub unauth_total: Duration,
+    /// Commands an unauthenticated connection may send.
+    pub unauth_commands: u32,
 }
 
 impl Default for Limits {
@@ -47,6 +51,8 @@ impl Default for Limits {
             search_scan_bytes: 512 * 1024 * 1024,
             idle_per_account: 20,
             idle_poll: Duration::from_secs(30),
+            unauth_total: Duration::from_secs(300),
+            unauth_commands: 100,
         }
     }
 }
@@ -223,6 +229,10 @@ impl Session {
     }
 
     /// How often an idling session polls the change log (a long time while not idling).
+    pub fn unauth_limits(&self) -> (Duration, u32) {
+        (self.limits.unauth_total, self.limits.unauth_commands)
+    }
+
     pub fn idle_poll_every(&self) -> Duration {
         self.limits.idle_poll
     }
@@ -298,6 +308,14 @@ impl Session {
     }
 
     /// The server is shutting down: say so.
+    /// The shared memory budget cannot cover the announced message literal: refused before `+`.
+    pub fn busy(&self, tag: Option<&str>, out: &mut Out<'_>) {
+        match tag {
+            Some(t) => out.tagged(t, "NO", Some("UNAVAILABLE"), "Server busy, try again later"),
+            None => out.untagged("NO [UNAVAILABLE] Server busy, try again later"),
+        }
+    }
+
     pub fn bye_shutdown(&self, out: &mut Out<'_>) {
         out.untagged("BYE Server shutting down");
     }
@@ -437,7 +455,7 @@ impl Session {
             C::List { reference, pattern } => self.cmd_list(&reference, &pattern, false, out).await,
             C::Lsub { reference, pattern } => self.cmd_list(&reference, &pattern, true, out).await,
             C::Status { name, items } => self.cmd_status(&name, &items, out).await,
-            C::Append { name, flags, date, data } => self.cmd_append(&name, &flags, date, &data).await,
+            C::Append { name, flags, date, data } => self.cmd_append(&name, &flags, date, data).await,
             C::Namespace => {
                 out.untagged("NAMESPACE ((\"\" \"/\")) NIL NIL");
                 Ok(Done::ok("NAMESPACE completed"))
