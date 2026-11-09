@@ -14,7 +14,7 @@ use crate::command::ParseError;
 use crate::folders::{FolderResolver, PersonalNamespace};
 use crate::frame::{tag_of, FatalReason, Frame, FrameLimits, Framer, Mode, RejectReason};
 use crate::out::{Closed, Out, Sink};
-use crate::session::{Action, FramingError, Limits, Session};
+use crate::session::{Action, FramingError, IdleCaps, Limits, Session};
 
 /// How long a write may block before the peer is given up on.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -43,12 +43,13 @@ pub struct ImapHandler {
     ctx: Context,
     resolver: Arc<dyn FolderResolver>,
     limits: Limits,
+    caps: Arc<IdleCaps>,
 }
 
 impl ImapHandler {
     /// Built from the shared `Context`; the folder namespace defaults to the personal one.
     pub fn new(ctx: Context) -> ImapHandler {
-        ImapHandler { ctx, resolver: Arc::new(PersonalNamespace), limits: Limits::default() }
+        ImapHandler { ctx, resolver: Arc::new(PersonalNamespace), limits: Limits::default(), caps: Arc::default() }
     }
 
     pub fn with_resolver(mut self, resolver: Arc<dyn FolderResolver>) -> ImapHandler {
@@ -69,7 +70,7 @@ fn frame_limits(ctx: &Context) -> FrameLimits {
 #[async_trait]
 impl SessionHandler for ImapHandler {
     async fn handle(&self, stream: BoxedStream, peer: PeerInfo, shutdown: CancellationToken) {
-        let session = Session::new(self.ctx.clone(), peer, self.resolver.clone(), self.limits);
+        let session = Session::new(self.ctx.clone(), peer, self.resolver.clone(), self.limits, self.caps.clone());
         run(session, frame_limits(&self.ctx), stream, shutdown, &self.ctx).await;
     }
 }
@@ -91,23 +92,38 @@ async fn run(mut session: Session, limits: FrameLimits, stream: BoxedStream, shu
         }
     }
     let mut buf = vec![0u8; 16 * 1024];
+    let mut last_input = tokio::time::Instant::now();
     loop {
         match framer.next() {
             Frame::NeedMore => {
-                let idle = session.idle_limit();
+                let deadline = last_input + session.idle_limit();
+                let poll = session.idle_poll_every();
                 tokio::select! {
                     biased;
                     _ = shutdown.cancelled() => {
                         write_bye(&mut stream, "Server shutting down").await;
                         return;
                     }
-                    r = tokio::time::timeout(idle, stream.read(&mut buf)) => match r {
-                        Err(_) => {
-                            write_bye(&mut stream, "Autologout; idle for too long").await;
+                    _ = tokio::time::sleep_until(deadline) => {
+                        write_bye(&mut stream, "Autologout; idle for too long").await;
+                        return;
+                    }
+                    r = stream.read(&mut buf) => match r {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => {
+                            last_input = tokio::time::Instant::now();
+                            framer.push(buf.get(..n).unwrap_or(&[]));
+                        }
+                    },
+                    _ = session.idle_wait() => {
+                        if !push_updates(&mut session, &mut stream).await {
                             return;
                         }
-                        Ok(Ok(0)) | Ok(Err(_)) => return,
-                        Ok(Ok(n)) => framer.push(buf.get(..n).unwrap_or(&[])),
+                    }
+                    _ = tokio::time::sleep(poll), if session.is_idling() => {
+                        if !push_updates(&mut session, &mut stream).await {
+                            return;
+                        }
                     }
                 }
             }
@@ -138,12 +154,17 @@ async fn run(mut session: Session, limits: FrameLimits, stream: BoxedStream, shu
                 let action = {
                     let mut sink = StreamSink(&mut stream);
                     let mut out = Out::new(&mut sink);
-                    session.auth_line(&line, &mut out).await
+                    if session.is_idling() {
+                        session.idle_line(&line, &mut out).await
+                    } else {
+                        session.auth_line(&line, &mut out).await
+                    }
                 };
                 match action {
                     Ok(Action::Close) | Err(Closed) => return,
                     Ok(_) => {}
                 }
+                // IDLE ended: back to commands.
             }
             Frame::Command(bytes) => {
                 let decoded = crate::codec::parse_command(&bytes);
@@ -163,7 +184,7 @@ async fn run(mut session: Session, limits: FrameLimits, stream: BoxedStream, shu
                 match action {
                     Err(Closed) | Ok(Action::Close) => return,
                     Ok(Action::Continue) => {}
-                    Ok(Action::AuthLine) => framer.set_mode(Mode::Line),
+                    Ok(Action::AuthLine | Action::Idle) => framer.set_mode(Mode::Line),
                     Ok(Action::StartTls) => {
                         // Anything the client sent after STARTTLS before the handshake is an
                         // injection attempt (CVE-style command smuggling): refuse to continue.
@@ -184,4 +205,11 @@ async fn run(mut session: Session, limits: FrameLimits, stream: BoxedStream, shu
             }
         }
     }
+}
+
+/// Send pending updates while idling; `false` when the peer is gone.
+async fn push_updates(session: &mut Session, stream: &mut BoxedStream) -> bool {
+    let mut sink = StreamSink(stream);
+    let mut out = Out::new(&mut sink);
+    session.idle_poll(&mut out).await.is_ok()
 }

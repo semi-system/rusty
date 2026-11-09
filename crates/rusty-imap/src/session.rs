@@ -31,6 +31,10 @@ pub struct Limits {
     /// messages and bytes per command, else `NO [LIMIT]` (fails closed, never a partial answer).
     pub search_scan_messages: usize,
     pub search_scan_bytes: u64,
+    /// Concurrent IDLE sessions per account (phones hold them open).
+    pub idle_per_account: usize,
+    /// How often an idling session looks at the change log, for writers the hub does not see.
+    pub idle_poll: Duration,
 }
 
 impl Default for Limits {
@@ -41,6 +45,8 @@ impl Default for Limits {
             idle_authenticated: Duration::from_secs(30 * 60),
             search_scan_messages: 20_000,
             search_scan_bytes: 512 * 1024 * 1024,
+            idle_per_account: 20,
+            idle_poll: Duration::from_secs(30),
         }
     }
 }
@@ -53,6 +59,8 @@ pub enum Action {
     StartTls,
     /// The next client line is the AUTHENTICATE payload (a continuation was written).
     AuthLine,
+    /// IDLE started (the `+ idling` was written): wait for updates and for `DONE`.
+    Idle,
     /// Close the connection.
     Close,
 }
@@ -109,6 +117,46 @@ struct PendingAuth {
     tag: String,
 }
 
+/// Concurrent IDLE sessions per mailbox, shared by every session of a handler.
+#[derive(Default)]
+pub struct IdleCaps(std::sync::Mutex<std::collections::HashMap<i64, usize>>);
+
+impl IdleCaps {
+    fn take(self: &Arc<Self>, mailbox: i64, max: usize) -> Option<IdleGuard> {
+        let mut m = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let n = m.entry(mailbox).or_insert(0);
+        if *n >= max {
+            return None;
+        }
+        *n += 1;
+        Some(IdleGuard { caps: self.clone(), mailbox })
+    }
+}
+
+/// A held IDLE slot; freed when dropped (DONE, error or a closed connection).
+struct IdleGuard {
+    caps: Arc<IdleCaps>,
+    mailbox: i64,
+}
+
+impl Drop for IdleGuard {
+    fn drop(&mut self) {
+        let mut m = self.caps.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = m.get_mut(&self.mailbox) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                m.remove(&self.mailbox);
+            }
+        }
+    }
+}
+
+struct Idle {
+    tag: String,
+    rx: tokio::sync::watch::Receiver<u64>,
+    _slot: IdleGuard,
+}
+
 pub struct Session {
     pub(crate) ctx: Context,
     pub(crate) peer: PeerInfo,
@@ -120,6 +168,8 @@ pub struct Session {
     pub(crate) sel: Option<Selected>,
     pending: Option<PendingAuth>,
     failed_auths: u32,
+    caps: Arc<IdleCaps>,
+    idle: Option<Idle>,
 }
 
 /// Protocol name of a command (for the log: verbs only, never arguments).
@@ -161,8 +211,55 @@ fn verb(body: &Body) -> &'static str {
 }
 
 impl Session {
-    pub fn new(ctx: Context, peer: PeerInfo, resolver: Arc<dyn FolderResolver>, limits: Limits) -> Session {
-        Session { tls: peer.tls, ctx, peer, resolver, limits, user: None, sel: None, pending: None, failed_auths: 0 }
+    pub fn new(ctx: Context, peer: PeerInfo, resolver: Arc<dyn FolderResolver>, limits: Limits, caps: Arc<IdleCaps>) -> Session {
+        Session { tls: peer.tls, ctx, peer, resolver, limits, user: None, sel: None, pending: None, failed_auths: 0, caps, idle: None }
+    }
+
+    fn start_idle(&self, tag: &str) -> Option<Idle> {
+        let user = self.user.as_ref()?;
+        let id = user.mailbox.id();
+        let slot = self.caps.take(id.0, self.limits.idle_per_account)?;
+        Some(Idle { tag: tag.to_owned(), rx: self.ctx.hub.subscribe(id), _slot: slot })
+    }
+
+    /// How often an idling session polls the change log (a long time while not idling).
+    pub fn idle_poll_every(&self) -> Duration {
+        self.limits.idle_poll
+    }
+
+    pub fn is_idling(&self) -> bool {
+        self.idle.is_some()
+    }
+
+    /// Resolves when the hub announces a change of the idling mailbox (never while not idling).
+    pub async fn idle_wait(&mut self) {
+        match self.idle.as_mut() {
+            Some(i) => {
+                if i.rx.changed().await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            }
+            None => std::future::pending::<()>().await,
+        }
+    }
+
+    /// Send what changed (a hub wake-up or the periodic change-log poll).
+    pub async fn idle_poll(&mut self, out: &mut Out<'_>) -> Result<(), Closed> {
+        self.send_updates(out, true).await?;
+        out.flush().await
+    }
+
+    /// The client's line while idling: `DONE` ends it, anything else is a protocol error that
+    /// also ends it.
+    pub async fn idle_line(&mut self, line: &[u8], out: &mut Out<'_>) -> Result<Action, Closed> {
+        let Some(idle) = self.idle.take() else { return Ok(Action::Continue) };
+        let done = if line.eq_ignore_ascii_case(b"DONE") {
+            self.send_updates(out, true).await?;
+            Done::ok("IDLE terminated")
+        } else {
+            Done::bad("Expected DONE")
+        };
+        self.finish(&idle.tag, done, out).await
     }
 
     pub fn is_authenticated(&self) -> bool {
@@ -251,10 +348,19 @@ impl Session {
                 | Body::StartTls
         );
         let done = self.dispatch(&tag, cmd.body, out).await?;
-        if done.action == Action::AuthLine {
-            // The continuation request is the whole reply for now; the tagged status follows the payload.
+        if matches!(done.action, Action::AuthLine | Action::Idle) {
+            // The continuation request is the whole reply for now; the tagged status follows the
+            // payload (AUTHENTICATE) or DONE (IDLE).
+            if done.action == Action::Idle {
+                self.idle = self.start_idle(&tag);
+                if self.idle.is_none() {
+                    return self.finish(&tag, Done::no("LIMIT", "Too many IDLE sessions"), out).await;
+                }
+                out.raw(b"+ idling
+");
+            }
             out.flush().await?;
-            return Ok(Action::AuthLine);
+            return Ok(done.action);
         }
         if in_selected_only && done.action != Action::Close {
             self.send_updates(out, !non_uid_scan).await?;
@@ -339,7 +445,7 @@ impl Session {
             C::ListExt { reference, patterns, subscribed_only, return_subscribed } => {
                 self.cmd_list_ext(&reference, &patterns, subscribed_only, return_subscribed, out).await
             }
-            C::Idle => Ok(Done::no("CANNOT", "IDLE is not available")),
+            C::Idle => Ok(Done::ok("").with(Action::Idle)),
             C::Check => Ok(Done::ok("CHECK completed")),
             C::Close => Ok(self.cmd_close().await),
             C::Unselect => {

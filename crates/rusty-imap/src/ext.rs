@@ -139,11 +139,9 @@ pub fn parse(frame: &[u8]) -> Option<Result<Command, ParseError>> {
         b"NAMESPACE" => done(if lx.end() { Ok(Body::Namespace) } else { Err(ParseError::Syntax) }),
         b"ID" => done(id(&mut lx)),
         b"UID" => {
-            let save = lx.pos;
             lx.sp();
             let sub = lx.atom().map(<[u8]>::to_ascii_uppercase);
             if sub.as_deref() != Some(b"EXPUNGE") {
-                lx.pos = save;
                 return None; // UID FETCH/STORE/...: the library's
             }
             done(uid_expunge(&mut lx))
