@@ -242,6 +242,10 @@ pub trait DirectoryRepo: Send + Sync {
     async fn set_status(&self, account: AccountId, status: AccountStatus) -> Result<()>;
     /// `None`: no such account.
     async fn account_auth(&self, account: AccountId) -> Result<Option<AuthRow>>;
+    /// The EFFECTIVE status of many accounts in one statement (an account of a disabled domain is
+    /// `Disabled`). Ids that do not exist are absent from the answer. At most [`MAX_STATUS_IDS`] ids
+    /// per call (`Invalid` otherwise).
+    async fn account_statuses(&self, ids: &[AccountId]) -> Result<Vec<(AccountId, AccountStatus)>>;
 
     // ------------------------------------------------------------ aliases, lists
     async fn add_alias(&self, local: &str, domain: DomainId, account: AccountId) -> Result<()>;
@@ -308,7 +312,15 @@ pub(crate) mod sql {
     pub const MAILBOX_FOR_ACCOUNT: &str = "SELECT id FROM mailboxes WHERE account_id = $1";
     pub const UPDATE_PASSWORD: &str = "UPDATE accounts SET password_hash = $1 WHERE id = $2";
     pub const UPDATE_STATUS: &str = "UPDATE accounts SET status = $1 WHERE id = $2";
-    pub const ACCOUNT_AUTH: &str = "SELECT status, password_hash FROM accounts WHERE id = $1";
+    /// The status is the effective one: an account of a disabled domain is disabled.
+    pub const ACCOUNT_AUTH: &str = "SELECT CASE WHEN d.status <> 'active' THEN 'disabled' ELSE a.status END, \
+        a.password_hash FROM accounts a JOIN domains d ON d.id = a.domain_id WHERE a.id = $1";
+    /// Effective status of many accounts. The id list is one bound parameter: a JSON array on SQLite,
+    /// an int8 array on Postgres (two statement texts, same result).
+    pub const ACCOUNT_STATUSES_SQLITE: &str = "SELECT a.id, CASE WHEN d.status <> 'active' THEN 'disabled' ELSE a.status END \
+        FROM accounts a JOIN domains d ON d.id = a.domain_id WHERE a.id IN (SELECT value FROM json_each($1))";
+    pub const ACCOUNT_STATUSES_PG: &str = "SELECT a.id, CASE WHEN d.status <> 'active' THEN 'disabled' ELSE a.status END \
+        FROM accounts a JOIN domains d ON d.id = a.domain_id WHERE a.id = ANY($1)";
     pub const INSERT_ALIAS: &str =
         "INSERT INTO aliases (local_part, domain_id, account_id) VALUES ($1, $2, $3)";
     pub const INSERT_LIST: &str =
@@ -363,9 +375,10 @@ pub(crate) mod sql {
     pub const CAP_VALIDATE: &str = "SELECT c.account_id, c.domain_id, c.role, c.expires_at \
         FROM capabilities c \
         JOIN accounts a ON a.id = c.account_id AND a.domain_id = c.domain_id \
+        JOIN domains d ON d.id = a.domain_id \
         WHERE c.token_hash = $1 AND c.revoked_at IS NULL \
           AND c.expires_at > COALESCE(CAST($2 AS BIGINT), {NOW}) \
-          AND c.role = $3 AND a.status = 'active'";
+          AND c.role = $3 AND a.status = 'active' AND d.status = 'active'";
     pub const CAP_REVOKE_ONE: &str = "UPDATE capabilities SET revoked_at = \
         CASE WHEN COALESCE(CAST($1 AS BIGINT), {NOW}) > issued_at \
              THEN COALESCE(CAST($1 AS BIGINT), {NOW}) ELSE issued_at END \
@@ -376,9 +389,16 @@ pub(crate) mod sql {
              THEN COALESCE(CAST($1 AS BIGINT), {NOW}) ELSE issued_at END \
         WHERE account_id = $2 AND revoked_at IS NULL \
           AND expires_at > COALESCE(CAST($1 AS BIGINT), {NOW})";
+    /// Disabling a domain revokes every capability of every account in it.
+    pub const CAP_REVOKE_DOMAIN: &str = "UPDATE capabilities SET revoked_at = \
+        CASE WHEN COALESCE(CAST($1 AS BIGINT), {NOW}) > issued_at \
+             THEN COALESCE(CAST($1 AS BIGINT), {NOW}) ELSE issued_at END \
+        WHERE domain_id = $2 AND revoked_at IS NULL \
+          AND expires_at > COALESCE(CAST($1 AS BIGINT), {NOW})";
     pub const CAP_INSERT: &str = "INSERT INTO capabilities \
         (token_hash, account_id, domain_id, role, issued_at, expires_at) \
-        SELECT $1, id, domain_id, $2, $3, $4 FROM accounts WHERE id = $5 AND status = 'active'";
+        SELECT $1, a.id, a.domain_id, $2, $3, $4 FROM accounts a JOIN domains d ON d.id = a.domain_id \
+        WHERE a.id = $5 AND a.status = 'active' AND d.status = 'active'";
     /// The database clock as a scalar.
     pub const NOW: &str = "SELECT {NOW}";
 }
@@ -437,6 +457,16 @@ pub(crate) fn check_text(value: &str, max_bytes: usize) -> Result<()> {
         return Err(Error::Invalid("invalid value".into()));
     }
     Ok(())
+}
+
+/// Most ids one `account_statuses` call takes.
+pub const MAX_STATUS_IDS: usize = 5000;
+
+/// The effective status text of a row of `ACCOUNT_STATUSES_*`.
+pub(crate) fn decode_status_row(row: (i64, String)) -> Result<(AccountId, AccountStatus)> {
+    let (id, status) = row;
+    let status = AccountStatus::parse(&status).ok_or_else(|| Error::storage("unknown account status"))?;
+    Ok((AccountId(id), status))
 }
 
 /// `limit` of a `list_*` page as the SQL bind value: 1..=[`MAX_LIST_PAGE`], else `Invalid`.

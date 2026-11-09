@@ -31,7 +31,7 @@ pub use jobs::{ClaimRequest, JobRepo, NewJob};
 pub use directory::{
     AccountInfo, AccountStatus, AliasInfo, AuthRow, CapabilityGrant, ConfigLayers, ConfigTarget,
     DirectoryRepo, DomainInfo, DomainStatus, ListMember, NewAccount, Resolution, GLOBAL_PLAN,
-    MAX_LIST_PAGE,
+    MAX_LIST_PAGE, MAX_STATUS_IDS,
 };
 pub use mailbox::{
     sql_text, Committed, DeliverEntry, Delivery, FolderInfo, JobFence, MailboxRepo, MessageDetail,

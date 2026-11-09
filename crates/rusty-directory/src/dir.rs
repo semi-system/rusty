@@ -323,6 +323,12 @@ impl Directory {
         }
     }
 
+    /// The effective status of many accounts in ONE statement (an account of a disabled domain is
+    /// `Disabled`); ids that do not exist are absent.
+    pub async fn account_statuses(&self, ids: &[AccountId]) -> Result<std::collections::HashMap<AccountId, AccountStatus>> {
+        Ok(self.repo.account_statuses(ids).await?.into_iter().collect())
+    }
+
     /// Remove the alias with this address (`NotFound` if there is none).
     pub async fn remove_alias(&self, addr: &str) -> Result<()> {
         let (local, domain) = parse_address(addr)?;

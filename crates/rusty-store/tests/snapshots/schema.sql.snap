@@ -103,6 +103,12 @@ CREATE TRIGGER aliases_addr_unique_ins BEFORE INSERT ON aliases BEGIN SELECT RAI
 -- trigger aliases_addr_unique_upd on aliases
 CREATE TRIGGER aliases_addr_unique_upd BEFORE UPDATE ON aliases BEGIN SELECT RAISE(ABORT, 'conflict: address already used by an account or list') WHERE EXISTS (SELECT 1 FROM accounts WHERE local_part = NEW.local_part AND domain_id = NEW.domain_id) OR EXISTS (SELECT 1 FROM lists WHERE local_part = NEW.local_part AND domain_id = NEW.domain_id); END;
 
+-- trigger aliases_same_domain_ins on aliases
+CREATE TRIGGER aliases_same_domain_ins BEFORE INSERT ON aliases BEGIN SELECT RAISE(ABORT, 'invalid: alias target is in another domain') WHERE (SELECT domain_id FROM accounts WHERE id = NEW.account_id) <> NEW.domain_id; END;
+
+-- trigger aliases_same_domain_upd on aliases
+CREATE TRIGGER aliases_same_domain_upd BEFORE UPDATE OF domain_id, account_id ON aliases BEGIN SELECT RAISE(ABORT, 'invalid: alias target is in another domain') WHERE (SELECT domain_id FROM accounts WHERE id = NEW.account_id) <> NEW.domain_id; END;
+
 -- trigger blobs_zero_since_ins on blobs
 CREATE TRIGGER blobs_zero_since_ins AFTER INSERT ON blobs WHEN NEW.refcount = 0 BEGIN UPDATE blobs SET zero_since = unixepoch() WHERE hash = NEW.hash; END;
 
@@ -114,6 +120,12 @@ CREATE TRIGGER blobs_zero_since_released AFTER UPDATE OF refcount ON blobs WHEN 
 
 -- trigger folders_no_cycle on folders
 CREATE TRIGGER folders_no_cycle BEFORE UPDATE OF parent_id ON folders WHEN NEW.parent_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'folder cycle') WHERE EXISTS ( WITH RECURSIVE chain(id, depth) AS ( SELECT NEW.parent_id, 1 UNION ALL SELECT f.parent_id, c.depth + 1 FROM folders f JOIN chain c ON f.mailbox_id = NEW.mailbox_id AND f.id = c.id WHERE f.parent_id IS NOT NULL AND c.depth < 65 ) SELECT 1 FROM chain WHERE id = NEW.id ); SELECT RAISE(ABORT, 'folder tree too deep') WHERE EXISTS ( WITH RECURSIVE chain(id, depth) AS ( SELECT NEW.parent_id, 1 UNION ALL SELECT f.parent_id, c.depth + 1 FROM folders f JOIN chain c ON f.mailbox_id = NEW.mailbox_id AND f.id = c.id WHERE f.parent_id IS NOT NULL AND c.depth < 65 ) SELECT 1 FROM chain WHERE depth >= 64 ); END;
+
+-- trigger list_members_same_domain_ins on list_members
+CREATE TRIGGER list_members_same_domain_ins BEFORE INSERT ON list_members BEGIN SELECT RAISE(ABORT, 'invalid: list member is in another domain') WHERE NEW.account_id IS NOT NULL AND (SELECT domain_id FROM accounts WHERE id = NEW.account_id) <> (SELECT domain_id FROM lists WHERE id = NEW.list_id); END;
+
+-- trigger list_members_same_domain_upd on list_members
+CREATE TRIGGER list_members_same_domain_upd BEFORE UPDATE OF account_id, list_id ON list_members BEGIN SELECT RAISE(ABORT, 'invalid: list member is in another domain') WHERE NEW.account_id IS NOT NULL AND (SELECT domain_id FROM accounts WHERE id = NEW.account_id) <> (SELECT domain_id FROM lists WHERE id = NEW.list_id); END;
 
 -- trigger list_members_seq_ins on list_members
 CREATE TRIGGER list_members_seq_ins AFTER INSERT ON list_members WHEN NEW.seq IS NULL BEGIN UPDATE list_members SET seq = ( SELECT COALESCE(MAX(seq), 0) + 1 FROM list_members WHERE list_id = NEW.list_id AND rowid <> NEW.rowid ) WHERE rowid = NEW.rowid; END;

@@ -80,17 +80,44 @@ impl DirectoryRepo for SqliteRepo {
     }
 
     async fn set_domain_status(&self, domain: DomainId, status: DomainStatus) -> Result<()> {
+        // One transaction: disabling revokes every capability of the domain at the same moment.
+        let mut tx = self.store.begin_write().await?;
         let n = sqlx::query(&r(sql::UPDATE_DOMAIN_STATUS))
             .bind(status.as_str())
             .bind(domain.0)
-            .execute(self.store.pool())
+            .execute(&mut *tx)
             .await
             .map_err(map_db_error)?
             .rows_affected();
         if n == 0 {
             return Err(Error::NotFound("domain".into()));
         }
-        Ok(())
+        if status == DomainStatus::Disabled {
+            sqlx::query(&r(sql::CAP_REVOKE_DOMAIN))
+                .bind(None::<i64>)
+                .bind(domain.0)
+                .execute(&mut *tx)
+                .await
+                .map_err(map_db_error)?;
+        }
+        tx.commit().await.map_err(map_db_error)
+    }
+
+    async fn account_statuses(&self, ids: &[AccountId]) -> Result<Vec<(AccountId, AccountStatus)>> {
+        if ids.len() > crate::repo::MAX_STATUS_IDS {
+            return Err(Error::Invalid("too many ids".into()));
+        }
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let list = serde_json::to_string(&ids.iter().map(|a| a.0).collect::<Vec<i64>>())
+            .map_err(|_| Error::Invalid("ids".into()))?;
+        let rows: Vec<(i64, String)> = sqlx::query_as(&r(sql::ACCOUNT_STATUSES_SQLITE))
+            .bind(list)
+            .fetch_all(self.store.pool())
+            .await
+            .map_err(map_db_error)?;
+        rows.into_iter().map(crate::repo::directory::decode_status_row).collect()
     }
 
     async fn find_account(&self, local: &str, domain: &str) -> Result<Option<AccountInfo>> {
