@@ -227,7 +227,45 @@ pub fn from_addresses(original: &[u8]) -> Result<Vec<String>, FromError> {
     if addrs.is_empty() {
         return Err(FromError::Unusable);
     }
+    // Fail closed: the MIME layer keeps at most 100 addresses and skips ones it cannot read, so
+    // every `@` of the raw header must be accounted for by a parsed address, else an address the
+    // ownership check never saw could still be displayed as the sender.
+    if raw_from_value(original).matches('@').count() > addrs.len() || addrs.len() > MAX_FROM_ADDRESSES {
+        return Err(FromError::Unusable);
+    }
     Ok(addrs)
+}
+
+/// A `From` header lists a handful of addresses at most; more is refused.
+const MAX_FROM_ADDRESSES: usize = 20;
+
+/// The unfolded value of the first `From` header.
+fn raw_from_value(original: &[u8]) -> String {
+    let text = String::from_utf8_lossy(original);
+    let mut value = String::new();
+    let mut inside = false;
+    for line in text.split(char::from(10)) {
+        let line = line.strip_suffix(char::from(13)).unwrap_or(line);
+        if line.is_empty() {
+            break;
+        }
+        if line.starts_with(' ') || line.starts_with(char::from(9)) {
+            if inside {
+                value.push_str(line);
+            }
+            continue;
+        }
+        if inside {
+            break;
+        }
+        if let Some((name, rest)) = line.split_once(':') {
+            if name.trim().eq_ignore_ascii_case("from") {
+                inside = true;
+                value.push_str(rest);
+            }
+        }
+    }
+    value
 }
 
 /// A `Message-ID` for a message that has none: derived from the content hash, so a client that
