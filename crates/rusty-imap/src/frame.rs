@@ -62,6 +62,8 @@ pub enum RejectReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FatalReason {
     LineTooLong,
+    /// Lines and literals of one command add up past the command cap.
+    CommandTooLarge,
     /// A non-synchronising literal larger than allowed, or literals adding up past the cap.
     LiteralTooLarge,
 }
@@ -101,11 +103,19 @@ pub struct Framer {
     literal_total: usize,
     /// The current command is an APPEND (decided on its first line).
     append: Option<bool>,
+    /// The session is logged in: only then may an APPEND use the message-size cap.
+    authed: bool,
 }
 
 impl Framer {
     pub fn new(limits: FrameLimits) -> Framer {
-        Framer { limits, mode: Mode::Command, buf: Vec::new(), scan: 0, state: State::Line, literal_total: 0, append: None }
+        Framer { limits, mode: Mode::Command, buf: Vec::new(), scan: 0, state: State::Line, literal_total: 0, append: None, authed: false }
+    }
+
+    /// Tell the framer whether the session is logged in (before login an APPEND is refused outright:
+    /// no continuation, no 50 MB path).
+    pub fn set_authenticated(&mut self, authed: bool) {
+        self.authed = authed;
     }
 
     pub fn set_mode(&mut self, mode: Mode) {
@@ -153,6 +163,11 @@ impl Framer {
                         return self.fatal(FatalReason::LineTooLong);
                     }
                     let line_end = self.scan + nl + 1;
+                    let append_now = self.append == Some(true) || (self.scan == 0 && is_append(self.buf.get(..line_end).unwrap_or(&[])));
+                    let byte_cap = self.limits.max_command + if append_now && self.authed { self.limits.max_append } else { 0 };
+                    if line_end > byte_cap {
+                        return self.fatal(FatalReason::CommandTooLarge);
+                    }
                     let line = self.buf.get(self.scan..line_end).unwrap_or(&[]);
                     let first_line = self.scan == 0;
                     if first_line {
@@ -164,9 +179,11 @@ impl Framer {
                         return Frame::Command(cmd);
                     };
                     let append = self.append.unwrap_or(false);
-                    let cap = if append { self.limits.max_append } else { self.limits.max_literal };
+                    let cap = if append && self.authed { self.limits.max_append } else { self.limits.max_literal };
+                    let forbidden = append && !self.authed;
                     let total_cap = self.limits.max_command.max(cap);
-                    let too_large = marker.len > cap as u64
+                    let too_large = forbidden
+                        || marker.len > cap as u64
                         || self.literal_total as u64 + marker.len > total_cap as u64;
                     if too_large {
                         if marker.sync {
@@ -329,6 +346,7 @@ mod tests {
     #[test]
     fn literal_bytes_are_never_framing() {
         let mut f = Framer::new(lim());
+        f.set_authenticated(true);
         // The literal holds a CRLF and something that looks like another literal marker.
         f.push(b"a APPEND INBOX {14+}\r\nx\r\n{99}\r\nyyyy\r\n");
         let frames = drain(&mut f);
@@ -364,9 +382,11 @@ mod tests {
     #[test]
     fn append_may_exceed_the_ordinary_literal_cap_but_not_its_own() {
         let mut f = Framer::new(lim());
+        f.set_authenticated(true);
         f.push(b"a APPEND INBOX {500}\r\n");
         assert_eq!(drain(&mut f), vec![Frame::SendContinuation]);
         let mut g = Framer::new(lim());
+        g.set_authenticated(true);
         g.push(b"b APPEND INBOX {1001}\r\n");
         assert!(matches!(drain(&mut g)[..], [Frame::Reject { .. }]));
         // The same size on a command that is not an APPEND is over the ordinary cap.
@@ -393,7 +413,7 @@ mod tests {
         cmd.extend_from_slice(b"\r\n");
         f.push(&cmd);
         let fr = drain(&mut f);
-        assert!(matches!(fr[0], Frame::Fatal(FatalReason::LiteralTooLarge)), "{fr:?}");
+        assert!(matches!(fr[0], Frame::Fatal(_)), "{fr:?}");
     }
 
     #[test]
@@ -414,6 +434,69 @@ mod tests {
         f.set_mode(Mode::Line);
         f.push(&[b'A'; 40]);
         assert_eq!(drain(&mut f), vec![Frame::Fatal(FatalReason::LineTooLong)]);
+    }
+
+
+    #[test]
+    fn zero_length_literals_still_count_toward_the_command_cap() {
+        // Review I2: `{0+}` repeated never grew `literal_total`, so a command could buffer without end.
+        let mut f = Framer::new(lim());
+        f.set_authenticated(true);
+        f.push(b"a LOGIN");
+        let mut fatal = false;
+        for _ in 0..200 {
+            f.push(b" {0+}\r\n");
+            match drain(&mut f).as_slice() {
+                [] => {}
+                [Frame::Fatal(_)] => {
+                    fatal = true;
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(fatal, "buffered {} bytes without a verdict", f.buffered());
+        assert!(f.buffered() <= 1024);
+    }
+
+    #[test]
+    fn long_commands_of_many_short_lines_are_capped_too() {
+        let mut f = Framer::new(lim());
+        let mut fatal = false;
+        for _ in 0..100 {
+            f.push(&[b'x'; 50]);
+            f.push(b" {1+}\r\nz");
+            if matches!(drain(&mut f).as_slice(), [Frame::Fatal(_)]) {
+                fatal = true;
+                break;
+            }
+        }
+        assert!(fatal);
+    }
+
+    #[test]
+    fn append_before_login_gets_no_continuation_and_no_big_cap() {
+        // Review I3: pre-auth APPEND must not open the message-size path.
+        let mut f = Framer::new(lim());
+        f.push(b"x1 APPEND INBOX {900}\r\n");
+        assert!(matches!(drain(&mut f)[..], [Frame::Reject { .. }]), "refused before `+`");
+        let mut g = Framer::new(lim());
+        g.push(b"x1 APPEND INBOX {900+}\r\n");
+        assert!(matches!(drain(&mut g)[..], [Frame::Fatal(_)]));
+        // Authenticated, the same line is fine.
+        let mut h = Framer::new(lim());
+        h.set_authenticated(true);
+        h.push(b"x1 APPEND INBOX {900}\r\n");
+        assert_eq!(drain(&mut h), vec![Frame::SendContinuation]);
+    }
+
+    #[test]
+    fn a_literal_between_the_ordinary_and_the_command_cap_is_refused_for_non_append() {
+        // Review M3 (mutation survivor): max_literal 64 < 200 < max_command 400.
+        let mut f = Framer::new(lim());
+        f.set_authenticated(true);
+        f.push(b"a SEARCH TEXT {200}\r\n");
+        assert!(matches!(drain(&mut f)[..], [Frame::Reject { .. }]));
     }
 
     #[test]

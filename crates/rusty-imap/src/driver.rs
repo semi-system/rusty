@@ -94,6 +94,7 @@ async fn run(mut session: Session, limits: FrameLimits, stream: BoxedStream, shu
     let mut buf = vec![0u8; 16 * 1024];
     let mut last_input = tokio::time::Instant::now();
     loop {
+        framer.set_authenticated(session.is_authenticated());
         match framer.next() {
             Frame::NeedMore => {
                 let deadline = last_input + session.idle_limit();
@@ -137,6 +138,7 @@ async fn run(mut session: Session, limits: FrameLimits, stream: BoxedStream, shu
                 let text = match why {
                     FatalReason::LineTooLong => "Command line too long",
                     FatalReason::LiteralTooLarge => "Literal too large",
+                    FatalReason::CommandTooLarge => "Command too large",
                 };
                 write_bye(&mut stream, text).await;
                 return;
