@@ -218,3 +218,19 @@ async fn remove_alias_deletes_only_that_alias() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn account_status_reports_the_lifecycle_state() {
+    for_each_backend(|b| async move {
+        let d = b.dir.clone();
+        let dom = d.create_domain("st.test").await.unwrap();
+        let acc = d.create_account("alice", dom, None, None).await.unwrap();
+        assert_eq!(d.account_status(acc).await.unwrap(), Some(AccountStatus::Active));
+        d.set_status(acc, AccountStatus::Locked).await.unwrap();
+        assert_eq!(d.account_status(acc).await.unwrap(), Some(AccountStatus::Locked));
+        d.set_status(acc, AccountStatus::Disabled).await.unwrap();
+        assert_eq!(d.account_status(acc).await.unwrap(), Some(AccountStatus::Disabled));
+        assert_eq!(d.account_status(AccountId(424242)).await.unwrap(), None);
+    })
+    .await;
+}

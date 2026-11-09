@@ -4,7 +4,7 @@ use std::sync::Arc;
 use rusty_core::{AccountId, DomainId, Error, ListId, MailboxId, PlanId, Result};
 use rusty_store::repo::sqlite::SqliteRepo;
 use rusty_store::repo::{
-    AccountInfo, AliasInfo, DirectoryRepo, DomainInfo, DomainStatus, ListMember, NewAccount,
+    AccountInfo, AccountStatus, AliasInfo, DirectoryRepo, DomainInfo, DomainStatus, ListMember, NewAccount,
     Resolution, GLOBAL_PLAN,
 };
 use rusty_store::SqliteStore;
@@ -310,6 +310,17 @@ impl Directory {
         limit: usize,
     ) -> Result<Vec<AliasInfo>> {
         self.repo.list_aliases(domain, after, limit).await
+    }
+
+    /// The lifecycle state of an account (`None`: no such account). Delivery refuses accounts that
+    /// are not `Active`.
+    pub async fn account_status(&self, account: AccountId) -> Result<Option<AccountStatus>> {
+        match self.repo.account_auth(account).await? {
+            None => Ok(None),
+            Some(row) => AccountStatus::parse(&row.status)
+                .map(Some)
+                .ok_or_else(|| Error::storage("unknown account status")),
+        }
     }
 
     /// Remove the alias with this address (`NotFound` if there is none).
