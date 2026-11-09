@@ -104,10 +104,10 @@ CREATE TRIGGER aliases_addr_unique_ins BEFORE INSERT ON aliases BEGIN SELECT RAI
 CREATE TRIGGER aliases_addr_unique_upd BEFORE UPDATE ON aliases BEGIN SELECT RAISE(ABORT, 'conflict: address already used by an account or list') WHERE EXISTS (SELECT 1 FROM accounts WHERE local_part = NEW.local_part AND domain_id = NEW.domain_id) OR EXISTS (SELECT 1 FROM lists WHERE local_part = NEW.local_part AND domain_id = NEW.domain_id); END;
 
 -- trigger aliases_same_domain_ins on aliases
-CREATE TRIGGER aliases_same_domain_ins BEFORE INSERT ON aliases BEGIN SELECT RAISE(ABORT, 'invalid: alias target is in another domain') WHERE (SELECT domain_id FROM accounts WHERE id = NEW.account_id) <> NEW.domain_id; END;
+CREATE TRIGGER aliases_same_domain_ins BEFORE INSERT ON aliases BEGIN SELECT RAISE(ABORT, 'invalid: alias target is in another domain') WHERE (SELECT domain_id FROM accounts WHERE id = NEW.account_id) <> NEW.domain_id AND EXISTS (SELECT 1 FROM domains WHERE id = NEW.domain_id); END;
 
 -- trigger aliases_same_domain_upd on aliases
-CREATE TRIGGER aliases_same_domain_upd BEFORE UPDATE OF domain_id, account_id ON aliases BEGIN SELECT RAISE(ABORT, 'invalid: alias target is in another domain') WHERE (SELECT domain_id FROM accounts WHERE id = NEW.account_id) <> NEW.domain_id; END;
+CREATE TRIGGER aliases_same_domain_upd BEFORE UPDATE OF domain_id, account_id ON aliases BEGIN SELECT RAISE(ABORT, 'invalid: alias target is in another domain') WHERE (SELECT domain_id FROM accounts WHERE id = NEW.account_id) <> NEW.domain_id AND EXISTS (SELECT 1 FROM domains WHERE id = NEW.domain_id); END;
 
 -- trigger blobs_zero_since_ins on blobs
 CREATE TRIGGER blobs_zero_since_ins AFTER INSERT ON blobs WHEN NEW.refcount = 0 BEGIN UPDATE blobs SET zero_since = unixepoch() WHERE hash = NEW.hash; END;

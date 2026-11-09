@@ -5,12 +5,14 @@
 CREATE TRIGGER aliases_same_domain_ins BEFORE INSERT ON aliases
 BEGIN
   SELECT RAISE(ABORT, 'invalid: alias target is in another domain')
-  WHERE (SELECT domain_id FROM accounts WHERE id = NEW.account_id) <> NEW.domain_id;
+  WHERE (SELECT domain_id FROM accounts WHERE id = NEW.account_id) <> NEW.domain_id
+    AND EXISTS (SELECT 1 FROM domains WHERE id = NEW.domain_id);
 END;
 CREATE TRIGGER aliases_same_domain_upd BEFORE UPDATE OF domain_id, account_id ON aliases
 BEGIN
   SELECT RAISE(ABORT, 'invalid: alias target is in another domain')
-  WHERE (SELECT domain_id FROM accounts WHERE id = NEW.account_id) <> NEW.domain_id;
+  WHERE (SELECT domain_id FROM accounts WHERE id = NEW.account_id) <> NEW.domain_id
+    AND EXISTS (SELECT 1 FROM domains WHERE id = NEW.domain_id);
 END;
 CREATE TRIGGER list_members_same_domain_ins BEFORE INSERT ON list_members
 BEGIN

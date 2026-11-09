@@ -3,7 +3,9 @@
 CREATE FUNCTION rs_alias_same_domain() RETURNS trigger LANGUAGE plpgsql
 SET search_path = pg_catalog, public AS $$
 BEGIN
-  IF EXISTS (SELECT 1 FROM accounts WHERE id = NEW.account_id AND domain_id <> NEW.domain_id) THEN
+  -- A missing domain or account is left to the foreign keys (23503), so only a real mismatch is ours.
+  IF EXISTS (SELECT 1 FROM accounts WHERE id = NEW.account_id AND domain_id <> NEW.domain_id)
+     AND EXISTS (SELECT 1 FROM domains WHERE id = NEW.domain_id) THEN
     RAISE EXCEPTION 'alias target is in another domain' USING ERRCODE = 'RS002';
   END IF;
   RETURN NEW;
