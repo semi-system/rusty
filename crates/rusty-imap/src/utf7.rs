@@ -78,10 +78,10 @@ fn decode_run(run: &[u8]) -> Option<Vec<u16>> {
         }
     }
     // Leftover bits must be fewer than 6 (else a whole base64 character carried no data) and zero.
-    if bits >= 6 || acc != 0 || bytes.len() % 2 != 0 {
+    if bits >= 6 || acc != 0 || !bytes.len().is_multiple_of(2) {
         return None;
     }
-    Some(bytes.chunks_exact(2).map(|p| u16::from_be_bytes([p.first().copied().unwrap_or(0), p.get(1).copied().unwrap_or(0)])).collect())
+    Some(bytes.chunks(2).map(|p| u16::from_be_bytes([p.first().copied().unwrap_or(0), p.get(1).copied().unwrap_or(0)])).collect())
 }
 
 /// Modified UTF-7 to UTF-8; `None` if it is not canonical modified UTF-7.

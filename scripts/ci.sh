@@ -111,7 +111,7 @@ postgres_tests() {
   fi
   if [ "$rc" -eq 0 ]; then
     RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
-      cargo test -p rusty-directory --features postgres || rc=$?
+      cargo test -p rusty-directory -p rusty-imap --features postgres || rc=$?
   fi
   # The mutation hook's table and probes (the full mutation run is scripts/pg-mutate.sh, not a CI stage).
   if [ "$rc" -eq 0 ]; then
@@ -120,7 +120,7 @@ postgres_tests() {
   fi
   if [ "$rc" -eq 0 ]; then
     RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
-      cargo clippy -p rusty-store -p rusty-directory --features postgres --all-targets -- -D warnings || rc=$?
+      cargo clippy -p rusty-store -p rusty-directory -p rusty-imap --features postgres --all-targets -- -D warnings || rc=$?
   fi
   bash scripts/pg-down.sh >/dev/null 2>&1 || true
   PG_RUN_ID=""
@@ -169,7 +169,7 @@ stage "static linking" check_static
 fuzz_all() {
   if command -v cargo-fuzz >/dev/null 2>&1 && rustup toolchain list | grep -q "^nightly"; then
     local t
-    for t in parse_envelope parse_address fuzz_config fuzz_pem; do
+    for t in parse_envelope parse_address fuzz_config fuzz_pem fuzz_imap_command fuzz_imap_structure fuzz_imap_search_eval fuzz_imap_seqset fuzz_imap_utf7; do
       mkdir -p "fuzz/corpus/$t"
       # Working corpus first (new finds are written there), committed seeds second.
       (cd fuzz && cargo +nightly fuzz run "$t" "corpus/$t" "seeds/$t" -- "-max_total_time=$FUZZ_SECS" -rss_limit_mb=2048) || return 1
@@ -177,7 +177,7 @@ fuzz_all() {
   else
     FUZZ_DEGRADED=1
     echo "WARNING: cargo-fuzz and/or the nightly toolchain are missing; running the proptest fallback only (NOT real fuzzing)." >&2
-    cargo test -p rusty-mime -p rusty-directory -p rusty-core -p rusty-svc --test fuzz_smoke
+    cargo test -p rusty-mime -p rusty-directory -p rusty-core -p rusty-svc -p rusty-imap --test fuzz_smoke
   fi
 }
 

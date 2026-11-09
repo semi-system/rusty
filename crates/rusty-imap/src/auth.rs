@@ -8,7 +8,7 @@ pub const MAX_PLAIN_B64: usize = 4 * 1024;
 /// Standard base64 with padding. Anything outside the alphabet, bad padding or non-zero padding
 /// bits is refused (no leniency: this is an authentication payload).
 pub fn base64_decode(input: &[u8]) -> Option<Vec<u8>> {
-    if input.len() % 4 != 0 {
+    if !input.len().is_multiple_of(4) {
         return None;
     }
     let val = |b: u8| -> Option<u32> {

@@ -1423,6 +1423,7 @@ dependencies = [
  "rustls",
  "rusty-core",
  "rusty-directory",
+ "rusty-imap",
  "rusty-store",
  "rusty-svc",
  "tempfile",

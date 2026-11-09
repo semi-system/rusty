@@ -22,6 +22,7 @@
 //!   fixed grammars - and to write the response codes ourselves (we write all responses
 //!   ourselves anyway, see src/wire.rs). SPECIAL-USE needs no parsing: the `\Sent` attributes go
 //!   into ordinary LIST replies.
+//!
 //! The assertions below pin both halves, so a library upgrade that changes either shows up here.
 
 use imap_codec::decode::{CommandDecodeError, Decoder};
@@ -40,6 +41,7 @@ fn name(line: &str) -> Result<&'static str, String> {
     }
 }
 
+// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn commands_of_the_target_clients_decode() {
     let table: &[(&str, &str)] = &[
@@ -106,6 +108,7 @@ fn commands_of_the_target_clients_decode() {
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
+// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn what_1_0_0_does_not_know_is_exactly_the_u7_list() {
     // These all FAIL in imap-codec 1.0.0 (see the module docs): src/ext.rs parses them.
@@ -121,6 +124,7 @@ fn what_1_0_0_does_not_know_is_exactly_the_u7_list() {
     }
 }
 
+// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn literals_are_reported_not_buffered() {
     // A synchronising literal stops the decoder at the literal; the caller (our framer) decides.

@@ -124,6 +124,7 @@ impl Framer {
         self.buf.len()
     }
 
+    #[allow(clippy::should_implement_trait)] // not an Iterator: NeedMore is not the end
     pub fn next(&mut self) -> Frame {
         if self.mode == Mode::Line {
             return self.next_line();

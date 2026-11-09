@@ -143,7 +143,11 @@ async fn build(
         } else {
             Arc::new(DirectTcp)
         };
-        let handler = Arc::new(BannerSession::new(planned.kind, hostname));
+        let handler: Arc<dyn rusty_svc::SessionHandler> = if planned.kind.is_imap() {
+            Arc::new(rusty_imap::ImapHandler::new(ctx.clone()))
+        } else {
+            Arc::new(BannerSession::new(planned.kind, hostname))
+        };
         services.push(Box::new(ListenerService::new(bound, accept, handler)));
     }
     services.push(Box::new(GcService::new(GC_EVERY)));

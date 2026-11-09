@@ -225,7 +225,7 @@ async fn an_oversized_command_line_closes_the_session() {
         let mut c = Conn::open(handler(b.ctx().await), true);
         c.line().await;
         let mut big = b"a1 NOOP ".to_vec();
-        big.extend(std::iter::repeat(b'x').take(200_000));
+        big.extend(std::iter::repeat_n(b'x', 200_000));
         c.send_bytes(&big).await;
         let l = c.line().await;
         assert!(l.starts_with("* BYE"), "{l}");

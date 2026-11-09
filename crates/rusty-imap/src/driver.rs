@@ -152,7 +152,7 @@ async fn run(mut session: Session, limits: FrameLimits, stream: BoxedStream, shu
                     let mut sink = StreamSink(&mut stream);
                     let mut out = Out::new(&mut sink);
                     match decoded {
-                        Ok((rest, cmd)) if rest.is_empty() => session.command(cmd, &mut out).await,
+                        Ok(([], cmd)) => session.command(cmd, &mut out).await,
                         Ok(_) | Err(CommandDecodeError::Incomplete | CommandDecodeError::LiteralFound { .. } | CommandDecodeError::Failed) => {
                             let tag = tag_of(&bytes);
                             session.framing_error(tag.as_deref(), &mut out, FramingError::Unparsable);

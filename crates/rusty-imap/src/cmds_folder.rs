@@ -6,7 +6,6 @@ use imap_codec::imap_types::mailbox::{ListMailbox, Mailbox as WireMailbox};
 use imap_codec::imap_types::status::StatusDataItemName;
 use rusty_core::{Error, Flags, FolderId};
 use rusty_store::{FolderInfo, MAX_BATCH, MAX_PAGE};
-use std::borrow::Cow;
 
 use crate::errors::Op;
 use crate::out::{Closed, Out};
@@ -315,7 +314,7 @@ impl Session {
     pub(crate) async fn cmd_status(
         &mut self,
         m: &WireMailbox<'_>,
-        items: &Cow<'_, [StatusDataItemName]>,
+        items: &[StatusDataItemName],
         out: &mut Out<'_>,
     ) -> Result<Done, Closed> {
         let Some(mb) = self.mailbox() else { return Ok(Done::bad("Not authenticated")) };

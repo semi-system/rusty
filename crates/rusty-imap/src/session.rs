@@ -10,7 +10,7 @@ use std::time::Duration;
 use imap_codec::imap_types::auth::AuthMechanism;
 use imap_codec::imap_types::command::{Command, CommandBody};
 use imap_codec::imap_types::mailbox::Mailbox as WireMailbox;
-use rusty_core::{AccountId, Error};
+use rusty_core::Error;
 use rusty_store::Mailbox;
 use rusty_svc::{Context, PeerInfo, ServiceEvent, Verdict};
 
@@ -88,10 +88,6 @@ impl Done {
         Done { kind: Kind::No, code: Some(code.to_owned()), text: text.to_owned(), action: Action::Continue }
     }
 
-    pub fn no_plain(text: &str) -> Done {
-        Done { kind: Kind::No, code: None, text: text.to_owned(), action: Action::Continue }
-    }
-
     pub fn bad(text: &str) -> Done {
         Done { kind: Kind::Bad, code: None, text: text.to_owned(), action: Action::Continue }
     }
@@ -109,7 +105,6 @@ impl Done {
 }
 
 pub(crate) struct User {
-    pub account: AccountId,
     pub mailbox: Mailbox,
 }
 
@@ -368,7 +363,7 @@ impl Session {
         };
         self.ctx.rate.record_success(ip, identity);
         self.ctx.events.emit(ServiceEvent::AuthResult { service: "imap", peer: self.peer.addr, ok: true });
-        self.user = Some(User { account, mailbox });
+        self.user = Some(User { mailbox });
         Ok(())
     }
 
