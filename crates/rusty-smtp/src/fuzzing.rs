@@ -91,9 +91,8 @@ pub fn check_headers(data: &[u8]) {
     assert!(out.starts_with(b"Return-Path: <a@b.c>\r\nReceived: from "));
     let head = header_section(&out);
     for (i, &b) in head.iter().enumerate() {
-        if b == b'' {
-            assert_eq!(head.get(i + 1), Some(&b'
-'), "a lone CR survived in the header block");
+        if b == b'\r' {
+            assert_eq!(head.get(i + 1), Some(&b'\n'), "a lone CR survived in the header block");
         }
     }
     let mut ar = 0;
