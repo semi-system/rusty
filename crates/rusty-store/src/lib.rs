@@ -33,7 +33,7 @@ pub use jobs::{
     MAX_PENDING_JOBS_PER_DOMAIN, MAX_RETRY_AFTER_SECS, MAX_SETTLED_PER_CLAIM,
 };
 pub use mailbox::{
-    normalize_keyword, validate_folder_name, BatchOutcome, Change, ChangeItem, ChangeOp,
+    ChangeNotifier, normalize_keyword, validate_folder_name, BatchOutcome, Change, ChangeItem, ChangeOp,
     ChangePage, CopyBatch, DeliverItem, DeliverOutcome, Mailbox, MailboxLimits, MessageRef, MessageSummary,
     MoveBatch, DEFAULT_MAX_MESSAGE_BYTES, MAX_BATCH, MAX_DELIVER_BATCH_BYTES, MAX_FOLDER_DEPTH,
     MAX_FOLDER_NAME_BYTES, MAX_KEYWORDS_PER_MESSAGE, MAX_KEYWORD_BYTES, MAX_PAGE,

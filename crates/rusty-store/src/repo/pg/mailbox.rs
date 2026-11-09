@@ -576,7 +576,7 @@ impl MailboxRepo for PgRepo {
                     Some(r) => (DeliverOutcome::Duplicate(r), None),
                     None => {
                         let dids: Vec<&[u8]> = delivery.iter().map(|d| &d.id.0[..]).collect();
-                        let at = delivery.and_then(|d| d.created_at);
+                        let at = delivery.and_then(|d| d.created_at).or(msg.internal_date);
                         let (mut refs, seq) =
                             insert_messages(c, mb.0, &[msg], &dids, at, knobs).await?;
                         (DeliverOutcome::Created(refs.remove(0)), Some(seq))

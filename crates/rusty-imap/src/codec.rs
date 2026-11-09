@@ -23,6 +23,10 @@ use crate::utf7;
 
 /// Parse a framed command; the error carries nothing about the input.
 pub fn parse_command(frame: &[u8]) -> Result<Command, ParseError> {
+    // The verbs the library lacks are ours (src/ext.rs).
+    if let Some(r) = crate::ext::parse(frame) {
+        return r;
+    }
     match CommandCodec::new().decode(frame) {
         Ok(([], cmd)) => Ok(Command { tag: cmd.tag.as_ref().to_owned(), body: convert(cmd.body)? }),
         Ok(_) | Err(CommandDecodeError::Incomplete | CommandDecodeError::LiteralFound { .. } | CommandDecodeError::Failed) => {
@@ -213,8 +217,12 @@ fn convert(body: CommandBody<'_>) -> Result<Body, ParseError> {
                 })
                 .collect(),
         },
-        C::Append { mailbox, flags, date: _, message } => {
-            Body::Append { name: name(&mailbox)?, flags: flags.iter().map(flag).collect(), data: message.as_ref().to_vec() }
+        C::Append { mailbox, flags, date, message } => {
+            let date = date.map(|d| {
+                let c: &chrono::DateTime<chrono::FixedOffset> = d.as_ref();
+                c.timestamp()
+            });
+            Body::Append { name: name(&mailbox)?, flags: flags.iter().map(flag).collect(), date, data: message.as_ref().to_vec() }
         }
         C::Check => Body::Check,
         C::Close => Body::Close,

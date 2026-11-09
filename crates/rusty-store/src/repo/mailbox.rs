@@ -64,6 +64,9 @@ pub struct NewMessage {
     pub size: i64,
     pub flags: Flags,
     pub env: Envelope,
+    /// The client's internal date (IMAP APPEND); `None` = database clock. The facade bounds it with
+    /// `MAX_SUPPLIED_TIME`. Honoured by `append` (a delivery's own `created_at` wins).
+    pub internal_date: Option<i64>,
 }
 
 /// Idempotency key of a delivery. `created_at: None` = database clock; `Some(t)` is stored

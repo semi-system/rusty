@@ -26,6 +26,7 @@ pub mod fuzz_checks;
 pub mod auth;
 pub mod codec;
 pub mod command;
+pub mod ext;
 pub mod errors;
 pub mod folders;
 pub mod out;

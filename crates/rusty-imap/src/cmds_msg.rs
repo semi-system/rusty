@@ -14,14 +14,21 @@ use crate::search::{eval, needs_content, needs_keywords, Bounds, Content, Facts,
 use crate::session::{Done, Session};
 
 impl Session {
-    pub(crate) async fn cmd_expunge(&mut self, out: &mut Out<'_>) -> Result<Done, Closed> {
+    pub(crate) async fn cmd_expunge(&mut self, out: &mut Out<'_>, only_uids: Option<&SeqSet>) -> Result<Done, Closed> {
         let Some(mb) = self.mailbox() else { return Ok(Done::bad("Not authenticated")) };
         let Some(sel) = self.sel.as_ref() else { return Ok(Done::bad("No mailbox selected")) };
         if sel.read_only {
             return Ok(Done::no("READ-ONLY", "Mailbox is read-only"));
         }
-        let doomed: Vec<(usize, MessageId)> =
-            sel.entries.iter().enumerate().filter(|(_, e)| e.flags.contains(Flags::DELETED)).map(|(i, e)| (i, e.id)).collect();
+        // UID EXPUNGE only removes the Deleted messages whose uid is in the set.
+        let allowed: Option<std::collections::HashSet<usize>> = only_uids.map(|s| crate::seqset::select_by_uid(s, &sel.uids()).into_iter().collect());
+        let doomed: Vec<(usize, MessageId)> = sel
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(i, e)| e.flags.contains(Flags::DELETED) && allowed.as_ref().is_none_or(|a| a.contains(i)))
+            .map(|(i, e)| (i, e.id))
+            .collect();
         let ids: Vec<MessageId> = doomed.iter().map(|(_, id)| *id).collect();
         for chunk in ids.chunks(MAX_BATCH) {
             if let Err(e) = mb.expunge_many(chunk).await {
@@ -129,18 +136,28 @@ impl Session {
         }
         let ids: Vec<MessageId> = picked.iter().filter_map(|i| sel.entries.get(*i)).map(|e| e.id).collect();
         let same_folder = sel.folder == to;
+        let uid_of: std::collections::HashMap<MessageId, u32> = sel.entries.iter().map(|e| (e.id, e.uid)).collect();
+        let (mut src_uids, mut dst_uids): (Vec<u32>, Vec<u32>) = (Vec::new(), Vec::new());
         for chunk in ids.chunks(MAX_BATCH) {
-            let r = if is_move {
+            let r: Result<Vec<(MessageId, rusty_store::MessageRef)>, Error> = if is_move {
                 if same_folder {
-                    Ok(())
+                    Ok(Vec::new())
                 } else {
-                    mb.move_many(chunk, to).await.map(|_| ())
+                    mb.move_many(chunk, to).await.map(|b| b.moved)
                 }
             } else {
-                mb.copy_many(chunk, to).await.map(|_| ())
+                mb.copy_many(chunk, to).await.map(|b| b.copied)
             };
-            if let Err(e) = r {
-                return Ok(Done::store(Op::Store, &e));
+            match r {
+                Ok(pairs) => {
+                    for (src, new) in pairs {
+                        if let Some(u) = uid_of.get(&src) {
+                            src_uids.push(*u);
+                            dst_uids.push(new.uid);
+                        }
+                    }
+                }
+                Err(e) => return Ok(Done::store(Op::Store, &e)),
             }
         }
         if is_move && !same_folder {
@@ -160,10 +177,14 @@ impl Session {
             (false, true) => "UID COPY completed",
             (false, false) => "COPY completed",
         };
-        Ok(Done::ok(verb))
+        let uv = folders.iter().find(|f| f.id == to).map_or(0, |f| f.uid_validity);
+        if src_uids.is_empty() {
+            return Ok(Done::ok(verb));
+        }
+        Ok(Done::ok_code(&format!("COPYUID {uv} {} {}", uid_set(&src_uids), uid_set(&dst_uids)), verb))
     }
 
-    pub(crate) async fn cmd_append(&mut self, dest: &str, flags: &[FlagArg], data: &[u8]) -> Result<Done, Closed> {
+    pub(crate) async fn cmd_append(&mut self, dest: &str, flags: &[FlagArg], date: Option<i64>, data: &[u8]) -> Result<Done, Closed> {
         let Some(mb) = self.mailbox() else { return Ok(Done::bad("Not authenticated")) };
         let name = dest;
         let Ok(fs) = split_flags(flags) else { return Ok(Done::no("CANNOT", "Invalid keyword")) };
@@ -174,9 +195,12 @@ impl Session {
         let Some(folder) = self.resolver.lookup(&folders, name) else {
             return Ok(Done::no("TRYCREATE", "Mailbox does not exist"));
         };
-        // The internal date the client may give is not honoured yet (the message gets the server
-        // time); see the deferred list.
-        let r = match mb.append(folder, Bytes::copy_from_slice(data), fs.system).await {
+        let bytes = Bytes::copy_from_slice(data);
+        let stored = match date {
+            Some(d) => mb.append_dated(folder, bytes, fs.system, d).await,
+            None => mb.append(folder, bytes, fs.system).await,
+        };
+        let r = match stored {
             Ok(r) => r,
             Err(e) => return Ok(Done::store(Op::Store, &e)),
         };
@@ -185,6 +209,15 @@ impl Session {
                 return Ok(Done::store(Op::Store, &e));
             }
         }
-        Ok(Done::ok("APPEND completed"))
+        let uv = folders.iter().find(|f| f.id == folder).map_or(0, |f| f.uid_validity);
+        Ok(Done::ok_code(&format!("APPENDUID {uv} {}", r.uid), "APPEND completed"))
     }
+}
+
+/// `5,7:9`: ascending numbers as a uid set (consecutive runs become ranges), in the given order of
+/// first appearance; used by COPYUID where source and destination lists must stay aligned, so
+/// only runs that are consecutive in BOTH positions would be mergeable: plain comma lists keep it
+/// exact and simple.
+fn uid_set(uids: &[u32]) -> String {
+    uids.iter().map(u32::to_string).collect::<Vec<_>>().join(",")
 }

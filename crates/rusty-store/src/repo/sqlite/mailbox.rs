@@ -295,7 +295,7 @@ async fn insert_message(
         cands.iter().find_map(|k| known.get(*k).copied()).unwrap_or(id)
     };
     // internal_date: the database clock, or the caller's `_at(now)` value verbatim (D2).
-    let at = delivery.and_then(|d| d.created_at);
+    let at = delivery.and_then(|d| d.created_at).or(m.internal_date);
     sqlx::query(
         &crate::repo::sqlite_lit("INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, size, internal_date, \
          subject, from_addr, to_addrs, message_id_hdr, thread_id, flags) \

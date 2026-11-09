@@ -107,17 +107,18 @@ fn commands_of_the_target_clients_decode() {
 
 // backend-neutral: pure parser over bytes, no store involved
 #[test]
-fn what_1_0_0_does_not_know_is_exactly_the_u7_list() {
-    // These all FAIL in imap-codec 1.0.0 (see the module docs): src/ext.rs parses them.
-    for line in [
-        "1 ID (\"name\" \"Thunderbird\" \"version\" \"115.0\")\r\n",
-        "2 ID NIL\r\n",
-        "3 NAMESPACE\r\n",
-        "4 UID EXPUNGE 5:7\r\n",
-        "5 LIST (SUBSCRIBED) \"\" \"*\" RETURN (SPECIAL-USE)\r\n",
-        "6 LIST \"\" \"*\" RETURN (CHILDREN)\r\n",
+fn what_the_library_lacks_is_parsed_by_our_own_layer() {
+    // The grammar library (1.0.0) fails on all of these (pinned by the evaluation recorded in the
+    // module docs); the adapter answers them with src/ext.rs.
+    for (line, want) in [
+        ("1 ID (\"name\" \"Thunderbird\" \"version\" \"115.0\")\r\n", "Id"),
+        ("2 ID NIL\r\n", "Id"),
+        ("3 NAMESPACE\r\n", "Namespace"),
+        ("4 UID EXPUNGE 5:7\r\n", "UidExpunge"),
+        ("5 LIST (SUBSCRIBED) \"\" \"*\" RETURN (SPECIAL-USE)\r\n", "ListExt"),
+        ("6 LIST \"\" \"*\" RETURN (CHILDREN)\r\n", "ListExt"),
     ] {
-        assert_eq!(name(line), Err("failed".to_owned()), "{line:?} became supported: drop it from src/ext.rs");
+        assert_eq!(name(line), Ok(want.to_owned()), "{line:?}");
     }
 }
 

@@ -153,6 +153,10 @@ fn verb(body: &Body) -> &'static str {
         Body::Move { .. } => "MOVE",
         Body::Idle => "IDLE",
         Body::Enable => "ENABLE",
+        Body::Id { .. } => "ID",
+        Body::Namespace => "NAMESPACE",
+        Body::UidExpunge { .. } => "UID EXPUNGE",
+        Body::ListExt { .. } => "LIST",
     }
 }
 
@@ -175,7 +179,10 @@ impl Session {
     }
 
     pub(crate) fn capabilities(&self) -> String {
-        let mut caps = vec!["IMAP4rev1", "SASL-IR", "UNSELECT", "CHILDREN", "MOVE"];
+        let mut caps = vec![
+            "IMAP4rev1", "SASL-IR", "UNSELECT", "CHILDREN", "MOVE", "UIDPLUS", "NAMESPACE", "ID", "ENABLE", "LITERAL+", "SPECIAL-USE",
+            "LIST-EXTENDED", "IDLE",
+        ];
         if self.user.is_none() {
             if self.tls {
                 caps.push("AUTH=PLAIN");
@@ -280,6 +287,12 @@ impl Session {
                 return Ok(Done::ok("CAPABILITY completed"));
             }
             C::Noop => return Ok(Done::ok("NOOP completed")),
+            C::Id { client } => {
+                let get = |k: &str| client.iter().find(|(n, _)| n.eq_ignore_ascii_case(k)).map(|(_, v)| v.chars().take(64).collect::<String>());
+                tracing::info!(client_name = get("name").as_deref(), client_version = get("version").as_deref(), "imap client id");
+                out.untagged("ID (\"name\" \"Rusty\")");
+                return Ok(Done::ok("ID completed"));
+            }
             C::Logout => {
                 out.untagged("BYE Logging out");
                 return Ok(Done::ok("LOGOUT completed").with(Action::Close));
@@ -297,7 +310,7 @@ impl Session {
         if !selected
             && matches!(
                 body,
-                C::Check | C::Close | C::Unselect | C::Expunge | C::Search { .. } | C::Fetch { .. } | C::Store { .. } | C::Copy { .. } | C::Move { .. }
+                C::Check | C::Close | C::Unselect | C::Expunge | C::UidExpunge { .. } | C::Search { .. } | C::Fetch { .. } | C::Store { .. } | C::Copy { .. } | C::Move { .. }
             )
         {
             return Ok(Done::bad("No mailbox selected"));
@@ -318,7 +331,14 @@ impl Session {
             C::List { reference, pattern } => self.cmd_list(&reference, &pattern, false, out).await,
             C::Lsub { reference, pattern } => self.cmd_list(&reference, &pattern, true, out).await,
             C::Status { name, items } => self.cmd_status(&name, &items, out).await,
-            C::Append { name, flags, data } => self.cmd_append(&name, &flags, &data).await,
+            C::Append { name, flags, date, data } => self.cmd_append(&name, &flags, date, &data).await,
+            C::Namespace => {
+                out.untagged("NAMESPACE ((\"\" \"/\")) NIL NIL");
+                Ok(Done::ok("NAMESPACE completed"))
+            }
+            C::ListExt { reference, patterns, subscribed_only, return_subscribed } => {
+                self.cmd_list_ext(&reference, &patterns, subscribed_only, return_subscribed, out).await
+            }
             C::Idle => Ok(Done::no("CANNOT", "IDLE is not available")),
             C::Check => Ok(Done::ok("CHECK completed")),
             C::Close => Ok(self.cmd_close().await),
@@ -326,7 +346,8 @@ impl Session {
                 self.sel = None;
                 Ok(Done::ok("UNSELECT completed"))
             }
-            C::Expunge => self.cmd_expunge(out).await,
+            C::Expunge => self.cmd_expunge(out, None).await,
+            C::UidExpunge { set } => self.cmd_expunge(out, Some(&set)).await,
             C::Search { charset, key, uid } => self.cmd_search(charset.as_deref(), &key, uid, out).await,
             C::Fetch { set, items, uid } => self.cmd_fetch(&set, &items, uid, out).await,
             C::Store { set, kind, silent, flags, uid } => self.cmd_store(&set, kind, silent, &flags, uid, out).await,

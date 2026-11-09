@@ -251,49 +251,77 @@ impl Session {
         &mut self,
         reference: &str,
         pattern: &str,
-        subscribed_only: bool,
+        lsub: bool,
         out: &mut Out<'_>,
     ) -> Result<Done, Closed> {
-        let verb = if subscribed_only { "LSUB" } else { "LIST" };
+        let verb = if lsub { "LSUB" } else { "LIST" };
+        self.list_matches(verb, reference, &[pattern.to_owned()], lsub, false, out).await
+    }
+
+    /// Extended LIST (RFC 5258): several patterns, selection by subscription, `\\Subscribed`.
+    pub(crate) async fn cmd_list_ext(
+        &mut self,
+        reference: &str,
+        patterns: &[String],
+        subscribed_only: bool,
+        return_subscribed: bool,
+        out: &mut Out<'_>,
+    ) -> Result<Done, Closed> {
+        self.list_matches("LIST", reference, patterns, subscribed_only, return_subscribed || subscribed_only, out).await
+    }
+
+    async fn list_matches(
+        &mut self,
+        verb: &str,
+        reference: &str,
+        patterns: &[String],
+        subscribed_only: bool,
+        mark_subscribed: bool,
+        out: &mut Out<'_>,
+    ) -> Result<Done, Closed> {
         let folders = match self.folders().await {
             Ok(f) => f,
             Err(d) => return Ok(d),
         };
-                let delim = self.resolver.delimiter();
-        // An empty pattern asks for the hierarchy delimiter.
-        if pattern.is_empty() {
-            out.untagged(&format!("{verb} (\\Noselect) \"{delim}\" \"\""));
-            return Ok(Done::ok(&format!("{verb} completed")));
-        }
-        // "INBOX" is case-insensitive in the first component.
-        let full = {
-            let joined = format!("{reference}{pattern}");
-            let (head, tail) = match joined.split_once(delim) {
-                Some((h, t)) => (h.to_owned(), Some(t.to_owned())),
-                None => (joined.clone(), None),
-            };
-            let head = if head.eq_ignore_ascii_case("INBOX") { "INBOX".to_owned() } else { head };
-            match tail {
-                Some(t) => format!("{head}{delim}{t}"),
-                None => head,
-            }
-        };
+        let delim = self.resolver.delimiter();
         let names = self.resolver.names(&folders);
-        for (f, name) in folders.iter().zip(names.iter()) {
-            if subscribed_only && !f.subscribed {
+        let mut shown = std::collections::HashSet::new();
+        for pattern in patterns {
+            // An empty pattern asks for the hierarchy delimiter.
+            if pattern.is_empty() {
+                out.untagged(&format!("{verb} (\\Noselect) \"{delim}\" \"\""));
                 continue;
             }
-            if !wildcard_match(&full, name, delim) {
-                continue;
+            // "INBOX" is case-insensitive in the first component.
+            let joined = format!("{reference}{pattern}");
+            let full = match joined.split_once(delim) {
+                Some((h, t)) if h.eq_ignore_ascii_case("INBOX") => format!("INBOX{delim}{t}"),
+                None if joined.eq_ignore_ascii_case("INBOX") => "INBOX".to_owned(),
+                _ => joined,
+            };
+            for (f, name) in folders.iter().zip(names.iter()) {
+                if (subscribed_only && !f.subscribed) || !wildcard_match(&full, name, delim) || !shown.insert(f.id) {
+                    continue;
+                }
+                let mut attrs: Vec<&str> = Vec::new();
+                if mark_subscribed && f.subscribed {
+                    attrs.push("\\Subscribed");
+                }
+                attrs.push(if folders.iter().any(|c| c.parent == Some(f.id)) { "\\HasChildren" } else { "\\HasNoChildren" });
+                match f.role.as_str() {
+                    "sent" => attrs.push("\\Sent"),
+                    "drafts" => attrs.push("\\Drafts"),
+                    "trash" => attrs.push("\\Trash"),
+                    "spam" => attrs.push("\\Junk"),
+                    "archive" => attrs.push("\\Archive"),
+                    _ => {}
+                }
+                let mut line = format!("* {verb} ({}) \"{delim}\" ", attrs.join(" ")).into_bytes();
+                wire::mailbox(&mut line, name);
+                line.extend_from_slice(b"\r\n");
+                out.raw(&line);
+                out.flush_if_big().await?;
             }
-            let has_children = folders.iter().any(|c| c.parent == Some(f.id));
-            let attr = if has_children { "\\HasChildren" } else { "\\HasNoChildren" };
-            let mut line = format!("{verb} ({attr}) \"{delim}\" ").into_bytes();
-            wire::mailbox(&mut line, name);
-            out.raw(b"* ");
-            out.raw(&line);
-            out.raw(b"\r\n");
-            out.flush_if_big().await?;
         }
         Ok(Done::ok(&format!("{verb} completed")))
     }

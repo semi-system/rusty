@@ -20,7 +20,7 @@ async fn list_lsub_create_rename_delete_and_subscribe() {
         let (mut c, _) = logged_in(&b, "alice@a.test").await;
         let l = c.ok("LIST \"\" \"*\"").await;
         assert_eq!(l[0], "* LIST (\\HasNoChildren) \"/\" INBOX");
-        assert!(l.contains(&"* LIST (\\HasNoChildren) \"/\" Sent".to_owned()), "{l:?}");
+        assert!(l.contains(&"* LIST (\\HasNoChildren \\Sent) \"/\" Sent".to_owned()), "{l:?}");
         assert_eq!(c.ok("LIST \"\" \"\"").await, ["* LIST (\\Noselect) \"/\" \"\""]);
         assert_eq!(c.ok("LIST \"\" \"inbox\"").await.len(), 1, "INBOX is case-insensitive");
         // CREATE builds intermediate folders; names are UTF-7 on the wire.

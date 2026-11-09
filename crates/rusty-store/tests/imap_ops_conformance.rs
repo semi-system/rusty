@@ -324,3 +324,22 @@ async fn keywords_many_never_reads_another_mailbox() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn append_dated_stores_the_clients_internal_date_within_bounds() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let (_, _, mb) = acct(&b, "ad").await;
+        let r = mb.append_dated(INBOX, raw("old", Some("old@t.test")), Flags::SEEN, 1_262_304_000).await.unwrap();
+        let d = mb.get_message(r.id).await.unwrap();
+        assert_eq!(d.summary.internal_date, 1_262_304_000, "{n}");
+        assert_eq!(d.summary.flags, Flags::SEEN, "{n}");
+        let plain = mb.append(INBOX, raw("new", Some("new@t.test")), Flags::empty()).await.unwrap();
+        assert!(mb.get_message(plain.id).await.unwrap().summary.internal_date > 1_700_000_000, "{n}: undated appends use the database clock");
+        for bad in [-1, rusty_store::MAX_SUPPLIED_TIME + 1] {
+            assert!(matches!(mb.append_dated(INBOX, raw("x", None), Flags::empty(), bad).await, Err(Error::Invalid(_))), "{n}: {bad}");
+        }
+        assert_eq!(mb.list_folder(INBOX, 0, 10).await.unwrap().len(), 2, "{n}: rejected dates stored nothing");
+    })
+    .await;
+}

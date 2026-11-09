@@ -139,7 +139,7 @@ pub enum Body {
     List { reference: String, pattern: String },
     Lsub { reference: String, pattern: String },
     Status { name: String, items: Vec<StatusItem> },
-    Append { name: String, flags: Vec<FlagArg>, data: Vec<u8> },
+    Append { name: String, flags: Vec<FlagArg>, date: Option<i64>, data: Vec<u8> },
     Check,
     Close,
     Unselect,
@@ -151,6 +151,13 @@ pub enum Body {
     Move { set: SeqSet, name: String, uid: bool },
     Idle,
     Enable,
+    /// RFC 2971: the client's identification (key, value) pairs.
+    Id { client: Vec<(String, String)> },
+    Namespace,
+    /// UIDPLUS `UID EXPUNGE`.
+    UidExpunge { set: SeqSet },
+    /// Extended LIST (RFC 5258); special-use and children attributes are always returned.
+    ListExt { reference: String, patterns: Vec<String>, subscribed_only: bool, return_subscribed: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
