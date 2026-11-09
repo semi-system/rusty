@@ -29,16 +29,23 @@ pub fn delivery_id_for(mail_from: &str, account: i64, original: &[u8]) -> Delive
     DeliveryId::derive(&BlobHash::of(original), &format!("account:{account}"), &format!("from:{mail_from}"))
 }
 
-/// Replace every bare LF with CRLF (a CR that is not followed by LF is kept as it is).
+/// Make every line break CRLF: a bare LF gets its CR, and a bare CR gets its LF. A lone CR is a line
+/// break to some readers and not to others; leaving it would let a sender hide a forged header from
+/// the header filter below.
 pub fn normalise_crlf(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len() + data.len() / 32);
-    let mut prev = 0u8;
-    for &b in data {
-        if b == b'\n' && prev != b'\r' {
-            out.push(b'\r');
+    let mut i = 0;
+    while let Some(&b) = data.get(i) {
+        match b {
+            // CRLF is consumed as a pair; any CR or LF reaching the next arm is a bare one.
+            b'\r' if data.get(i + 1) == Some(&b'\n') => {
+                out.extend_from_slice(b"\r\n");
+                i += 1;
+            }
+            b'\r' | b'\n' => out.extend_from_slice(b"\r\n"),
+            _ => out.push(b),
         }
-        out.push(b);
-        prev = b;
+        i += 1;
     }
     out
 }
@@ -78,7 +85,8 @@ fn sanitize(s: &str, max: usize) -> String {
 
 fn is_stripped(name: &[u8]) -> bool {
     let lower: Vec<u8> = name.iter().map(u8::to_ascii_lowercase).collect();
-    lower == b"authentication-results" || lower == b"received-spf" || lower.starts_with(b"x-rusty-")
+    // `Return-Path` is added by the final delivery step, so the sender's own is forged by definition.
+    lower == b"authentication-results" || lower == b"received-spf" || lower == b"return-path" || lower.starts_with(b"x-rusty-")
 }
 
 /// Drop the logical headers (a header line plus its folded continuation lines) that this server
@@ -86,9 +94,16 @@ fn is_stripped(name: &[u8]) -> bool {
 fn strip_reserved(headers: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(headers.len());
     let mut dropping = false;
+    let mut seen_field = false;
     for line in headers.split_inclusive(|&b| b == b'\n') {
         let continuation = matches!(line.first(), Some(b' ' | b'\t'));
+        if continuation && !seen_field {
+            // A "continuation" with nothing to continue (the first line of the message) would be glued
+            // to whatever header precedes it once our trace headers go on top. Drop it.
+            continue;
+        }
         if !continuation {
+            seen_field = true;
             // The name is what precedes the first colon (the whole line if there is none, so a reserved
             // prefix is dropped even when the colon was damaged), without trailing blanks that lenient
             // parsers ignore.

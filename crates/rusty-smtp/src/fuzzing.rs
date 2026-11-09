@@ -90,7 +90,14 @@ pub fn check_headers(data: &[u8]) {
     let out = prepare_message(data, &trace);
     assert!(out.starts_with(b"Return-Path: <a@b.c>\r\nReceived: from "));
     let head = header_section(&out);
+    for (i, &b) in head.iter().enumerate() {
+        if b == b'' {
+            assert_eq!(head.get(i + 1), Some(&b'
+'), "a lone CR survived in the header block");
+        }
+    }
     let mut ar = 0;
+    let mut rp = 0;
     for line in head.split(|&b| b == b'\n') {
         if matches!(line.first(), Some(b' ' | b'\t')) {
             continue;
@@ -99,10 +106,14 @@ pub fn check_headers(data: &[u8]) {
         if lower.starts_with(b"authentication-results:") {
             ar += 1;
         }
+        if lower.starts_with(b"return-path:") {
+            rp += 1;
+        }
         assert!(!lower.starts_with(b"received-spf:"), "a forged Received-SPF survived");
         assert!(!lower.starts_with(b"x-rusty-"), "a forged X-Rusty header survived");
     }
     assert_eq!(ar, 1, "exactly our own Authentication-Results");
+    assert_eq!(rp, 1, "exactly our own Return-Path");
     // The part after the header section is the normalised original body.
     let norm = normalise_crlf(data);
     if let Some(p) = norm.windows(4).position(|w| w == b"\r\n\r\n") {

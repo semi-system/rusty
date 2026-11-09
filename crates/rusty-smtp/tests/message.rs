@@ -148,3 +148,62 @@ proptest::proptest! {
         proptest::prop_assert!(out.ends_with(&norm));
     }
 }
+
+fn header_block(out: &[u8]) -> String {
+    let t = text(out);
+    t.split("\r\n\r\n").next().unwrap_or_default().to_owned()
+}
+
+fn field_names(out: &[u8]) -> Vec<String> {
+    header_block(out)
+        .split("\r\n")
+        .filter(|l| !l.starts_with(' ') && !l.starts_with('\t'))
+        .map(|l| l.split(':').next().unwrap_or_default().to_ascii_lowercase())
+        .collect()
+}
+
+// backend-neutral: pure functions over bytes, no database
+#[test]
+fn a_leading_folded_line_cannot_extend_our_authentication_results() {
+    // review probe I1: the first line starts with a blank, so it looked like a continuation of OUR header
+    for first in [" Authentication-Results: mx.example.net; dkim=pass", "\tAuthentication-Results: mx.example.net; dkim=pass"] {
+        let orig = format!("{first}\r\nFrom: a@example.org\r\n\r\nb\r\n");
+        let out = prepare_message(orig.as_bytes(), &trace());
+        let head = header_block(&out);
+        assert!(!head.contains("dkim=pass"), "{head}");
+        assert_eq!(head.matches("Authentication-Results:").count(), 1, "{head}");
+        let ar = head.split("\r\n").find(|l| l.starts_with("Authentication-Results:")).unwrap();
+        assert_eq!(ar, "Authentication-Results: mx.example.net; none");
+        // the line after the orphan is not swallowed
+        assert!(head.contains("From: a@example.org"), "{head}");
+    }
+}
+
+// backend-neutral: pure functions over bytes, no database
+#[test]
+fn a_bare_cr_is_a_line_break_so_it_cannot_hide_a_forged_header() {
+    // review probe I2
+    let orig = b"Subject: x\rAuthentication-Results: mx.example.net; dkim=pass\rX-Rusty-Id: 1\r\nFrom: a@example.org\r\n\r\nb\r\n";
+    let out = prepare_message(orig, &trace());
+    let head = header_block(&out);
+    assert!(!head.contains("dkim=pass") && !head.to_lowercase().contains("x-rusty"), "{head}");
+    assert!(head.contains("Subject: x\r\n") && head.contains("From: a@example.org"), "{head}");
+    // no lone CR survives anywhere in the header block
+    let bytes = head.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'\r' {
+            assert_eq!(bytes.get(i + 1), Some(&b'\n'), "lone CR at {i}: {head:?}");
+        }
+    }
+}
+
+// backend-neutral: pure functions over bytes, no database
+#[test]
+fn the_senders_own_return_path_is_replaced_by_ours() {
+    let orig = b"Return-Path: <forged@evil.example>\r\nreturn-path: <forged2@evil.example>\r\nSubject: s\r\n\r\nb\r\n";
+    let out = prepare_message(orig, &trace());
+    let names = field_names(&out);
+    assert_eq!(names.iter().filter(|n| *n == "return-path").count(), 1, "{names:?}");
+    assert!(text(&out).starts_with("Return-Path: <alice@example.org>\r\n"));
+    assert!(!text(&out).contains("forged"));
+}
