@@ -18,6 +18,7 @@ fn cfg() -> SessionConfig {
         max_errors: 1000,
         max_line: 1000,
         starttls_available: false,
+        submission: false,
     }
 }
 
@@ -50,6 +51,7 @@ impl Wire {
                 }
                 Action::Deliver(_) => q.extend(self.s.answer(Answer::Delivery(Reply::new(250, "2.0.0", "Ok: queued")))),
                 Action::StartTls | Action::Close => {}
+                Action::Authenticate { .. } | Action::CheckSender { .. } => unreachable!("port 25 never authenticates"),
             }
         }
     }

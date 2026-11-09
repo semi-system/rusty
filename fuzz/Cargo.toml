@@ -82,3 +82,10 @@ path = "fuzz_targets/fuzz_smtp_headers.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_smtp_auth"
+path = "fuzz_targets/fuzz_smtp_auth.rs"
+test = false
+doc = false
+bench = false

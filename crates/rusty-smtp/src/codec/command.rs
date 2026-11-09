@@ -30,7 +30,15 @@ pub enum Command {
     Expn,
     Help,
     StartTls,
-    Auth,
+    /// `AUTH mechanism [initial-response]`. `initial` is `Some("")` for the `=` empty response.
+    Auth { mechanism: AuthMechanism, initial: Option<String> },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMechanism {
+    Plain,
+    Login,
+    Other,
 }
 
 /// Why a line is not a command. The texts are fixed; input is never echoed.

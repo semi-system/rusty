@@ -6,7 +6,7 @@
 
 use smtp_proto::{Error as ProtoError, Request, MAIL_BODY_7BIT, MAIL_BODY_8BITMIME, MAIL_SMTPUTF8};
 
-use crate::codec::{Command, MailParams, ParseError};
+use crate::codec::{AuthMechanism, Command, MailParams, ParseError};
 
 /// Parse one validated command line (no terminator).
 pub(crate) fn parse_request(line: &[u8]) -> Result<Command, ParseError> {
@@ -76,7 +76,20 @@ fn convert(request: Request<std::borrow::Cow<'_, str>>) -> Result<Command, Parse
         Request::Expn { .. } => Command::Expn,
         Request::Help { .. } => Command::Help,
         Request::StartTls => Command::StartTls,
-        Request::Auth { .. } => Command::Auth,
+        Request::Auth { mechanism, initial_response } => Command::Auth {
+            mechanism: if mechanism == smtp_proto::AUTH_PLAIN {
+                AuthMechanism::Plain
+            } else if mechanism == smtp_proto::AUTH_LOGIN {
+                AuthMechanism::Login
+            } else {
+                AuthMechanism::Other
+            },
+            initial: match initial_response.as_ref() {
+                "" => None,
+                "=" => Some(String::new()),
+                other => Some(other.to_owned()),
+            },
+        },
         Request::Lhlo { .. }
         | Request::Etrn { .. }
         | Request::Atrn { .. }

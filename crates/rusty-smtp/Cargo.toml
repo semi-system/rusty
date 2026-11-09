@@ -14,10 +14,12 @@ postgres = ["rusty-store/postgres"]
 [dependencies]
 rusty-core = { path = "../rusty-core" }
 rusty-directory = { path = "../rusty-directory" }
+rusty-mime = { path = "../rusty-mime" }
 rusty-store = { path = "../rusty-store" }
 rusty-svc = { path = "../rusty-svc", default-features = false }
 smtp-proto.workspace = true
 async-trait.workspace = true
+serde_json.workspace = true
 bytes.workspace = true
 tokio = { workspace = true, features = ["rt", "time", "io-util", "sync", "macros"] }
 tokio-util.workspace = true

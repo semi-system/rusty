@@ -17,6 +17,7 @@ fn cfg() -> SessionConfig {
         max_errors: 20,
         max_line: 1000,
         starttls_available: true,
+        submission: false,
     }
 }
 
@@ -55,6 +56,7 @@ impl Sim {
                 Action::Reply(r) => self.out.push_str(&String::from_utf8_lossy(&r.render())),
                 Action::Close => self.closed = true,
                 Action::StartTls => self.starttls += 1,
+                Action::Authenticate { .. } | Action::CheckSender { .. } => unreachable!("port 25 never authenticates"),
                 Action::CheckRcpt { address } => {
                     self.checks.push(address.clone());
                     let verdict = match address.split('@').next().unwrap_or("") {

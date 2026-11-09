@@ -85,6 +85,7 @@ pub fn check_headers(data: &[u8]) {
         mail_from: "a@b.c",
         queue_id: "000000000000",
         received_unix: 0,
+        authenticated: false,
     };
     let out = prepare_message(data, &trace);
     assert!(out.starts_with(b"Return-Path: <a@b.c>\r\nReceived: from "));
@@ -107,5 +108,46 @@ pub fn check_headers(data: &[u8]) {
     if let Some(p) = norm.windows(4).position(|w| w == b"\r\n\r\n") {
         let body = norm.get(p + 2..).unwrap_or_default();
         assert!(out.ends_with(body));
+    }
+}
+
+/// SASL decoding and the submission AUTH exchange: arbitrary bytes after `AUTH PLAIN` / `AUTH LOGIN`
+/// never panic, decoded values keep their bounds, and credentials never appear in `Debug` output.
+pub fn check_auth(data: &[u8]) {
+    use crate::codec::{decode_base64, parse_plain};
+    use crate::session::{Action, PeerFacts, Session, SessionConfig};
+
+    let text = String::from_utf8_lossy(data);
+    if let Ok(raw) = decode_base64(&text, 2048) {
+        assert!(raw.len() <= 2048);
+        assert!(raw.len() / 3 * 4 <= text.len());
+        if let Ok(c) = parse_plain(&raw) {
+            assert!(!c.authcid.is_empty() && !c.password.is_empty());
+            assert!(!c.authcid.contains('\0') && !c.password.contains('\0') && !c.authzid.contains('\0'));
+        }
+    }
+    let cfg = SessionConfig {
+        hostname: "mx.example.net".into(),
+        max_message_bytes: 4096,
+        max_recipients: 5,
+        max_transactions: 5,
+        max_commands_without_transaction: 100,
+        max_errors: 50,
+        max_line: LINE_MAX,
+        starttls_available: true,
+        submission: true,
+    };
+    for opener in [&b"AUTH PLAIN\r\n"[..], &b"AUTH LOGIN\r\n"[..]] {
+        let (mut s, _) = Session::new(cfg.clone(), PeerFacts { ip: IpAddr::from([192, 0, 2, 1]), tls: true });
+        let _ = s.feed(b"EHLO x\r\n");
+        let _ = s.feed(opener);
+        for piece in data.chunks(97) {
+            let actions = s.feed(piece);
+            for a in &actions {
+                if let Action::Authenticate { password, .. } = a {
+                    assert!(format!("{password:?}") == "<redacted>" && format!("{a:?}").contains("<redacted>"));
+                }
+            }
+        }
     }
 }

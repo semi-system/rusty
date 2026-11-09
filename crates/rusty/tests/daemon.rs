@@ -195,11 +195,11 @@ async fn the_skeleton_service_refuses_commands_politely() {
     let tmp = private_tmp();
     let token = CancellationToken::new();
     let run = start(dev_config(&tmp.path().join("d")), Profile::Dev, token.clone()).await.unwrap();
-    let mut c = TcpStream::connect(addr_of(&run, ListenerKind::Submission587)).await.unwrap();
+    let mut c = TcpStream::connect(addr_of(&run, ListenerKind::Imap143)).await.unwrap();
     read_line(&mut c).await;
     c.write_all(b"EHLO x\r\n").await.unwrap();
     let l = read_line(&mut c).await;
-    assert!(l.starts_with("421 "), "{l}");
+    assert!(l.starts_with("* BYE"), "{l}");
     token.cancel();
     run.wait().await.unwrap();
 }

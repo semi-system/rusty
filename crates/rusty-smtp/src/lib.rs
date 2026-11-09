@@ -19,6 +19,8 @@ pub mod codec;
 pub mod filter;
 pub mod fuzzing;
 pub mod inbound;
+pub mod limits;
 pub mod message;
+pub mod outbound_queue;
 pub mod reply;
 pub mod session;

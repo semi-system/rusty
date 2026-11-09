@@ -14,14 +14,21 @@ use rusty_core::{Error, Result};
 use rusty_store::{BlobStore, FsBlobStore, Store, StoreConfig};
 use rusty_svc::{
     listener_plan, run_services, Accept, BoundListener, Context, DirectTcp, DirectTls, FileSecretSource,
-    GcService, ListenerKind, ListenerService, Service, SessionHandler, TlsProvider,
+    GcService, ListenerKind, ListenerService, Service, SessionHandler, SystemClock, TlsProvider,
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use rusty_smtp::inbound::{InboundHandler, InboundOptions};
+use rusty_smtp::inbound::{InboundHandler, InboundOptions, SubmissionDeps};
+use rusty_smtp::limits::MemorySubmissionLimiter;
+use rusty_smtp::outbound_queue::JobOutbound;
 
 use crate::banner::BannerSession;
+
+/// Messages one account may submit per hour (U4 default; becomes a config key with per-tenant limits).
+const SUBMISSIONS_PER_HOUR: u32 = 200;
+/// Messages per submission connection (mail clients reuse one connection for a whole outbox).
+const SUBMISSION_TRANSACTIONS: u32 = 100;
 
 /// How often the GC pass runs.
 const GC_EVERY: Duration = Duration::from_secs(3600);
@@ -145,10 +152,17 @@ async fn build(
         } else {
             Arc::new(DirectTcp)
         };
-        let handler: Arc<dyn SessionHandler> = if planned.kind == ListenerKind::Smtp25 {
-            Arc::new(InboundHandler::new(&ctx, InboundOptions::default()))
-        } else {
-            Arc::new(BannerSession::new(planned.kind, hostname))
+        let handler: Arc<dyn SessionHandler> = match planned.kind {
+            ListenerKind::Smtp25 => Arc::new(InboundHandler::new(&ctx, InboundOptions::default())),
+            ListenerKind::Submission587 | ListenerKind::Submissions465 => {
+                let deps = SubmissionDeps {
+                    outbound: Arc::new(JobOutbound::new(ctx.jobs.clone(), ctx.directory.clone())),
+                    limiter: Arc::new(MemorySubmissionLimiter::new(SUBMISSIONS_PER_HOUR, Arc::new(SystemClock::new()))),
+                };
+                let options = InboundOptions { max_transactions: SUBMISSION_TRANSACTIONS, ..InboundOptions::default() };
+                Arc::new(InboundHandler::submission(&ctx, options, deps))
+            }
+            _ => Arc::new(BannerSession::new(planned.kind, hostname)),
         };
         services.push(Box::new(ListenerService::new(bound, accept, handler)));
     }

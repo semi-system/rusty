@@ -1,6 +1,7 @@
-//! The I/O driver of the inbound (port 25) service: owns the stream, the timeouts and STARTTLS,
-//! feeds the sans-I/O [`Session`], and answers its questions through the `Directory` and `Mailbox`
-//! facades of `rusty_svc::Context`. It never names a backend.
+//! The I/O driver of the SMTP services: port 25 (inbound mail) and, with [`SubmissionDeps`],
+//! 587/465 (submission). It owns the stream, the timeouts and STARTTLS, feeds the sans-I/O
+//! [`Session`], and answers its questions through the `Directory`, `Mailbox`, `Authenticator` and
+//! `RateLimiter` seams of `rusty_svc::Context`. It never names a backend.
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
@@ -9,16 +10,26 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use bytes::Bytes;
 use rusty_core::{AccountId, BlobHash, Error, FolderId, Flags};
-use rusty_directory::{parse_address, AccountStatus, Directory, DomainStatus, Resolved};
+use rusty_directory::{parse_address, AccountStatus, Authenticator, Directory, DomainStatus, Resolved};
 use rusty_store::repo::SYSTEM_FOLDER_TABLE;
-use rusty_svc::{BoxedStream, Context, MailboxHub, PeerInfo, QuotaPolicy, SessionHandler, TlsProvider};
+use rusty_store::BlobStore;
+use rusty_svc::{
+    BoxedStream, Context, MailboxHub, OutboundEnqueue, OutboundMessage, PeerInfo, QuotaPolicy, RateLimiter,
+    ServiceEvent, ServiceEvents, SessionHandler, TlsProvider, Verdict,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
 use crate::filter::{run_filters, FilterContext, InboundFilter, QuarantineFolder};
-use crate::message::{delivery_id_for, prepare_message_with, Trace};
+use crate::limits::SubmissionLimiter;
+use crate::message::{
+    delivery_id_for, from_addresses, generated_message_id, has_header, prepare_message_with, rfc5322_date, FromError, Trace,
+};
 use crate::reply::{delivery_reply, map_error, ErrorContext, Reply};
-use crate::session::{Action, Answer, PeerFacts, Phase, RcptVerdict, Recipient, Session, SessionConfig, Transaction};
+use crate::session::{
+    Action, Answer, AuthVerdict, Identity, PeerFacts, Phase, RcptVerdict, Recipient, Secret, Session, SessionConfig,
+    Transaction,
+};
 
 /// Most accounts one recipient (a list) may expand to; more is `452 4.5.3`.
 const MAX_ACCOUNTS_PER_RECIPIENT: usize = 1000;
@@ -71,7 +82,19 @@ impl Default for InboundOptions {
     }
 }
 
+/// What submission needs beyond port 25: where mail for remote recipients goes, and the per-account
+/// sending limit. Both are seams (constructor injection).
+pub struct SubmissionDeps {
+    pub outbound: Arc<dyn OutboundEnqueue>,
+    pub limiter: Arc<dyn SubmissionLimiter>,
+}
+
 pub struct InboundHandler {
+    auth: Arc<dyn Authenticator>,
+    rate: Arc<dyn RateLimiter>,
+    events: Arc<dyn ServiceEvents>,
+    blobs: Arc<dyn BlobStore>,
+    submission: Option<SubmissionDeps>,
     directory: Directory,
     hub: MailboxHub,
     quota: Arc<dyn QuotaPolicy>,
@@ -98,6 +121,15 @@ enum Flow {
 impl InboundHandler {
     /// Built from the shared `Context` (facades and seams) and the service options.
     pub fn new(ctx: &Context, options: InboundOptions) -> InboundHandler {
+        Self::build(ctx, options, None)
+    }
+
+    /// The submission service (587 with STARTTLS, 465 with implicit TLS): AUTH over TLS only.
+    pub fn submission(ctx: &Context, options: InboundOptions, deps: SubmissionDeps) -> InboundHandler {
+        Self::build(ctx, options, Some(deps))
+    }
+
+    fn build(ctx: &Context, options: InboundOptions, submission: Option<SubmissionDeps>) -> InboundHandler {
         let hostname = ctx.cfg.hostname.clone().unwrap_or_else(|| "localhost".to_owned());
         let session = SessionConfig {
             hostname: hostname.clone(),
@@ -108,8 +140,14 @@ impl InboundHandler {
             max_errors: options.max_errors,
             max_line: options.max_line,
             starttls_available: ctx.tls.is_available(),
+            submission: submission.is_some(),
         };
         InboundHandler {
+            auth: ctx.auth.clone(),
+            rate: ctx.rate.clone(),
+            events: ctx.events.clone(),
+            blobs: ctx.blobs.clone(),
+            submission,
             directory: ctx.directory.clone(),
             hub: ctx.hub.clone(),
             quota: ctx.quota.clone(),
@@ -137,6 +175,8 @@ impl InboundHandler {
             Err(Error::NotFound(_)) => {
                 return match self.directory.find_domain(&domain).await {
                     Ok(Some(d)) if d.status == DomainStatus::Active => reject(550, "5.1.1", "No such user here"),
+                    // An authenticated user may send to the world; port 25 is never an open relay.
+                    Ok(_) if self.submission.is_some() => RcptVerdict::AcceptRemote(normal),
                     Ok(_) => reject(554, "5.7.1", "Relay access denied"),
                     Err(e) => RcptVerdict::Reject(map_error(&e, ErrorContext::Rcpt)),
                 };
@@ -208,6 +248,7 @@ impl InboundHandler {
             mail_from: &t.mail_from,
             queue_id: &queue_id,
             received_unix: self.options.clock.now_unix(),
+            authenticated: false,
         };
         let stored = Bytes::from(prepare_message_with(&t.data, &trace, &outcome.tags));
         let mut seen = HashSet::new();
@@ -229,6 +270,137 @@ impl InboundHandler {
         reply
     }
 
+    /// Verify credentials through the `Authenticator`, behind the auth throttle. Failing closed: any
+    /// internal error is a temporary failure, never a success.
+    async fn authenticate(&self, peer: &PeerInfo, identity: &str, password: &Secret) -> AuthVerdict {
+        let temporary = || AuthVerdict::Failure(Reply::new(454, "4.7.0", "Temporary authentication failure"));
+        let ip = peer.addr.ip();
+        if let Verdict::Blocked { .. } = self.rate.check(ip, identity) {
+            return AuthVerdict::Failure(Reply::new(454, "4.7.0", "Too many failed attempts, try again later"));
+        }
+        let Some(_slot) = self.rate.try_begin_attempt() else {
+            return temporary();
+        };
+        let address = parse_address(identity).map(|(l, d)| format!("{l}@{d}"));
+        let verified = match &address {
+            Ok(addr) => self.auth.verify(addr, password.expose()).await,
+            Err(_) => Ok(None),
+        };
+        let service = "submission";
+        match (verified, address) {
+            (Ok(Some(account)), Ok(address)) => {
+                self.rate.record_success(ip, identity);
+                self.events.emit(ServiceEvent::AuthResult { service, peer: peer.addr, ok: true });
+                AuthVerdict::Success(Identity { account, address })
+            }
+            (Ok(_), _) => {
+                self.rate.record_failure(ip, identity);
+                self.events.emit(ServiceEvent::AuthResult { service, peer: peer.addr, ok: false });
+                AuthVerdict::Failure(Reply::new(535, "5.7.8", "Authentication credentials invalid"))
+            }
+            (Err(_), _) => temporary(),
+        }
+    }
+
+    /// May `identity` use `address` as the envelope sender? Only its own account address or one of
+    /// its aliases (`Directory::resolve` answers `Account(id)` for both).
+    async fn check_sender(&self, address: &str, identity: &Identity) -> Result<(), Reply> {
+        let refused = || Reply::new(553, "5.7.1", "Sender address rejected: not owned by the authenticated user");
+        let Ok((local, domain)) = parse_address(address) else {
+            return Err(Reply::new(501, "5.1.7", "Bad address syntax"));
+        };
+        match self.directory.resolve(&format!("{local}@{domain}")).await {
+            Ok(Resolved::Account(id)) if id == identity.account => {
+                if self.submission.as_ref().is_some_and(|d| !d.limiter.allow(identity.account)) {
+                    return Err(Reply::new(451, "4.7.1", "Sending limit reached, try again later"));
+                }
+                Ok(())
+            }
+            Ok(_) | Err(Error::NotFound(_)) => Err(refused()),
+            Err(e) => Err(map_error(&e, ErrorContext::Rcpt)),
+        }
+    }
+
+    /// End of DATA on submission: the header `From` must be the user too, then local recipients are
+    /// delivered and remote ones queued, all durable before the `250`.
+    async fn deliver_submitted(&self, t: &Transaction, deps: &SubmissionDeps) -> Reply {
+        let Some(identity) = &t.identity else {
+            return Reply::new(530, "5.7.0", "Authentication required");
+        };
+        let not_yours = || Reply::new(550, "5.7.1", "The From header is not an address of the authenticated user");
+        match from_addresses(&t.data) {
+            Ok(list) => {
+                for addr in list {
+                    match self.directory.resolve(&addr).await {
+                        Ok(Resolved::Account(id)) if id == identity.account => {}
+                        Ok(_) | Err(Error::NotFound(_)) | Err(Error::Invalid(_)) => return not_yours(),
+                        Err(e) => return map_error(&e, ErrorContext::Data),
+                    }
+                }
+            }
+            Err(FromError::Missing) => return Reply::new(550, "5.7.1", "A From header is required"),
+            Err(FromError::Multiple) => return Reply::new(550, "5.7.1", "Only one From header is allowed"),
+            Err(FromError::Unusable) => return not_yours(),
+        }
+        let now = self.options.clock.now_unix();
+        let queue_id = hex12(&BlobHash::of(&t.data));
+        let trace = Trace {
+            hostname: &self.hostname,
+            helo: &t.helo,
+            peer: t.peer.ip,
+            tls: t.peer.tls,
+            mail_from: &t.mail_from,
+            queue_id: &queue_id,
+            received_unix: now,
+            authenticated: true,
+        };
+        let mut extra = Vec::new();
+        if !has_header(&t.data, "message-id") {
+            extra.push(("Message-ID".to_owned(), generated_message_id(&t.data, &self.hostname)));
+        }
+        if !has_header(&t.data, "date") {
+            extra.push(("Date".to_owned(), rfc5322_date(now)));
+        }
+        let stored = Bytes::from(prepare_message_with(&t.data, &trace, &extra));
+        let mut results: Vec<Result<(), Error>> = Vec::new();
+        if !t.remote_recipients.is_empty() {
+            let sender_domain = identity.address.rsplit_once('@').map(|(_, d)| d.to_owned()).unwrap_or_default();
+            results.push(match self.blobs.put(stored.clone()).await {
+                Ok(blob) => {
+                    deps.outbound
+                        .enqueue(OutboundMessage {
+                            blob,
+                            envelope_from: t.mail_from.clone(),
+                            recipients: t.remote_recipients.clone(),
+                            sender_domain,
+                        })
+                        .await
+                }
+                Err(e) => Err(e),
+            });
+        }
+        let mut seen = HashSet::new();
+        let accounts: Vec<AccountId> =
+            t.recipients.iter().flat_map(|r| r.accounts.iter().copied()).filter(|a| seen.insert(*a)).collect();
+        for a in &accounts {
+            results.push(self.deliver_one(*a, &t.mail_from, &t.data, stored.clone(), system_folder("inbox")).await);
+        }
+        let reply = delivery_reply(results);
+        if reply.is_positive() {
+            deps.limiter.record(identity.account);
+        }
+        tracing::info!(
+            peer = %t.peer.ip,
+            queue_id = %queue_id,
+            bytes = t.data.len(),
+            local = accounts.len(),
+            remote = t.remote_recipients.len(),
+            status = reply.code,
+            "submitted message finished"
+        );
+        reply
+    }
+
     async fn flush(stream: &mut BoxedStream, out: &mut Vec<u8>) -> bool {
         if out.is_empty() {
             return true;
@@ -245,6 +417,7 @@ impl InboundHandler {
         queue: &mut VecDeque<Action>,
         out: &mut Vec<u8>,
         stream: &mut BoxedStream,
+        peer: &PeerInfo,
     ) -> Flow {
         while let Some(action) = queue.pop_front() {
             match action {
@@ -257,8 +430,19 @@ impl InboundHandler {
                     let verdict = self.resolve_rcpt(&address).await;
                     queue.extend(session.answer(Answer::Rcpt(verdict)));
                 }
+                Action::Authenticate { identity, password } => {
+                    let verdict = self.authenticate(peer, &identity, &password).await;
+                    queue.extend(session.answer(Answer::Auth(verdict)));
+                }
+                Action::CheckSender { address, identity } => {
+                    let verdict = self.check_sender(&address, &identity).await;
+                    queue.extend(session.answer(Answer::Sender(verdict)));
+                }
                 Action::Deliver(t) => {
-                    let reply = self.deliver(&t).await;
+                    let reply = match &self.submission {
+                        Some(deps) => self.deliver_submitted(&t, deps).await,
+                        None => self.deliver(&t).await,
+                    };
                     queue.extend(session.answer(Answer::Delivery(reply)));
                 }
                 Action::StartTls => {
@@ -291,7 +475,7 @@ impl SessionHandler for InboundHandler {
         let mut out = Vec::new();
         let mut buf = vec![0u8; READ_BUF];
         loop {
-            if matches!(self.execute(&mut session, &mut queue, &mut out, &mut stream).await, Flow::Stop)
+            if matches!(self.execute(&mut session, &mut queue, &mut out, &mut stream, &peer).await, Flow::Stop)
                 || session.phase() == Phase::Closed
             {
                 break;
@@ -301,13 +485,13 @@ impl SessionHandler for InboundHandler {
                 biased;
                 _ = shutdown.cancelled() => {
                     queue.extend(session.shutdown());
-                    self.execute(&mut session, &mut queue, &mut out, &mut stream).await;
+                    self.execute(&mut session, &mut queue, &mut out, &mut stream, &peer).await;
                     break;
                 }
                 read = tokio::time::timeout(idle, stream.read(&mut buf)) => match read {
                     Err(_) => {
                         queue.extend(session.timed_out());
-                        self.execute(&mut session, &mut queue, &mut out, &mut stream).await;
+                        self.execute(&mut session, &mut queue, &mut out, &mut stream, &peer).await;
                         break;
                     }
                     Ok(Ok(0)) | Ok(Err(_)) => break,

@@ -24,6 +24,11 @@ impl LineReader {
         LineReader { buf: Vec::new(), max, skipping: false }
     }
 
+    /// Change the cap for the next line (an unfinished line keeps the cap it started under).
+    pub fn set_max(&mut self, max: usize) {
+        self.max = max;
+    }
+
     /// Bytes currently held for an unfinished line.
     pub fn buffered(&self) -> usize {
         self.buf.len()

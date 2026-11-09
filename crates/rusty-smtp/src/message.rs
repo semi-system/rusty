@@ -19,6 +19,8 @@ pub struct Trace<'a> {
     pub mail_from: &'a str,
     pub queue_id: &'a str,
     pub received_unix: i64,
+    /// The sender authenticated (submission): the client address is not written to the trace.
+    pub authenticated: bool,
 }
 
 /// The delivery id of `original` for the recipient account `account` from envelope sender
@@ -124,17 +126,24 @@ pub fn prepare_message_with(original: &[u8], trace: &Trace<'_>, extra: &[(String
     }
 
     let ip = match trace.peer {
-        IpAddr::V4(a) => format!("[{a}]"),
-        IpAddr::V6(a) => format!("[IPv6:{a}]"),
+        IpAddr::V4(a) => format!(" ([{a}])"),
+        IpAddr::V6(a) => format!(" ([IPv6:{a}])"),
     };
+    // A submitting user's address is not published in the headers of the mail they send.
+    let ip = if trace.authenticated { String::new() } else { ip };
     let mut out = Vec::with_capacity(norm.len() + 512);
     out.extend_from_slice(format!("Return-Path: <{}>\r\n", sanitize(trace.mail_from, 320)).as_bytes());
     out.extend_from_slice(
         format!(
-            "Received: from {} ({ip})\r\n\tby {} with {} id {};\r\n\t{}\r\n",
+            "Received: from {}{ip}\r\n\tby {} with {} id {};\r\n\t{}\r\n",
             sanitize(trace.helo, 255),
             sanitize(trace.hostname, 255),
-            if trace.tls { "ESMTPS" } else { "ESMTP" },
+            match (trace.tls, trace.authenticated) {
+                (true, true) => "ESMTPSA",
+                (true, false) => "ESMTPS",
+                (false, true) => "ESMTPA",
+                (false, false) => "ESMTP",
+            },
             sanitize(trace.queue_id, 32),
             rfc5322_date(trace.received_unix),
         )
@@ -147,4 +156,70 @@ pub fn prepare_message_with(original: &[u8], trace: &Trace<'_>, extra: &[(String
     out.extend_from_slice(&kept);
     out.extend_from_slice(rest);
     out
+}
+
+// ------------------------------------------------------------------ submission checks
+
+/// The logical header fields of the header section, as (lowercase name, raw line start) pairs. Used
+/// to count and find fields without parsing values.
+fn header_names(original: &[u8]) -> Vec<String> {
+    let norm = normalise_crlf(original);
+    let head: &[u8] = if norm.starts_with(b"\r\n") {
+        &[]
+    } else if let Some(p) = norm.windows(4).position(|w| w == b"\r\n\r\n") {
+        norm.get(..p + 2).unwrap_or_default()
+    } else {
+        &norm
+    };
+    let mut names = Vec::new();
+    for line in head.split_inclusive(|&b| b == b'\n') {
+        if matches!(line.first(), Some(b' ' | b'\t')) {
+            continue;
+        }
+        if let Some(name) = line.split(|&b| b == b':').next().filter(|_| line.contains(&b':')) {
+            names.push(String::from_utf8_lossy(name.trim_ascii_end()).to_ascii_lowercase());
+        }
+    }
+    names
+}
+
+/// Does the header section of `original` carry a field called `name` (case-insensitive)?
+pub fn has_header(original: &[u8], name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    header_names(original).contains(&name)
+}
+
+/// Why the `From` header of a submitted message cannot be checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FromError {
+    Missing,
+    /// More than one `From` field: mail clients disagree about which one they show.
+    Multiple,
+    /// No usable address in it.
+    Unusable,
+}
+
+/// The addresses of the (single) `From` header, lowercase, as the MIME layer reads them.
+pub fn from_addresses(original: &[u8]) -> Result<Vec<String>, FromError> {
+    let count = header_names(original).iter().filter(|n| *n == "from").count();
+    match count {
+        0 => return Err(FromError::Missing),
+        1 => {}
+        _ => return Err(FromError::Multiple),
+    }
+    let env = rusty_mime::parse_envelope(original).map_err(|_| FromError::Unusable)?;
+    let addrs: Vec<String> = env.from.split(", ").filter(|a| !a.is_empty()).map(str::to_owned).collect();
+    if addrs.is_empty() {
+        return Err(FromError::Unusable);
+    }
+    Ok(addrs)
+}
+
+/// A `Message-ID` for a message that has none: derived from the content hash, so a client that
+/// retries after a lost `250` produces the same id.
+pub fn generated_message_id(original: &[u8], hostname: &str) -> String {
+    let hash = BlobHash::of(original);
+    let short: String = hash.as_str().chars().take(24).collect();
+    let host: String = hostname.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-').collect();
+    format!("<{short}@{host}>")
 }

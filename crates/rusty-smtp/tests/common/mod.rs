@@ -10,11 +10,13 @@ use std::time::Duration;
 use rusty_core::config::StartupConfig;
 use rusty_core::{AccountId, FolderId};
 use rusty_directory::Directory;
-use rusty_smtp::inbound::{InboundHandler, InboundOptions};
+use rusty_smtp::inbound::{InboundHandler, InboundOptions, SubmissionDeps};
+use rusty_smtp::limits::MemorySubmissionLimiter;
+use rusty_smtp::outbound_queue::JobOutbound;
 use rusty_store::fixtures::Fixtures;
 use rusty_store::{BlobStore, FsBlobStore, Store, StoreConfig};
 use rusty_svc::{
-    certified_key, BoundListener, Context, DirectTcp, ListenerSpec, SessionHandler, StaticCertResolver, TlsProvider,
+    certified_key, Accept, BoundListener, Context, DirectTcp, DirectTls, ListenerSpec, SystemClock, SessionHandler, StaticCertResolver, TlsProvider,
     TracingEvents,
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -92,6 +94,10 @@ where
 }
 
 impl Backend {
+    pub async fn count(&self, table: &str) -> i64 {
+        self.fx.scalar(&format!("SELECT count(*) FROM {table}"), &[]).await
+    }
+
     /// Domain `example.net` with accounts alice and bob (and the aliases the ctl would create).
     pub async fn seed(&self) -> (AccountId, AccountId) {
         let dom = self.dir.create_domain("example.net").await.unwrap();
@@ -129,11 +135,17 @@ pub struct Opts {
     pub max_message_bytes: u64,
     pub max_recipients: u32,
     pub tls: bool,
+    /// Serve submission (AUTH over TLS, queueing of remote recipients) instead of port 25.
+    pub submission: bool,
+    /// Accept TLS before the first byte (port 465) instead of plain TCP.
+    pub implicit_tls: bool,
+    pub per_hour: u32,
+    pub auth_failures_max: u32,
 }
 
 impl Default for Opts {
     fn default() -> Opts {
-        Opts { options: InboundOptions::default(), max_message_bytes: 1 << 20, max_recipients: 100, tls: false }
+        Opts { options: InboundOptions::default(), max_message_bytes: 1 << 20, max_recipients: 100, tls: false, submission: false, implicit_tls: false, per_hour: 200, auth_failures_max: 10 }
     }
 }
 
@@ -161,6 +173,7 @@ pub async fn start(b: &Backend, opts: Opts) -> Server {
     cfg.hostname = Some(HOST.into());
     cfg.max_message_bytes = opts.max_message_bytes;
     cfg.smtp.max_recipients = opts.max_recipients;
+    cfg.limits.auth_failures_max = opts.auth_failures_max;
     let (tls, cert_der) = if opts.tls {
         let ck = rcgen::generate_simple_self_signed(vec![HOST.to_string()]).unwrap();
         let cert_pem = ck.cert.pem();
@@ -172,7 +185,16 @@ pub async fn start(b: &Backend, opts: Opts) -> Server {
         (TlsProvider::unavailable().unwrap(), Vec::new())
     };
     let ctx = Context::new(b.store.repos(), blobs.clone(), Arc::new(cfg), tls).await.unwrap();
-    let handler: Arc<dyn SessionHandler> = Arc::new(InboundHandler::new(&ctx, opts.options));
+    let handler: Arc<dyn SessionHandler> = if opts.submission {
+        let deps = SubmissionDeps {
+            outbound: Arc::new(JobOutbound::new(ctx.jobs.clone(), ctx.directory.clone())),
+            limiter: Arc::new(MemorySubmissionLimiter::new(opts.per_hour, Arc::new(SystemClock::new()))),
+        };
+        Arc::new(InboundHandler::submission(&ctx, opts.options, deps))
+    } else {
+        Arc::new(InboundHandler::new(&ctx, opts.options))
+    };
+    let accept: Arc<dyn Accept> = if opts.implicit_tls { Arc::new(DirectTls::new(ctx.tls.clone())) } else { Arc::new(DirectTcp) };
     let listener = BoundListener::bind(ListenerSpec {
         name: "smtp-25",
         addr: "127.0.0.1:0".parse().unwrap(),
@@ -185,7 +207,7 @@ pub async fn start(b: &Backend, opts: Opts) -> Server {
     let token = CancellationToken::new();
     let t = token.clone();
     let task = tokio::spawn(async move {
-        let _ = listener.serve(Arc::new(DirectTcp), handler, Arc::new(TracingEvents), t, Duration::from_secs(5)).await;
+        let _ = listener.serve(accept, handler, Arc::new(TracingEvents), t, Duration::from_secs(5)).await;
     });
     Server { addr, token, blobs, ctx, cert_der, task }
 }
@@ -286,5 +308,43 @@ impl Client {
         let inner = self.stream.into_inner();
         let tls = connector.connect(name, inner).await.expect("TLS handshake with the server");
         Client { stream: BufReader::new(Box::new(tls)) }
+    }
+}
+
+/// Standard base64 (tests only).
+pub fn b64(data: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for c in data.chunks(3) {
+        let n = (u32::from(c[0]) << 16) | (u32::from(*c.get(1).unwrap_or(&0)) << 8) | u32::from(*c.get(2).unwrap_or(&0));
+        out.push(A[(n >> 18) as usize & 63] as char);
+        out.push(A[(n >> 12) as usize & 63] as char);
+        out.push(if c.len() > 1 { A[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if c.len() > 2 { A[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+pub fn plain(user: &str, password: &str) -> String {
+    b64(format!("\0{user}\0{password}").as_bytes())
+}
+
+impl Client {
+    /// Implicit TLS (port 465): the handshake comes before the greeting.
+    pub async fn connect_tls(addr: SocketAddr, cert_der: &[u8]) -> Client {
+        Client::connect(addr).await.upgrade_tls(cert_der).await
+    }
+
+    /// Greeting, STARTTLS, TLS, EHLO again: a submission session ready for AUTH.
+    pub async fn secure_hello(addr: SocketAddr, cert_der: &[u8]) -> Client {
+        let mut c = Client::connect(addr).await;
+        assert!(c.reply().await.starts_with("220 "));
+        let e = c.cmd("EHLO client.example.org").await;
+        assert!(e.contains("STARTTLS"), "{e}");
+        assert!(c.cmd("STARTTLS").await.starts_with("220 "));
+        let mut c = c.upgrade_tls(cert_der).await;
+        let e = c.cmd("EHLO client.example.org").await;
+        assert!(e.contains("AUTH PLAIN LOGIN"), "{e}");
+        c
     }
 }

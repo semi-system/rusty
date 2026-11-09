@@ -14,6 +14,7 @@ fn trace<'a>() -> Trace<'a> {
         mail_from: "alice@example.org",
         queue_id: "0123456789ab",
         received_unix: 1_794_139_200, // 2026-11-08 12:00:00 UTC
+        authenticated: false,
     }
 }
 

@@ -3,7 +3,7 @@
 //! cargo-fuzz/nightly are missing.
 
 use proptest::prelude::*;
-use rusty_smtp::fuzzing::{check_command_stream, check_data, check_headers, check_path};
+use rusty_smtp::fuzzing::{check_auth, check_command_stream, check_data, check_headers, check_path};
 
 const COMMAND_SEEDS: [&[u8]; 3] = [
     include_bytes!("../../../fuzz/seeds/fuzz_smtp_command/swaks_session"),
@@ -22,6 +22,12 @@ const PATH_SEEDS: [&[u8]; 4] = [
     include_bytes!("../../../fuzz/seeds/fuzz_smtp_path/route_and_param"),
     include_bytes!("../../../fuzz/seeds/fuzz_smtp_path/null"),
 ];
+const AUTH_SEEDS: [&[u8]; 4] = [
+    include_bytes!("../../../fuzz/seeds/fuzz_smtp_auth/plain_ok"),
+    include_bytes!("../../../fuzz/seeds/fuzz_smtp_auth/login_ok"),
+    include_bytes!("../../../fuzz/seeds/fuzz_smtp_auth/cancel"),
+    include_bytes!("../../../fuzz/seeds/fuzz_smtp_auth/bad_blobs"),
+];
 const HEADER_SEEDS: [&[u8]; 3] = [
     include_bytes!("../../../fuzz/seeds/fuzz_smtp_headers/forged"),
     include_bytes!("../../../fuzz/seeds/fuzz_smtp_headers/no_headers"),
@@ -35,6 +41,7 @@ fn seeds_pass() {
     DATA_SEEDS.iter().for_each(|s| check_data(s));
     PATH_SEEDS.iter().for_each(|s| check_path(s));
     HEADER_SEEDS.iter().for_each(|s| check_headers(s));
+    AUTH_SEEDS.iter().for_each(|s| check_auth(s));
 }
 
 fn mutate(seed: &[u8], pos: usize, byte: u8, cut: usize) -> Vec<u8> {
@@ -60,6 +67,7 @@ proptest! {
         check_data(&data);
         check_path(&data);
         check_headers(&data);
+        check_auth(&data);
     }
 
     // backend-neutral: pure codecs over bytes, no database
@@ -69,5 +77,6 @@ proptest! {
         check_data(&mutate(DATA_SEEDS.get(which).copied().unwrap_or_default(), pos, byte, cut));
         check_path(&mutate(PATH_SEEDS.get(which).copied().unwrap_or_default(), pos, byte, cut));
         check_headers(&mutate(HEADER_SEEDS.get(which % 3).copied().unwrap_or_default(), pos, byte, cut));
+        check_auth(&mutate(AUTH_SEEDS.get(which).copied().unwrap_or_default(), pos, byte, cut));
     }
 }
