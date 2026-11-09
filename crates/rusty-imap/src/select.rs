@@ -82,7 +82,10 @@ impl Selected {
             .find(|f| f.id == folder)
             .ok_or_else(|| Error::NotFound("folder".into()))?;
         let entries = read_entries(mb, folder).await?;
-        Ok(Selected { folder, name, read_only, uid_validity: info.uid_validity, uid_next: info.uid_next, entries, cursor, kw: HashMap::new() })
+        // The folder row was read before the messages: a delivery in between must not leave a message
+        // at or above the announced UIDNEXT.
+        let uid_next = info.uid_next.max(entries.last().map_or(1, |e| e.uid.saturating_add(1)));
+        Ok(Selected { folder, name, read_only, uid_validity: info.uid_validity, uid_next, entries, cursor, kw: HashMap::new() })
     }
 
     /// The client was just told these keywords for `id` (empty or absent means none).
