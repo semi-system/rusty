@@ -2,8 +2,7 @@
 //! Names arrive as modified UTF-7, are resolved through the injected `FolderResolver` against the
 //! session's own `Mailbox`, so another account's folder is unreachable by construction.
 
-use imap_codec::imap_types::mailbox::{ListMailbox, Mailbox as WireMailbox};
-use imap_codec::imap_types::status::StatusDataItemName;
+use crate::command::StatusItem;
 use rusty_core::{Error, Flags, FolderId};
 use rusty_store::{FolderInfo, MAX_BATCH, MAX_PAGE};
 
@@ -61,26 +60,17 @@ pub(crate) fn wildcard_match(pattern: &str, name: &str, delim: char) -> bool {
     reach[n.len()]
 }
 
-fn list_text(m: &ListMailbox<'_>) -> Option<String> {
-    let raw: &[u8] = match m {
-        ListMailbox::Token(t) => t.as_ref(),
-        ListMailbox::String(s) => s.as_ref(),
-    };
-    crate::utf7::decode(std::str::from_utf8(raw).ok()?)
-}
-
 impl Session {
     async fn folders(&self) -> Result<Vec<FolderInfo>, Done> {
         let mb = self.mailbox().ok_or_else(|| Done::bad("Not authenticated"))?;
         mb.list_folders().await.map_err(|e| Done::store(Op::Mailbox, &e))
     }
 
-    fn resolve_name(&self, folders: &[FolderInfo], m: &WireMailbox<'_>) -> Result<Option<FolderId>, Done> {
-        let name = Session::name_of(m).ok_or_else(|| Done::bad("Invalid mailbox name"))?;
-        Ok(self.resolver.lookup(folders, &name))
+    fn resolve_name(&self, folders: &[FolderInfo], m: &str) -> Result<Option<FolderId>, Done> {
+        Ok(self.resolver.lookup(folders, m))
     }
 
-    pub(crate) async fn cmd_select(&mut self, m: &WireMailbox<'_>, read_only: bool, out: &mut Out<'_>) -> Result<Done, Closed> {
+    pub(crate) async fn cmd_select(&mut self, m: &str, read_only: bool, out: &mut Out<'_>) -> Result<Done, Closed> {
         // A failed SELECT leaves the session with no folder selected (RFC 3501 6.3.1).
         self.sel = None;
         let Some(mb) = self.mailbox() else { return Ok(Done::bad("Not authenticated")) };
@@ -93,7 +83,7 @@ impl Session {
             Ok(None) => return Ok(Done::no("NONEXISTENT", "Mailbox does not exist")),
             Err(d) => return Ok(d),
         };
-        let name = Session::name_of(m).unwrap_or_default();
+        let name = m.to_owned();
         let sel = match Selected::load(&mb, id, name, read_only).await {
             Ok(s) => s,
             Err(e) => return Ok(Done::store(Op::Mailbox, &e)),
@@ -119,9 +109,9 @@ impl Session {
         })
     }
 
-    pub(crate) async fn cmd_create(&mut self, m: &WireMailbox<'_>) -> Result<Done, Closed> {
+    pub(crate) async fn cmd_create(&mut self, m: &str) -> Result<Done, Closed> {
         let Some(mb) = self.mailbox() else { return Ok(Done::bad("Not authenticated")) };
-        let Some(name) = Session::name_of(m) else { return Ok(Done::bad("Invalid mailbox name")) };
+        let name = m.to_owned();
         // `CREATE foo/` asks for a hierarchy node only; here it is the same folder.
         let name = name.strip_suffix('/').unwrap_or(&name).to_owned();
         let folders = match self.folders().await {
@@ -145,7 +135,7 @@ impl Session {
         Ok(Done::ok("CREATE completed"))
     }
 
-    pub(crate) async fn cmd_delete(&mut self, m: &WireMailbox<'_>) -> Result<Done, Closed> {
+    pub(crate) async fn cmd_delete(&mut self, m: &str) -> Result<Done, Closed> {
         let Some(mb) = self.mailbox() else { return Ok(Done::bad("Not authenticated")) };
         let folders = match self.folders().await {
             Ok(f) => f,
@@ -190,9 +180,9 @@ impl Session {
         }
     }
 
-    pub(crate) async fn cmd_rename(&mut self, from: &WireMailbox<'_>, to: &WireMailbox<'_>) -> Result<Done, Closed> {
+    pub(crate) async fn cmd_rename(&mut self, from: &str, to: &str) -> Result<Done, Closed> {
         let Some(mb) = self.mailbox() else { return Ok(Done::bad("Not authenticated")) };
-        let Some(to_name) = Session::name_of(to) else { return Ok(Done::bad("Invalid mailbox name")) };
+        let to_name = to.to_owned();
         let folders = match self.folders().await {
             Ok(f) => f,
             Err(d) => return Ok(d),
@@ -238,7 +228,7 @@ impl Session {
         Ok(Done::ok("RENAME completed"))
     }
 
-    pub(crate) async fn cmd_subscribe(&mut self, m: &WireMailbox<'_>, on: bool) -> Result<Done, Closed> {
+    pub(crate) async fn cmd_subscribe(&mut self, m: &str, on: bool) -> Result<Done, Closed> {
         let Some(mb) = self.mailbox() else { return Ok(Done::bad("Not authenticated")) };
         let folders = match self.folders().await {
             Ok(f) => f,
@@ -259,8 +249,8 @@ impl Session {
 
     pub(crate) async fn cmd_list(
         &mut self,
-        reference: &WireMailbox<'_>,
-        pattern: &ListMailbox<'_>,
+        reference: &str,
+        pattern: &str,
         subscribed_only: bool,
         out: &mut Out<'_>,
     ) -> Result<Done, Closed> {
@@ -269,10 +259,7 @@ impl Session {
             Ok(f) => f,
             Err(d) => return Ok(d),
         };
-        let (Some(reference), Some(pattern)) = (Session::name_of(reference), list_text(pattern)) else {
-            return Ok(Done::bad("Invalid mailbox name"));
-        };
-        let delim = self.resolver.delimiter();
+                let delim = self.resolver.delimiter();
         // An empty pattern asks for the hierarchy delimiter.
         if pattern.is_empty() {
             out.untagged(&format!("{verb} (\\Noselect) \"{delim}\" \"\""));
@@ -313,8 +300,8 @@ impl Session {
 
     pub(crate) async fn cmd_status(
         &mut self,
-        m: &WireMailbox<'_>,
-        items: &[StatusDataItemName],
+        m: &str,
+        items: &[StatusItem],
         out: &mut Out<'_>,
     ) -> Result<Done, Closed> {
         let Some(mb) = self.mailbox() else { return Ok(Done::bad("Not authenticated")) };
@@ -333,13 +320,13 @@ impl Session {
         };
         let Some(info) = folders.iter().find(|f| f.id == id) else { return Ok(Done::no("NONEXISTENT", "Mailbox does not exist")) };
         let mut parts: Vec<String> = Vec::new();
-        for item in items.iter() {
+        for item in items {
             match item {
-                StatusDataItemName::Messages => parts.push(format!("MESSAGES {}", counts.messages)),
-                StatusDataItemName::Recent => parts.push("RECENT 0".to_owned()),
-                StatusDataItemName::UidNext => parts.push(format!("UIDNEXT {}", info.uid_next)),
-                StatusDataItemName::UidValidity => parts.push(format!("UIDVALIDITY {}", info.uid_validity)),
-                StatusDataItemName::Unseen => parts.push(format!("UNSEEN {}", counts.unseen)),
+                StatusItem::Messages => parts.push(format!("MESSAGES {}", counts.messages)),
+                StatusItem::Recent => parts.push("RECENT 0".to_owned()),
+                StatusItem::UidNext => parts.push(format!("UIDNEXT {}", info.uid_next)),
+                StatusItem::UidValidity => parts.push(format!("UIDVALIDITY {}", info.uid_validity)),
+                StatusItem::Unseen => parts.push(format!("UNSEEN {}", counts.unseen)),
                 // DELETED and DELETED-STORAGE are not offered (no capability advertises them).
                 _ => {}
             }

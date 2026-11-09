@@ -9,10 +9,7 @@
 
 use std::cell::OnceCell;
 
-use chrono::Datelike;
-use imap_codec::imap_types::core::AString;
-use imap_codec::imap_types::datetime::NaiveDate;
-use imap_codec::imap_types::search::SearchKey;
+use crate::command::SearchKey;
 use rusty_core::Flags;
 
 use crate::headers::{self, Field};
@@ -268,7 +265,7 @@ fn encoded_word(s: &[u8]) -> Option<(String, usize)> {
 // ---------------------------------------------------------------------------- dates
 
 /// Days since 1970-01-01 of a civil date (Howard Hinnant's algorithm).
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+pub(crate) fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);
     let yoe = y.rem_euclid(400);
@@ -276,11 +273,6 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let doy = (153 * mp + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
-}
-
-fn naive_day(d: &NaiveDate) -> i64 {
-    let d: &chrono::NaiveDate = d.as_ref();
-    days_from_civil(i64::from(d.year()), i64::from(d.month()), i64::from(d.day()))
 }
 
 /// The date of an RFC 5322 `Date:` value (`Fri, 06 Nov 2026 10:00:00 +0000`), time and zone ignored.
@@ -305,15 +297,15 @@ fn parse_date_header(v: &[u8]) -> Option<i64> {
 
 // ---------------------------------------------------------------------------- evaluation
 
-fn needle(a: &AString<'_>) -> String {
-    String::from_utf8_lossy(a.as_ref()).to_lowercase()
+fn needle(a: &[u8]) -> String {
+    String::from_utf8_lossy(a).to_lowercase()
 }
 
 /// Does deciding `key` ever need the message's bytes?
-pub fn needs_content(key: &SearchKey<'_>) -> bool {
+pub fn needs_content(key: &SearchKey) -> bool {
     use SearchKey::*;
     match key {
-        And(keys) => keys.as_ref().iter().any(needs_content),
+        And(keys) => keys.iter().any(needs_content),
         Not(k) => needs_content(k),
         Or(a, b) => needs_content(a) || needs_content(b),
         Bcc(_) | Body(_) | Cc(_) | From(_) | Header(..) | SentBefore(_) | SentOn(_) | SentSince(_) | Subject(_) | Text(_) | To(_) => true,
@@ -326,15 +318,15 @@ fn header_has(c: &Content<'_>, name: &str, text: &str) -> bool {
 }
 
 /// Evaluate `key` for one message. `content` is `None` until the caller loaded the bytes.
-pub fn eval(key: &SearchKey<'_>, f: &Facts<'_>, b: Bounds, content: Option<&Content<'_>>) -> Tri {
+pub fn eval(key: &SearchKey, f: &Facts<'_>, b: Bounds, content: Option<&Content<'_>>) -> Tri {
     use SearchKey::*;
     let flag = |x: Flags| Tri::of(f.flags.contains(x));
     let with = |g: &dyn Fn(&Content<'_>) -> bool| content.map_or(Tri::Needs, |c| Tri::of(g(c)));
     match key {
-        And(keys) => keys.as_ref().iter().fold(Tri::Yes, |acc, k| acc.and(eval(k, f, b, content))),
+        And(keys) => keys.iter().fold(Tri::Yes, |acc, k| acc.and(eval(k, f, b, content))),
         Not(k) => eval(k, f, b, content).not(),
         Or(x, y) => eval(x, f, b, content).or(eval(y, f, b, content)),
-        SequenceSet(set) => Tri::of(!seqset::ranges(set, b.max_seq).iter().all(|(lo, hi)| f.seq < *lo || f.seq > *hi)),
+        Seq(set) => Tri::of(!seqset::ranges(set, b.max_seq).iter().all(|(lo, hi)| f.seq < *lo || f.seq > *hi)),
         Uid(set) => Tri::of(!seqset::ranges(set, b.max_uid).iter().all(|(lo, hi)| f.uid < *lo || f.uid > *hi)),
         All => Tri::Yes,
         Answered => flag(Flags::ANSWERED),
@@ -350,23 +342,23 @@ pub fn eval(key: &SearchKey<'_>, f: &Facts<'_>, b: Bounds, content: Option<&Cont
         // Nothing is \Recent in this server: every message is old.
         Recent | New => Tri::No,
         Old => Tri::Yes,
-        Keyword(k) => Tri::of(has_keyword(f, k.as_ref())),
-        Unkeyword(k) => Tri::of(!has_keyword(f, k.as_ref())),
+        Keyword(k) => Tri::of(has_keyword(f, k)),
+        Unkeyword(k) => Tri::of(!has_keyword(f, k)),
         Larger(n) => Tri::of(f.size > u64::from(*n)),
         Smaller(n) => Tri::of(f.size < u64::from(*n)),
-        Before(d) => Tri::of(f.internal_date.div_euclid(86_400) < naive_day(d)),
-        On(d) => Tri::of(f.internal_date.div_euclid(86_400) == naive_day(d)),
-        Since(d) => Tri::of(f.internal_date.div_euclid(86_400) >= naive_day(d)),
-        SentBefore(d) => with(&|c| c.sent_day().is_some_and(|s| s < naive_day(d))),
-        SentOn(d) => with(&|c| c.sent_day().is_some_and(|s| s == naive_day(d))),
-        SentSince(d) => with(&|c| c.sent_day().is_some_and(|s| s >= naive_day(d))),
+        Before(d) => Tri::of(f.internal_date.div_euclid(86_400) < *d),
+        On(d) => Tri::of(f.internal_date.div_euclid(86_400) == *d),
+        Since(d) => Tri::of(f.internal_date.div_euclid(86_400) >= *d),
+        SentBefore(d) => with(&|c| c.sent_day().is_some_and(|s| s < *d)),
+        SentOn(d) => with(&|c| c.sent_day().is_some_and(|s| s == *d)),
+        SentSince(d) => with(&|c| c.sent_day().is_some_and(|s| s >= *d)),
         From(s) => with(&|c| header_has(c, "from", &needle(s))),
         To(s) => with(&|c| header_has(c, "to", &needle(s))),
         Cc(s) => with(&|c| header_has(c, "cc", &needle(s))),
         Bcc(s) => with(&|c| header_has(c, "bcc", &needle(s))),
         Subject(s) => with(&|c| header_has(c, "subject", &needle(s))),
         Header(name, value) => with(&|c| {
-            let name = String::from_utf8_lossy(name.as_ref()).into_owned();
+            let name = String::from_utf8_lossy(name).into_owned();
             let want = needle(value);
             let vals = c.values(&name);
             !vals.is_empty() && (want.is_empty() || vals.iter().any(|v| v.contains(&want)))
@@ -387,10 +379,10 @@ fn has_keyword(f: &Facts<'_>, k: &str) -> bool {
 }
 
 /// Does `key` look at keywords (so the caller must read them for the folder)?
-pub fn needs_keywords(key: &SearchKey<'_>) -> bool {
+pub fn needs_keywords(key: &SearchKey) -> bool {
     use SearchKey::*;
     match key {
-        And(keys) => keys.as_ref().iter().any(needs_keywords),
+        And(keys) => keys.iter().any(needs_keywords),
         Not(k) => needs_keywords(k),
         Or(a, b) => needs_keywords(a) || needs_keywords(b),
         Keyword(_) | Unkeyword(_) => true,

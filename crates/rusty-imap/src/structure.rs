@@ -5,7 +5,7 @@
 
 use std::ops::Range;
 
-use imap_codec::imap_types::fetch::{Part as PartSpec, Section};
+use crate::command::Section;
 
 use crate::headers::{self, find, line_at, Field};
 use crate::wire;
@@ -480,11 +480,11 @@ impl Mime {
         }
     }
 
-    fn resolve(&self, path: &PartSpec) -> Option<&Node> {
+    fn resolve(&self, path: &[u32]) -> Option<&Node> {
         let mut level = self.top_level();
         let mut found: Option<&Node> = None;
-        for num in path.0.as_ref() {
-            let idx = usize::try_from(num.get()).ok()?.checked_sub(1)?;
+        for num in path {
+            let idx = usize::try_from(*num).ok()?.checked_sub(1)?;
             let n = *level.get(idx)?;
             found = Some(n);
             level = kids(n);
@@ -494,7 +494,7 @@ impl Mime {
 
     /// The message a header/text section refers to: the whole message, or the embedded message of
     /// a message/rfc822 part.
-    fn message_node(&self, part: Option<&PartSpec>) -> Option<&Node> {
+    fn message_node(&self, part: Option<&[u32]>) -> Option<&Node> {
         match part {
             None => Some(&self.root),
             Some(p) => match &self.resolve(p)?.kind {
@@ -505,7 +505,7 @@ impl Mime {
     }
 
     /// The bytes of `BODY[section]`; `None` when the section names a part that does not exist.
-    pub fn section(&self, raw: &[u8], section: &Section<'_>) -> Option<Vec<u8>> {
+    pub fn section(&self, raw: &[u8], section: &Section) -> Option<Vec<u8>> {
         let slice = |r: Range<usize>| raw.get(r).map(<[u8]>::to_vec);
         match section {
             Section::Part(p) => slice(self.resolve(p)?.part.body.clone()),
@@ -514,15 +514,15 @@ impl Mime {
                 slice(n.part.header.start..n.part.body.start)
             }
             Section::Header(p) => {
-                let n = self.message_node(p.as_ref())?;
+                let n = self.message_node(p.as_deref())?;
                 slice(n.part.header.start..n.part.body.start)
             }
-            Section::Text(p) => slice(self.message_node(p.as_ref())?.part.body.clone()),
+            Section::Text(p) => slice(self.message_node(p.as_deref())?.part.body.clone()),
             Section::HeaderFields(p, names) | Section::HeaderFieldsNot(p, names) => {
                 let not = matches!(section, Section::HeaderFieldsNot(..));
-                let n = self.message_node(p.as_ref())?;
+                let n = self.message_node(p.as_deref())?;
                 let block = raw.get(n.part.header.clone())?;
-                let wanted: Vec<Vec<u8>> = names.as_ref().iter().map(|a| a.as_ref().to_ascii_lowercase()).collect();
+                let wanted: Vec<Vec<u8>> = names.iter().map(|a| a.to_ascii_lowercase()).collect();
                 let mut out = Vec::new();
                 for f in headers::fields(block) {
                     let hit = wanted.iter().any(|w| f.name.eq_ignore_ascii_case(w));

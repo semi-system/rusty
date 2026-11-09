@@ -3,11 +3,7 @@
 use std::collections::HashMap;
 
 use bytes::Bytes;
-use imap_codec::imap_types::core::Charset;
-use imap_codec::imap_types::flag::Flag;
-use imap_codec::imap_types::mailbox::Mailbox as WireMailbox;
-use imap_codec::imap_types::search::SearchKey;
-use imap_codec::imap_types::sequence::SequenceSet;
+use crate::command::{FlagArg, SearchKey, SeqSet};
 use rusty_core::{Error, Flags, MessageId};
 use rusty_store::MAX_BATCH;
 
@@ -45,14 +41,14 @@ impl Session {
 
     pub(crate) async fn cmd_search(
         &mut self,
-        charset: Option<&Charset<'_>>,
-        criteria: &SearchKey<'_>,
+        charset: Option<&str>,
+        criteria: &SearchKey,
         uid_mode: bool,
         out: &mut Out<'_>,
     ) -> Result<Done, Closed> {
         let Some(mb) = self.mailbox() else { return Ok(Done::bad("Not authenticated")) };
         if let Some(cs) = charset {
-            let name = cs.as_ref().to_ascii_uppercase();
+            let name = cs.to_ascii_uppercase();
             if name != "UTF-8" && name != "US-ASCII" {
                 return Ok(Done::no("BADCHARSET (UTF-8 US-ASCII)", "Charset not supported"));
             }
@@ -111,19 +107,19 @@ impl Session {
 
     pub(crate) async fn cmd_copy(
         &mut self,
-        set: &SequenceSet,
-        dest: &WireMailbox<'_>,
+        set: &SeqSet,
+        dest: &str,
         uid_mode: bool,
         is_move: bool,
         out: &mut Out<'_>,
     ) -> Result<Done, Closed> {
         let Some(mb) = self.mailbox() else { return Ok(Done::bad("Not authenticated")) };
-        let Some(name) = Session::name_of(dest) else { return Ok(Done::bad("Invalid mailbox name")) };
+        let name = dest;
         let folders = match mb.list_folders().await {
             Ok(f) => f,
             Err(e) => return Ok(Done::store(Op::Mailbox, &e)),
         };
-        let Some(to) = self.resolver.lookup(&folders, &name) else {
+        let Some(to) = self.resolver.lookup(&folders, name) else {
             return Ok(Done::no("TRYCREATE", "Mailbox does not exist"));
         };
         let picked = self.pick(set, uid_mode);
@@ -167,15 +163,15 @@ impl Session {
         Ok(Done::ok(verb))
     }
 
-    pub(crate) async fn cmd_append(&mut self, dest: &WireMailbox<'_>, flags: &[Flag<'_>], data: &[u8]) -> Result<Done, Closed> {
+    pub(crate) async fn cmd_append(&mut self, dest: &str, flags: &[FlagArg], data: &[u8]) -> Result<Done, Closed> {
         let Some(mb) = self.mailbox() else { return Ok(Done::bad("Not authenticated")) };
-        let Some(name) = Session::name_of(dest) else { return Ok(Done::bad("Invalid mailbox name")) };
+        let name = dest;
         let Ok(fs) = split_flags(flags) else { return Ok(Done::no("CANNOT", "Invalid keyword")) };
         let folders = match mb.list_folders().await {
             Ok(f) => f,
             Err(e) => return Ok(Done::store(Op::Mailbox, &e)),
         };
-        let Some(folder) = self.resolver.lookup(&folders, &name) else {
+        let Some(folder) = self.resolver.lookup(&folders, name) else {
             return Ok(Done::no("TRYCREATE", "Mailbox does not exist"));
         };
         // The internal date the client may give is not honoured yet (the message gets the server

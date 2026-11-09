@@ -24,6 +24,8 @@ pub mod headers;
 pub mod search;
 pub mod fuzz_checks;
 pub mod auth;
+pub mod codec;
+pub mod command;
 pub mod errors;
 pub mod folders;
 pub mod out;

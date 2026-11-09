@@ -1,21 +1,16 @@
 //! MIME structure: BODYSTRUCTURE, ENVELOPE and BODY[section] extraction over fixed messages, and
 //! the behaviour on hostile ones (the same properties are fuzzed by fuzz_imap_structure).
 
-use imap_codec::decode::Decoder;
-use imap_codec::imap_types::command::CommandBody;
-use imap_codec::imap_types::fetch::{MacroOrMessageDataItemNames, MessageDataItemName};
-use imap_codec::CommandCodec;
+use rusty_imap::codec::parse_command;
+use rusty_imap::command::{Body, FetchItem};
 use rusty_imap::structure::{parse, Mime, MAX_DEPTH, MAX_PARTS};
 
 fn section(m: &Mime, raw: &[u8], spec: &str) -> Option<String> {
     let line = format!("a FETCH 1 (BODY.PEEK[{spec}])\r\n");
-    let (_, cmd) = CommandCodec::new().decode(line.as_bytes()).unwrap();
-    let CommandBody::Fetch { macro_or_item_names: MacroOrMessageDataItemNames::MessageDataItemNames(items), .. } = cmd.body
-    else {
-        panic!("not a fetch")
-    };
+    let cmd = parse_command(line.as_bytes()).unwrap();
+    let Body::Fetch { items, .. } = cmd.body else { panic!("not a fetch") };
     match items.into_iter().next().unwrap() {
-        MessageDataItemName::BodyExt { section: Some(sec), .. } => {
+        FetchItem::BodyExt { section: Some(sec), .. } => {
             m.section(raw, &sec).map(|v| String::from_utf8(v).unwrap())
         }
         other => panic!("{other:?}"),

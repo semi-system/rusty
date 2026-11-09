@@ -7,9 +7,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use imap_codec::imap_types::auth::AuthMechanism;
-use imap_codec::imap_types::command::{Command, CommandBody};
-use imap_codec::imap_types::mailbox::Mailbox as WireMailbox;
+use crate::command::{Body, Command};
 use rusty_core::Error;
 use rusty_store::Mailbox;
 use rusty_svc::{Context, PeerInfo, ServiceEvent, Verdict};
@@ -19,7 +17,6 @@ use crate::errors::{status_for, Op, Status};
 use crate::folders::FolderResolver;
 use crate::out::{Closed, Out};
 use crate::select::Selected;
-use crate::utf7;
 
 /// Per-connection limits that are not framing limits.
 #[derive(Debug, Clone, Copy)]
@@ -126,8 +123,37 @@ pub struct Session {
 }
 
 /// Protocol name of a command (for the log: verbs only, never arguments).
-fn verb(body: &CommandBody<'_>) -> &'static str {
-    body.name()
+fn verb(body: &Body) -> &'static str {
+    match body {
+        Body::Capability => "CAPABILITY",
+        Body::Noop => "NOOP",
+        Body::Logout => "LOGOUT",
+        Body::StartTls => "STARTTLS",
+        Body::Login { .. } => "LOGIN",
+        Body::Authenticate { .. } => "AUTHENTICATE",
+        Body::Select { .. } => "SELECT",
+        Body::Examine { .. } => "EXAMINE",
+        Body::Create { .. } => "CREATE",
+        Body::Delete { .. } => "DELETE",
+        Body::Rename { .. } => "RENAME",
+        Body::Subscribe { .. } => "SUBSCRIBE",
+        Body::Unsubscribe { .. } => "UNSUBSCRIBE",
+        Body::List { .. } => "LIST",
+        Body::Lsub { .. } => "LSUB",
+        Body::Status { .. } => "STATUS",
+        Body::Append { .. } => "APPEND",
+        Body::Check => "CHECK",
+        Body::Close => "CLOSE",
+        Body::Unselect => "UNSELECT",
+        Body::Expunge => "EXPUNGE",
+        Body::Search { .. } => "SEARCH",
+        Body::Fetch { .. } => "FETCH",
+        Body::Store { .. } => "STORE",
+        Body::Copy { .. } => "COPY",
+        Body::Move { .. } => "MOVE",
+        Body::Idle => "IDLE",
+        Body::Enable => "ENABLE",
+    }
 }
 
 impl Session {
@@ -186,6 +212,7 @@ impl Session {
         let (status, code, text) = match kind {
             FramingError::LiteralTooLarge => ("NO", Some("LIMIT"), "Literal too large"),
             FramingError::Unparsable => ("BAD", None, "Command not understood"),
+            FramingError::BadName => ("BAD", None, "Invalid mailbox name"),
         };
         match tag {
             Some(t) => out.tagged(t, status, code, text),
@@ -198,23 +225,23 @@ impl Session {
     }
 
     /// Run one command to completion: handler, pending updates, tagged reply.
-    pub async fn command(&mut self, cmd: Command<'_>, out: &mut Out<'_>) -> Result<Action, Closed> {
-        let tag = cmd.tag.as_ref().to_owned();
+    pub async fn command(&mut self, cmd: Command, out: &mut Out<'_>) -> Result<Action, Closed> {
+        let tag = cmd.tag.clone();
         tracing::debug!(verb = verb(&cmd.body), "imap command");
         let non_uid_scan = matches!(
             &cmd.body,
-            CommandBody::Fetch { uid: false, .. } | CommandBody::Store { uid: false, .. } | CommandBody::Search { uid: false, .. }
+            Body::Fetch { uid: false, .. } | Body::Store { uid: false, .. } | Body::Search { uid: false, .. }
         );
         let in_selected_only = !matches!(
             &cmd.body,
-            CommandBody::Select { .. }
-                | CommandBody::Examine { .. }
-                | CommandBody::Close
-                | CommandBody::Unselect
-                | CommandBody::Logout
-                | CommandBody::Login { .. }
-                | CommandBody::Authenticate { .. }
-                | CommandBody::StartTLS
+            Body::Select { .. }
+                | Body::Examine { .. }
+                | Body::Close
+                | Body::Unselect
+                | Body::Logout
+                | Body::Login { .. }
+                | Body::Authenticate { .. }
+                | Body::StartTls
         );
         let done = self.dispatch(&tag, cmd.body, out).await?;
         if done.action == Action::AuthLine {
@@ -242,8 +269,8 @@ impl Session {
         Ok(done.action)
     }
 
-    async fn dispatch(&mut self, tag: &str, body: CommandBody<'_>, out: &mut Out<'_>) -> Result<Done, Closed> {
-        use CommandBody as C;
+    async fn dispatch(&mut self, tag: &str, body: Body, out: &mut Out<'_>) -> Result<Done, Closed> {
+        use Body as C;
         let authed = self.user.is_some();
         let selected = self.sel.is_some();
         // Commands that are valid in any state.
@@ -261,16 +288,9 @@ impl Session {
         }
         if !authed {
             return match body {
-                C::StartTLS => Ok(self.cmd_starttls(out)),
-                C::Login { username, password } => {
-                    let name = String::from_utf8_lossy(username.as_ref()).into_owned();
-                    let pass = String::from_utf8_lossy(password.declassify().as_ref()).into_owned();
-                    Ok(self.cmd_login(&name, &pass).await)
-                }
-                C::Authenticate { mechanism, initial_response } => {
-                    let ir = initial_response.map(|s| s.declassify().to_vec());
-                    Ok(self.cmd_authenticate(tag, mechanism, ir, out).await)
-                }
+                C::StartTls => Ok(self.cmd_starttls(out)),
+                C::Login { user, password } => Ok(self.cmd_login(&user, &password).await),
+                C::Authenticate { mechanism, initial } => Ok(self.cmd_authenticate(tag, &mechanism, initial, out).await),
                 _ => Ok(Done::no("AUTHENTICATIONREQUIRED", "Log in first")),
             };
         }
@@ -283,22 +303,22 @@ impl Session {
             return Ok(Done::bad("No mailbox selected"));
         }
         match body {
-            C::StartTLS | C::Login { .. } | C::Authenticate { .. } => Ok(Done::bad("Already authenticated")),
-            C::Enable { .. } => {
+            C::StartTls | C::Login { .. } | C::Authenticate { .. } => Ok(Done::bad("Already authenticated")),
+            C::Enable => {
                 out.untagged("ENABLED");
                 Ok(Done::ok("ENABLE completed"))
             }
-            C::Select { mailbox } => self.cmd_select(&mailbox, false, out).await,
-            C::Examine { mailbox } => self.cmd_select(&mailbox, true, out).await,
-            C::Create { mailbox } => self.cmd_create(&mailbox).await,
-            C::Delete { mailbox } => self.cmd_delete(&mailbox).await,
+            C::Select { name } => self.cmd_select(&name, false, out).await,
+            C::Examine { name } => self.cmd_select(&name, true, out).await,
+            C::Create { name } => self.cmd_create(&name).await,
+            C::Delete { name } => self.cmd_delete(&name).await,
             C::Rename { from, to } => self.cmd_rename(&from, &to).await,
-            C::Subscribe { mailbox } => self.cmd_subscribe(&mailbox, true).await,
-            C::Unsubscribe { mailbox } => self.cmd_subscribe(&mailbox, false).await,
-            C::List { reference, mailbox_wildcard } => self.cmd_list(&reference, &mailbox_wildcard, false, out).await,
-            C::Lsub { reference, mailbox_wildcard } => self.cmd_list(&reference, &mailbox_wildcard, true, out).await,
-            C::Status { mailbox, item_names } => self.cmd_status(&mailbox, &item_names, out).await,
-            C::Append { mailbox, flags, date: _, message } => self.cmd_append(&mailbox, &flags, message.as_ref()).await,
+            C::Subscribe { name } => self.cmd_subscribe(&name, true).await,
+            C::Unsubscribe { name } => self.cmd_subscribe(&name, false).await,
+            C::List { reference, pattern } => self.cmd_list(&reference, &pattern, false, out).await,
+            C::Lsub { reference, pattern } => self.cmd_list(&reference, &pattern, true, out).await,
+            C::Status { name, items } => self.cmd_status(&name, &items, out).await,
+            C::Append { name, flags, data } => self.cmd_append(&name, &flags, &data).await,
             C::Idle => Ok(Done::no("CANNOT", "IDLE is not available")),
             C::Check => Ok(Done::ok("CHECK completed")),
             C::Close => Ok(self.cmd_close().await),
@@ -307,15 +327,11 @@ impl Session {
                 Ok(Done::ok("UNSELECT completed"))
             }
             C::Expunge => self.cmd_expunge(out).await,
-            C::Search { charset, criteria, uid } => self.cmd_search(charset.as_ref(), &criteria, uid, out).await,
-            C::Fetch { sequence_set, macro_or_item_names, uid } => {
-                self.cmd_fetch(&sequence_set, &macro_or_item_names, uid, out).await
-            }
-            C::Store { sequence_set, kind, response, flags, uid } => {
-                self.cmd_store(&sequence_set, kind, response, &flags, uid, out).await
-            }
-            C::Copy { sequence_set, mailbox, uid } => self.cmd_copy(&sequence_set, &mailbox, uid, false, out).await,
-            C::Move { sequence_set, mailbox, uid } => self.cmd_copy(&sequence_set, &mailbox, uid, true, out).await,
+            C::Search { charset, key, uid } => self.cmd_search(charset.as_deref(), &key, uid, out).await,
+            C::Fetch { set, items, uid } => self.cmd_fetch(&set, &items, uid, out).await,
+            C::Store { set, kind, silent, flags, uid } => self.cmd_store(&set, kind, silent, &flags, uid, out).await,
+            C::Copy { set, name, uid } => self.cmd_copy(&set, &name, uid, false, out).await,
+            C::Move { set, name, uid } => self.cmd_copy(&set, &name, uid, true, out).await,
             _ => Ok(Done::bad("Command not available")),
         }
     }
@@ -389,14 +405,14 @@ impl Session {
     async fn cmd_authenticate(
         &mut self,
         tag: &str,
-        mechanism: AuthMechanism<'_>,
+        mechanism: &str,
         initial: Option<Vec<u8>>,
         out: &mut Out<'_>,
     ) -> Done {
         if !self.tls {
             return Done::no("PRIVACYREQUIRED", "Plaintext authentication is disabled; use TLS");
         }
-        if mechanism != AuthMechanism::Plain {
+        if mechanism != "PLAIN" {
             return Done::no("CANNOT", "Unsupported authentication mechanism");
         }
         match initial {
@@ -447,13 +463,6 @@ impl Session {
         self.finish(&p.tag, done, out).await
     }
 
-    /// Resolve a client mailbox name to UTF-8.
-    pub(crate) fn name_of(m: &WireMailbox<'_>) -> Option<String> {
-        match m {
-            WireMailbox::Inbox => Some("INBOX".to_owned()),
-            WireMailbox::Other(o) => utf7::decode(std::str::from_utf8(o.as_ref()).ok()?),
-        }
-    }
 }
 
 /// Which framing problem was reported by the framer or the decoder.
@@ -461,5 +470,7 @@ impl Session {
 pub enum FramingError {
     LiteralTooLarge,
     Unparsable,
+    /// A mailbox name that is not valid modified UTF-7.
+    BadName,
 }
 

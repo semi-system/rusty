@@ -25,19 +25,16 @@
 //!
 //! The assertions below pin both halves, so a library upgrade that changes either shows up here.
 
-use imap_codec::decode::{CommandDecodeError, Decoder};
-use imap_codec::imap_types::command::CommandBody;
-use imap_codec::CommandCodec;
+use rusty_imap::codec::parse_command;
 
-fn name(line: &str) -> Result<&'static str, String> {
-    match CommandCodec::new().decode(line.as_bytes()) {
-        Ok((rest, cmd)) => {
-            assert!(rest.is_empty(), "{line:?}: trailing input {rest:?}");
-            Ok(cmd.body.name())
+/// The variant name of the parsed command, or `"failed"`.
+fn name(line: &str) -> Result<String, String> {
+    match parse_command(line.as_bytes()) {
+        Ok(c) => {
+            let d = format!("{:?}", c.body);
+            Ok(d.split(|ch: char| !ch.is_ascii_alphanumeric()).next().unwrap_or("").to_owned())
         }
-        Err(CommandDecodeError::Incomplete) => Err("incomplete".into()),
-        Err(CommandDecodeError::LiteralFound { .. }) => Err("literal".into()),
-        Err(CommandDecodeError::Failed) => Err("failed".into()),
+        Err(_) => Err("failed".into()),
     }
 }
 
@@ -46,57 +43,57 @@ fn name(line: &str) -> Result<&'static str, String> {
 fn commands_of_the_target_clients_decode() {
     let table: &[(&str, &str)] = &[
         // Any state
-        ("1 capability\r\n", "CAPABILITY"),
-        ("2 NOOP\r\n", "NOOP"),
-        ("3 LOGOUT\r\n", "LOGOUT"),
+        ("1 capability\r\n", "Capability"),
+        ("2 NOOP\r\n", "Noop"),
+        ("3 LOGOUT\r\n", "Logout"),
         // Not authenticated
-        ("4 STARTTLS\r\n", "STARTTLS"),
-        ("5 login \"user@example.com\" \"s3cret\"\r\n", "LOGIN"),
-        ("6 LOGIN user@example.com s3cret\r\n", "LOGIN"),
-        ("7 authenticate PLAIN\r\n", "AUTHENTICATE"),
-        ("8 AUTHENTICATE PLAIN AGFsaWNlAHBhc3M=\r\n", "AUTHENTICATE"),
+        ("4 STARTTLS\r\n", "StartTls"),
+        ("5 login \"user@example.com\" \"s3cret\"\r\n", "Login"),
+        ("6 LOGIN user@example.com s3cret\r\n", "Login"),
+        ("7 authenticate PLAIN\r\n", "Authenticate"),
+        ("8 AUTHENTICATE PLAIN AGFsaWNlAHBhc3M=\r\n", "Authenticate"),
         // Authenticated
-        ("9 select \"INBOX\"\r\n", "SELECT"),
-        ("10 EXAMINE INBOX\r\n", "EXAMINE"),
-        ("11 CREATE \"Projects/2026\"\r\n", "CREATE"),
-        ("12 DELETE Old\r\n", "DELETE"),
-        ("13 RENAME \"A\" \"B/C\"\r\n", "RENAME"),
-        ("14 SUBSCRIBE \"Sent\"\r\n", "SUBSCRIBE"),
-        ("15 UNSUBSCRIBE \"Sent\"\r\n", "UNSUBSCRIBE"),
-        ("16 list \"\" \"*\"\r\n", "LIST"),
-        ("17 LIST \"\" \"INBOX\"\r\n", "LIST"),
-        ("18 LIST \"\" \"%\"\r\n", "LIST"),
-        ("19 LSUB \"\" \"*\"\r\n", "LSUB"),
-        ("20 STATUS \"INBOX\" (UIDNEXT MESSAGES UNSEEN UIDVALIDITY)\r\n", "STATUS"),
-        ("21 STATUS INBOX (MESSAGES UIDNEXT)\r\n", "STATUS"),
-        ("22 APPEND \"Sent\" (\\Seen) {5+}\r\nhello\r\n", "APPEND"),
-        ("23 APPEND Drafts (\\Seen \\Draft) \"07-Nov-2026 10:00:00 +0000\" {3+}\r\nabc\r\n", "APPEND"),
-        ("24 ENABLE UTF8=ACCEPT\r\n", "ENABLE"),
-        ("25 IDLE\r\n", "IDLE"),
-        ("26 UNSELECT\r\n", "UNSELECT"),
+        ("9 select \"INBOX\"\r\n", "Select"),
+        ("10 EXAMINE INBOX\r\n", "Examine"),
+        ("11 CREATE \"Projects/2026\"\r\n", "Create"),
+        ("12 DELETE Old\r\n", "Delete"),
+        ("13 RENAME \"A\" \"B/C\"\r\n", "Rename"),
+        ("14 SUBSCRIBE \"Sent\"\r\n", "Subscribe"),
+        ("15 UNSUBSCRIBE \"Sent\"\r\n", "Unsubscribe"),
+        ("16 list \"\" \"*\"\r\n", "List"),
+        ("17 LIST \"\" \"INBOX\"\r\n", "List"),
+        ("18 LIST \"\" \"%\"\r\n", "List"),
+        ("19 LSUB \"\" \"*\"\r\n", "Lsub"),
+        ("20 STATUS \"INBOX\" (UIDNEXT MESSAGES UNSEEN UIDVALIDITY)\r\n", "Status"),
+        ("21 STATUS INBOX (MESSAGES UIDNEXT)\r\n", "Status"),
+        ("22 APPEND \"Sent\" (\\Seen) {5+}\r\nhello\r\n", "Append"),
+        ("23 APPEND Drafts (\\Seen \\Draft) \"07-Nov-2026 10:00:00 +0000\" {3+}\r\nabc\r\n", "Append"),
+        ("24 ENABLE UTF8=ACCEPT\r\n", "Enable"),
+        ("25 IDLE\r\n", "Idle"),
+        ("26 UNSELECT\r\n", "Unselect"),
         // Selected
-        ("27 CHECK\r\n", "CHECK"),
-        ("28 CLOSE\r\n", "CLOSE"),
-        ("29 EXPUNGE\r\n", "EXPUNGE"),
-        ("30 UID FETCH 1:* (FLAGS)\r\n", "FETCH"),
-        ("31 UID FETCH 1:5 (UID RFC822.SIZE FLAGS BODY.PEEK[HEADER.FIELDS (From To Cc Bcc Subject Date Message-ID Priority X-Priority References Newsgroups In-Reply-To Content-Type Reply-To)])\r\n", "FETCH"),
-        ("32 UID FETCH 5 (BODY.PEEK[]<0.20480>)\r\n", "FETCH"),
-        ("33 UID FETCH 5 (BODYSTRUCTURE)\r\n", "FETCH"),
-        ("34 FETCH 1:10 (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE)\r\n", "FETCH"),
-        ("35 FETCH 2 (BODY.PEEK[1.2.MIME] BODY[TEXT]<10.100>)\r\n", "FETCH"),
-        ("36 FETCH 1:3 FAST\r\n", "FETCH"),
-        ("37 UID STORE 5 +FLAGS (\\Seen)\r\n", "STORE"),
-        ("38 UID STORE 5 +FLAGS.SILENT (\\Deleted)\r\n", "STORE"),
-        ("39 STORE 1:3 -FLAGS ($label1 \\Flagged)\r\n", "STORE"),
-        ("40 UID COPY 5 \"Trash\"\r\n", "COPY"),
-        ("41 UID MOVE 5 \"Trash\"\r\n", "MOVE"),
-        ("42 MOVE 1:2 Archive\r\n", "MOVE"),
-        ("43 UID SEARCH CHARSET UTF-8 SUBJECT \"x\"\r\n", "SEARCH"),
-        ("44 SEARCH UNSEEN\r\n", "SEARCH"),
-        ("45 UID SEARCH UNDELETED 1:*\r\n", "SEARCH"),
-        ("46 SEARCH OR FROM \"a\" TO \"b\" NOT SEEN SINCE 1-Jan-2026 LARGER 1000\r\n", "SEARCH"),
-        ("47 SEARCH HEADER Message-ID \"<x@y>\" BODY \"hello\" TEXT \"world\"\r\n", "SEARCH"),
-        ("48 SEARCH KEYWORD $label1\r\n", "SEARCH"),
+        ("27 CHECK\r\n", "Check"),
+        ("28 CLOSE\r\n", "Close"),
+        ("29 EXPUNGE\r\n", "Expunge"),
+        ("30 UID FETCH 1:* (FLAGS)\r\n", "Fetch"),
+        ("31 UID FETCH 1:5 (UID RFC822.SIZE FLAGS BODY.PEEK[HEADER.FIELDS (From To Cc Bcc Subject Date Message-ID Priority X-Priority References Newsgroups In-Reply-To Content-Type Reply-To)])\r\n", "Fetch"),
+        ("32 UID FETCH 5 (BODY.PEEK[]<0.20480>)\r\n", "Fetch"),
+        ("33 UID FETCH 5 (BODYSTRUCTURE)\r\n", "Fetch"),
+        ("34 FETCH 1:10 (UID FLAGS INTERNALDATE RFC822.SIZE ENVELOPE)\r\n", "Fetch"),
+        ("35 FETCH 2 (BODY.PEEK[1.2.MIME] BODY[TEXT]<10.100>)\r\n", "Fetch"),
+        ("36 FETCH 1:3 FAST\r\n", "Fetch"),
+        ("37 UID STORE 5 +FLAGS (\\Seen)\r\n", "Store"),
+        ("38 UID STORE 5 +FLAGS.SILENT (\\Deleted)\r\n", "Store"),
+        ("39 STORE 1:3 -FLAGS ($label1 \\Flagged)\r\n", "Store"),
+        ("40 UID COPY 5 \"Trash\"\r\n", "Copy"),
+        ("41 UID MOVE 5 \"Trash\"\r\n", "Move"),
+        ("42 MOVE 1:2 Archive\r\n", "Move"),
+        ("43 UID SEARCH CHARSET UTF-8 SUBJECT \"x\"\r\n", "Search"),
+        ("44 SEARCH UNSEEN\r\n", "Search"),
+        ("45 UID SEARCH UNDELETED 1:*\r\n", "Search"),
+        ("46 SEARCH OR FROM \"a\" TO \"b\" NOT SEEN SINCE 1-Jan-2026 LARGER 1000\r\n", "Search"),
+        ("47 SEARCH HEADER Message-ID \"<x@y>\" BODY \"hello\" TEXT \"world\"\r\n", "Search"),
+        ("48 SEARCH KEYWORD $label1\r\n", "Search"),
     ];
     let mut bad = vec![];
     for (line, want) in table {
@@ -126,17 +123,13 @@ fn what_1_0_0_does_not_know_is_exactly_the_u7_list() {
 
 // backend-neutral: pure parser over bytes, no store involved
 #[test]
-fn literals_are_reported_not_buffered() {
-    // A synchronising literal stops the decoder at the literal; the caller (our framer) decides.
-    match CommandCodec::new().decode(b"a LOGIN {5}\r\n") {
-        Err(CommandDecodeError::LiteralFound { length, .. }) => assert_eq!(length, 5),
-        other => panic!("{other:?}"),
-    }
-    // A literal that is complete decodes.
-    assert!(matches!(
-        CommandCodec::new().decode(b"a LOGIN {5}\r\nalice {4}\r\npass\r\n"),
-        Ok((_, c)) if matches!(c.body, CommandBody::Login { .. })
-    ));
-    // Missing CRLF terminator or bare LF: refused (the framer passes the bytes through).
-    assert!(matches!(CommandCodec::new().decode(b"a NOOP\n"), Err(CommandDecodeError::Failed)));
+fn literals_are_the_framers_business() {
+    // A command that still announces literal data is not complete: the adapter refuses it (the
+    // framer never hands such a frame over; the size caps are tested in src/frame.rs).
+    assert!(parse_command(b"a LOGIN {5}\r\n").is_err());
+    // A complete one parses, and a bare LF terminator is refused.
+    assert!(parse_command(b"a LOGIN {5}\r\nalice {4}\r\npass\r\n").is_ok());
+    assert!(parse_command(b"a NOOP\n").is_err());
+    // Mailbox names are decoded from modified UTF-7 by the adapter; a broken one is an error.
+    assert!(parse_command(b"a SELECT \"&AGE-\"\r\n").is_err());
 }

@@ -1,9 +1,8 @@
 //! SEARCH evaluation: flags, sets, sizes and dates from the snapshot facts; headers and body from
 //! the message bytes; three-valued logic so content is only loaded when it matters.
 
-use imap_codec::decode::Decoder;
-use imap_codec::imap_types::command::CommandBody;
-use imap_codec::CommandCodec;
+use rusty_imap::codec::parse_command;
+use rusty_imap::command::Body;
 use rusty_core::Flags;
 use rusty_imap::search::{eval, needs_content, Bounds, Content, Facts, Tri};
 
@@ -26,8 +25,8 @@ fn facts(flags: Flags) -> Facts<'static> {
 
 fn run(q: &str, f: &Facts<'_>, raw: Option<&[u8]>) -> Tri {
     let line = format!("a SEARCH {q}\r\n");
-    let (_, cmd) = CommandCodec::new().decode(line.as_bytes()).unwrap();
-    let CommandBody::Search { criteria, .. } = cmd.body else { panic!() };
+    let cmd = parse_command(line.as_bytes()).unwrap();
+    let Body::Search { key: criteria, .. } = cmd.body else { panic!() };
     let b = Bounds { max_seq: 10, max_uid: 100 };
     match raw {
         None => eval(&criteria, f, b, None),
@@ -93,8 +92,8 @@ fn boolean_logic_is_three_valued() {
 
 fn needs(q: &str) -> bool {
     let line = format!("a SEARCH {q}\r\n");
-    let (_, cmd) = CommandCodec::new().decode(line.as_bytes()).unwrap();
-    let CommandBody::Search { criteria, .. } = cmd.body else { panic!() };
+    let cmd = parse_command(line.as_bytes()).unwrap();
+    let Body::Search { key: criteria, .. } = cmd.body else { panic!() };
     needs_content(&criteria)
 }
 

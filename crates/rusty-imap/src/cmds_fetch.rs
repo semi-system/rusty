@@ -2,9 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use imap_codec::imap_types::fetch::{MacroOrMessageDataItemNames, MessageDataItemName, Section};
-use imap_codec::imap_types::flag::{Flag, StoreResponse, StoreType};
-use imap_codec::imap_types::sequence::SequenceSet;
+use crate::command::{FetchItem, FlagArg, Section, SeqSet, StoreKind};
 use rusty_core::{Error, Flags, MessageId};
 use rusty_store::{normalize_keyword, MAX_BATCH};
 
@@ -25,20 +23,20 @@ pub(crate) struct FlagSet {
     pub keywords: Vec<String>,
 }
 
-pub(crate) fn split_flags(flags: &[Flag<'_>]) -> Result<FlagSet, ()> {
+pub(crate) fn split_flags(flags: &[FlagArg]) -> Result<FlagSet, ()> {
     let mut system = Flags::empty();
     let mut keywords = Vec::new();
     for f in flags {
         match f {
-            Flag::Seen => system |= Flags::SEEN,
-            Flag::Answered => system |= Flags::ANSWERED,
-            Flag::Flagged => system |= Flags::FLAGGED,
-            Flag::Deleted => system |= Flags::DELETED,
-            Flag::Draft => system |= Flags::DRAFT,
+            FlagArg::Seen => system |= Flags::SEEN,
+            FlagArg::Answered => system |= Flags::ANSWERED,
+            FlagArg::Flagged => system |= Flags::FLAGGED,
+            FlagArg::Deleted => system |= Flags::DELETED,
+            FlagArg::Draft => system |= Flags::DRAFT,
             // \Recent and unknown system flags cannot be stored; they are ignored.
-            Flag::Extension(_) => {}
-            Flag::Keyword(k) => {
-                let kw = normalize_keyword(k.as_ref()).map_err(|_| ())?;
+            FlagArg::Ignored => {}
+            FlagArg::Keyword(k) => {
+                let kw = normalize_keyword(k).map_err(|_| ())?;
                 if !keywords.contains(&kw) {
                     keywords.push(kw);
                 }
@@ -49,24 +47,24 @@ pub(crate) fn split_flags(flags: &[Flag<'_>]) -> Result<FlagSet, ()> {
 }
 
 /// The text of a section specification as it appears inside `BODY[...]`.
-fn write_section(out: &mut Vec<u8>, s: &Option<Section<'_>>) {
-    let part = |out: &mut Vec<u8>, p: &imap_codec::imap_types::fetch::Part| {
-        let nums: Vec<String> = p.0.as_ref().iter().map(|n| n.get().to_string()).collect();
+fn write_section(out: &mut Vec<u8>, s: &Option<Section>) {
+    let part = |out: &mut Vec<u8>, p: &[u32]| {
+        let nums: Vec<String> = p.iter().map(u32::to_string).collect();
         out.extend_from_slice(nums.join(".").as_bytes());
     };
-    let dot = |out: &mut Vec<u8>, p: &Option<imap_codec::imap_types::fetch::Part>| {
+    let dot = |out: &mut Vec<u8>, p: &Option<Vec<u32>>| {
         if let Some(p) = p {
             part(out, p);
             out.push(b'.');
         }
     };
-    let names = |out: &mut Vec<u8>, n: &imap_codec::imap_types::core::NonEmptyVec<imap_codec::imap_types::core::AString<'_>>| {
+    let names = |out: &mut Vec<u8>, n: &[Vec<u8>]| {
         out.extend_from_slice(b" (");
-        for (i, a) in n.as_ref().iter().enumerate() {
+        for (i, a) in n.iter().enumerate() {
             if i > 0 {
                 out.push(b' ');
             }
-            wire::astring(out, a.as_ref());
+            wire::astring(out, a);
         }
         out.push(b')');
     };
@@ -99,7 +97,7 @@ fn write_section(out: &mut Vec<u8>, s: &Option<Section<'_>>) {
 }
 
 impl Session {
-    pub(crate) fn pick(&self, set: &SequenceSet, uid: bool) -> Vec<usize> {
+    pub(crate) fn pick(&self, set: &SeqSet, uid: bool) -> Vec<usize> {
         let Some(sel) = &self.sel else { return Vec::new() };
         if uid {
             seqset::select_by_uid(set, &sel.uids())
@@ -163,34 +161,31 @@ impl Session {
 
     pub(crate) async fn cmd_fetch(
         &mut self,
-        set: &SequenceSet,
-        items: &MacroOrMessageDataItemNames<'_>,
+        set: &SeqSet,
+        items: &[FetchItem],
         uid_mode: bool,
         out: &mut Out<'_>,
     ) -> Result<Done, Closed> {
         let Some(mb) = self.mailbox() else { return Ok(Done::bad("Not authenticated")) };
-        let mut wanted: Vec<MessageDataItemName<'_>> = match items {
-            MacroOrMessageDataItemNames::Macro(m) => m.expand(),
-            MacroOrMessageDataItemNames::MessageDataItemNames(v) => v.clone(),
-        };
-        if uid_mode && !wanted.iter().any(|i| matches!(i, MessageDataItemName::Uid)) {
-            wanted.insert(0, MessageDataItemName::Uid);
+        let mut wanted: Vec<FetchItem> = items.to_vec();
+        if uid_mode && !wanted.iter().any(|i| matches!(i, FetchItem::Uid)) {
+            wanted.insert(0, FetchItem::Uid);
         }
-        let wants_flags = wanted.iter().any(|i| matches!(i, MessageDataItemName::Flags));
+        let wants_flags = wanted.iter().any(|i| matches!(i, FetchItem::Flags));
         let needs_raw = wanted.iter().any(|i| {
             matches!(
                 i,
-                MessageDataItemName::Envelope
-                    | MessageDataItemName::Body
-                    | MessageDataItemName::BodyStructure
-                    | MessageDataItemName::BodyExt { .. }
-                    | MessageDataItemName::Rfc822
-                    | MessageDataItemName::Rfc822Header
-                    | MessageDataItemName::Rfc822Text
+                FetchItem::Envelope
+                    | FetchItem::Body
+                    | FetchItem::BodyStructure
+                    | FetchItem::BodyExt { .. }
+                    | FetchItem::Rfc822
+                    | FetchItem::Rfc822Header
+                    | FetchItem::Rfc822Text
             )
         });
         let sets_seen = wanted.iter().any(|i| {
-            matches!(i, MessageDataItemName::BodyExt { peek: false, .. } | MessageDataItemName::Rfc822 | MessageDataItemName::Rfc822Text)
+            matches!(i, FetchItem::BodyExt { peek: false, .. } | FetchItem::Rfc822 | FetchItem::Rfc822Text)
         });
         let read_only = self.sel.as_ref().is_some_and(|s| s.read_only);
         let picked: Vec<usize> = self.pick(set, uid_mode);
@@ -262,10 +257,10 @@ impl Session {
 
     pub(crate) async fn cmd_store(
         &mut self,
-        set: &SequenceSet,
-        kind: StoreType,
-        response: StoreResponse,
-        flags: &[Flag<'_>],
+        set: &SeqSet,
+        kind: StoreKind,
+        silent: bool,
+        flags: &[FlagArg],
         uid_mode: bool,
         out: &mut Out<'_>,
     ) -> Result<Done, Closed> {
@@ -284,9 +279,9 @@ impl Session {
         let mut result: HashMap<MessageId, Flags> = HashMap::new();
         for (_, e) in &entries {
             let new = match kind {
-                StoreType::Replace => fs.system,
-                StoreType::Add => e.flags | fs.system,
-                StoreType::Remove => Flags::from_bits(e.flags.bits() & !fs.system.bits()).unwrap_or(e.flags),
+                StoreKind::Replace => fs.system,
+                StoreKind::Add => e.flags | fs.system,
+                StoreKind::Remove => Flags::from_bits(e.flags.bits() & !fs.system.bits()).unwrap_or(e.flags),
             };
             result.insert(e.id, new);
             if new != e.flags {
@@ -305,8 +300,8 @@ impl Session {
         }
         // Keywords.
         let ids: Vec<MessageId> = entries.iter().map(|(_, e)| e.id).filter(|id| !missing.contains(id)).collect();
-        if kind == StoreType::Replace || !fs.keywords.is_empty() {
-            let existing = if kind == StoreType::Replace {
+        if kind == StoreKind::Replace || !fs.keywords.is_empty() {
+            let existing = if kind == StoreKind::Replace {
                 let mut m: HashMap<MessageId, Vec<String>> = HashMap::new();
                 for chunk in ids.chunks(MAX_BATCH) {
                     match mb.keywords_many(chunk).await {
@@ -336,7 +331,7 @@ impl Session {
                 }
             }
         }
-        if response == StoreResponse::Answer {
+        if !silent {
             let mut keywords: HashMap<MessageId, Vec<String>> = HashMap::new();
             for chunk in ids.chunks(MAX_BATCH) {
                 if let Ok(m) = mb.keywords_many(chunk).await {
@@ -366,22 +361,22 @@ impl Session {
         &self,
         mb: &rusty_store::Mailbox,
         id: MessageId,
-        kind: StoreType,
+        kind: StoreKind,
         wanted: &[String],
         existing: Option<&Vec<String>>,
     ) -> Result<(), Error> {
         match kind {
-            StoreType::Add => {
+            StoreKind::Add => {
                 for k in wanted {
                     mb.add_keyword(id, k).await?;
                 }
             }
-            StoreType::Remove => {
+            StoreKind::Remove => {
                 for k in wanted {
                     mb.remove_keyword(id, k).await?;
                 }
             }
-            StoreType::Replace => {
+            StoreKind::Replace => {
                 for k in existing.map(Vec::as_slice).unwrap_or(&[]) {
                     if !wanted.contains(k) {
                         mb.remove_keyword(id, k).await?;
@@ -401,7 +396,7 @@ impl Session {
 /// One `item value` pair of a FETCH response.
 fn write_item(
     out: &mut Vec<u8>,
-    item: &MessageDataItemName<'_>,
+    item: &FetchItem,
     entry: &crate::select::Entry,
     flags: Flags,
     keywords: &[String],
@@ -410,18 +405,18 @@ fn write_item(
 ) {
     let raw = raw.unwrap_or(&[]);
     match item {
-        MessageDataItemName::Flags => {
+        FetchItem::Flags => {
             out.extend_from_slice(b"FLAGS ");
             wire::flag_list(out, flags, keywords);
         }
-        MessageDataItemName::Uid => out.extend_from_slice(format!("UID {}", entry.uid).as_bytes()),
-        MessageDataItemName::InternalDate => {
+        FetchItem::Uid => out.extend_from_slice(format!("UID {}", entry.uid).as_bytes()),
+        FetchItem::InternalDate => {
             out.extend_from_slice(b"INTERNALDATE \"");
             out.extend_from_slice(wire::date_time(entry.date).as_bytes());
             out.push(b'"');
         }
-        MessageDataItemName::Rfc822Size => out.extend_from_slice(format!("RFC822.SIZE {}", entry.size).as_bytes()),
-        MessageDataItemName::Envelope => {
+        FetchItem::Rfc822Size => out.extend_from_slice(format!("RFC822.SIZE {}", entry.size).as_bytes()),
+        FetchItem::Envelope => {
             out.extend_from_slice(b"ENVELOPE ");
             if let Some(m) = mime {
                 out.extend_from_slice(&m.envelope(raw));
@@ -429,33 +424,33 @@ fn write_item(
                 out.extend_from_slice(b"NIL");
             }
         }
-        MessageDataItemName::Body => {
+        FetchItem::Body => {
             out.extend_from_slice(b"BODY ");
             if let Some(m) = mime {
                 out.extend_from_slice(&m.body_structure(raw, false));
             }
         }
-        MessageDataItemName::BodyStructure => {
+        FetchItem::BodyStructure => {
             out.extend_from_slice(b"BODYSTRUCTURE ");
             if let Some(m) = mime {
                 out.extend_from_slice(&m.body_structure(raw, true));
             }
         }
-        MessageDataItemName::Rfc822 => {
+        FetchItem::Rfc822 => {
             out.extend_from_slice(b"RFC822 ");
             wire::string(out, raw);
         }
-        MessageDataItemName::Rfc822Header => {
+        FetchItem::Rfc822Header => {
             out.extend_from_slice(b"RFC822.HEADER ");
             let part = mime.and_then(|m| m.section(raw, &Section::Header(None)));
             wire::string(out, part.as_deref().unwrap_or(&[]));
         }
-        MessageDataItemName::Rfc822Text => {
+        FetchItem::Rfc822Text => {
             out.extend_from_slice(b"RFC822.TEXT ");
             let part = mime.and_then(|m| m.section(raw, &Section::Text(None)));
             wire::string(out, part.as_deref().unwrap_or(&[]));
         }
-        MessageDataItemName::BodyExt { section, partial, .. } => {
+        FetchItem::BodyExt { section, partial, .. } => {
             out.extend_from_slice(b"BODY[");
             write_section(out, section);
             out.push(b']');
@@ -467,7 +462,7 @@ fn write_item(
                 (Some((offset, len)), Some(d)) => {
                     out.extend_from_slice(format!("<{offset}> ").as_bytes());
                     let start = usize::try_from(*offset).unwrap_or(usize::MAX).min(d.len());
-                    let end = start.saturating_add(usize::try_from(len.get()).unwrap_or(usize::MAX)).min(d.len());
+                    let end = start.saturating_add(usize::try_from(*len).unwrap_or(usize::MAX)).min(d.len());
                     wire::string(out, d.get(start..end).unwrap_or(&[]));
                 }
                 (None, Some(d)) => {

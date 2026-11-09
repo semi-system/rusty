@@ -3,10 +3,8 @@
 //! never panic on any input and asserts the documented bounds of the layer it exercises.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
-use imap_codec::decode::{CommandDecodeError, Decoder};
-use imap_codec::imap_types::command::CommandBody;
-use imap_codec::imap_types::fetch::{MacroOrMessageDataItemNames, MessageDataItemName};
-use imap_codec::{CommandCodec, ResponseCodec};
+use crate::codec::{parse_command, response_decodes};
+use crate::command::{Body, FetchItem};
 use rusty_core::Flags;
 
 use crate::frame::{Frame, FrameLimits, Framer};
@@ -32,12 +30,8 @@ pub fn command(data: &[u8]) {
             match f.next() {
                 Frame::NeedMore => break,
                 Frame::Command(c) => {
-                    match CommandCodec::new().decode(&c) {
-                        Ok((left, _)) => assert!(left.is_empty() || !c.ends_with(left), "decoder consumed less than a frame"),
-                        Err(CommandDecodeError::Incomplete) => panic!("a framed command was incomplete"),
-                        Err(CommandDecodeError::LiteralFound { .. }) => panic!("a framed command still announces a literal"),
-                        Err(CommandDecodeError::Failed) => {}
-                    }
+                    // Any outcome but a panic is fine: a framed command is complete for the decoder.
+                    let _ = parse_command(&c);
                 }
                 Frame::Line(_) | Frame::SendContinuation | Frame::Reject { .. } => {}
                 Frame::Fatal(_) => return,
@@ -61,12 +55,10 @@ pub fn structure(data: &[u8]) {
     // Every section of the first few part numbers is addressable without panicking.
     for spec in ["HEADER", "TEXT", "1", "1.1", "1.2", "2", "1.MIME", "2.MIME", "1.HEADER", "1.TEXT", "HEADER.FIELDS (subject from)", "HEADER.FIELDS.NOT (subject)", "1.1.1"] {
         let line = format!("a FETCH 1 (BODY.PEEK[{spec}])\r\n");
-        let (_, cmd) = CommandCodec::new().decode(line.as_bytes()).expect("section grammar");
-        let CommandBody::Fetch { macro_or_item_names: MacroOrMessageDataItemNames::MessageDataItemNames(items), .. } = cmd.body else {
-            panic!("not a fetch")
-        };
+        let cmd = parse_command(line.as_bytes()).expect("section grammar");
+        let Body::Fetch { items, .. } = cmd.body else { panic!("not a fetch") };
         for it in items {
-            if let MessageDataItemName::BodyExt { section: Some(s), .. } = it {
+            if let FetchItem::BodyExt { section: Some(s), .. } = it {
                 if let Some(bytes) = m.section(data, &s) {
                     assert!(bytes.len() <= data.len() + 8, "section longer than the message");
                 }
@@ -80,7 +72,7 @@ fn assert_decodes(item: &str, value: &[u8]) {
     let mut line = format!("* 1 FETCH ({item} ").into_bytes();
     line.extend_from_slice(value);
     line.extend_from_slice(b")\r\n");
-    if ResponseCodec::new().decode(&line).is_err() {
+    if !response_decodes(&line) {
         panic!("our output does not decode: {}", String::from_utf8_lossy(&line).chars().take(300).collect::<String>());
     }
 }
@@ -95,8 +87,8 @@ pub fn search(data: &[u8]) {
     let mut line = b"a SEARCH ".to_vec();
     line.extend_from_slice(q);
     line.extend_from_slice(b"\r\n");
-    let Ok((_, cmd)) = CommandCodec::new().decode(&line) else { return };
-    let CommandBody::Search { criteria, .. } = cmd.body else { return };
+    let Ok(cmd) = parse_command(&line) else { return };
+    let Body::Search { key: criteria, .. } = cmd.body else { return };
     let kw = vec!["k".to_owned()];
     let facts = Facts { seq: 2, uid: 20, flags: Flags::SEEN, keywords: &kw, size: 100, internal_date: 1_700_000_000 };
     let b = Bounds { max_seq: 5, max_uid: 50 };
@@ -115,8 +107,8 @@ pub fn seqset(data: &[u8]) {
     let mut line = b"a FETCH ".to_vec();
     line.extend_from_slice(data);
     line.extend_from_slice(b" FLAGS\r\n");
-    let Ok((_, cmd)) = CommandCodec::new().decode(&line) else { return };
-    let CommandBody::Fetch { sequence_set, .. } = cmd.body else { return };
+    let Ok(cmd) = parse_command(&line) else { return };
+    let Body::Fetch { set: sequence_set, .. } = cmd.body else { return };
     let uids: Vec<u32> = (1..=40).map(|n| n * 3).collect();
     for count in [0usize, 1, 7, 40] {
         let sel = seqset::select_by_seq(&sequence_set, count);

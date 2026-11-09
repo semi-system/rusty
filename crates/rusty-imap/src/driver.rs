@@ -6,12 +6,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use imap_codec::decode::{CommandDecodeError, Decoder};
-use imap_codec::CommandCodec;
 use rusty_svc::{BoxedStream, Context, PeerInfo, SessionHandler};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
+use crate::command::ParseError;
 use crate::folders::{FolderResolver, PersonalNamespace};
 use crate::frame::{tag_of, FatalReason, Frame, FrameLimits, Framer, Mode, RejectReason};
 use crate::out::{Closed, Out, Sink};
@@ -147,15 +146,16 @@ async fn run(mut session: Session, limits: FrameLimits, stream: BoxedStream, shu
                 }
             }
             Frame::Command(bytes) => {
-                let decoded = CommandCodec::new().decode(&bytes);
+                let decoded = crate::codec::parse_command(&bytes);
                 let action = {
                     let mut sink = StreamSink(&mut stream);
                     let mut out = Out::new(&mut sink);
                     match decoded {
-                        Ok(([], cmd)) => session.command(cmd, &mut out).await,
-                        Ok(_) | Err(CommandDecodeError::Incomplete | CommandDecodeError::LiteralFound { .. } | CommandDecodeError::Failed) => {
+                        Ok(cmd) => session.command(cmd, &mut out).await,
+                        Err(e) => {
                             let tag = tag_of(&bytes);
-                            session.framing_error(tag.as_deref(), &mut out, FramingError::Unparsable);
+                            let kind = if e == ParseError::BadName { FramingError::BadName } else { FramingError::Unparsable };
+                            session.framing_error(tag.as_deref(), &mut out, kind);
                             out.flush().await.map(|()| Action::Continue)
                         }
                     }

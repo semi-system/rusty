@@ -73,6 +73,8 @@ stage "parametrised gate self-test" bash scripts/tests/parametrised-gate.sh
 stage "every test runs on both backends" bash scripts/check-parametrised.sh
 # Service crates reach storage only through the facades and repository traits (plan section 1b rule 1).
 stage "service-crates gate self-test" bash scripts/tests/service-crates-gate.sh
+stage "wrapped-libs gate self-test" bash scripts/tests/wrapped-libs-gate.sh
+stage "third-party libraries only in their adapters" bash scripts/check-wrapped-libs.sh
 stage "service crates use only facades" bash scripts/check-service-crates.sh
 # The `test-knobs` fault-injection feature of rusty-store is enabled only by its own tests.
 stage "test-knobs gate self-test" bash scripts/tests/test-knobs-gate.sh
