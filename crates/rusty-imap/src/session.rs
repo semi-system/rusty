@@ -498,7 +498,8 @@ impl Session {
             return Err(Done::no("PRIVACYREQUIRED", "Plaintext authentication is disabled; use TLS"));
         }
         let ip = self.peer.addr.ip();
-        if let Verdict::Blocked { .. } = self.ctx.rate.check(ip, identity) {
+        let keys = rusty_svc::throttle_keys(&self.ctx.directory, identity).await;
+        if keys.iter().any(|k| matches!(self.ctx.rate.check(ip, k), Verdict::Blocked { .. })) {
             self.ctx.events.emit(ServiceEvent::AuthResult { service: "imap", peer: self.peer.addr, ok: false });
             self.failed_auths += 1;
             return Err(Done::no("AUTHENTICATIONFAILED", "Too many failed attempts, try again later"));
@@ -511,7 +512,7 @@ impl Session {
         let account = match verified {
             Ok(Some(a)) => a,
             Ok(None) => {
-                self.ctx.rate.record_failure(ip, identity);
+                keys.iter().for_each(|k| self.ctx.rate.record_failure(ip, k));
                 self.ctx.events.emit(ServiceEvent::AuthResult { service: "imap", peer: self.peer.addr, ok: false });
                 self.failed_auths += 1;
                 return Err(Done::no("AUTHENTICATIONFAILED", "Authentication failed"));
@@ -522,7 +523,7 @@ impl Session {
             Ok(m) => m,
             Err(e) => return Err(Done::store(Op::Mailbox, &e)),
         };
-        self.ctx.rate.record_success(ip, identity);
+        keys.iter().for_each(|k| self.ctx.rate.record_success(ip, k));
         self.ctx.events.emit(ServiceEvent::AuthResult { service: "imap", peer: self.peer.addr, ok: true });
         self.user = Some(User { mailbox });
         Ok(())

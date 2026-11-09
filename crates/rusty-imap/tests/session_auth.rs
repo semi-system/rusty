@@ -419,3 +419,26 @@ async fn an_unauthenticated_connection_has_a_total_time_and_command_budget() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn the_imap_throttle_follows_the_account_not_the_spelling_or_the_alias() {
+    for_each_backend(|b| async move {
+        let dom = b.dir.create_domain("a.test").await.unwrap();
+        let alice = b.account_in(dom, "alice", "pw-alice").await;
+        b.dir.add_alias("ally", dom, alice).await.unwrap();
+        let ctx = b.ctx_with(|c| c.limits.auth_failures_max = 2).await;
+        let h = handler(ctx);
+        for _ in 0..2 {
+            let mut c = Conn::open(h.clone(), true);
+            c.line().await;
+            assert!(c.status("LOGIN \"alice@a.test\" \"wrong\"").await.contains("AUTHENTICATIONFAILED"));
+        }
+        for spelling in ["alice@a.test", "ALICE@A.TEST", " alice@a.test", "alice@a.test.", "ally@a.test", "ALLY@a.test."] {
+            let mut c = Conn::open(h.clone(), true);
+            c.line().await;
+            let st = c.status(&format!("LOGIN \"{spelling}\" \"pw-alice\"")).await;
+            assert!(st.contains("Too many"), "{spelling:?} escaped the throttle: {st}");
+        }
+    })
+    .await;
+}

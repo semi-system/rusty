@@ -122,3 +122,33 @@ fn every_spelling_of_an_identity_shares_one_counter() {
     assert_eq!(t.check(a, "carol@a.test"), Verdict::Allowed);
     assert_eq!(t.check(a, "not an address"), Verdict::Allowed);
 }
+
+// backend-neutral: no database involved, in-memory counters only
+#[test]
+fn an_ipv6_peer_is_throttled_by_its_64_bit_prefix() {
+    let clock = Arc::new(ManualClock::default());
+    let t = throttle(clock, 2, 60, 4);
+    for _ in 0..2 {
+        t.record_failure(ip("2001:db8:1:2:aaaa::1"), "x@a.test");
+    }
+    assert!(matches!(t.check(ip("2001:db8:1:2:bbbb::9"), "x@a.test"), Verdict::Blocked { .. }), "rotating the low 64 bits must not help");
+    assert_eq!(t.check(ip("2001:db8:1:3::1"), "x@a.test"), Verdict::Allowed, "another /64 is another peer");
+}
+
+// backend-neutral: no database involved, in-memory counters only
+#[test]
+fn a_flood_of_new_keys_cannot_evict_an_active_block() {
+    let clock = Arc::new(ManualClock::default());
+    let t = throttle(clock.clone(), 3, 3600, 4);
+    let victim = ip("192.0.2.1");
+    for _ in 0..3 {
+        t.record_failure(victim, "victim@a.test");
+    }
+    assert!(matches!(t.check(victim, "victim@a.test"), Verdict::Blocked { .. }));
+    clock.advance_secs(1);
+    for i in 0..150_000u32 {
+        let attacker = IpAddr::from([10, (i >> 16) as u8, (i >> 8) as u8, i as u8]);
+        t.record_failure(attacker, "x@a.test");
+    }
+    assert!(matches!(t.check(victim, "victim@a.test"), Verdict::Blocked { .. }), "the block survived the flood");
+}
