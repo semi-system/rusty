@@ -45,6 +45,9 @@ pub struct Selected {
     pub uid_next: u32,
     pub entries: Vec<Entry>,
     cursor: i64,
+    /// Keywords of the messages whose flags the client has been told (non-empty sets only): a
+    /// change by someone else is detected by comparing with it.
+    kw: HashMap<MessageId, Vec<String>>,
 }
 
 fn entry_of(s: &rusty_store::MessageSummary) -> Entry {
@@ -79,7 +82,19 @@ impl Selected {
             .find(|f| f.id == folder)
             .ok_or_else(|| Error::NotFound("folder".into()))?;
         let entries = read_entries(mb, folder).await?;
-        Ok(Selected { folder, name, read_only, uid_validity: info.uid_validity, uid_next: info.uid_next, entries, cursor })
+        Ok(Selected { folder, name, read_only, uid_validity: info.uid_validity, uid_next: info.uid_next, entries, cursor, kw: HashMap::new() })
+    }
+
+    /// The client was just told these keywords for `id` (empty or absent means none).
+    pub fn remember_keywords(&mut self, id: MessageId, kws: Option<&Vec<String>>) {
+        match kws {
+            Some(k) if !k.is_empty() => {
+                self.kw.insert(id, k.clone());
+            }
+            _ => {
+                self.kw.remove(&id);
+            }
+        }
     }
 
     pub fn exists(&self) -> u32 {
@@ -168,6 +183,7 @@ impl Selected {
         let mut removals: Vec<usize> = Vec::new();
         let mut adds: Vec<Entry> = Vec::new();
         let mut flag_changes: Vec<(u32, Flags)> = Vec::new();
+        let mut maybe_keywords: Vec<(MessageId, u32, Flags)> = Vec::new();
         for id in changed {
             let now = match mb.get_message(id).await {
                 Ok(d) if !d.deleted && d.folder == self.folder => Some(entry_of(&d.summary)),
@@ -180,11 +196,26 @@ impl Selected {
                     if let Some(old) = self.entries.get(*i) {
                         if old.flags != n.flags {
                             flag_changes.push((old.uid, n.flags));
+                        } else {
+                            // Same flag bits: a keyword may still have changed.
+                            maybe_keywords.push((old.id, old.uid, n.flags));
                         }
                     }
                 }
                 (None, Some(n)) => adds.push(n),
                 (None, None) => {}
+            }
+        }
+        // Keyword changes: compare the stored keywords of the otherwise unchanged messages with what
+        // the client last heard.
+        let ids: Vec<MessageId> = maybe_keywords.iter().map(|m| m.0).collect();
+        let mut now: HashMap<MessageId, Vec<String>> = HashMap::new();
+        for chunk in ids.chunks(rusty_store::MAX_BATCH) {
+            now.extend(mb.keywords_many(chunk).await?);
+        }
+        for (id, uid, flags) in maybe_keywords {
+            if now.get(&id) != self.kw.get(&id) {
+                flag_changes.push((uid, flags));
             }
         }
         if !allow_expunge && !removals.is_empty() {

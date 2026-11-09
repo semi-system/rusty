@@ -139,6 +139,9 @@ impl Session {
                 Update::Exists(n) => out.untagged(&format!("{n} EXISTS")),
                 Update::Flags { uid } => {
                     if let Some(i) = sel.index_of_uid(uid) {
+                        if let Some(id) = sel.entries.get(i).map(|e| e.id) {
+                            sel.remember_keywords(id, keywords.get(&id));
+                        }
                         if let Some(e) = sel.entries.get(i) {
                             let mut b = format!("* {} FETCH (UID {uid} FLAGS ", i + 1).into_bytes();
                             wire::flag_list(&mut b, e.flags, keywords.get(&e.id).map_or(&[][..], Vec::as_slice));
@@ -204,6 +207,13 @@ impl Session {
             } else {
                 HashMap::new()
             };
+            if wants_flags {
+                if let Some(s) = self.sel.as_mut() {
+                    for id in &ids {
+                        s.remember_keywords(*id, keywords.get(id));
+                    }
+                }
+            }
             for (idx, entry) in entries {
                 let raw = if needs_raw {
                     match mb.get_raw(entry.id).await {
@@ -331,13 +341,18 @@ impl Session {
                 }
             }
         }
-        if !silent {
-            let mut keywords: HashMap<MessageId, Vec<String>> = HashMap::new();
-            for chunk in ids.chunks(MAX_BATCH) {
-                if let Ok(m) = mb.keywords_many(chunk).await {
-                    keywords.extend(m);
-                }
+        let mut keywords: HashMap<MessageId, Vec<String>> = HashMap::new();
+        for chunk in ids.chunks(MAX_BATCH) {
+            if let Ok(m) = mb.keywords_many(chunk).await {
+                keywords.extend(m);
             }
+        }
+        if let Some(s) = self.sel.as_mut() {
+            for id in &ids {
+                s.remember_keywords(*id, keywords.get(id));
+            }
+        }
+        if !silent {
             for (idx, e) in &entries {
                 if missing.contains(&e.id) {
                     continue;

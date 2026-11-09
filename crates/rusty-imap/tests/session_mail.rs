@@ -303,3 +303,28 @@ async fn one_account_cannot_reach_anothers_mailbox() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn keyword_changes_by_another_session_are_pushed_but_ones_own_are_not() {
+    for_each_backend(|b| async move {
+        let acc = b.account("alice@a.test", "pw").await;
+        let ctx = b.ctx().await;
+        let mut one = Conn::open(handler(ctx.clone()), true);
+        one.line().await;
+        one.login("alice@a.test", "pw").await;
+        let mb = b.mailbox(&ctx, acc).await;
+        let m = deliver(&mb, 1, "a", "a").await;
+        one.ok("SELECT INBOX").await;
+        assert_eq!(one.ok("FETCH 1 FLAGS").await, ["* 1 FETCH (FLAGS ())"]);
+        // Someone else tags the message: the next command carries the new flags.
+        mb.add_keyword(m.id, "$label1").await.unwrap();
+        assert_eq!(one.ok("NOOP").await, ["* 1 FETCH (UID 1 FLAGS ($label1))"]);
+        assert!(one.ok("NOOP").await.is_empty(), "told once");
+        // The session's own STORE is answered by the STORE itself and not repeated at the next NOOP.
+        one.ok("STORE 1 +FLAGS.SILENT (work)").await;
+        assert!(one.ok("NOOP").await.is_empty(), "own changes are not echoed");
+        mb.remove_keyword(m.id, "$label1").await.unwrap();
+        assert_eq!(one.ok("NOOP").await, ["* 1 FETCH (UID 1 FLAGS (work))"]);
+    })
+    .await;
+}
