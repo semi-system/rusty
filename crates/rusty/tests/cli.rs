@@ -85,8 +85,9 @@ fn wait_for_port(port: u16, child: &mut Child) {
 }
 
 fn offset() -> u16 {
-    // spread concurrent test processes over the port space
-    20_000 + (std::process::id() % 20_000) as u16
+    // spread concurrent test processes over the port space, below the ephemeral range (32768+) so that
+    // client sockets of other tests cannot hold one of our listener ports
+    1_000 + (std::process::id() % 15_000) as u16
 }
 
 fn signal(child: &Child, sig: &str) {
@@ -184,8 +185,8 @@ fn the_multi_call_names_dispatch_by_argv0() {
     let tmp = private_tmp();
     let ctl: PathBuf = tmp.path().join("rustyctl");
     symlink(BIN, &ctl).unwrap();
-    let out = Command::new(&ctl).arg("check").output().unwrap();
-    // `rustyctl` is reached (its commands arrive with U2): a clear message and the usage exit code
+    let out = Command::new(&ctl).arg("--bogus").output().unwrap();
+    // `rustyctl` is reached (argv[0] dispatch): a usage error from its own parser
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("rustyctl"));
     let rd: PathBuf = tmp.path().join("rustyd");

@@ -72,6 +72,9 @@ stage "no mutation hook anywhere" bash scripts/check-mutation-hook.sh static
 stage "parametrised gate self-test" bash scripts/tests/parametrised-gate.sh
 stage "every test runs on both backends" bash scripts/check-parametrised.sh
 # Service crates reach storage only through the facades and repository traits (plan section 1b rule 1).
+stage "no filled-in postgres migration gap" bash scripts/check-pg-migration-gap.sh
+stage "wrapped-libs gate self-test" bash scripts/tests/wrapped-libs-gate.sh
+stage "wrapped libraries stay behind their adapter" bash scripts/check-wrapped-libs.sh
 stage "service-crates gate self-test" bash scripts/tests/service-crates-gate.sh
 stage "service crates use only facades" bash scripts/check-service-crates.sh
 # The `test-knobs` fault-injection feature of rusty-store is enabled only by its own tests.
@@ -169,7 +172,7 @@ stage "static linking" check_static
 fuzz_all() {
   if command -v cargo-fuzz >/dev/null 2>&1 && rustup toolchain list | grep -q "^nightly"; then
     local t
-    for t in parse_envelope parse_address fuzz_config fuzz_pem; do
+    for t in parse_envelope parse_address fuzz_config fuzz_pem fuzz_ctl_args fuzz_smtp_command fuzz_smtp_data fuzz_smtp_path fuzz_smtp_headers fuzz_smtp_auth; do
       mkdir -p "fuzz/corpus/$t"
       # Working corpus first (new finds are written there), committed seeds second.
       (cd fuzz && cargo +nightly fuzz run "$t" "corpus/$t" "seeds/$t" -- "-max_total_time=$FUZZ_SECS" -rss_limit_mb=2048) || return 1
@@ -177,7 +180,7 @@ fuzz_all() {
   else
     FUZZ_DEGRADED=1
     echo "WARNING: cargo-fuzz and/or the nightly toolchain are missing; running the proptest fallback only (NOT real fuzzing)." >&2
-    cargo test -p rusty-mime -p rusty-directory -p rusty-core -p rusty-svc --test fuzz_smoke
+    cargo test -p rusty-mime -p rusty-directory -p rusty-core -p rusty-svc -p rusty-ctl -p rusty-smtp --test fuzz_smoke
   fi
 }
 

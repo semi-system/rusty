@@ -126,10 +126,7 @@ pub fn main(argv: Vec<OsString>) -> ExitCode {
             println!("{USAGE}");
             ExitCode::SUCCESS
         }
-        Ok(Invocation::Ctl(_)) => {
-            eprintln!("rustyctl: administration commands are not implemented yet");
-            ExitCode::from(2)
-        }
+        Ok(Invocation::Ctl(args)) => crate::ctl::run(args),
         Ok(Invocation::Daemon(args)) => {
             let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
                 Ok(rt) => rt,
@@ -143,18 +140,26 @@ pub fn main(argv: Vec<OsString>) -> ExitCode {
     }
 }
 
+/// The dev profile configuration for `data_dir` (default `./rusty-dev-data`), shared by `rusty d --dev`
+/// and `rustyctl --dev`.
+pub(crate) fn dev_config(data_dir: Option<&Path>) -> Result<StartupConfig, String> {
+    let dir = match data_dir {
+        Some(d) => d.to_path_buf(),
+        None => PathBuf::from(DEFAULT_DEV_DIR),
+    };
+    let dir = if dir.is_absolute() {
+        dir
+    } else {
+        std::env::current_dir().map_err(|e| format!("cannot read the current directory: {e}"))?.join(dir)
+    };
+    Ok(StartupConfig::dev(&dir))
+}
+
+pub(crate) const DEFAULT_CONFIG_PATH: &str = DEFAULT_CONFIG;
+
 fn load_config(args: &DaemonArgs) -> Result<(StartupConfig, Profile), String> {
     if args.dev {
-        let dir = match &args.data_dir {
-            Some(d) => d.clone(),
-            None => PathBuf::from(DEFAULT_DEV_DIR),
-        };
-        let dir = if dir.is_absolute() {
-            dir
-        } else {
-            std::env::current_dir().map_err(|e| format!("cannot read the current directory: {e}"))?.join(dir)
-        };
-        let mut cfg = with_port_offset(StartupConfig::dev(&dir), args.port_offset).map_err(|e| e.to_string())?;
+        let mut cfg = with_port_offset(dev_config(args.data_dir.as_deref())?, args.port_offset).map_err(|e| e.to_string())?;
         if let Some(ip) = args.bind {
             cfg = with_bind(cfg, ip);
         }

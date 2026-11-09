@@ -8,4 +8,5 @@
 
 mod banner;
 pub mod cli;
+pub mod ctl;
 pub mod daemon;

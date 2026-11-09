@@ -9,11 +9,12 @@ use super::tx::{tx_retry, TxError, TxResult};
 use super::PgRepo;
 use crate::map_db_error;
 use crate::repo::directory::{
-    capability_expiry, check_list_capacity, check_no_nul, check_text, list_resolution, sql,
+    capability_expiry, check_list_capacity, check_no_nul, check_page_limit, check_text, decode_account,
+    decode_alias, decode_domain, list_resolution, sql, AccountRow,
     MAX_DOMAIN_BYTES, MAX_EXTERNAL_MEMBER_BYTES, MAX_LOCAL_PART_BYTES, MAX_PLAN_NAME_BYTES,
 };
 use crate::repo::{
-    render_pg as r, AccountStatus, AuthRow, CapabilityGrant, ConfigLayers, ConfigTarget,
+    render_pg as r, AccountInfo, AccountStatus, AliasInfo, AuthRow, DomainInfo, DomainStatus, CapabilityGrant, ConfigLayers, ConfigTarget,
     DirectoryRepo, NewAccount, Resolution, GLOBAL_PLAN, SYSTEM_FOLDERS, SYSTEM_FOLDER_TABLE,
 };
 
@@ -61,6 +62,128 @@ impl DirectoryRepo for PgRepo {
             .await
             .map_err(map_db_error)?;
         Ok(PlanId(id))
+    }
+
+    async fn list_domains(&self, after: Option<DomainId>, limit: usize) -> Result<Vec<DomainInfo>> {
+        let limit = check_page_limit(limit)?;
+        let rows: Vec<(i64, String, String, i64)> = sqlx::query_as(&r(sql::LIST_DOMAINS))
+            .bind(after.map(|d| d.0))
+            .bind(limit)
+            .fetch_all(self.store.pool())
+            .await
+            .map_err(map_db_error)?;
+        rows.into_iter().map(decode_domain).collect()
+    }
+
+    async fn find_domain(&self, name: &str) -> Result<Option<DomainInfo>> {
+        check_text(name, MAX_DOMAIN_BYTES)?;
+        let row: Option<(i64, String, String, i64)> = sqlx::query_as(&r(sql::FIND_DOMAIN))
+            .bind(name)
+            .fetch_optional(self.store.pool())
+            .await
+            .map_err(map_db_error)?;
+        row.map(decode_domain).transpose()
+    }
+
+    async fn set_domain_status(&self, domain: DomainId, status: DomainStatus) -> Result<()> {
+        // One transaction: disabling revokes every capability of the domain at the same moment.
+        tx_retry!(self, None, |c| {
+            let n = sqlx::query(&r(sql::UPDATE_DOMAIN_STATUS))
+                .bind(status.as_str())
+                .bind(domain.0)
+                .execute(&mut *c)
+                .await?
+                .rows_affected();
+            if n == 0 {
+                return Err(TxError::Domain(Error::NotFound("domain".into())));
+            }
+            if status == DomainStatus::Disabled {
+                sqlx::query(&r(sql::CAP_REVOKE_DOMAIN))
+                    .bind(None::<i64>)
+                    .bind(domain.0)
+                    .execute(&mut *c)
+                    .await?;
+            }
+            Ok(())
+        })
+    }
+
+    async fn account_statuses(&self, ids: &[AccountId]) -> Result<Vec<(AccountId, AccountStatus)>> {
+        if ids.len() > crate::repo::MAX_STATUS_IDS {
+            return Err(Error::Invalid("too many ids".into()));
+        }
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let list: Vec<i64> = ids.iter().map(|a| a.0).collect();
+        let rows: Vec<(i64, String)> = sqlx::query_as(&r(sql::ACCOUNT_STATUSES_PG))
+            .bind(list)
+            .fetch_all(self.store.pool())
+            .await
+            .map_err(map_db_error)?;
+        rows.into_iter().map(crate::repo::directory::decode_status_row).collect()
+    }
+
+    async fn find_account(&self, local: &str, domain: &str) -> Result<Option<AccountInfo>> {
+        check_text(local, MAX_LOCAL_PART_BYTES)?;
+        check_text(domain, MAX_DOMAIN_BYTES)?;
+        let row: Option<AccountRow> = sqlx::query_as(&r(sql::FIND_ACCOUNT))
+            .bind(domain)
+            .bind(local)
+            .fetch_optional(self.store.pool())
+            .await
+            .map_err(map_db_error)?;
+        row.map(decode_account).transpose()
+    }
+
+    async fn list_accounts(
+        &self,
+        domain: DomainId,
+        after: Option<AccountId>,
+        limit: usize,
+    ) -> Result<Vec<AccountInfo>> {
+        let limit = check_page_limit(limit)?;
+        let rows: Vec<AccountRow> = sqlx::query_as(&r(sql::LIST_ACCOUNTS))
+            .bind(domain.0)
+            .bind(after.map(|a| a.0))
+            .bind(limit)
+            .fetch_all(self.store.pool())
+            .await
+            .map_err(map_db_error)?;
+        rows.into_iter().map(decode_account).collect()
+    }
+
+    async fn list_aliases(
+        &self,
+        domain: DomainId,
+        after: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<AliasInfo>> {
+        let limit = check_page_limit(limit)?;
+        let rows: Vec<(i64, String, i64, String, String)> = sqlx::query_as(&r(sql::LIST_ALIASES))
+            .bind(domain.0)
+            .bind(after)
+            .bind(limit)
+            .fetch_all(self.store.pool())
+            .await
+            .map_err(map_db_error)?;
+        Ok(rows.into_iter().map(decode_alias).collect())
+    }
+
+    async fn remove_alias(&self, local: &str, domain: &str) -> Result<()> {
+        check_text(local, MAX_LOCAL_PART_BYTES)?;
+        check_text(domain, MAX_DOMAIN_BYTES)?;
+        let n = sqlx::query(&r(sql::DELETE_ALIAS))
+            .bind(local)
+            .bind(domain)
+            .execute(self.store.pool())
+            .await
+            .map_err(map_db_error)?
+            .rows_affected();
+        if n == 0 {
+            return Err(Error::NotFound("alias".into()));
+        }
+        Ok(())
     }
 
     async fn create_account(&self, new: &NewAccount) -> Result<AccountId> {

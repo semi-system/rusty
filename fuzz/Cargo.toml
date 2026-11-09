@@ -14,6 +14,8 @@ rusty-mime = { path = "../crates/rusty-mime" }
 rusty-directory = { path = "../crates/rusty-directory" }
 rusty-core = { path = "../crates/rusty-core" }
 rusty-svc = { path = "../crates/rusty-svc", default-features = false }
+rusty-ctl = { path = "../crates/rusty-ctl" }
+rusty-smtp = { path = "../crates/rusty-smtp" }
 
 # Not part of the main workspace (needs nightly); has its own lockfile.
 [workspace]
@@ -42,6 +44,48 @@ bench = false
 [[bin]]
 name = "fuzz_pem"
 path = "fuzz_targets/fuzz_pem.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_ctl_args"
+path = "fuzz_targets/fuzz_ctl_args.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_smtp_command"
+path = "fuzz_targets/fuzz_smtp_command.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_smtp_data"
+path = "fuzz_targets/fuzz_smtp_data.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_smtp_path"
+path = "fuzz_targets/fuzz_smtp_path.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_smtp_headers"
+path = "fuzz_targets/fuzz_smtp_headers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_smtp_auth"
+path = "fuzz_targets/fuzz_smtp_auth.rs"
 test = false
 doc = false
 bench = false

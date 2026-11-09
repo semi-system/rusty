@@ -65,7 +65,7 @@ CREATE TABLE change_log ( mailbox_id INTEGER NOT NULL REFERENCES mailboxes(id) O
 CREATE TABLE deliveries ( mailbox_id INTEGER NOT NULL, delivery_id BLOB NOT NULL CHECK (length(delivery_id) = 32), message_id INTEGER NOT NULL, blob_hash TEXT NOT NULL CHECK (length(blob_hash) = 64), created_at INTEGER NOT NULL, PRIMARY KEY (mailbox_id, delivery_id), FOREIGN KEY (mailbox_id, message_id) REFERENCES messages(mailbox_id, id) ON DELETE CASCADE ) STRICT;
 
 -- table domains on domains
-CREATE TABLE domains ( id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE CHECK (length(name) > 0 AND name = lower(name)), config TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(config)), created_at INTEGER NOT NULL ) STRICT;
+CREATE TABLE domains ( id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE CHECK (length(name) > 0 AND name = lower(name)), config TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(config)), created_at INTEGER NOT NULL , status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled'))) STRICT;
 
 -- table folders on folders
 CREATE TABLE folders ( mailbox_id INTEGER NOT NULL REFERENCES mailboxes(id) ON DELETE CASCADE, id INTEGER NOT NULL CHECK (id >= 1), parent_id INTEGER, name TEXT NOT NULL CHECK (length(name) > 0 AND instr(name, '/') = 0), role TEXT NOT NULL DEFAULT 'custom' CHECK (role IN ('inbox','sent','drafts','trash','spam','archive','custom')), uid_validity INTEGER NOT NULL CHECK (uid_validity > 0), next_uid INTEGER NOT NULL DEFAULT 1 CHECK (next_uid >= 1), PRIMARY KEY (mailbox_id, id), CHECK (parent_id IS NULL OR parent_id <> id), FOREIGN KEY (mailbox_id, parent_id) REFERENCES folders(mailbox_id, id) ON DELETE NO ACTION ) STRICT;
@@ -103,6 +103,12 @@ CREATE TRIGGER aliases_addr_unique_ins BEFORE INSERT ON aliases BEGIN SELECT RAI
 -- trigger aliases_addr_unique_upd on aliases
 CREATE TRIGGER aliases_addr_unique_upd BEFORE UPDATE ON aliases BEGIN SELECT RAISE(ABORT, 'conflict: address already used by an account or list') WHERE EXISTS (SELECT 1 FROM accounts WHERE local_part = NEW.local_part AND domain_id = NEW.domain_id) OR EXISTS (SELECT 1 FROM lists WHERE local_part = NEW.local_part AND domain_id = NEW.domain_id); END;
 
+-- trigger aliases_same_domain_ins on aliases
+CREATE TRIGGER aliases_same_domain_ins BEFORE INSERT ON aliases BEGIN SELECT RAISE(ABORT, 'invalid: alias target is in another domain') WHERE (SELECT domain_id FROM accounts WHERE id = NEW.account_id) <> NEW.domain_id AND EXISTS (SELECT 1 FROM domains WHERE id = NEW.domain_id); END;
+
+-- trigger aliases_same_domain_upd on aliases
+CREATE TRIGGER aliases_same_domain_upd BEFORE UPDATE OF domain_id, account_id ON aliases BEGIN SELECT RAISE(ABORT, 'invalid: alias target is in another domain') WHERE (SELECT domain_id FROM accounts WHERE id = NEW.account_id) <> NEW.domain_id AND EXISTS (SELECT 1 FROM domains WHERE id = NEW.domain_id); END;
+
 -- trigger blobs_zero_since_ins on blobs
 CREATE TRIGGER blobs_zero_since_ins AFTER INSERT ON blobs WHEN NEW.refcount = 0 BEGIN UPDATE blobs SET zero_since = unixepoch() WHERE hash = NEW.hash; END;
 
@@ -114,6 +120,12 @@ CREATE TRIGGER blobs_zero_since_released AFTER UPDATE OF refcount ON blobs WHEN 
 
 -- trigger folders_no_cycle on folders
 CREATE TRIGGER folders_no_cycle BEFORE UPDATE OF parent_id ON folders WHEN NEW.parent_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'folder cycle') WHERE EXISTS ( WITH RECURSIVE chain(id, depth) AS ( SELECT NEW.parent_id, 1 UNION ALL SELECT f.parent_id, c.depth + 1 FROM folders f JOIN chain c ON f.mailbox_id = NEW.mailbox_id AND f.id = c.id WHERE f.parent_id IS NOT NULL AND c.depth < 65 ) SELECT 1 FROM chain WHERE id = NEW.id ); SELECT RAISE(ABORT, 'folder tree too deep') WHERE EXISTS ( WITH RECURSIVE chain(id, depth) AS ( SELECT NEW.parent_id, 1 UNION ALL SELECT f.parent_id, c.depth + 1 FROM folders f JOIN chain c ON f.mailbox_id = NEW.mailbox_id AND f.id = c.id WHERE f.parent_id IS NOT NULL AND c.depth < 65 ) SELECT 1 FROM chain WHERE depth >= 64 ); END;
+
+-- trigger list_members_same_domain_ins on list_members
+CREATE TRIGGER list_members_same_domain_ins BEFORE INSERT ON list_members BEGIN SELECT RAISE(ABORT, 'invalid: list member is in another domain') WHERE NEW.account_id IS NOT NULL AND (SELECT domain_id FROM accounts WHERE id = NEW.account_id) <> (SELECT domain_id FROM lists WHERE id = NEW.list_id); END;
+
+-- trigger list_members_same_domain_upd on list_members
+CREATE TRIGGER list_members_same_domain_upd BEFORE UPDATE OF account_id, list_id ON list_members BEGIN SELECT RAISE(ABORT, 'invalid: list member is in another domain') WHERE NEW.account_id IS NOT NULL AND (SELECT domain_id FROM accounts WHERE id = NEW.account_id) <> (SELECT domain_id FROM lists WHERE id = NEW.list_id); END;
 
 -- trigger list_members_seq_ins on list_members
 CREATE TRIGGER list_members_seq_ins AFTER INSERT ON list_members WHEN NEW.seq IS NULL BEGIN UPDATE list_members SET seq = ( SELECT COALESCE(MAX(seq), 0) + 1 FROM list_members WHERE list_id = NEW.list_id AND rowid <> NEW.rowid ) WHERE rowid = NEW.rowid; END;

@@ -1,0 +1,23 @@
+[package]
+name = "rusty-ctl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Runs the executor suites against Postgres too (needs RUSTY_TEST_PG_URL).
+postgres = ["rusty-store/postgres"]
+
+[dependencies]
+rusty-core = { path = "../rusty-core" }
+rusty-directory = { path = "../rusty-directory" }
+serde_json.workspace = true
+
+[dev-dependencies]
+rusty-store = { path = "../rusty-store", features = ["test-fixtures"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tempfile.workspace = true
+proptest.workspace = true

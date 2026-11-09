@@ -13,6 +13,7 @@ pub use caps::{
     MAX_CAPABILITY_TTL_SECS,
 };
 pub use config::AccountStatus;
+pub use rusty_store::repo::{AccountInfo, AliasInfo, DomainInfo, DomainStatus, MAX_LIST_PAGE};
 pub use dir::{
     allowed_local_char, display_domain, normalize_address, parse_address, Directory, Resolved,
     MAX_LIST_MEMBERS,

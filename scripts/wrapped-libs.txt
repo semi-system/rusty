@@ -1,0 +1,4 @@
+# Third-party protocol libraries that must stay behind ONE adapter module (plan section 1b).
+# One library per line: <crate name as in Cargo.toml> <adapter directory>. Lines starting with # are comments.
+# The gate is scripts/check-wrapped-libs.sh.
+smtp-proto crates/rusty-smtp/src/adapter

@@ -120,6 +120,11 @@ pub struct LimitsConfig {
     /// Authentication attempts allowed to run at the same time, process-wide.
     #[serde(default = "d_auth_concurrent")]
     pub auth_concurrent_max: u32,
+    /// Memory (MiB) all SMTP sessions together may hold for messages being received and processed.
+    /// A message in flight is counted about four times (received, normalised, prepared, handed to the
+    /// store). When the budget is used up new data is refused with a temporary status.
+    #[serde(default = "d_inflight_mib")]
+    pub inflight_message_mib: u32,
 }
 
 fn l25() -> Listen {
@@ -157,6 +162,9 @@ fn d_auth_failures() -> u32 {
 }
 fn d_auth_window() -> u64 {
     300
+}
+fn d_inflight_mib() -> u32 {
+    1024
 }
 fn d_auth_concurrent() -> u32 {
     16
@@ -196,6 +204,7 @@ impl Default for LimitsConfig {
             auth_failures_max: d_auth_failures(),
             auth_window_secs: d_auth_window(),
             auth_concurrent_max: d_auth_concurrent(),
+            inflight_message_mib: d_inflight_mib(),
         }
     }
 }
@@ -263,6 +272,9 @@ impl LimitsConfig {
     pub(crate) fn validate(&self) -> Result<()> {
         if !(1..=600).contains(&self.shutdown_grace_secs) {
             return Err(bad("limits.shutdown_grace_secs must be 1..=600"));
+        }
+        if !(16..=1_048_576).contains(&self.inflight_message_mib) {
+            return Err(bad("limits.inflight_message_mib must be 16..=1048576"));
         }
         if self.auth_failures_max == 0 || self.auth_concurrent_max == 0 {
             return Err(bad("limits.auth_* counts must be at least 1"));
