@@ -94,7 +94,7 @@ async fn fetch_items_sections_and_partials() {
         assert!(l[0].starts_with("* 1 FETCH (INTERNALDATE \"") && l[0].contains("ENVELOPE (\"Fri, 06 Nov 2026 10:00:00 +0000\" \"hello\""), "{l:?}");
         let l = c.ok("FETCH 1 BODYSTRUCTURE").await;
         assert!(l[0].contains("BODYSTRUCTURE (\"TEXT\" \"PLAIN\" (\"CHARSET\" \"us-ascii\") NIL NIL \"7BIT\" 10 1 NIL NIL NIL NIL)"), "{l:?}");
-        // BODY.PEEK leaves the flags alone, BODY[] sets \Seen and reports it.
+        // BODY.PEEK leaves the flags alone, BODY[] sets \\Seen and reports it.
         let l = c.ok("FETCH 1 BODY.PEEK[TEXT]<0.4>").await;
         assert_eq!(l, ["* 1 FETCH (BODY[TEXT]<0> \"line\")"]);
         assert_eq!(c.ok("FETCH 1 FLAGS").await, ["* 1 FETCH (FLAGS ())"]);
@@ -325,6 +325,46 @@ async fn keyword_changes_by_another_session_are_pushed_but_ones_own_are_not() {
         assert!(one.ok("NOOP").await.is_empty(), "own changes are not echoed");
         mb.remove_keyword(m.id, "$label1").await.unwrap();
         assert_eq!(one.ok("NOOP").await, ["* 1 FETCH (UID 1 FLAGS (work))"]);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn stale_snapshots_do_not_lose_flags_or_destroy_undeleted_messages() {
+    for_each_backend(|b| async move {
+        let acc = b.account("alice@a.test", "pw").await;
+        let ctx = b.ctx().await;
+        let mk = |ctx: &rusty_svc::Context| Conn::open(handler(ctx.clone()), true);
+        let (mut a, mut other) = (mk(&ctx), mk(&ctx));
+        for c in [&mut a, &mut other] {
+            c.line().await;
+            c.login("alice@a.test", "pw").await;
+            c.ok("SELECT INBOX").await;
+        }
+        let mb = b.mailbox(&ctx, acc).await;
+        deliver(&mb, 1, "m", "m").await;
+        a.ok("NOOP").await;
+        other.ok("NOOP").await;
+        // (a) Another client flags the message; A, idle, then adds \\Seen: both flags survive.
+        other.ok("STORE 1 +FLAGS.SILENT (\\Flagged)").await;
+        let l = a.ok("STORE 1 +FLAGS (\\Seen)").await;
+        assert!(l.iter().any(|x| x == "* 1 FETCH (FLAGS (\\Seen \\Flagged))"), "{l:?}");
+        assert!(other.ok("FETCH 1 FLAGS").await.iter().any(|x| x.contains("FLAGS (\\Seen \\Flagged)")));
+        // +FLAGS of a flag another client removed is applied, not skipped as "already set".
+        other.ok("STORE 1 -FLAGS.SILENT (\\Seen)").await;
+        a.ok("STORE 1 +FLAGS.SILENT (\\Seen)").await;
+        assert!(other.ok("FETCH 1 FLAGS").await.iter().any(|x| x.contains("\\Seen")));
+        // (b) A flags \\Deleted, the other client clears it; A's EXPUNGE must not destroy the message.
+        a.ok("STORE 1 +FLAGS.SILENT (\\Deleted)").await;
+        other.ok("STORE 1 -FLAGS.SILENT (\\Deleted)").await;
+        let l = a.ok("EXPUNGE").await;
+        assert!(l.iter().all(|x| !x.contains("EXPUNGE")), "{l:?}");
+        assert_eq!(mb.folder_counts(rusty_core::FolderId(1)).await.unwrap().messages, 1, "the message is still there");
+        // The same through CLOSE.
+        a.ok("STORE 1 +FLAGS.SILENT (\\Deleted)").await;
+        other.ok("STORE 1 -FLAGS.SILENT (\\Deleted)").await;
+        a.ok("CLOSE").await;
+        assert_eq!(mb.folder_counts(rusty_core::FolderId(1)).await.unwrap().messages, 1);
     })
     .await;
 }

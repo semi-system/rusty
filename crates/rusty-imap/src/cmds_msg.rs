@@ -16,6 +16,8 @@ use crate::session::{Done, Session};
 impl Session {
     pub(crate) async fn cmd_expunge(&mut self, out: &mut Out<'_>, only_uids: Option<&SeqSet>) -> Result<Done, Closed> {
         let Some(mb) = self.mailbox() else { return Ok(Done::bad("Not authenticated")) };
+        // Bring the snapshot up to date first: it decides what is flagged Deleted.
+        self.send_updates(out, true).await?;
         let Some(sel) = self.sel.as_ref() else { return Ok(Done::bad("No mailbox selected")) };
         if sel.read_only {
             return Ok(Done::no("READ-ONLY", "Mailbox is read-only"));
@@ -30,12 +32,15 @@ impl Session {
             .map(|(i, e)| (i, e.id))
             .collect();
         let ids: Vec<MessageId> = doomed.iter().map(|(_, id)| *id).collect();
+        // Conditional in the store: a message another session un-deleted since survives.
+        let mut spared: std::collections::HashSet<MessageId> = std::collections::HashSet::new();
         for chunk in ids.chunks(MAX_BATCH) {
-            if let Err(e) = mb.expunge_many(chunk).await {
-                return Ok(Done::store(Op::Message, &e));
+            match mb.expunge_deleted_many(chunk).await {
+                Ok(o) => spared.extend(o.missing),
+                Err(e) => return Ok(Done::store(Op::Message, &e)),
             }
         }
-        let indexes: Vec<usize> = doomed.iter().map(|(i, _)| *i).collect();
+        let indexes: Vec<usize> = doomed.iter().filter(|(_, id)| !spared.contains(id)).map(|(i, _)| *i).collect();
         if let Some(sel) = self.sel.as_mut() {
             for u in sel.remove(&indexes) {
                 if let crate::select::Update::Expunge(n) = u {

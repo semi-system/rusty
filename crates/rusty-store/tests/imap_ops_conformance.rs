@@ -343,3 +343,47 @@ async fn append_dated_stores_the_clients_internal_date_within_bounds() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn flag_deltas_do_not_clobber_what_another_session_changed() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let (_, _, mb) = acct(&b, "fd").await;
+        let a = put(&mb, INBOX, "a", Flags::SEEN).await;
+        let c = put(&mb, INBOX, "c", Flags::empty()).await;
+        // Another session flagged the first message after our snapshot: +\Answered must keep it.
+        mb.set_flags(a, Flags::SEEN | Flags::FLAGGED).await.unwrap();
+        let out = mb.update_flags_many(&[a, c, MessageId(9999)], Flags::ANSWERED, Flags::empty()).await.unwrap();
+        assert_eq!(out.updated, vec![(a, Flags::SEEN | Flags::FLAGGED | Flags::ANSWERED), (c, Flags::ANSWERED)], "{n}");
+        assert_eq!(out.missing, vec![MessageId(9999)], "{n}");
+        // Removal is a delta too, and removing what is not there is fine.
+        let out = mb.update_flags_many(&[a], Flags::DRAFT, Flags::SEEN | Flags::DELETED).await.unwrap();
+        assert_eq!(out.updated, vec![(a, Flags::FLAGGED | Flags::ANSWERED | Flags::DRAFT)], "{n}");
+        assert_eq!(mb.get_message(a).await.unwrap().summary.flags, Flags::FLAGGED | Flags::ANSWERED | Flags::DRAFT, "{n}");
+        // Expunged messages are missing; empty/oversized batches are Invalid.
+        mb.expunge(c).await.unwrap();
+        assert_eq!(mb.update_flags_many(&[c], Flags::SEEN, Flags::empty()).await.unwrap().missing, vec![c], "{n}");
+        assert!(matches!(mb.update_flags_many(&[], Flags::SEEN, Flags::empty()).await, Err(Error::Invalid(_))), "{n}");
+        // The change log records it.
+        assert!(mb.changes_since(0, 1000).await.unwrap().changes.iter().any(|x| x.item == ChangeItem::Message(a) && x.op == ChangeOp::Update), "{n}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn expunge_deleted_only_takes_messages_that_are_still_deleted() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let (_, _, mb) = acct(&b, "ed").await;
+        let keep = put(&mb, INBOX, "keep", Flags::DELETED).await;
+        let go = put(&mb, INBOX, "go", Flags::DELETED).await;
+        // Another session cleared \Deleted on `keep` after our snapshot said it was deleted.
+        mb.set_flags(keep, Flags::empty()).await.unwrap();
+        let out = mb.expunge_deleted_many(&[keep, go, MessageId(9999)]).await.unwrap();
+        assert_eq!(out.applied, 1, "{n}");
+        assert_eq!(out.missing, vec![keep, MessageId(9999)], "{n}");
+        assert!(!mb.get_message(keep).await.unwrap().deleted, "{n}: the un-deleted message survives");
+        assert!(mb.get_message(go).await.unwrap().deleted, "{n}");
+    })
+    .await;
+}

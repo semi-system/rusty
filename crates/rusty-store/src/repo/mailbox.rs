@@ -127,6 +127,23 @@ pub struct FolderInfo {
     pub subscribed: bool,
 }
 
+/// Result of `update_flags_many`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlagUpdate {
+    /// `(id, new flags)` in input order.
+    pub updated: Vec<(MessageId, Flags)>,
+    pub missing: Vec<MessageId>,
+}
+
+pub(crate) fn flag_update(applied: &[i64], now: &std::collections::HashMap<i64, i64>, missing: Vec<MessageId>) -> Result<FlagUpdate> {
+    let mut updated = Vec::with_capacity(applied.len());
+    for id in applied {
+        let bits = now.get(id).copied().ok_or_else(|| Error::storage("missing flags row"))?;
+        updated.push((MessageId(*id), crate::mailbox::to_flags(bits)?));
+    }
+    Ok(FlagUpdate { updated, missing })
+}
+
 /// Live message counts of one folder (IMAP STATUS).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FolderCounts {
@@ -223,6 +240,20 @@ pub trait MailboxRepo: Send + Sync {
     ) -> Result<Committed<Vec<DeliverOutcome>>>;
     async fn set_flags(&self, mb: MailboxId, id: MessageId, flags: Flags) -> Result<Committed<()>>;
     /// `ids`: 1..=MAX_BATCH, no duplicates (the facade dedups).
+    /// Delta flag update (IMAP STORE +FLAGS / -FLAGS): `flags = (flags | add) & ~remove` on the LIVE
+    /// value, atomically, so a stale snapshot never overwrites another session's change. Returns the
+    /// new flags of each updated message in input order; ids that are not live messages are `missing`.
+    /// `ids`: 1..=MAX_BATCH, no duplicates.
+    async fn update_flags_many(
+        &self,
+        mb: MailboxId,
+        ids: &[i64],
+        add: Flags,
+        remove: Flags,
+    ) -> Result<Committed<FlagUpdate>>;
+    /// Soft-delete the messages among `ids` whose live flags still contain Deleted (IMAP EXPUNGE must
+    /// not destroy a message another session un-deleted); the others are `missing`.
+    async fn expunge_deleted_many(&self, mb: MailboxId, ids: &[i64]) -> Result<Committed<BatchOutcome>>;
     async fn set_flags_many(
         &self,
         mb: MailboxId,

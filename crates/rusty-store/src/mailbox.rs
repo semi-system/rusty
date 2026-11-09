@@ -39,7 +39,7 @@ use rusty_mime::Envelope;
 use crate::gc::PURGE_BATCH;
 use crate::repo::sqlite::SqliteRepo;
 use crate::repo::{
-    DeliverEntry, Delivery, FolderCounts, FolderInfo, JobFence, MailboxRepo, MessageDetail, NewMessage, RawRef,
+    DeliverEntry, Delivery, FlagUpdate, FolderCounts, FolderInfo, JobFence, MailboxRepo, MessageDetail, NewMessage, RawRef,
 };
 use crate::{BlobStore, SqliteStore};
 
@@ -657,6 +657,20 @@ impl Mailbox {
     pub async fn set_flags_many(&self, ids: &[MessageId], flags: Flags) -> Result<BatchOutcome> {
         let ids = batch_ids(ids)?;
         Ok(self.note(self.repo.set_flags_many(self.id, &ids, flags).await?))
+    }
+
+    /// Delta flag update for many messages (IMAP STORE +FLAGS / -FLAGS): applied to the live flags in
+    /// one transaction, never overwriting what another session changed.
+    pub async fn update_flags_many(&self, ids: &[MessageId], add: Flags, remove: Flags) -> Result<FlagUpdate> {
+        let ids = batch_ids(ids)?;
+        Ok(self.note(self.repo.update_flags_many(self.id, &ids, add, remove).await?))
+    }
+
+    /// Expunge the messages among `ids` that are STILL flagged Deleted (IMAP EXPUNGE/CLOSE with a
+    /// possibly stale snapshot); the rest are reported as missing.
+    pub async fn expunge_deleted_many(&self, ids: &[MessageId]) -> Result<BatchOutcome> {
+        let ids = batch_ids(ids)?;
+        Ok(self.note(self.repo.expunge_deleted_many(self.id, &ids).await?))
     }
 
     /// [`Mailbox::expunge`] for many messages.

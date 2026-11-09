@@ -41,7 +41,7 @@ pub use mailbox::{
 };
 #[cfg(feature = "postgres")]
 pub use pg::{PgPoolConfig, PgStore};
-pub use repo::{FolderCounts, FolderInfo, JobFence, MessageDetail, PurgeBatch, RawRef};
+pub use repo::{FlagUpdate, FolderCounts, FolderInfo, JobFence, MessageDetail, PurgeBatch, RawRef};
 pub use store::{Repos, Store, StoreConfig};
 pub use sqlite::{map_db_error, SqliteStore, DEFAULT_BUSY_TIMEOUT};
 

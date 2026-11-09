@@ -25,7 +25,7 @@ use crate::repo::{
     changes_since_generic, check_batch_len, check_distinct_ids, check_purge_limit, depth_verdict, hash_bytes, moved_refs,
     not_found_folder, not_found_mailbox, not_found_message, plan_deliveries, plan_move,
     render_pg as r, split_hits, sql_text as q, summary_from_row, thread_candidates, Committed,
-    DeliverEntry, Delivery, FolderCounts, FolderInfo, JobFence, MailboxRepo, MessageDetail, NewMessage, RawRef,
+    DeliverEntry, Delivery, FlagUpdate, flag_update, FolderCounts, FolderInfo, JobFence, MailboxRepo, MessageDetail, NewMessage, RawRef,
     counts_from_row, folder_from_row, FolderRow,
     Slot, SummaryRow,
 };
@@ -753,6 +753,61 @@ impl MailboxRepo for PgRepo {
                     },
                     seq,
                 ))
+            }
+        })?;
+        Ok(Committed::new(out, seq))
+    }
+
+    async fn update_flags_many(
+        &self,
+        mb: MailboxId,
+        ids: &[i64],
+        add: Flags,
+        remove: Flags,
+    ) -> Result<Committed<FlagUpdate>> {
+        check_batch_len(ids.len())?;
+        check_distinct_ids(ids)?;
+        let (out, seq) = tx_retry!(self, Some(mb), |c| {
+            {
+                let now: HashMap<i64, i64> = sqlx::query_as::<_, (i64, i64)>(
+                    &crate::repo::pg_lit("UPDATE messages SET flags = (flags | $3) & ~$4 WHERE mailbox_id = $1 \
+                     AND deleted_at IS NULL AND id = ANY($2) RETURNING id, flags"),
+                )
+                .bind(mb.0)
+                .bind(ids)
+                .bind(i64::from(add.bits()))
+                .bind(i64::from(remove.bits()))
+                .fetch_all(&mut *c)
+                .await?
+                .into_iter()
+                .collect();
+                let hit: HashSet<i64> = now.keys().copied().collect();
+                let (applied, missing) = split_hits(ids, &hit);
+                let seq = log_message_changes(c, mb.0, &applied, ChangeOp::Update).await?;
+                Ok((flag_update(&applied, &now, missing)?, seq))
+            }
+        })?;
+        Ok(Committed::new(out, seq))
+    }
+
+    async fn expunge_deleted_many(&self, mb: MailboxId, ids: &[i64]) -> Result<Committed<BatchOutcome>> {
+        check_batch_len(ids.len())?;
+        check_distinct_ids(ids)?;
+        let (out, seq) = tx_retry!(self, Some(mb), |c| {
+            {
+                let hit: HashSet<i64> = sqlx::query_scalar::<_, i64>(
+                    &crate::repo::pg_lit("UPDATE messages SET deleted_at = rs_now() \
+                     WHERE mailbox_id = $1 AND deleted_at IS NULL AND (flags & 16) <> 0 AND id = ANY($2) RETURNING id"),
+                )
+                .bind(mb.0)
+                .bind(ids)
+                .fetch_all(&mut *c)
+                .await?
+                .into_iter()
+                .collect();
+                let (applied, missing) = split_hits(ids, &hit);
+                let seq = log_message_changes(c, mb.0, &applied, ChangeOp::Destroy).await?;
+                Ok((BatchOutcome { applied: applied.len() as u32, missing }, seq))
             }
         })?;
         Ok(Committed::new(out, seq))

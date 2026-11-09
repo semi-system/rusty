@@ -368,11 +368,15 @@ impl Session {
     }
 
     pub(crate) async fn cmd_close(&mut self) -> Done {
+        // CLOSE expunges silently, but from the current state of the folder.
+        if let (Some(mb), Some(sel)) = (self.mailbox(), self.sel.as_mut()) {
+            let _ = sel.sync(&mb, true).await;
+        }
         if let (Some(mb), Some(sel)) = (self.mailbox(), self.sel.as_ref()) {
             if !sel.read_only {
                 let ids: Vec<_> = sel.entries.iter().filter(|e| e.flags.contains(Flags::DELETED)).map(|e| e.id).collect();
                 for chunk in ids.chunks(MAX_BATCH) {
-                    if let Err(e) = mb.expunge_many(chunk).await {
+                    if let Err(e) = mb.expunge_deleted_many(chunk).await {
                         return Done::store(Op::Message, &e);
                     }
                 }

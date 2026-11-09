@@ -1,6 +1,6 @@
 //! FETCH, STORE and the unsolicited updates that keep a client's view in step.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use crate::command::{FetchItem, FlagArg, Section, SeqSet, StoreKind};
 use rusty_core::{Error, Flags, MessageId};
@@ -279,33 +279,31 @@ impl Session {
             return Ok(Done::no("READ-ONLY", "Mailbox is read-only"));
         }
         let Ok(fs) = split_flags(flags) else { return Ok(Done::no("CANNOT", "Invalid keyword")) };
+        // Act on the CURRENT folder state, not the one the previous command left behind.
+        self.send_updates(out, uid_mode).await?;
         let picked = self.pick(set, uid_mode);
         let entries: Vec<(usize, crate::select::Entry)> = match &self.sel {
             Some(s) => picked.iter().filter_map(|i| s.entries.get(*i).map(|e| (*i, *e))).collect(),
             None => return Ok(Done::bad("No mailbox selected")),
         };
-        // System flags: group the messages by their resulting flag set, one batch per group.
-        let mut groups: BTreeMap<u8, Vec<MessageId>> = BTreeMap::new();
+        // System flags are DELTAS on the live value (the snapshot may be stale: another client may
+        // have changed the flags since): add and/or remove, atomically in the store; Replace removes
+        // every flag that is not named.
+        let (add, remove) = match kind {
+            StoreKind::Add => (fs.system, Flags::empty()),
+            StoreKind::Remove => (Flags::empty(), fs.system),
+            StoreKind::Replace => (fs.system, Flags::from_bits(31 & !fs.system.bits()).unwrap_or(Flags::empty())),
+        };
         let mut result: HashMap<MessageId, Flags> = HashMap::new();
-        for (_, e) in &entries {
-            let new = match kind {
-                StoreKind::Replace => fs.system,
-                StoreKind::Add => e.flags | fs.system,
-                StoreKind::Remove => Flags::from_bits(e.flags.bits() & !fs.system.bits()).unwrap_or(e.flags),
-            };
-            result.insert(e.id, new);
-            if new != e.flags {
-                groups.entry(new.bits()).or_default().push(e.id);
-            }
-        }
         let mut missing: Vec<MessageId> = Vec::new();
-        for (bits, ids) in &groups {
-            let Some(new) = Flags::from_bits(*bits) else { continue };
-            for chunk in ids.chunks(MAX_BATCH) {
-                match mb.set_flags_many(chunk, new).await {
-                    Ok(o) => missing.extend(o.missing),
-                    Err(e) => return Ok(Done::store(Op::Message, &e)),
+        let all_ids: Vec<MessageId> = entries.iter().map(|(_, e)| e.id).collect();
+        for chunk in all_ids.chunks(MAX_BATCH) {
+            match mb.update_flags_many(chunk, add, remove).await {
+                Ok(o) => {
+                    result.extend(o.updated);
+                    missing.extend(o.missing);
                 }
+                Err(e) => return Ok(Done::store(Op::Message, &e)),
             }
         }
         // Keywords.

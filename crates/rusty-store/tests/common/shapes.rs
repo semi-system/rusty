@@ -125,6 +125,9 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
     shape!("set_flags", true, r.set_flags(id, rusty_core::MessageId(ids[0]), Flags::SEEN));
     shape!("set_flags_many (10)", true, r.set_flags_many(id, &ids[0..10], Flags::SEEN));
     shape!("set_flags_many (100)", true, r.set_flags_many(id, &ids[0..100], Flags::SEEN));
+    shape!("update_flags_many (10)", true, r.update_flags_many(id, &ids[0..10], Flags::FLAGGED, Flags::empty()));
+    shape!("update_flags_many (100)", true, r.update_flags_many(id, &ids[0..100], Flags::FLAGGED, Flags::SEEN));
+    shape!("expunge_deleted_many", true, r.expunge_deleted_many(id, &ids[390..400]));
     let m = rusty_core::MessageId(ids[1]);
     shape!("add_keyword", true, r.add_keyword(id, m, "kw"));
     shape!("remove_keyword", true, r.remove_keyword(id, m, "kw"));

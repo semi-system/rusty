@@ -23,7 +23,7 @@ use crate::repo::{
     changes_since_generic, check_batch_len, check_distinct_ids, check_purge_limit, depth_verdict, moved_refs, not_found_folder,
     not_found_mailbox, not_found_message, plan_deliveries, plan_move, render_sqlite as r,
     split_hits, sql_text as q, summary_from_row, thread_candidates, Committed, DeliverEntry,
-    Delivery, FolderCounts, FolderInfo, JobFence, MailboxRepo, MessageDetail, NewMessage, RawRef, Slot,
+    Delivery, FlagUpdate, FolderCounts, FolderInfo, JobFence, MailboxRepo, MessageDetail, NewMessage, RawRef, Slot, flag_update,
     counts_from_row, folder_from_row, FolderRow,
     SummaryRow,
 };
@@ -874,6 +874,64 @@ impl MailboxRepo for SqliteRepo {
             },
             seq,
         ))
+    }
+
+    async fn update_flags_many(
+        &self,
+        mb: MailboxId,
+        ids: &[i64],
+        add: Flags,
+        remove: Flags,
+    ) -> Result<Committed<FlagUpdate>> {
+        check_batch_len(ids.len())?;
+        check_distinct_ids(ids)?;
+        let mut tx = self.begin_locked(mb).await?;
+        let mut now: HashMap<i64, i64> = HashMap::with_capacity(ids.len());
+        for chunk in ids.chunks(SQL_CHUNK) {
+            let sql = format!(
+                "UPDATE messages SET flags = (flags | ?1) & ~?2 WHERE mailbox_id = ?3 \
+                 AND deleted_at IS NULL AND id IN ({}) RETURNING id, flags",
+                placeholders(4, chunk.len())
+            );
+            let mut qy = sqlx::query_as::<_, (i64, i64)>(&sql)
+                .bind(i64::from(add.bits()))
+                .bind(i64::from(remove.bits()))
+                .bind(mb.0);
+            for id in chunk {
+                qy = qy.bind(*id);
+            }
+            now.extend(qy.fetch_all(&mut *tx).await.map_err(map_db_error)?);
+        }
+        let hit: HashSet<i64> = now.keys().copied().collect();
+        let (applied, missing) = split_hits(ids, &hit);
+        let seq = log_message_changes(&mut tx, mb.0, &applied, ChangeOp::Update).await?;
+        tx.commit().await.map_err(map_db_error)?;
+        Ok(Committed::new(flag_update(&applied, &now, missing)?, seq))
+    }
+
+    async fn expunge_deleted_many(&self, mb: MailboxId, ids: &[i64]) -> Result<Committed<BatchOutcome>> {
+        check_batch_len(ids.len())?;
+        check_distinct_ids(ids)?;
+        let mut tx = self.begin_locked(mb).await?;
+        let mut hit = HashSet::with_capacity(ids.len());
+        for chunk in ids.chunks(SQL_CHUNK) {
+            // Only messages whose LIVE flags still contain Deleted (bit 16): the caller's snapshot
+            // may be stale.
+            let sql = format!(
+                "UPDATE messages SET deleted_at = unixepoch() \
+                 WHERE mailbox_id = ?1 AND deleted_at IS NULL AND (flags & 16) <> 0 AND id IN ({}) RETURNING id",
+                placeholders(2, chunk.len())
+            );
+            let mut qy = sqlx::query_scalar::<_, i64>(&sql).bind(mb.0);
+            for id in chunk {
+                qy = qy.bind(*id);
+            }
+            hit.extend(qy.fetch_all(&mut *tx).await.map_err(map_db_error)?);
+        }
+        let (applied, missing) = split_hits(ids, &hit);
+        let seq = log_message_changes(&mut tx, mb.0, &applied, ChangeOp::Destroy).await?;
+        tx.commit().await.map_err(map_db_error)?;
+        Ok(Committed::new(BatchOutcome { applied: applied.len() as u32, missing }, seq))
     }
 
     async fn add_keyword(
