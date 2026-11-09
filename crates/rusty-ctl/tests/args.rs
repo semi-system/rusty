@@ -84,11 +84,11 @@ fn alias_commands() {
 fn dkim_and_check() {
     assert_eq!(
         cmd(&["dkim", "generate", "example.com"]),
-        Command::DkimGenerate { domain: "example.com".into(), selector: "rusty".into() }
+        Command::DkimGenerate { domain: "example.com".into(), selector: "rusty".into(), ed25519: false }
     );
     assert_eq!(
         cmd(&["dkim", "generate", "example.com", "--selector", "s1"]),
-        Command::DkimGenerate { domain: "example.com".into(), selector: "s1".into() }
+        Command::DkimGenerate { domain: "example.com".into(), selector: "s1".into(), ed25519: false }
     );
     assert_eq!(cmd(&["check"]), Command::Check);
 }

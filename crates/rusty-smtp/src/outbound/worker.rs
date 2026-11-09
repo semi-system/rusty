@@ -355,7 +355,8 @@ impl Inner {
 
     /// DKIM-sign when a key exists for the domain of the header `From` (alignment) and it is the
     /// sender's tenant; otherwise the message goes unsigned.
-    fn signed(&self, payload: &OutboundPayload, original: &Bytes) -> Result<Bytes> {
+    fn signed(&self, payload: &OutboundPayload, stored: &Bytes) -> Result<Bytes> {
+        let original = &Bytes::from(crate::message::outbound_copy(stored));
         let Some(signer) = &self.deps.signer else { return Ok(original.clone()) };
         let from_domain = crate::message::from_addresses(original)
             .ok()

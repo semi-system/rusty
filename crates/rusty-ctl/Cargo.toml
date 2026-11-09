@@ -14,6 +14,7 @@ postgres = ["rusty-store/postgres"]
 [dependencies]
 rusty-core = { path = "../rusty-core" }
 rusty-directory = { path = "../rusty-directory" }
+rusty-smtp = { path = "../rusty-smtp", default-features = false }
 serde_json.workspace = true
 
 [dev-dependencies]

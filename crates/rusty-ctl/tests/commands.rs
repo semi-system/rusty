@@ -275,19 +275,6 @@ async fn check_lists_dns_hints_for_active_domains_only() {
     .await;
 }
 
-#[tokio::test]
-async fn dkim_generate_is_reported_as_not_available_yet() {
-    for_each_backend(|b| async move {
-        let e = b
-            .run(Command::DkimGenerate { domain: "example.com".into(), selector: "rusty".into() }, &[])
-            .await
-            .unwrap_err();
-        assert_eq!(e.exit, 1);
-        assert!(e.message.contains("not available yet"), "{}", e.message);
-    })
-    .await;
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_command_waits_for_a_busy_writer_instead_of_failing() {
     for_each_backend(|b| async move {
@@ -302,6 +289,35 @@ async fn a_command_waits_for_a_busy_writer_instead_of_failing() {
         r.unwrap();
         assert!(started.elapsed() >= Duration::from_millis(300), "did not wait: {:?}", started.elapsed());
         assert_eq!(b.count("domains").await, 1);
+    })
+    .await;
+}
+
+// ---- dkim generate (U5) ----
+
+#[tokio::test]
+async fn dkim_generate_writes_a_private_key_and_prints_the_dns_record() {
+    use std::os::unix::fs::PermissionsExt;
+    for_each_backend(|b| async move {
+        b.run(Command::DomainAdd { name: "example.org".into() }, &[]).await.unwrap();
+        let keys = tempfile::tempdir().unwrap();
+        let cmd = Command::DkimGenerate { domain: "example.org".into(), selector: "rusty".into(), ed25519: false };
+        // Without a configured key directory there is nowhere safe to write.
+        assert!(b.run(cmd.clone(), &[]).await.is_err(), "{}", b.name);
+        let out = b.run_with_dkim(cmd.clone(), keys.path()).await.unwrap();
+        let file = keys.path().join("example.org.rusty.pem");
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600, "{}", b.name);
+        assert!(out.text.contains("rusty._domainkey.example.org") && out.text.contains("v=DKIM1; k=rsa; p="), "{}", out.text);
+        assert!(!out.text.contains("PRIVATE KEY") && !out.json.to_string().contains("PRIVATE"), "the private key is never printed");
+        // A second run never overwrites a key (that would break every published signature).
+        assert!(b.run_with_dkim(cmd, keys.path()).await.is_err(), "{}", b.name);
+        // The optional ed25519 second key has its own selector name.
+        let ed = Command::DkimGenerate { domain: "example.org".into(), selector: "rusty".into(), ed25519: true };
+        let out = b.run_with_dkim(ed, keys.path()).await.unwrap();
+        assert!(out.text.contains("rusty-ed25519._domainkey.example.org") && out.text.contains("k=ed25519"), "{}", out.text);
+        // An unknown domain gets no key.
+        let unknown = Command::DkimGenerate { domain: "nope.test".into(), selector: "rusty".into(), ed25519: false };
+        assert!(b.run_with_dkim(unknown, keys.path()).await.is_err());
     })
     .await;
 }

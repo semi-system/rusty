@@ -163,3 +163,52 @@ pub fn check_auth(data: &[u8]) {
         }
     }
 }
+
+/// The reply parser of the outbound client: arbitrary bytes from a hostile server never panic; the
+/// reported length stays inside the input; a parsed reply honours the limits; and a complete reply
+/// parsed from a prefix equals the one parsed from the whole input (no dependence on chunking).
+pub fn check_reply(data: &[u8]) {
+    use crate::outbound::smtp_reply::{parse_reply, MAX_LINES, MAX_REPLY};
+    match parse_reply(data) {
+        Ok(Some((reply, used))) => {
+            assert!(used <= data.len() && used <= MAX_REPLY + 1);
+            assert!(reply.lines.len() <= MAX_LINES && (100..600).contains(&reply.code));
+            let again = parse_reply(data.get(..used).unwrap_or_default()).ok().flatten();
+            assert_eq!(again.map(|(r, u)| (r, u)), Some((reply, used)), "a reply is self-delimiting");
+        }
+        Ok(None) | Err(_) => {}
+    }
+}
+
+/// The header copier of a bounce: never panics, never contains the body, never exceeds the cap, never
+/// holds a line that could pass for a MIME boundary or a control character.
+pub fn check_dsn_headers(data: &[u8]) {
+    use crate::outbound::dsn::{header_section, MAX_HEADERS_BYTES};
+    let out = header_section(data, MAX_HEADERS_BYTES);
+    assert!(out.len() <= MAX_HEADERS_BYTES);
+    assert!(out.is_empty() || out.ends_with(b"\r\n"));
+    for line in out.split(|&b| b == b'\n') {
+        assert!(!line.starts_with(b"--"));
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        assert!(line.iter().all(|&b| b == b'\t' || !b.is_ascii_control()));
+    }
+    if let Some(p) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+        let body = data.get(p + 4..).unwrap_or_default();
+        if body.len() > 8 {
+            assert!(!out.windows(body.len()).any(|w| w == body), "the body must not be copied");
+        }
+    }
+}
+
+/// The queue payload decoder: any JSON value decodes or is refused without a panic, and what decodes
+/// is safe to put on the wire (no CR, LF, angle brackets or spaces in any address) and round-trips.
+pub fn check_queue_payload(data: &[u8]) {
+    use crate::outbound::payload::OutboundPayload;
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(data) else { return };
+    if let Ok(p) = OutboundPayload::decode(&v) {
+        for a in p.recipients.iter().chain(std::iter::once(&p.envelope_from)) {
+            assert!(!a.chars().any(|c| c.is_control() || c.is_whitespace() || c == '<' || c == '>'));
+        }
+        assert_eq!(OutboundPayload::decode(&p.encode()).ok(), Some(p));
+    }
+}

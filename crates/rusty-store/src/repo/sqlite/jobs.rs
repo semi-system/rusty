@@ -7,7 +7,7 @@ use sqlx::{Row, SqliteConnection};
 
 use super::SqliteRepo;
 use crate::jobs::{parse_payload, ClaimedJob, MAX_SETTLED_PER_CLAIM};
-use crate::repo::jobs::{exhausted_reason, require_one, sql, ClaimRequest, NewJob};
+use crate::repo::jobs::{exhausted_reason, require_one, sql, BatchRequest, ClaimRequest, NewJob};
 use crate::repo::{render_sqlite as r, JobFence, JobRepo};
 use crate::map_db_error;
 
@@ -80,6 +80,108 @@ impl JobRepo for SqliteRepo {
         .map_err(map_db_error)?;
         tx.commit().await.map_err(map_db_error)?;
         Ok(JobId(id))
+    }
+
+    async fn enqueue_batch(&self, req: &BatchRequest<'_>) -> Result<Vec<JobId>> {
+        let mut tx = self.store.begin_write().await?;
+        let now = clock(&mut tx, req.now).await?;
+        // Known keys first: a retried submission creates nothing.
+        let mut ids: Vec<Option<i64>> = Vec::with_capacity(req.jobs.len());
+        for j in req.jobs {
+            let existing = match j.dedupe_key {
+                Some(k) => sqlx::query_scalar::<_, i64>(&crate::repo::sqlite_lit("SELECT id FROM jobs WHERE dedupe_key = ?"))
+                    .bind(k)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(map_db_error)?,
+                None => None,
+            };
+            ids.push(existing);
+        }
+        // Caps over what is really new, per scope.
+        let new: Vec<&crate::repo::jobs::BatchJob<'_>> = req.jobs.iter().zip(&ids).filter(|(_, i)| i.is_none()).map(|(j, _)| j).collect();
+        let mut scopes: Vec<(Option<i64>, i64)> = Vec::new();
+        for j in &new {
+            let d = j.domain.map(|d: DomainId| d.0);
+            match scopes.iter_mut().find(|(k, _)| *k == d) {
+                Some((_, n)) => *n += 1,
+                None => scopes.push((d, 1)),
+            }
+        }
+        for (d, add) in scopes {
+            let pending: i64 = match d {
+                Some(d) => sqlx::query_scalar(&crate::repo::sqlite_lit("SELECT count(*) FROM jobs WHERE domain_id = ? AND state IN ('queued', 'running')"))
+                    .bind(d)
+                    .fetch_one(&mut *tx)
+                    .await,
+                None => sqlx::query_scalar(&crate::repo::sqlite_lit("SELECT count(*) FROM jobs WHERE domain_id IS NULL AND state IN ('queued', 'running')"))
+                    .fetch_one(&mut *tx)
+                    .await,
+            }
+            .map_err(map_db_error)?;
+            let cap = match d {
+                Some(_) => req.domain_cap.min(crate::jobs::MAX_PENDING_JOBS_PER_DOMAIN),
+                None => req.no_domain_cap.min(crate::jobs::MAX_PENDING_JOBS_GLOBAL_NO_DOMAIN),
+            };
+            if pending + add > i64::from(cap) {
+                return Err(Error::Quota("job queue full".into()));
+            }
+        }
+        if let (Some((owner, lim)), false) = (req.owner, new.is_empty()) {
+            let pending: i64 = sqlx::query_scalar(&crate::repo::sqlite_lit("SELECT count(*) FROM jobs WHERE owner_id = ? AND state IN ('queued', 'running')"))
+                .bind(owner)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(map_db_error)?;
+            let (jobs, units, bytes): (i64, i64, i64) = sqlx::query_as(&crate::repo::sqlite_lit(
+                "SELECT count(*), COALESCE(sum(units), 0), COALESCE(sum(bytes), 0) FROM jobs WHERE owner_id = ? AND created_at > ?",
+            ))
+            .bind(owner)
+            .bind(now.saturating_sub(lim.window_secs))
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(map_db_error)?;
+            let add_units: i64 = new.iter().map(|j| i64::from(j.units)).sum();
+            let add_bytes: i64 = new.iter().map(|j| i64::try_from(j.bytes).unwrap_or(i64::MAX)).fold(0i64, i64::saturating_add);
+            let n = i64::try_from(new.len()).unwrap_or(i64::MAX);
+            if pending + n > i64::from(lim.max_pending)
+                || jobs + n > i64::from(lim.max_jobs)
+                || units.saturating_add(add_units) > i64::try_from(lim.max_units).unwrap_or(i64::MAX)
+                || bytes.saturating_add(add_bytes) > i64::try_from(lim.max_bytes).unwrap_or(i64::MAX)
+            {
+                return Err(Error::Quota("submission limit reached".into()));
+            }
+        }
+        let owner = req.owner.map(|(o, _)| o);
+        let mut out = Vec::with_capacity(ids.len());
+        for (j, known) in req.jobs.iter().zip(ids) {
+            if let Some(id) = known {
+                out.push(JobId(id));
+                continue;
+            }
+            let id: i64 = sqlx::query_scalar(&crate::repo::sqlite_lit(
+                "INSERT INTO jobs (kind, domain_id, state, payload, attempts, max_attempts, run_after, epoch, created_at, updated_at, \
+                                   dedupe_key, owner_id, units, bytes) \
+                 VALUES (?, ?, 'queued', ?, 0, ?, ?, 0, ?, ?, ?, ?, ?, ?) RETURNING id",
+            ))
+            .bind(j.kind)
+            .bind(j.domain.map(|d: DomainId| d.0))
+            .bind(j.payload)
+            .bind(i64::from(j.max_attempts))
+            .bind(now)
+            .bind(now)
+            .bind(now)
+            .bind(j.dedupe_key)
+            .bind(owner)
+            .bind(i64::from(j.units))
+            .bind(i64::try_from(j.bytes).unwrap_or(i64::MAX))
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(map_db_error)?;
+            out.push(JobId(id));
+        }
+        tx.commit().await.map_err(map_db_error)?;
+        Ok(out)
     }
 
     async fn claim(&self, req: &ClaimRequest<'_>) -> Result<Option<ClaimedJob>> {

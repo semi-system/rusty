@@ -3,7 +3,24 @@
 //! cargo-fuzz/nightly are missing.
 
 use proptest::prelude::*;
-use rusty_smtp::fuzzing::{check_auth, check_command_stream, check_data, check_headers, check_path};
+use rusty_smtp::fuzzing::{
+    check_auth, check_command_stream, check_data, check_dsn_headers, check_headers, check_path, check_queue_payload, check_reply,
+};
+
+const REPLY_SEEDS: [&[u8]; 4] = [
+    include_bytes!("../../../fuzz/seeds/fuzz_smtp_response/ehlo"),
+    include_bytes!("../../../fuzz/seeds/fuzz_smtp_response/reject"),
+    include_bytes!("../../../fuzz/seeds/fuzz_smtp_response/multi_and_trailing"),
+    include_bytes!("../../../fuzz/seeds/fuzz_smtp_response/bad"),
+];
+const DSN_SEEDS: [&[u8]; 2] = [
+    include_bytes!("../../../fuzz/seeds/fuzz_dsn_headers/simple"),
+    include_bytes!("../../../fuzz/seeds/fuzz_dsn_headers/no_headers"),
+];
+const PAYLOAD_SEEDS: [&[u8]; 2] = [
+    include_bytes!("../../../fuzz/seeds/fuzz_queue_payload/ok"),
+    include_bytes!("../../../fuzz/seeds/fuzz_queue_payload/injection"),
+];
 
 const COMMAND_SEEDS: [&[u8]; 3] = [
     include_bytes!("../../../fuzz/seeds/fuzz_smtp_command/swaks_session"),
@@ -42,6 +59,9 @@ fn seeds_pass() {
     PATH_SEEDS.iter().for_each(|s| check_path(s));
     HEADER_SEEDS.iter().for_each(|s| check_headers(s));
     AUTH_SEEDS.iter().for_each(|s| check_auth(s));
+    REPLY_SEEDS.iter().for_each(|s| check_reply(s));
+    DSN_SEEDS.iter().for_each(|s| check_dsn_headers(s));
+    PAYLOAD_SEEDS.iter().for_each(|s| check_queue_payload(s));
 }
 
 fn mutate(seed: &[u8], pos: usize, byte: u8, cut: usize) -> Vec<u8> {
@@ -68,6 +88,9 @@ proptest! {
         check_path(&data);
         check_headers(&data);
         check_auth(&data);
+        check_reply(&data);
+        check_dsn_headers(&data);
+        check_queue_payload(&data);
     }
 
     // backend-neutral: pure codecs over bytes, no database
@@ -78,5 +101,8 @@ proptest! {
         check_path(&mutate(PATH_SEEDS.get(which).copied().unwrap_or_default(), pos, byte, cut));
         check_headers(&mutate(HEADER_SEEDS.get(which % 3).copied().unwrap_or_default(), pos, byte, cut));
         check_auth(&mutate(AUTH_SEEDS.get(which).copied().unwrap_or_default(), pos, byte, cut));
+        check_reply(&mutate(REPLY_SEEDS.get(which).copied().unwrap_or_default(), pos, byte, cut));
+        check_dsn_headers(&mutate(DSN_SEEDS.get(which % 2).copied().unwrap_or_default(), pos, byte, cut));
+        check_queue_payload(&mutate(PAYLOAD_SEEDS.get(which % 2).copied().unwrap_or_default(), pos, byte, cut));
     }
 }

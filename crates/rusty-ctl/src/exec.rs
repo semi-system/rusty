@@ -54,6 +54,8 @@ pub struct CtlEnv<'a> {
     pub hostname: Option<&'a str>,
     /// One line describing the configuration that was read (`check` prints it).
     pub config_note: &'a str,
+    /// `[outbound] dkim_dir`: where `dkim generate` writes keys (none: the command refuses).
+    pub dkim_dir: Option<&'a std::path::Path>,
 }
 
 /// What a command produced.
@@ -381,12 +383,34 @@ pub async fn execute(command: &Command, env: &mut CtlEnv<'_>) -> Result<Outcome,
             Ok(Outcome::new(format!("alias {} removed", alias.trim()), json!({ "alias": alias.trim(), "removed": true })))
         }
 
-        Command::DkimGenerate { .. } => Err(CtlError::runtime(
-            "dkim generate: not available yet (it arrives with the outbound queue)",
-        )),
+        Command::DkimGenerate { domain, selector, ed25519 } => dkim_generate(env, domain, selector, *ed25519).await,
 
         Command::Check => check(env).await,
     }
+}
+
+/// `dkim generate`: a key for an existing domain, written 0600 into the configured key directory, and the
+/// DNS record to publish. Never overwrites, never prints the private key.
+async fn dkim_generate(env: &mut CtlEnv<'_>, domain: &str, selector: &str, ed25519: bool) -> Result<Outcome, CtlError> {
+    use rusty_smtp::dkim::{generate_key, DkimAlgo};
+    let dom = env.directory.find_domain(domain).await.map_err(|e| map_error(&e, "domain"))?.ok_or_else(|| CtlError::runtime("no such domain; add it first with `domain add`"))?;
+    let dir = env.dkim_dir.ok_or_else(|| CtlError::runtime("set [outbound] dkim_dir in the configuration: that is where DKIM keys are kept"))?;
+    match std::fs::symlink_metadata(dir) {
+        Ok(m) if m.is_dir() => {}
+        Ok(_) => return Err(CtlError::runtime("dkim_dir is not a directory")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new().mode(0o700).create(dir).map_err(|_| CtlError::runtime("cannot create dkim_dir"))?;
+        }
+        Err(_) => return Err(CtlError::runtime("cannot inspect dkim_dir")),
+    }
+    let algo = if ed25519 { DkimAlgo::Ed25519 } else { DkimAlgo::Rsa2048 };
+    let key = generate_key(dir, &dom.name, selector, algo).map_err(|e| map_error(&e, "dkim key"))?;
+    let name = format!("{}._domainkey.{}", key.selector, dom.name);
+    let text = format!("key written to {} (mode 0600)
+Publish this TXT record:
+{name}. IN TXT \"{}\"", key.key_file.display(), key.txt_value());
+    Ok(Outcome::new(text, json!({ "domain": dom.name, "selector": key.selector, "record_name": name, "record_value": key.txt_value(), "key_file": key.key_file.display().to_string() })))
 }
 
 /// `check`: the configuration that was read and the DNS records each active domain needs.

@@ -709,3 +709,9 @@ pub async fn fresh_like(b: &Backend) -> Backend {
     }
     pg_backend_or_skip().await.expect("postgres backend")
 }
+
+impl Backend {
+    pub async fn count_jobs(&self) -> i64 {
+        scalar(self, "SELECT count(*) FROM jobs").await
+    }
+}

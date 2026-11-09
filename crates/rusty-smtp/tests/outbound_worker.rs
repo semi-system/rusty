@@ -100,6 +100,9 @@ impl Rig {
             envelope_from: from.into(),
             recipients: rcpts.iter().map(|s| (*s).to_owned()).collect(),
             sender_domain: "example.net".into(),
+            account: self.alice.0,
+            submission_key: String::new(),
+            bytes: msg.len() as u64,
         })
         .await
         .unwrap();
@@ -409,10 +412,10 @@ async fn a_sender_domain_over_the_queue_cap_is_refused_at_enqueue() {
         let enq = JobOutbound::new(jobs, ctx.directory.clone());
         use rusty_svc::{OutboundEnqueue, OutboundMessage};
         let blob = blobs.put(Bytes::from_static(b"x")).await.unwrap();
-        let m = || OutboundMessage { blob: blob.clone(), envelope_from: "alice@example.net".into(), recipients: vec!["a@remote.test".into()], sender_domain: "example.net".into() };
+        let m = || OutboundMessage { blob: blob.clone(), envelope_from: "alice@example.net".into(), recipients: vec!["a@remote.test".into()], sender_domain: "example.net".into(), account: 1, submission_key: String::new(), bytes: 1 };
         enq.enqueue(m()).await.unwrap();
         enq.enqueue(m()).await.unwrap();
-        assert!(matches!(enq.enqueue(m()).await, Err(Error::Quota(_))), "the tenant's pending-job cap applies");
+        assert!(matches!(enq.enqueue(m()).await, Err(Error::Busy(_))), "a full queue is a temporary failure, not Quota");
     })
     .await;
 }

@@ -1963,6 +1963,7 @@ dependencies = [
  "proptest",
  "rusty-core",
  "rusty-directory",
+ "rusty-smtp",
  "rusty-store",
  "serde_json",
  "tempfile",

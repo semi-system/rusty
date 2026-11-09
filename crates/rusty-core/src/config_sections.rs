@@ -193,6 +193,43 @@ pub struct OutboundConfig {
     #[serde(default)]
     pub dkim_ed25519: bool,
     pub relay: Option<RelayConfig>,
+    /// Run the outbound worker and accept mail for remote recipients on submission. When `false`,
+    /// submission refuses remote recipients with a temporary status (it never accepts mail that no
+    /// worker will send).
+    #[serde(default = "d_true")]
+    pub enabled: bool,
+    /// Most queued or running jobs one account may have (fairness inside a tenant).
+    #[serde(default = "d_pending_account")]
+    pub max_pending_per_account: u32,
+    /// The window of the submission budget below.
+    #[serde(default = "d_window")]
+    pub submit_window_secs: u64,
+    /// Per account and window: jobs (one per destination domain), recipients, message bytes.
+    #[serde(default = "d_jobs")]
+    pub submit_max_jobs: u32,
+    #[serde(default = "d_rcpts")]
+    pub submit_max_recipients: u64,
+    #[serde(default = "d_bytes")]
+    pub submit_max_bytes: u64,
+}
+
+fn d_true() -> bool {
+    true
+}
+fn d_pending_account() -> u32 {
+    1000
+}
+fn d_window() -> u64 {
+    3600
+}
+fn d_jobs() -> u32 {
+    500
+}
+fn d_rcpts() -> u64 {
+    2000
+}
+fn d_bytes() -> u64 {
+    2 * 1024 * 1024 * 1024
 }
 
 fn d_max_age() -> u64 {
@@ -244,6 +281,12 @@ impl Default for OutboundConfig {
             dkim_selector: d_selector(),
             dkim_ed25519: false,
             relay: None,
+            enabled: true,
+            max_pending_per_account: d_pending_account(),
+            submit_window_secs: d_window(),
+            submit_max_jobs: d_jobs(),
+            submit_max_recipients: d_rcpts(),
+            submit_max_bytes: d_bytes(),
         }
     }
 }
@@ -266,6 +309,9 @@ impl OutboundConfig {
         }
         if self.backoff_secs.is_empty() || self.backoff_secs.len() > 64 || self.backoff_secs.iter().any(|s| !(1..=86_400).contains(s)) {
             return Err(bad("outbound.backoff_secs needs 1..=64 entries of 1..=86400"));
+        }
+        if self.max_pending_per_account == 0 || !(60..=7 * 86_400).contains(&self.submit_window_secs) || self.submit_max_jobs == 0 || self.submit_max_recipients == 0 || self.submit_max_bytes == 0 {
+            return Err(bad("outbound submission limits are out of range"));
         }
         if !(1..=1000).contains(&self.max_concurrent_per_domain) || !(1..=10_000).contains(&self.max_concurrent) {
             return Err(bad("outbound concurrency limits are out of range"));

@@ -100,6 +100,11 @@ fn is_stripped(name: &[u8]) -> bool {
 /// Drop the logical headers (a header line plus its folded continuation lines) that this server
 /// reserves for itself. `headers` is the header block without the blank line, CRLF-terminated.
 fn strip_reserved(headers: &[u8]) -> Vec<u8> {
+    strip_headers(headers, is_stripped)
+}
+
+/// [`strip_reserved`] with the set of dropped names chosen by `drop_name` (lower-case name tested).
+fn strip_headers(headers: &[u8], drop_name: fn(&[u8]) -> bool) -> Vec<u8> {
     let mut out = Vec::with_capacity(headers.len());
     let mut dropping = false;
     let mut seen_field = false;
@@ -116,7 +121,7 @@ fn strip_reserved(headers: &[u8]) -> Vec<u8> {
             // prefix is dropped even when the colon was damaged), without trailing blanks that lenient
             // parsers ignore.
             let name = line.split(|&b| b == b':').next().unwrap_or_default();
-            dropping = is_stripped(name.trim_ascii_end());
+            dropping = drop_name(name.trim_ascii_end());
         }
         if !dropping {
             out.extend_from_slice(line);
@@ -248,4 +253,30 @@ pub fn generated_message_id(original: &[u8], hostname: &str) -> String {
     let short: String = hash.as_str().chars().take(24).collect();
     let host: String = hostname.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-').collect();
     format!("<{short}@{host}>")
+}
+
+fn is_internal_for_relay(name: &[u8]) -> bool {
+    let lower: Vec<u8> = name.iter().map(u8::to_ascii_lowercase).collect();
+    // `Bcc` is removed because a client that put it in the header meant it as an envelope instruction.
+    lower == b"bcc" || is_stripped(name)
+}
+
+/// The message as it leaves for a remote server: what we stored for the sender (with our `Return-Path`,
+/// `Authentication-Results` and other internal headers on top, the `Received` line we wrote) minus the
+/// headers that must not cross the boundary: `Return-Path` (the receiver writes its own),
+/// `Authentication-Results`/`Received-SPF`/`X-Rusty-*` (our verdicts, meaningless or misleading
+/// elsewhere) and `Bcc`. The `Received` line stays: it is conventional trace, names no client address
+/// for an authenticated submission, and DKIM covers the headers that matter.
+pub fn outbound_copy(stored: &[u8]) -> Vec<u8> {
+    let norm = normalise_crlf(stored);
+    let (headers, rest): (&[u8], &[u8]) = if norm.starts_with(b"\r\n") {
+        (&[], &norm)
+    } else if let Some(p) = norm.windows(4).position(|w| w == b"\r\n\r\n") {
+        norm.split_at(p + 2)
+    } else {
+        (&norm, &[])
+    };
+    let mut out = strip_headers(headers, is_internal_for_relay);
+    out.extend_from_slice(rest);
+    out
 }

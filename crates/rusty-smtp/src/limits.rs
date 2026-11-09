@@ -12,8 +12,9 @@ use rusty_svc::Clock;
 pub trait SubmissionLimiter: Send + Sync {
     /// May `account` submit one more message now?
     fn allow(&self, account: AccountId) -> bool;
-    /// One message was accepted for `account`.
-    fn record(&self, account: AccountId);
+    /// Count one message for `account` if the budget allows it, in ONE atomic step (parallel
+    /// connections cannot all pass a separate check). `false`: over the limit, nothing counted.
+    fn try_record(&self, account: AccountId) -> bool;
 }
 
 /// A global budget for the memory messages in flight may hold, in 1 KiB units. Reserving never
@@ -80,7 +81,7 @@ impl SubmissionLimiter for MemorySubmissionLimiter {
         }
     }
 
-    fn record(&self, account: AccountId) {
+    fn try_record(&self, account: AccountId) -> bool {
         let now = self.clock.now_ms();
         let mut m = self.lock();
         if !m.contains_key(&account) && m.len() >= MAX_TRACKED_ACCOUNTS {
@@ -94,6 +95,9 @@ impl SubmissionLimiter for MemorySubmissionLimiter {
         // Bounded by the cap: never more entries than the limit.
         if w.len() < self.max_per_hour as usize {
             w.push_back(now);
+            true
+        } else {
+            false
         }
     }
 }

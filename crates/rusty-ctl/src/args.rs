@@ -40,7 +40,7 @@ pub enum Command {
     AliasAdd { alias: String, target: String },
     AliasList { domain: Option<String> },
     AliasRemove { alias: String },
-    DkimGenerate { domain: String, selector: String },
+    DkimGenerate { domain: String, selector: String, ed25519: bool },
     Check,
     Help,
 }
@@ -82,7 +82,7 @@ pub const USAGE: &str = "usage: rustyctl [--config FILE | --dev [--data-dir DIR]
   account set-password <addr> (--password-stdin | --prompt)\n\
   account disable <addr> | enable <addr>\n\
   alias add <alias-addr> <account-addr> | list [domain] | remove <alias-addr>\n\
-  dkim generate <domain> [--selector S]      (arrives with the outbound queue)\n\
+  dkim generate <domain> [--selector S] [--ed25519]   create a DKIM key (0600) and print its DNS record\n\
   check                                      configuration summary and DNS records to publish\n\
 \n\
 Passwords are read from standard input or the terminal, never from the command line.";
@@ -100,6 +100,7 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
     let mut prompt = false;
     let mut stdin = false;
     let mut selector: Option<String> = None;
+    let mut ed25519 = false;
     let mut help = false;
     let mut create = false;
     let mut words: Vec<&str> = Vec::new();
@@ -109,6 +110,7 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         match a.as_str() {
             "--json" => json = true,
             "--create" => create = true,
+            "--ed25519" => ed25519 = true,
             "--dev" => dev = true,
             "--prompt" => prompt = true,
             "--password-stdin" => stdin = true,
@@ -154,6 +156,9 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         Ok(())
     };
     let no_selector = || -> Result<(), UsageError> {
+        if ed25519 {
+            return Err(err("--ed25519 does not apply to this command"));
+        }
         if selector.is_some() {
             return Err(err("--selector does not apply to this command"));
         }
@@ -228,6 +233,7 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             no_password()?;
             done(Command::DkimGenerate {
                 domain: (*domain).to_owned(),
+                ed25519,
                 selector: match selector.as_deref() {
                     None => DEFAULT_SELECTOR.to_owned(),
                     Some(s) if valid_selector(s) => s.to_owned(),

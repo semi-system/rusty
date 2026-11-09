@@ -14,6 +14,15 @@ pub struct OutboundMessage {
     pub recipients: Vec<String>,
     /// Domain of the authenticated sender: the tenant the queue accounts the job to.
     pub sender_domain: String,
+    /// The authenticated account that submitted it: the queue's per-account caps and budgets apply.
+    pub account: i64,
+    /// Idempotency key of the SUBMISSION: derived from the sender, the account, the envelope and the
+    /// ORIGINAL bytes the client sent (not from what we store, which carries our arrival time). A
+    /// client that retries after a temporary failure presents the same key, so the queue creates no
+    /// second job. Empty: no idempotency.
+    pub submission_key: String,
+    /// Size of the message in bytes (the account's budget).
+    pub bytes: u64,
 }
 
 #[async_trait]
