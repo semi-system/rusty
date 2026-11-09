@@ -189,3 +189,22 @@ mod tests {
         assert!(!is_atom(b"") && !is_atom(b"a b") && !is_atom(b"a(b") && !is_atom(b"a\"b") && !is_atom(b"a]b") && !is_atom(b"a\\b") && !is_atom(b"a*"));
     }
 }
+
+/// Like [`string`] but for text taken from message headers: a NUL byte (which no IMAP parser
+/// accepts inside a string) becomes a space, everything else is kept.
+pub fn text(out: &mut Vec<u8>, s: &[u8]) {
+    if s.contains(&0) {
+        let clean: Vec<u8> = s.iter().map(|b| if *b == 0 { b' ' } else { *b }).collect();
+        string(out, &clean);
+    } else {
+        string(out, s);
+    }
+}
+
+/// [`text`] or `NIL`.
+pub fn ntext(out: &mut Vec<u8>, s: Option<&[u8]>) {
+    match s {
+        Some(s) => text(out, s),
+        None => out.extend_from_slice(b"NIL"),
+    }
+}

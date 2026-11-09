@@ -164,6 +164,16 @@ mod tests {
         assert_eq!(decode(&long), None);
     }
 
+    #[test]
+    fn a_name_whose_encoding_exceeds_the_cap_does_not_decode() {
+        // Found by fuzz_imap_utf7: 770 NULs encode to more than MAX_WIRE_NAME characters.
+        let long = "\u{110}".to_owned() + &"\u{0}".repeat(800);
+        assert!(encode(&long).len() > MAX_WIRE_NAME);
+        assert_eq!(decode(&encode(&long)), None);
+        let ok = "\u{110}".repeat(100);
+        assert_eq!(decode(&encode(&ok)).as_deref(), Some(ok.as_str()));
+    }
+
     proptest! {
         #[test]
         fn encode_then_decode_is_the_identity(s in "\\PC{0,40}") {

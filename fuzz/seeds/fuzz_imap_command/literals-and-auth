@@ -1,0 +1,8 @@
+
+x1 AUTHENTICATE PLAIN AGFsaWNlAHBhc3M=
+x2 LOGIN {5+}
+alice {6+}
+secret
+x3 APPEND "Sent" (\Seen) {11+}
+hello world
+x4 LIST "" "*"

@@ -1,0 +1,27 @@
+MIME-Version: 1.0
+Subject: S
+Content-Type: multipart/mixed; boundary="outer"
+
+preamble
+--outer
+Content-Type: multipart/alternative; boundary=inner
+
+--inner
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+plain =E2=9C=93
+--inner
+Content-Type: text/html; charset=utf-8
+
+<b>html</b>
+--inner--
+--outer
+Content-Type: application/pdf; name="a.pdf"
+Content-Disposition: attachment; filename="a.pdf"
+Content-Transfer-Encoding: base64
+Content-ID: <cid1>
+
+JVBERi0=
+--outer--
+epilogue

@@ -253,7 +253,7 @@ fn literal_marker(line: &[u8]) -> Option<Marker> {
 }
 
 /// The first token of a command if it is a plausible tag.
-fn tag_of(buf: &[u8]) -> Option<String> {
+pub(crate) fn tag_of(buf: &[u8]) -> Option<String> {
     let tok = buf.split(|b| *b == b' ' || *b == b'\r' || *b == b'\n').next()?;
     let ok = !tok.is_empty()
         && tok.len() <= 64

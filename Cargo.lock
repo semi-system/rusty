@@ -1485,16 +1485,21 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "chrono",
  "imap-codec",
  "proptest",
+ "rustls",
+ "rustls-pki-types",
  "rusty-core",
  "rusty-directory",
  "rusty-store",
  "rusty-svc",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

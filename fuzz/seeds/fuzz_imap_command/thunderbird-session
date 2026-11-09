@@ -1,0 +1,6 @@
+a1 CAPABILITY
+a2 STARTTLS
+a3 LOGIN "alice@example.com" "s3cret"
+a4 SELECT "INBOX"
+a5 UID FETCH 1:* (FLAGS)
+a6 LOGOUT

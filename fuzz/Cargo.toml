@@ -14,6 +14,7 @@ rusty-mime = { path = "../crates/rusty-mime" }
 rusty-directory = { path = "../crates/rusty-directory" }
 rusty-core = { path = "../crates/rusty-core" }
 rusty-svc = { path = "../crates/rusty-svc", default-features = false }
+rusty-imap = { path = "../crates/rusty-imap" }
 
 # Not part of the main workspace (needs nightly); has its own lockfile.
 [workspace]
@@ -42,6 +43,41 @@ bench = false
 [[bin]]
 name = "fuzz_pem"
 path = "fuzz_targets/fuzz_pem.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_imap_command"
+path = "fuzz_targets/fuzz_imap_command.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_imap_structure"
+path = "fuzz_targets/fuzz_imap_structure.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_imap_search_eval"
+path = "fuzz_targets/fuzz_imap_search_eval.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_imap_seqset"
+path = "fuzz_targets/fuzz_imap_seqset.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_imap_utf7"
+path = "fuzz_targets/fuzz_imap_utf7.rs"
 test = false
 doc = false
 bench = false

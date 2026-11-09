@@ -6,12 +6,19 @@ license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+# Runs the session suites against Postgres too (needs RUSTY_TEST_PG_URL).
+postgres = ["rusty-store/postgres"]
+
 [dependencies]
 rusty-core = { path = "../rusty-core" }
 rusty-store = { path = "../rusty-store" }
 rusty-svc = { path = "../rusty-svc", default-features = false }
 # Pinned exactly: the decoder is a security boundary (evaluation in tests/codec_table.rs).
 imap-codec = { version = "=1.0.0", features = ["starttls"] }
+# Already in the tree through imap-codec (alloc only); used to read dates out of the parsed commands.
+chrono = { version = "0.4", default-features = false }
 async-trait.workspace = true
 bytes.workspace = true
 tokio = { workspace = true, features = ["rt", "io-util", "time", "sync", "macros"] }
@@ -19,7 +26,14 @@ tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+rusty-store = { path = "../rusty-store", features = ["test-fixtures"] }
+rusty-directory = { path = "../rusty-directory" }
+# The dev certificate for the STARTTLS tests.
+rusty-svc = { path = "../rusty-svc" }
 proptest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
-rusty-directory = { path = "../rusty-directory" }
+rustls.workspace = true
+rustls-pki-types.workspace = true
+tokio-rustls.workspace = true
+tracing-subscriber.workspace = true
