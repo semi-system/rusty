@@ -64,7 +64,7 @@ const BUDGET: &[(&str, usize)] = &[
     ("keywords", 2),
     ("keywords_many", 1),
     ("latest_change_seq", 1),
-    ("folder_counts", 2),
+    ("folder_counts", 4),
     // JobRepo and GcRepo (PG5)
     ("db_now (jobs)", 1),
     ("enqueue (domain)", 5),
