@@ -338,10 +338,10 @@ async fn append_before_login_is_refused_before_any_continuation_and_empty_litera
         assert!(l.starts_with("x1 NO [LIMIT]"), "no `+ Ready` for an unauthenticated 50 MB literal: {l}");
         // `{0+}` repeated cannot buffer without end (review I2).
         let mut big = b"a LOGIN".to_vec();
-        for _ in 0..2_000_000 / 7 {
+        for _ in 0..5_000_000 / 7 {
             big.extend_from_slice(b" {0+}\r\n");
         }
-        c.send_bytes(&big).await;
+        let _ = c.try_send_bytes(&big).await;
         let mut closed = false;
         while let Some(l) = c.try_line().await {
             closed |= l.starts_with("* BYE");

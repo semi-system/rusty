@@ -174,6 +174,11 @@ impl Conn {
         self.send_bytes(s.as_bytes()).await;
     }
 
+    /// Like `send_bytes`, but a closed peer is not a failure (returns whether everything was written).
+    pub async fn try_send_bytes(&mut self, b: &[u8]) -> bool {
+        matches!(tokio::time::timeout(IO_TIMEOUT, self.io.write_all(b)).await, Ok(Ok(())))
+    }
+
     pub async fn send_bytes(&mut self, b: &[u8]) {
         tokio::time::timeout(IO_TIMEOUT, self.io.write_all(b)).await.expect("write timed out").expect("write");
         let _ = self.io.flush().await;
