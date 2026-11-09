@@ -247,6 +247,11 @@ impl Client {
         self.stream.get_mut().flush().await.unwrap();
     }
 
+    /// Like `send`, but a closed connection is an answer, not a panic.
+    pub async fn try_send(&mut self, bytes: &[u8]) -> bool {
+        self.stream.get_mut().write_all(bytes).await.is_ok() && self.stream.get_mut().flush().await.is_ok()
+    }
+
     pub async fn cmd(&mut self, line: &str) -> String {
         self.send(format!("{line}\r\n").as_bytes()).await;
         self.reply().await

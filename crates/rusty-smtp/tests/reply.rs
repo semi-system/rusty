@@ -35,7 +35,7 @@ fn the_mapping_table_for_recipients() {
         (Error::storage("boom"), 451, "4.3.0"),
         (Error::NotFound("x".into()), 550, "5.1.1"),
         (Error::Invalid("x".into()), 501, "5.1.3"),
-        (Error::Quota("x".into()), 452, "4.5.3"),
+        (Error::Quota("x".into()), 550, "5.5.3"),
         (Error::Conflict("x".into()), 451, "4.3.0"),
     ];
     for (e, code, enh) in cases {

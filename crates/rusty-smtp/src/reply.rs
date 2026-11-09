@@ -7,7 +7,7 @@
 //! | `Conflict`  | 451 4.3.0         | 451 4.3.0             |
 //! | `NotFound`  | 550 5.1.1         | 550 5.1.1             |
 //! | `Invalid`   | 501 5.1.3         | 554 5.6.0             |
-//! | `Quota`     | 452 4.5.3         | 552 5.2.2             |
+//! | `Quota`     | 550 5.5.3 (list)  | 552 5.2.2             |
 //!
 //! Reply texts are fixed; storage text and caller input never reach the wire.
 
@@ -78,7 +78,8 @@ pub fn map_error(e: &Error, ctx: ErrorContext) -> Reply {
         (Error::NotFound(_), _) => (550, "5.1.1", "No such user here"),
         (Error::Invalid(_), ErrorContext::Rcpt) => (501, "5.1.3", "Bad recipient address syntax"),
         (Error::Invalid(_), ErrorContext::Data) => (554, "5.6.0", "Message content rejected"),
-        (Error::Quota(_), ErrorContext::Rcpt) => (452, "4.5.3", "Too many recipients"),
+        // A list too large to expand is a permanent condition: a temporary status would be retried for days.
+        (Error::Quota(_), ErrorContext::Rcpt) => (550, "5.5.3", "Mailing list too large"),
         (Error::Quota(_), ErrorContext::Data) => (552, "5.2.2", "Mailbox full or message too large"),
     };
     Reply::new(code, enhanced, text)

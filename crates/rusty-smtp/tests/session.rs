@@ -12,6 +12,7 @@ fn cfg() -> SessionConfig {
         hostname: "mx.example.net".into(),
         max_message_bytes: 10_000,
         max_recipients: 3,
+        max_accounts: 1000,
         max_transactions: 5,
         max_commands_without_transaction: 100,
         max_errors: 20,
@@ -449,4 +450,64 @@ proptest::proptest! {
             sim.send(c.as_bytes());
         }
     }
+}
+
+// backend-neutral: pure state machine, no database
+#[test]
+fn the_advertised_recipient_count_is_really_accepted_with_default_caps() {
+    // review I3: RCPT and MAIL used to count against the "commands without a transaction" cap, so with the
+    // defaults (100 recipients, 100 commands) the 99th RCPT closed the connection
+    let mut c = cfg();
+    c.max_recipients = 100;
+    c.max_commands_without_transaction = 100;
+    c.max_errors = 20;
+    c.max_transactions = 5;
+    let mut sim = Sim::with(c, false);
+    sim.greeted();
+    sim.send(b"MAIL FROM:<a@b.c>\r\n");
+    for n in 1..=100 {
+        let out = sim.send(b"RCPT TO:<alice@example.net>\r\n");
+        assert!(out.starts_with("250 2.1.5"), "recipient {n}: {out}");
+    }
+    assert!(sim.send(b"RCPT TO:<alice@example.net>\r\n").starts_with("452 4.5.3"));
+    assert!(!sim.closed);
+    assert!(sim.send(b"DATA\r\n").starts_with("354"));
+    assert!(sim.send(b"x\r\n.\r\n").starts_with("250"));
+    assert_eq!(sim.delivered[0].recipients.len(), 100);
+}
+
+// backend-neutral: pure state machine, no database
+#[test]
+fn tls_started_forgets_the_greeting_and_the_open_transaction_exactly() {
+    // review: a leaked txn also answered 503 ("Nested MAIL"), so the reset was never really probed
+    let mut sim = Sim::new();
+    sim.greeted();
+    sim.send(b"MAIL FROM:<a@b.c>\r\nRCPT TO:<alice@example.net>\r\n");
+    sim.send(b"STARTTLS\r\n");
+    let a = sim.s.tls_started();
+    sim.apply(a);
+    // the greeting is forgotten: the refusal is about EHLO, not about a nested transaction
+    let out = sim.send(b"MAIL FROM:<a@b.c>\r\n");
+    assert!(out.contains("Send EHLO or HELO first"), "{out}");
+    sim.greeted();
+    // the transaction is gone: RCPT has no MAIL to belong to
+    let out = sim.send(b"RCPT TO:<alice@example.net>\r\n");
+    assert!(out.contains("Need MAIL command first"), "{out}");
+    // and a fresh MAIL is not "nested"
+    assert!(sim.send(b"MAIL FROM:<a@b.c>\r\n").starts_with("250 2.1.0"));
+}
+
+// backend-neutral: pure state machine, no database
+#[test]
+fn a_message_may_reach_only_so_many_distinct_mailboxes() {
+    let mut c = cfg();
+    c.max_accounts = 2;
+    let mut sim = Sim::with(c, false);
+    sim.greeted();
+    sim.send(b"MAIL FROM:<a@b.c>\r\n");
+    assert!(sim.send(b"RCPT TO:<alice@example.net>\r\n").starts_with("250"));
+    assert!(sim.send(b"RCPT TO:<alice@example.net>\r\n").starts_with("250"), "the same mailbox again is free");
+    assert!(sim.send(b"RCPT TO:<bob@example.net>\r\n").starts_with("250"));
+    assert!(sim.send(b"RCPT TO:<carol@example.net>\r\n").starts_with("452 4.5.3"));
+    assert!(sim.send(b"DATA\r\n").starts_with("354"));
 }

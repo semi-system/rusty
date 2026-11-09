@@ -26,6 +26,8 @@ pub struct SessionConfig {
     pub hostname: String,
     pub max_message_bytes: u64,
     pub max_recipients: usize,
+    /// Most distinct mailboxes one message may be delivered to (a list counts all its members).
+    pub max_accounts: usize,
     /// Most transactions (accepted `MAIL FROM`) per connection.
     pub max_transactions: u32,
     /// Most commands without a completed transaction.
@@ -279,10 +281,24 @@ impl Session {
                 self.state = State::Command;
                 match verdict {
                     RcptVerdict::Accept(r) => {
+                        let max = self.cfg.max_accounts;
+                        let mut over = false;
                         if let Some(t) = self.txn.as_mut() {
-                            t.recipients.push(r);
+                            // Lists multiply deliveries: bound the distinct mailboxes of the whole message.
+                            let mut seen: std::collections::HashSet<AccountId> =
+                                t.recipients.iter().flat_map(|x| x.accounts.iter().copied()).collect();
+                            seen.extend(r.accounts.iter().copied());
+                            if seen.len() > max {
+                                over = true;
+                            } else {
+                                t.recipients.push(r);
+                            }
                         }
-                        actions.push(Action::Reply(Reply::new(250, "2.1.5", "Recipient ok")));
+                        if over {
+                            self.error_reply(&mut actions, Reply::new(452, "4.5.3", "Too many deliveries for one message"));
+                        } else {
+                            actions.push(Action::Reply(Reply::new(250, "2.1.5", "Recipient ok")));
+                        }
                     }
                     RcptVerdict::AcceptRemote(address) => {
                         if let Some(t) = self.txn.as_mut() {
@@ -476,11 +492,6 @@ impl Session {
     }
 
     fn command(&mut self, line: &[u8], actions: &mut Vec<Action>) {
-        self.commands += 1;
-        if self.commands > self.cfg.max_commands_without_transaction {
-            self.refuse_and_close(actions, Reply::new(421, "4.7.0", "Too many commands, closing connection"));
-            return;
-        }
         if !matches!(self.auth, AuthStep::None) {
             return self.sasl_line(line, actions);
         }
@@ -497,6 +508,15 @@ impl Session {
                 return;
             }
         };
+        // The cap is for idle chatter. The commands that build a transaction (MAIL, RCPT, DATA) are bounded by
+        // their own limits (recipients, transactions) and must not eat into it, or a legitimate message to the
+        // advertised number of recipients would be cut off.
+        if !matches!(command, Command::Mail { .. } | Command::Rcpt { .. } | Command::Data) {
+            self.commands += 1;
+            if self.commands > self.cfg.max_commands_without_transaction {
+                return self.refuse_and_close(actions, Reply::new(421, "4.7.0", "Too many commands, closing connection"));
+            }
+        }
         match command {
             Command::Ehlo(host) => self.ehlo(host, true, actions),
             Command::Helo(host) => self.ehlo(host, false, actions),

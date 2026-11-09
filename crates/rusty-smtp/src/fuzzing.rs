@@ -140,6 +140,7 @@ pub fn check_auth(data: &[u8]) {
         hostname: "mx.example.net".into(),
         max_message_bytes: 4096,
         max_recipients: 5,
+        max_accounts: 50,
         max_transactions: 5,
         max_commands_without_transaction: 100,
         max_errors: 50,

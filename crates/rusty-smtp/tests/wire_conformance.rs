@@ -13,6 +13,7 @@ fn cfg() -> SessionConfig {
         hostname: "mx.example.net".into(),
         max_message_bytes: 10_000,
         max_recipients: 10,
+        max_accounts: 1000,
         max_transactions: 50,
         max_commands_without_transaction: 1000,
         max_errors: 1000,

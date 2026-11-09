@@ -5,7 +5,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -33,6 +33,8 @@ use crate::session::{
 
 /// Most accounts one recipient (a list) may expand to; more is `452 4.5.3`.
 const MAX_ACCOUNTS_PER_RECIPIENT: usize = 1000;
+/// Slowest DATA transfer tolerated once the grace period is over, in bytes per second.
+const MIN_DATA_RATE: u64 = 1024;
 /// Read buffer of the driver.
 const READ_BUF: usize = 16 * 1024;
 
@@ -60,7 +62,11 @@ pub struct InboundOptions {
     pub data_idle: Duration,
     /// How long the TLS handshake after STARTTLS may take.
     pub starttls_timeout: Duration,
+    /// How long writing the replies may take before the peer is cut.
+    pub write_timeout: Duration,
     pub max_transactions: u32,
+    /// Most distinct mailboxes one message may reach (lists expand into their members).
+    pub max_accounts: usize,
     pub max_commands_without_transaction: u32,
     pub max_errors: u32,
     pub max_line: usize,
@@ -74,7 +80,9 @@ impl Default for InboundOptions {
             command_idle: Duration::from_secs(300),
             data_idle: Duration::from_secs(600),
             starttls_timeout: Duration::from_secs(10),
+            write_timeout: Duration::from_secs(30),
             max_transactions: 5,
+            max_accounts: 1000,
             max_commands_without_transaction: 100,
             max_errors: 20,
             max_line: 1000,
@@ -136,6 +144,7 @@ impl InboundHandler {
             max_message_bytes: ctx.cfg.smtp_max_message_bytes(),
             max_recipients: usize::try_from(ctx.cfg.smtp.max_recipients).unwrap_or(usize::MAX),
             max_transactions: options.max_transactions,
+            max_accounts: options.max_accounts,
             max_commands_without_transaction: options.max_commands_without_transaction,
             max_errors: options.max_errors,
             max_line: options.max_line,
@@ -185,15 +194,20 @@ impl InboundHandler {
         };
         let mut seen = HashSet::new();
         let unique: Vec<AccountId> = ids.into_iter().filter(|a| seen.insert(*a)).collect();
+        // A list this large will never be accepted: permanent, so senders do not retry for days.
         if unique.len() > MAX_ACCOUNTS_PER_RECIPIENT {
             return RcptVerdict::Reject(map_error(&Error::Quota(String::new()), ErrorContext::Rcpt));
         }
+        // One statement for all members (the effective status: an account of a disabled domain is disabled).
+        let statuses = match self.directory.account_statuses(&unique).await {
+            Ok(s) => s,
+            Err(e) => return RcptVerdict::Reject(map_error(&e, ErrorContext::Rcpt)),
+        };
         let (mut active, mut inactive) = (Vec::new(), 0usize);
         for id in unique {
-            match self.directory.account_status(id).await {
-                Ok(Some(AccountStatus::Active)) => active.push(id),
-                Ok(_) => inactive += 1,
-                Err(e) => return RcptVerdict::Reject(map_error(&e, ErrorContext::Rcpt)),
+            match statuses.get(&id) {
+                Some(AccountStatus::Active) => active.push(id),
+                _ => inactive += 1,
             }
         }
         match (active.is_empty(), inactive) {
@@ -411,13 +425,19 @@ impl InboundHandler {
         reply
     }
 
-    async fn flush(stream: &mut BoxedStream, out: &mut Vec<u8>) -> bool {
+    /// Write the batched replies. A peer that does not read them is cut at `limit` (a stalled reader
+    /// must not hold a connection slot forever).
+    async fn flush(stream: &mut BoxedStream, out: &mut Vec<u8>, limit: Duration) -> bool {
         if out.is_empty() {
             return true;
         }
-        let ok = stream.write_all(out).await.is_ok() && stream.flush().await.is_ok();
+        let written = tokio::time::timeout(limit, async {
+            stream.write_all(out).await?;
+            stream.flush().await
+        })
+        .await;
         out.clear();
-        ok
+        matches!(written, Ok(Ok(())))
     }
 
     /// Run queued actions. Replies are batched and flushed before anything that blocks.
@@ -433,7 +453,7 @@ impl InboundHandler {
             match action {
                 Action::Reply(r) => out.extend_from_slice(&r.render()),
                 Action::Close => {
-                    Self::flush(stream, out).await;
+                    Self::flush(stream, out, self.options.write_timeout).await;
                     return Flow::Stop;
                 }
                 Action::CheckRcpt { address } => {
@@ -456,7 +476,7 @@ impl InboundHandler {
                     queue.extend(session.answer(Answer::Delivery(reply)));
                 }
                 Action::StartTls => {
-                    if !Self::flush(stream, out).await {
+                    if !Self::flush(stream, out, self.options.write_timeout).await {
                         return Flow::Stop;
                     }
                     let plain = std::mem::replace(stream, Box::new(tokio::io::join(tokio::io::empty(), tokio::io::sink())));
@@ -473,7 +493,7 @@ impl InboundHandler {
                 }
             }
         }
-        if Self::flush(stream, out).await { Flow::Go } else { Flow::Stop }
+        if Self::flush(stream, out, self.options.write_timeout).await { Flow::Go } else { Flow::Stop }
     }
 }
 
@@ -484,13 +504,33 @@ impl SessionHandler for InboundHandler {
         let mut queue: VecDeque<Action> = first.into();
         let mut out = Vec::new();
         let mut buf = vec![0u8; READ_BUF];
+        // Progress, not just silence: a client that drips one byte at a time must not hold the slot.
+        //  - waiting for a command: the whole line has `command_idle` from the moment the server last
+        //    produced something (a reply, a question), however the bytes trickle in;
+        //  - during DATA: after a grace of `data_idle`, the transfer must average MIN_DATA_RATE bytes/s.
+        let mut unit_start = Instant::now();
+        let mut data_bytes: u64 = 0;
+        let mut last_phase = session.phase();
         loop {
             if matches!(self.execute(&mut session, &mut queue, &mut out, &mut stream, &peer).await, Flow::Stop)
                 || session.phase() == Phase::Closed
             {
                 break;
             }
-            let idle = if session.phase() == Phase::Data { self.options.data_idle } else { self.options.command_idle };
+            let phase = session.phase();
+            if phase != last_phase {
+                last_phase = phase;
+                unit_start = Instant::now();
+                data_bytes = 0;
+            }
+            let in_data = phase == Phase::Data;
+            let idle = if in_data { self.options.data_idle } else { self.options.command_idle };
+            let wait = if in_data { idle } else { idle.saturating_sub(unit_start.elapsed()) };
+            if wait.is_zero() {
+                queue.extend(session.timed_out());
+                self.execute(&mut session, &mut queue, &mut out, &mut stream, &peer).await;
+                break;
+            }
             tokio::select! {
                 biased;
                 _ = shutdown.cancelled() => {
@@ -498,14 +538,29 @@ impl SessionHandler for InboundHandler {
                     self.execute(&mut session, &mut queue, &mut out, &mut stream, &peer).await;
                     break;
                 }
-                read = tokio::time::timeout(idle, stream.read(&mut buf)) => match read {
+                read = tokio::time::timeout(wait, stream.read(&mut buf)) => match read {
                     Err(_) => {
                         queue.extend(session.timed_out());
                         self.execute(&mut session, &mut queue, &mut out, &mut stream, &peer).await;
                         break;
                     }
                     Ok(Ok(0)) | Ok(Err(_)) => break,
-                    Ok(Ok(n)) => queue.extend(session.feed(buf.get(..n).unwrap_or_default())),
+                    Ok(Ok(n)) => {
+                        if in_data {
+                            data_bytes += n as u64;
+                            let secs = unit_start.elapsed().saturating_sub(idle).as_secs();
+                            if secs > 0 && data_bytes < secs * MIN_DATA_RATE {
+                                queue.extend(session.timed_out());
+                                self.execute(&mut session, &mut queue, &mut out, &mut stream, &peer).await;
+                                break;
+                            }
+                        }
+                        let actions = session.feed(buf.get(..n).unwrap_or_default());
+                        if !actions.is_empty() {
+                            unit_start = Instant::now();
+                        }
+                        queue.extend(actions);
+                    }
                 },
             }
         }

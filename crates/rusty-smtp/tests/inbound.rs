@@ -472,3 +472,132 @@ async fn a_retry_whose_trace_headers_differ_is_still_stored_once() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_client_that_drips_bytes_cannot_hold_the_connection() {
+    // review I6: the idle timer used to restart on every byte, so one byte per 200 ms lived forever
+    for_each_backend(|b| async move {
+        b.seed().await;
+        let mut o = Opts::default();
+        o.options = InboundOptions { command_idle: Duration::from_millis(400), data_idle: Duration::from_millis(400), ..InboundOptions::default() };
+        let s = start(&b, o).await;
+        // a command line that never ends, one byte per 150 ms
+        let mut c = Client::connect(s.addr).await;
+        c.reply().await;
+        let t0 = std::time::Instant::now();
+        let mut cut = false;
+        for _ in 0..30 {
+            if !c.try_send(b"N").await {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            if t0.elapsed() > Duration::from_millis(1500) {
+                break;
+            }
+        }
+        let r = c.reply().await;
+        assert!(r.starts_with("421 4.4.2"), "{r}");
+        cut = cut || t0.elapsed() < Duration::from_secs(3);
+        assert!(cut, "the drip must be cut within the budget, took {:?}", t0.elapsed());
+        // DATA at a trickle: after the grace the average rate is far below the minimum
+        let mut c = Client::hello(s.addr).await;
+        c.cmd("MAIL FROM:<s@remote.example>").await;
+        c.cmd("RCPT TO:<alice@example.net>").await;
+        c.cmd("DATA").await;
+        let t0 = std::time::Instant::now();
+        for _ in 0..40 {
+            if !c.try_send(b"x").await {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            if t0.elapsed() > Duration::from_secs(4) {
+                break;
+            }
+        }
+        let r = c.reply().await;
+        assert!(r.starts_with("421 4.4.2"), "{r}");
+        assert!(t0.elapsed() < Duration::from_secs(6), "{:?}", t0.elapsed());
+        s.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_list_over_the_limit_is_a_permanent_refusal_and_a_big_message_fan_out_is_bounded() {
+    for_each_backend(|b| async move {
+        let (alice, _) = b.seed().await;
+        let dom = b.dir.find_domain("example.net").await.unwrap().unwrap().id;
+        let big = b.dir.create_list("everyone", dom).await.unwrap();
+        for i in 0..1001 {
+            let a = b.dir.create_account(&format!("m{i:04}"), dom, None, None).await.unwrap();
+            b.dir.add_list_member(big, Some(a), None).await.unwrap();
+        }
+        let s = start(&b, Opts::default()).await;
+        let mut c = Client::hello(s.addr).await;
+        c.cmd("MAIL FROM:<s@remote.example>").await;
+        let r = c.cmd("RCPT TO:<everyone@example.net>").await;
+        assert!(r.starts_with("550 5.5.3"), "a list that can never be expanded is permanent, not 452: {r}");
+        s.stop().await;
+
+        // the per-message cap: a small list is fine alone, but two recipients together exceed 3 mailboxes
+        let small = b.dir.create_list("small", dom).await.unwrap();
+        for who in ["m0001", "m0002"] {
+            let a = b.dir.find_account(&format!("{who}@example.net")).await.unwrap().unwrap().id;
+            b.dir.add_list_member(small, Some(a), None).await.unwrap();
+        }
+        let mut o = Opts::default();
+        o.options.max_accounts = 3;
+        let s = start(&b, o).await;
+        let mut c = Client::hello(s.addr).await;
+        c.cmd("MAIL FROM:<s@remote.example>").await;
+        assert!(c.cmd("RCPT TO:<small@example.net>").await.starts_with("250"));
+        assert!(c.cmd("RCPT TO:<alice@example.net>").await.starts_with("250"));
+        let r = c.cmd("RCPT TO:<bob@example.net>").await;
+        assert!(r.starts_with("452 4.5.3"), "{r}");
+        let _ = alice;
+        s.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_disabled_domains_accounts_get_no_mail_even_through_a_list() {
+    // review I8: lists are same-tenant (I4), so a disabled domain's accounts cannot be members of another
+    // tenant's list; inside the domain the whole domain is off and the list resolves nothing
+    for_each_backend(|b| async move {
+        let (alice, _) = b.seed().await;
+        let dom = b.dir.find_domain("example.net").await.unwrap().unwrap().id;
+        let list = b.dir.create_list("team", dom).await.unwrap();
+        b.dir.add_list_member(list, Some(alice), None).await.unwrap();
+        let other = b.dir.create_domain("other.test").await.unwrap();
+        let eve = b.dir.create_account("eve", other, None, None).await.unwrap();
+        let foreign = b.dir.create_list("friends", other).await.unwrap();
+        assert!(b.dir.add_list_member(foreign, Some(alice), None).await.is_err(), "no cross-tenant list member");
+        b.dir.add_list_member(foreign, Some(eve), None).await.unwrap();
+        b.dir.set_domain_status(dom, rusty_directory::DomainStatus::Disabled).await.unwrap();
+        let s = start(&b, Opts::default()).await;
+        let mut c = Client::hello(s.addr).await;
+        c.cmd("MAIL FROM:<s@remote.example>").await;
+        assert!(c.cmd("RCPT TO:<alice@example.net>").await.starts_with("554 5.7.1"));
+        assert!(c.cmd("RCPT TO:<team@example.net>").await.starts_with("554 5.7.1"));
+        assert!(c.cmd("RCPT TO:<friends@other.test>").await.starts_with("250"), "the other tenant is unaffected");
+        s.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn two_recipients_get_their_own_delivery_ids_and_a_resend_to_a_third_only_adds_that_one() {
+    // the account is part of the delivery id: the same bytes for a new recipient are a new delivery
+    for_each_backend(|b| async move {
+        let (alice, bob) = b.seed().await;
+        let s = start(&b, Opts::default()).await;
+        let mut c = Client::hello(s.addr).await;
+        assert!(c.mail("sender@remote.example", &["alice@example.net"], MSG).await.starts_with("250"));
+        assert!(c.mail("sender@remote.example", &["alice@example.net", "bob@example.net"], MSG).await.starts_with("250"));
+        assert_eq!(b.inbox(alice, &s.blobs).await.len(), 1, "alice already had it");
+        assert_eq!(b.inbox(bob, &s.blobs).await.len(), 1, "bob gets his own copy");
+        s.stop().await;
+    })
+    .await;
+}
