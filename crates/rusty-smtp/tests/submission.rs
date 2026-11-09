@@ -258,7 +258,9 @@ async fn the_per_account_message_limit_gives_451() {
         let s = start(&b, o).await;
         let mut c = authed(s.addr, &s.cert_der).await;
         for _ in 0..2 {
-            assert!(c.mail("alice@example.net", &["bob@example.net"], MSG.strip_suffix(b"\r\n").unwrap()).await.starts_with("250"));
+            let r = c.mail("alice@example.net", &["bob@example.net"], MSG.strip_suffix(b"
+").unwrap()).await;
+            assert!(r.starts_with("250"), "{r}");
         }
         let r = c.cmd("MAIL FROM:<alice@example.net>").await;
         assert!(r.starts_with("451 4.7.1"), "{r}");

@@ -442,3 +442,33 @@ async fn message_bodies_and_auth_blobs_never_reach_the_log() {
     })
     .await;
 }
+
+/// A clock that moves one second per reading (a retry that crosses a second boundary).
+struct Ticking(std::sync::atomic::AtomicI64);
+
+impl rusty_smtp::inbound::WallClock for Ticking {
+    fn now_unix(&self) -> i64 {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[tokio::test]
+async fn a_retry_whose_trace_headers_differ_is_still_stored_once() {
+    // The Received header carries a time, so the stored bytes of a retry differ from the first copy; the
+    // delivery id (derived from the original data) must still make it a duplicate, not a failure.
+    for_each_backend(|b| async move {
+        let (alice, _) = b.seed().await;
+        let mut o = Opts::default();
+        o.options.clock = Arc::new(Ticking(std::sync::atomic::AtomicI64::new(1_794_139_200)));
+        let s = start(&b, o).await;
+        for _ in 0..3 {
+            let mut c = Client::hello(s.addr).await;
+            let r = c.mail("sender@remote.example", &["alice@example.net"], MSG).await;
+            assert!(r.starts_with("250"), "{r}");
+            c.cmd("QUIT").await;
+        }
+        assert_eq!(b.inbox(alice, &s.blobs).await.len(), 1);
+        s.stop().await;
+    })
+    .await;
+}

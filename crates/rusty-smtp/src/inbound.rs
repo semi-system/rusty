@@ -214,7 +214,17 @@ impl InboundHandler {
         self.quota.check_append(account, stored.len() as u64)?;
         let mailbox = self.hub.open_for(account).await?;
         let id = delivery_id_for(mail_from, account.0, original);
-        mailbox.deliver(folder, stored, Flags::default(), id).await.map(|_| ())
+        match mailbox.deliver(folder, stored, Flags::default(), id).await {
+            Ok(_) => Ok(()),
+            // The id is derived from the ORIGINAL data, the stored bytes carry the arrival time. A retry that
+            // crosses a second therefore stores different bytes under an id the store already knows and is
+            // answered Conflict: the message is already delivered, which is what the retry wants to know.
+            Err(Error::Conflict(_)) => {
+                tracing::debug!("retry of an already delivered message");
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// End of DATA: filters, then one idempotent delivery per distinct account.
