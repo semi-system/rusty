@@ -107,7 +107,12 @@ impl AuthThrottle {
     }
 
     fn key(ip: IpAddr, identity: &str) -> (IpAddr, String) {
-        let mut id = identity.to_ascii_lowercase();
+        // The directory's own normalisation (trim, case, trailing dot, NFC, IDNA), so every spelling
+        // of one address is one key; anything that is not an address is kept as trimmed lower case.
+        let mut id = match rusty_directory::parse_address(identity) {
+            Ok((local, domain)) => format!("{local}@{domain}"),
+            Err(_) => identity.trim().to_ascii_lowercase(),
+        };
         if id.len() > MAX_IDENTITY_BYTES {
             let mut cut = MAX_IDENTITY_BYTES;
             while !id.is_char_boundary(cut) {
