@@ -143,6 +143,7 @@ impl JobRepo for SqliteRepo {
                         epoch: row.try_get("epoch").map_err(map_db_error)?,
                         attempts: u32::try_from(attempts)
                             .map_err(|_| Error::storage("job attempts out of range"))?,
+                        created_at: row.try_get("created_at").map_err(map_db_error)?,
                     });
                 }
                 None => {
@@ -190,6 +191,31 @@ impl JobRepo for SqliteRepo {
         let n = sqlx::query(&r(sql::FAIL))
             .bind(id.0)
             .bind(epoch)
+            .bind(error)
+            .bind(retry_secs)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_db_error)?
+            .rows_affected();
+        require_one(n)?;
+        tx.commit().await.map_err(map_db_error)
+    }
+
+    async fn reschedule(
+        &self,
+        id: JobId,
+        epoch: i64,
+        payload: &str,
+        error: &str,
+        retry_secs: i64,
+        now: Option<i64>,
+    ) -> Result<()> {
+        let mut tx = self.store.begin_write().await?;
+        let n = sqlx::query(&r(sql::RESCHEDULE))
+            .bind(id.0)
+            .bind(epoch)
+            .bind(payload)
             .bind(error)
             .bind(retry_secs)
             .bind(now)

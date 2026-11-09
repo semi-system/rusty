@@ -122,6 +122,8 @@ pub struct ClaimedJob {
     pub epoch: i64,
     /// Claims so far, including this one.
     pub attempts: u32,
+    /// Database-clock time (unix seconds) the job was first enqueued; stable across retries.
+    pub created_at: i64,
 }
 
 /// The job queue over a [`JobRepo`] (either backend).
@@ -239,6 +241,19 @@ fn sanitize_error(s: &str) -> String {
 }
 
 
+/// Depth first, iteratively (serializing a hostile deeply nested value could overflow the stack),
+/// then the size cap.
+fn serialize_payload(payload: &Value) -> Result<String> {
+    if !depth_ok(payload) {
+        return Err(invalid("job payload nested too deeply"));
+    }
+    let text = serde_json::to_string(payload).map_err(|_| invalid("invalid job payload"))?;
+    if text.len() > MAX_JOB_PAYLOAD_BYTES {
+        return Err(invalid("job payload too large"));
+    }
+    Ok(text)
+}
+
 impl JobQueue {
     /// A queue over a SQLite store.
     pub fn new(store: SqliteStore) -> JobQueue {
@@ -355,15 +370,7 @@ impl JobQueue {
         if !(1..=MAX_JOB_ATTEMPTS).contains(&max_attempts) {
             return Err(invalid("invalid job attempt limit"));
         }
-        // Depth first, iteratively: serializing a hostile deeply nested value could overflow
-        // the stack.
-        if !depth_ok(payload) {
-            return Err(invalid("job payload nested too deeply"));
-        }
-        let text = serde_json::to_string(payload).map_err(|_| invalid("invalid job payload"))?;
-        if text.len() > MAX_JOB_PAYLOAD_BYTES {
-            return Err(invalid("job payload too large"));
-        }
+        let text = serialize_payload(payload)?;
         let cap = match domain {
             Some(_) => self.max_pending_per_domain,
             None => self.max_pending_no_domain,
@@ -521,6 +528,51 @@ impl JobQueue {
         let error = sanitize_error(error);
         let retry = i64::from(retry_after_secs.min(MAX_RETRY_AFTER_SECS));
         self.repo.fail(id, epoch, &error, retry, now).await
+    }
+
+    /// Requeue the claimed job after `retry_after_secs` (clamped like [`fail`](Self::fail)) with a
+    /// replaced payload and the attempt counter reset, so the retry schedule is not bounded by
+    /// `max_attempts` (which then only limits claims that end without a decision, such as crashes).
+    /// Same fencing as [`fail`](Self::fail); the payload obeys the enqueue limits.
+    pub async fn reschedule(
+        &self,
+        id: JobId,
+        epoch: i64,
+        payload: &Value,
+        error: &str,
+        retry_after_secs: u32,
+    ) -> Result<()> {
+        self.reschedule_inner(id, epoch, payload, error, retry_after_secs, None).await
+    }
+
+    /// [`reschedule`](Self::reschedule) at time `now`.
+    #[doc(hidden)]
+    pub async fn reschedule_at(
+        &self,
+        id: JobId,
+        epoch: i64,
+        payload: &Value,
+        error: &str,
+        retry_after_secs: u32,
+        now: i64,
+    ) -> Result<()> {
+        check_supplied_time(now)?;
+        self.reschedule_inner(id, epoch, payload, error, retry_after_secs, Some(now)).await
+    }
+
+    async fn reschedule_inner(
+        &self,
+        id: JobId,
+        epoch: i64,
+        payload: &Value,
+        error: &str,
+        retry_after_secs: u32,
+        now: Option<i64>,
+    ) -> Result<()> {
+        let text = serialize_payload(payload)?;
+        let error = sanitize_error(error);
+        let retry = i64::from(retry_after_secs.min(MAX_RETRY_AFTER_SECS));
+        self.repo.reschedule(id, epoch, &text, &error, retry, now).await
     }
 
     /// Check, in its own transaction, that the job is `running` with this `epoch` and an

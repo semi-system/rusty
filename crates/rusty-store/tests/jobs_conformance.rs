@@ -504,3 +504,42 @@ async fn a_live_lease_is_not_reclaimed_by_the_database_clock_claim() {
     })
     .await;
 }
+
+/// U5: a long-lived job (an outbound message retried for days) needs a retry that does not spend
+/// the attempt budget, carries an updated payload, and a way to know its age by the database clock.
+#[tokio::test]
+async fn reschedule_resets_attempts_replaces_payload_and_is_fenced() {
+    for_each_backend(|b| async move {
+        let jq = b.jobs();
+        let n = b.name;
+        let id = jq
+            .enqueue_with_max_attempts_at("r", None, &json!({"tries": 0}), None, 3, 5000)
+            .await
+            .unwrap();
+        let mut epoch = 0;
+        for round in 0..6i64 {
+            let now = 5000 + round * 100;
+            let j = jq.claim_at("w", &["r"], 30, now).await.unwrap().unwrap();
+            assert_eq!(j.created_at, 5000, "{n}: created_at is the enqueue time, stable across retries");
+            assert_eq!(j.attempts, 1, "{n}: attempts restart after a reschedule");
+            assert_eq!(j.payload, json!({"tries": round}), "{n}");
+            assert!(j.epoch > epoch, "{n}: every claim raises the epoch");
+            epoch = j.epoch;
+            jq.reschedule_at(id, j.epoch, &json!({"tries": round + 1}), "try later", 50, now + 1)
+                .await
+                .unwrap();
+            assert_eq!(state(&b, id).await, "queued", "{n}");
+            assert_eq!(col(&b, "run_after", id).await, now + 51, "{n}");
+            assert_eq!(last_error(&b, id).await, "try later", "{n}");
+            // The old epoch is a zombie now.
+            assert!(is_stale(&jq.reschedule_at(id, j.epoch, &json!({}), "x", 1, now + 2).await), "{n}");
+        }
+        // A lapsed lease cannot reschedule either.
+        let j = jq.claim_at("w", &["r"], 30, 9000).await.unwrap().unwrap();
+        assert!(is_stale(&jq.reschedule_at(id, j.epoch, &json!({}), "x", 1, 9031).await), "{n}");
+        // Payload limits still apply.
+        let j = jq.claim_at("w", &["r"], 30, 9100).await.unwrap().unwrap();
+        assert!(jq.reschedule_at(id, j.epoch, &nested(65), "x", 1, 9101).await.is_err(), "{n}");
+    })
+    .await;
+}

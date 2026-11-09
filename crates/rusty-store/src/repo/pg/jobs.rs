@@ -231,6 +231,7 @@ impl JobRepo for PgRepo {
                                 payload,
                                 epoch: row.try_get("epoch")?,
                                 attempts,
+                                created_at: row.try_get("created_at")?,
                             }));
                         }
                         None => {
@@ -287,6 +288,32 @@ impl JobRepo for PgRepo {
                 Ok(sqlx::query(&r(sql::FAIL))
                     .bind(id.0)
                     .bind(epoch)
+                    .bind(error)
+                    .bind(retry_secs)
+                    .bind(now)
+                    .execute(&mut *c)
+                    .await?
+                    .rows_affected())
+            }
+        })?;
+        require_one(n)
+    }
+
+    async fn reschedule(
+        &self,
+        id: JobId,
+        epoch: i64,
+        payload: &str,
+        error: &str,
+        retry_secs: i64,
+        now: Option<i64>,
+    ) -> Result<()> {
+        let n = tx_retry!(self, None, |c| {
+            {
+                Ok(sqlx::query(&r(sql::RESCHEDULE))
+                    .bind(id.0)
+                    .bind(epoch)
+                    .bind(payload)
                     .bind(error)
                     .bind(retry_secs)
                     .bind(now)
