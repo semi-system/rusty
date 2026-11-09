@@ -20,7 +20,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use rusty_smtp::inbound::{InboundHandler, InboundOptions, SubmissionDeps};
-use rusty_smtp::limits::MemorySubmissionLimiter;
+use rusty_smtp::limits::{MemoryBudget, MemorySubmissionLimiter};
 use rusty_smtp::outbound_queue::JobOutbound;
 
 use crate::banner::BannerSession;
@@ -144,6 +144,8 @@ async fn build(
     // Bind everything before serving anything: a clash fails the whole start.
     let mut addrs = Vec::new();
     let mut services: Vec<Box<dyn Service>> = Vec::new();
+    // One memory budget for every SMTP listener of the process.
+    let budget = MemoryBudget::new_mib(cfg.limits.inflight_message_mib);
     for planned in listener_plan(&cfg) {
         let bound = BoundListener::bind(planned.spec).await?;
         addrs.push((planned.kind, bound.local_addr()));
@@ -153,13 +155,19 @@ async fn build(
             Arc::new(DirectTcp)
         };
         let handler: Arc<dyn SessionHandler> = match planned.kind {
-            ListenerKind::Smtp25 => Arc::new(InboundHandler::new(&ctx, InboundOptions::default())),
+            ListenerKind::Smtp25 => {
+                Arc::new(InboundHandler::new(&ctx, InboundOptions { budget: budget.clone(), ..InboundOptions::default() }))
+            }
             ListenerKind::Submission587 | ListenerKind::Submissions465 => {
                 let deps = SubmissionDeps {
                     outbound: Arc::new(JobOutbound::new(ctx.jobs.clone(), ctx.directory.clone())),
                     limiter: Arc::new(MemorySubmissionLimiter::new(SUBMISSIONS_PER_HOUR, Arc::new(SystemClock::new()))),
                 };
-                let options = InboundOptions { max_transactions: SUBMISSION_TRANSACTIONS, ..InboundOptions::default() };
+                let options = InboundOptions {
+                    max_transactions: SUBMISSION_TRANSACTIONS,
+                    budget: budget.clone(),
+                    ..InboundOptions::default()
+                };
                 Arc::new(InboundHandler::submission(&ctx, options, deps))
             }
             _ => Arc::new(BannerSession::new(planned.kind, hostname)),

@@ -21,7 +21,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
 use crate::filter::{run_filters, FilterContext, InboundFilter, QuarantineFolder};
-use crate::limits::SubmissionLimiter;
+use crate::limits::{MemoryBudget, SubmissionLimiter};
 use crate::message::{
     delivery_id_for, from_addresses, generated_message_id, has_header, prepare_message_with, rfc5322_date, FromError, Trace,
 };
@@ -33,6 +33,11 @@ use crate::session::{
 
 /// Most accounts one recipient (a list) may expand to; more is `452 4.5.3`.
 const MAX_ACCOUNTS_PER_RECIPIENT: usize = 1000;
+/// Memory is reserved while a message is received in steps of this many bytes.
+const RESERVE_STEP: u64 = 256 * 1024;
+/// A message in flight exists about four times (received, normalised, prepared, handed to the store); the
+/// reception reserves the first copy, the delivery reserves the other three.
+const EXTRA_COPIES: u64 = 3;
 /// Slowest DATA transfer tolerated once the grace period is over, in bytes per second.
 const MIN_DATA_RATE: u64 = 1024;
 /// Read buffer of the driver.
@@ -64,6 +69,8 @@ pub struct InboundOptions {
     pub starttls_timeout: Duration,
     /// How long writing the replies may take before the peer is cut.
     pub write_timeout: Duration,
+    /// Memory all sessions together may hold for messages in flight (share one across listeners).
+    pub budget: MemoryBudget,
     pub max_transactions: u32,
     /// Most distinct mailboxes one message may reach (lists expand into their members).
     pub max_accounts: usize,
@@ -81,6 +88,7 @@ impl Default for InboundOptions {
             data_idle: Duration::from_secs(600),
             starttls_timeout: Duration::from_secs(10),
             write_timeout: Duration::from_secs(30),
+            budget: MemoryBudget::new_mib(1024),
             max_transactions: 5,
             max_accounts: 1000,
             max_commands_without_transaction: 100,
@@ -243,6 +251,9 @@ impl InboundHandler {
 
     /// End of DATA: filters, then one idempotent delivery per distinct account.
     async fn deliver(&self, t: &Transaction) -> Reply {
+        let Some(_copies) = self.options.budget.try_reserve(EXTRA_COPIES * t.data.len() as u64) else {
+            return Reply::new(451, "4.3.1", "Insufficient system resources, try again later");
+        };
         let outcome = run_filters(
             &self.options.filters,
             &FilterContext {
@@ -348,6 +359,9 @@ impl InboundHandler {
     /// End of DATA on submission: the header `From` must be the user too, then local recipients are
     /// delivered and remote ones queued, all durable before the `250`.
     async fn deliver_submitted(&self, t: &Transaction, deps: &SubmissionDeps) -> Reply {
+        let Some(_copies) = self.options.budget.try_reserve(EXTRA_COPIES * t.data.len() as u64) else {
+            return Reply::new(451, "4.3.1", "Insufficient system resources, try again later");
+        };
         let Some(identity) = &t.identity else {
             return Reply::new(530, "5.7.0", "Authentication required");
         };
@@ -511,6 +525,9 @@ impl SessionHandler for InboundHandler {
         let mut unit_start = Instant::now();
         let mut data_bytes: u64 = 0;
         let mut last_phase = session.phase();
+        // Memory reserved for the message being received; released when the transfer is over.
+        let mut held: Vec<tokio::sync::OwnedSemaphorePermit> = Vec::new();
+        let mut reserved: u64 = 0;
         loop {
             if matches!(self.execute(&mut session, &mut queue, &mut out, &mut stream, &peer).await, Flow::Stop)
                 || session.phase() == Phase::Closed
@@ -522,6 +539,10 @@ impl SessionHandler for InboundHandler {
                 last_phase = phase;
                 unit_start = Instant::now();
                 data_bytes = 0;
+                if phase != Phase::Data {
+                    held.clear();
+                    reserved = 0;
+                }
             }
             let in_data = phase == Phase::Data;
             let idle = if in_data { self.options.data_idle } else { self.options.command_idle };
@@ -548,6 +569,23 @@ impl SessionHandler for InboundHandler {
                     Ok(Ok(n)) => {
                         if in_data {
                             data_bytes += n as u64;
+                            while reserved < data_bytes {
+                                match self.options.budget.try_reserve(RESERVE_STEP) {
+                                    Some(p) => {
+                                        held.push(p);
+                                        reserved += RESERVE_STEP;
+                                    }
+                                    None => {
+                                        tracing::warn!("message memory budget exhausted; refusing data");
+                                        queue.extend(session.busy());
+                                        break;
+                                    }
+                                }
+                            }
+                            if session.phase() == Phase::Closed || reserved < data_bytes {
+                                self.execute(&mut session, &mut queue, &mut out, &mut stream, &peer).await;
+                                break;
+                            }
                             let secs = unit_start.elapsed().saturating_sub(idle).as_secs();
                             if secs > 0 && data_bytes < secs * MIN_DATA_RATE {
                                 queue.extend(session.timed_out());

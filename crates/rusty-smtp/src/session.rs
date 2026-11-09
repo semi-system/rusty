@@ -380,6 +380,11 @@ impl Session {
         self.goodbye(Reply::new(421, "4.3.2", format!("{} Service shutting down", self.cfg.hostname)))
     }
 
+    /// The server cannot take more data right now (memory budget): tell the peer to come back later.
+    pub fn busy(&mut self) -> Vec<Action> {
+        self.goodbye(Reply::new(421, "4.3.2", format!("{} Server busy, try again later", self.cfg.hostname)))
+    }
+
     /// The peer was idle for too long.
     pub fn timed_out(&mut self) -> Vec<Action> {
         self.goodbye(Reply::new(421, "4.4.2", format!("{} Idle timeout, closing connection", self.cfg.hostname)))

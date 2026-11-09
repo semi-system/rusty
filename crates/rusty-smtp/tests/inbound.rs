@@ -601,3 +601,39 @@ async fn two_recipients_get_their_own_delivery_ids_and_a_resend_to_a_third_only_
     })
     .await;
 }
+
+#[tokio::test]
+async fn the_memory_budget_refuses_data_and_deliveries_it_cannot_cover() {
+    // review I5: no global memory budget; a message in flight was held about four times with no limit
+    for_each_backend(|b| async move {
+        let (alice, _) = b.seed().await;
+        // 64 KiB in total: a 20 KiB message is received (20 KiB) but its three extra copies (60 KiB) do not fit
+        let mut o = Opts::default();
+        o.options.budget = rusty_smtp::limits::MemoryBudget::new_mib(0);
+        let s = start(&b, o).await;
+        let mut c = Client::hello(s.addr).await;
+        c.cmd("MAIL FROM:<s@remote.example>").await;
+        c.cmd("RCPT TO:<alice@example.net>").await;
+        c.cmd("DATA").await;
+        c.send(b"Subject: x\r\n\r\nsome data\r\n").await;
+        let r = c.reply().await;
+        assert!(r.starts_with("421 4.3.2"), "no budget at all: refuse the data, tell the peer to come back: {r}");
+        s.stop().await;
+
+        // a budget that covers reception but not the extra copies: the message is refused at the end, temporarily
+        let mut o = Opts::default();
+        o.options.budget = rusty_smtp::limits::MemoryBudget::new_mib(1);
+        let s = start(&b, o).await;
+        let mut c = Client::hello(s.addr).await;
+        let body = format!("Subject: big\r\n\r\n{}\r\n", "x".repeat(400_000));
+        let r = c.mail("s@remote.example", &["alice@example.net"], body.as_bytes()).await;
+        assert!(r.starts_with("421 4.3.2") || r.starts_with("451 4.3.1"), "{r}");
+        assert!(b.inbox(alice, &s.blobs).await.is_empty());
+        // the budget is returned: a small message goes through afterwards
+        let mut c = Client::hello(s.addr).await;
+        let r = c.mail("s@remote.example", &["alice@example.net"], b"Subject: small\r\n\r\nx").await;
+        assert!(r.starts_with("250"), "{r}");
+        s.stop().await;
+    })
+    .await;
+}
