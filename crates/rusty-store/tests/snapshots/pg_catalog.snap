@@ -424,7 +424,9 @@ CREATE OR REPLACE FUNCTION public.rs_alias_same_domain()
  SET search_path TO 'pg_catalog', 'public'
 AS $function$
 BEGIN
-  IF EXISTS (SELECT 1 FROM accounts WHERE id = NEW.account_id AND domain_id <> NEW.domain_id) THEN
+  -- A missing domain or account is left to the foreign keys (23503), so only a real mismatch is ours.
+  IF EXISTS (SELECT 1 FROM accounts WHERE id = NEW.account_id AND domain_id <> NEW.domain_id)
+     AND EXISTS (SELECT 1 FROM domains WHERE id = NEW.domain_id) THEN
     RAISE EXCEPTION 'alias target is in another domain' USING ERRCODE = 'RS002';
   END IF;
   RETURN NEW;
