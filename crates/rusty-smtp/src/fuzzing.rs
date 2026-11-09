@@ -169,14 +169,11 @@ pub fn check_auth(data: &[u8]) {
 /// parsed from a prefix equals the one parsed from the whole input (no dependence on chunking).
 pub fn check_reply(data: &[u8]) {
     use crate::outbound::smtp_reply::{parse_reply, MAX_LINES, MAX_REPLY};
-    match parse_reply(data) {
-        Ok(Some((reply, used))) => {
+    if let Ok(Some((reply, used))) = parse_reply(data) {
             assert!(used <= data.len() && used <= MAX_REPLY + 1);
             assert!(reply.lines.len() <= MAX_LINES && (100..600).contains(&reply.code));
             let again = parse_reply(data.get(..used).unwrap_or_default()).ok().flatten();
-            assert_eq!(again.map(|(r, u)| (r, u)), Some((reply, used)), "a reply is self-delimiting");
-        }
-        Ok(None) | Err(_) => {}
+            assert_eq!(again, Some((reply, used)), "a reply is self-delimiting");
     }
 }
 

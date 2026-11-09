@@ -1,3 +1,4 @@
+#![allow(clippy::field_reassign_with_default)]
 //! The outbound worker against loopback fake remote MTAs (see `common::fake_mta`), on every backend:
 //! delivery, MX order and fallback, null MX, 4xx retries and greylisting, partial recipients, bounces
 //! (and the no-backscatter rule), expiry, timeouts, TLS policies, DKIM signing, SMTPUTF8/IDN, size
@@ -53,6 +54,7 @@ struct Rig {
     alice: AccountId,
     token: CancellationToken,
     task: Option<tokio::task::JoinHandle<rusty_core::Result<()>>>,
+    #[allow(dead_code)]
     dialer: Arc<MapDialer>,
     deps: WorkerDeps,
     opts: WorkerOptions,
@@ -751,6 +753,39 @@ async fn relay_credentials_are_never_sent_without_tls() {
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(relay.messages().is_empty());
         assert_eq!(r.jobs("queued").await, 1);
+        r.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_body_of_a_retrying_job_survives_the_blob_gc_after_the_default_grace() {
+    for_each_backend(|b| async move {
+        let mta = FakeMta::start(|_| {
+            let mut s = Script::default();
+            s.rcpt = Box::new(|_| "451 4.7.1 later".into());
+            s
+        })
+        .await;
+        let dialer = MapDialer::new(&[("192.0.2.10", mta.addr)]);
+        let mut cfg = fast_cfg();
+        cfg.backoff_secs = vec![3600];
+        let mut r = rig(b, dialer, dns_one("mx.fake.test", "192.0.2.10"), cfg).await;
+        r.start();
+        r.submit("alice@example.net", &["bob@remote.test"], MSG).await;
+        for _ in 0..100 {
+            if r.jobs("queued").await == 1 && mta.connection_count() >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let blob_hash = rusty_core::BlobHash::of(MSG.as_bytes());
+        // Five days later (the whole retry window), a GC run with the grace window the configuration
+        // validates (>= max age + 1 day) leaves the queued body alone.
+        let grace = rusty_core::config::StartupConfig::dev(r.b.tmp.path()).gc_grace_seconds;
+        let later = std::time::SystemTime::now() + Duration::from_secs(5 * 86_400);
+        r.ctx.gc.collect_blobs_at(r.blobs.as_ref(), Duration::from_secs(grace), later).await.unwrap();
+        assert!(r.blobs.get(&blob_hash).await.is_ok(), "the retrying job still has its body");
         r.stop().await;
     })
     .await;

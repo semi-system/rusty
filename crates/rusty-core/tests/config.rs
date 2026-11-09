@@ -202,3 +202,15 @@ fn gc_grace_must_outlive_the_outbound_retry_window() {
     invalid(with("gc_grace_seconds = 604800\n[outbound]\nmax_age_secs = 1209600"));
     assert!(with("gc_grace_seconds = 1296000\n[outbound]\nmax_age_secs = 1209600").is_ok());
 }
+
+#[test]
+fn outbound_submission_limits_and_the_enabled_switch() {
+    let c = StartupConfig::from_toml_str(BASE).unwrap();
+    assert!(c.outbound.enabled && c.outbound.max_pending_per_account == 1000 && c.outbound.submit_window_secs == 3600);
+    assert!(!with("[outbound]\nenabled = false").unwrap().outbound.enabled);
+    invalid(with("[outbound]\nmax_pending_per_account = 0"));
+    invalid(with("[outbound]\nsubmit_window_secs = 10"));
+    invalid(with("[outbound]\nsubmit_max_bytes = 0"));
+    // Relay credentials only over TLS.
+    invalid(with("[outbound.relay]\nhost = \"smtp.example.net\"\nport = 25\ntls = \"none\"\nusername = \"u\"\npassword_file = \"/etc/rusty/pw\""));
+}

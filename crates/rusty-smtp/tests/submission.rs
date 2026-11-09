@@ -488,3 +488,29 @@ async fn the_atomic_memory_limiter_does_not_overshoot_under_parallel_attempts() 
     }
     assert_eq!(ok, 5, "exactly the budget passes, however many connections race");
 }
+
+#[tokio::test]
+async fn a_retry_after_a_failed_queue_step_converges_without_duplicates() {
+    for_each_backend(|b| async move {
+        let (_alice, bob, _) = world(&b).await;
+        let mut o = opts();
+        o.submit_limits = Some(SubmitLimits { max_pending: 1, window_secs: 3600, max_jobs: 100, max_recipients: 100, max_bytes: 1 << 30 });
+        let s = start(&b, o).await;
+        let mut c = authed(s.addr, &s.cert_der).await;
+        assert!(c.mail("alice@example.net", &["x@remote.test"], REMOTE).await.starts_with("250")); // fills the queue
+        let mixed = b"From: Alice <alice@example.net>\r\nTo: bob@example.net, y@remote.test\r\nSubject: mixed\r\n\r\nbody";
+        let r = c.mail("alice@example.net", &["bob@example.net", "y@remote.test"], mixed).await;
+        assert!(r.starts_with("451"), "the queue step failed: temporary for the client: {r}");
+        s.stop().await;
+        // The client retries the same message later, against a server whose queue has room.
+        let s = start(&b, opts()).await;
+        let mut c = authed(s.addr, &s.cert_der).await;
+        let r = c.mail("alice@example.net", &["bob@example.net", "y@remote.test"], mixed).await;
+        assert!(r.starts_with("250"), "{r}");
+        let copies = b.inbox(bob, &s.blobs).await.iter().filter(|m| contains(m, b"Subject: mixed")).count();
+        assert_eq!(copies, 1, "{}: the local copy was stored once across both attempts", b.name);
+        assert_eq!(b.fx.scalar("SELECT count(*) FROM jobs WHERE kind = 'outbound.send'", &[]).await, 2, "{}", b.name);
+        s.stop().await;
+    })
+    .await;
+}
