@@ -14,7 +14,9 @@ yanked = "deny"
 # as warnings by `cargo audit` in scripts/ci.sh. (No unmaintained crate exists today, so
 # this was verified from the source/changelog, not by an observed failure.)
 unmaintained = "workspace"
-ignore = []
+ignore = [
+    { id = "RUSTSEC-2026-0459", reason = "RUSTSEC-2026-0459 / CVE-2026-119375 (bundled SQLite < 3.54.0 returns uninitialised page-cache memory when a database is opened together with a crafted sibling -wal file of a different page size). No fix is obtainable: the fix needs libsqlite3-sys >= 0.39, but every released sqlx-sqlite (0.8.6 and 0.9.0) pins libsqlite3-sys <0.36 / <0.38, so the dependency cannot be bumped or [patch]ed without forking sqlx. Exposure: local-only attack; requires the process to open a database file plus -wal that an attacker wrote. Rusty opens only its own system/dev SQLite files created by rustyd under a 0700 state dir (not attacker-supplied files); production user data is on Postgres, SQLite is the dev/test backend. Journal mode cannot avoid it (a crafted db header selects WAL regardless). Review expiry: revisit when sqlx releases with libsqlite3-sys >= 0.39 (check each sqlx release) and no later than 2027-02-01." },
+]
 
 [licenses]
 version = 2

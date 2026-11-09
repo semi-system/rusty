@@ -1,0 +1,5 @@
+EHLO client.example.org
+MAIL FROM:<alice@example.org> SIZE=1000 BODY=8BITMIME
+RCPT TO:<bob@example.net>
+DATA
+QUIT

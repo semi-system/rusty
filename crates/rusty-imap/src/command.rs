@@ -1,6 +1,6 @@
 //! Our own command model: what the session layer understands. Library-independent: nothing in
-//! here (or in any module except `codec`) names a third-party type, so the command grammar library
-//! can be replaced by rewriting `codec.rs` alone. Mailbox names are already UTF-8 (the adapter
+//! here (or in any module except `adapter`) names a third-party type, so the command grammar library
+//! can be replaced by rewriting `adapter/mod.rs` alone. Mailbox names are already UTF-8 (the adapter
 //! decodes modified UTF-7), dates are day numbers since 1970-01-01.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

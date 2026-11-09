@@ -1,4 +1,4 @@
-//! Modified UTF-7 (RFC 3501 section 5.1.3): IMAP mailbox names on the wire. `imap-codec` hands
+//! Modified UTF-7 (RFC 3501 section 5.1.3): IMAP mailbox names on the wire. the grammar library hands
 //! mailbox names over as the raw wire string, so the conversion to and from UTF-8 is ours.
 //!
 //! `&` introduces a run of UTF-16BE code units in a modified base64 (`,` instead of `/`, no

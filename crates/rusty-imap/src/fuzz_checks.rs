@@ -3,7 +3,7 @@
 //! never panic on any input and asserts the documented bounds of the layer it exercises.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
-use crate::codec::{parse_command, response_decodes};
+use crate::adapter::{parse_command, response_decodes};
 use crate::command::{Body, FetchItem};
 use rusty_core::Flags;
 
@@ -67,7 +67,7 @@ pub fn structure(data: &[u8]) {
     }
 }
 
-/// `* 1 FETCH (<item> <value>)` must decode with imap-codec's response parser.
+/// `* 1 FETCH (<item> <value>)` must decode with the grammar library's response parser.
 fn assert_decodes(item: &str, value: &[u8]) {
     let mut line = format!("* 1 FETCH ({item} ").into_bytes();
     line.extend_from_slice(value);

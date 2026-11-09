@@ -1,0 +1,8 @@
+Authentication-Results: mx; dkim=pass
+	x=y
+Received-SPF: pass
+X-Rusty-A: 1
+Subject: s
+
+body
+bare

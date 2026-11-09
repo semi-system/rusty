@@ -41,6 +41,7 @@ COLUMN domains.id bigint nullable=NO identity=YES/ALWAYS collation= default=
 COLUMN domains.name text nullable=NO identity=NO/ collation=C default=
 COLUMN domains.config jsonb nullable=NO identity=NO/ collation= default='{}'::jsonb
 COLUMN domains.created_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN domains.status text nullable=NO identity=NO/ collation= default='active'::text
 COLUMN folders.mailbox_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN folders.id bigint nullable=NO identity=NO/ collation= default=
 COLUMN folders.parent_id bigint nullable=YES identity=NO/ collation= default=
@@ -173,6 +174,8 @@ CONSTRAINT domains.domains_name_key UNIQUE (name)
 CONSTRAINT domains.domains_name_not_null NOT NULL name
 CONSTRAINT domains.domains_name_valid CHECK (length(name) > 0 AND name = lower(name))
 CONSTRAINT domains.domains_pkey PRIMARY KEY (id)
+CONSTRAINT domains.domains_status_not_null NOT NULL status
+CONSTRAINT domains.domains_status_valid CHECK (status = ANY (ARRAY['active'::text, 'disabled'::text]))
 CONSTRAINT folders.folders_id_not_null NOT NULL id
 CONSTRAINT folders.folders_id_valid CHECK (id >= 1)
 CONSTRAINT folders.folders_mailbox_id_fkey FOREIGN KEY (mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE
@@ -323,9 +326,13 @@ TRIGGER aliases.aliases_addr_truncate CREATE TRIGGER aliases_addr_truncate AFTER
 TRIGGER aliases.aliases_addr_unique_del CREATE TRIGGER aliases_addr_unique_del BEFORE DELETE ON aliases FOR EACH ROW EXECUTE FUNCTION rs_address_unique()
 TRIGGER aliases.aliases_addr_unique_ins CREATE TRIGGER aliases_addr_unique_ins BEFORE INSERT ON aliases FOR EACH ROW EXECUTE FUNCTION rs_address_unique()
 TRIGGER aliases.aliases_addr_unique_upd CREATE TRIGGER aliases_addr_unique_upd BEFORE UPDATE OF local_part, domain_id ON aliases FOR EACH ROW EXECUTE FUNCTION rs_address_unique()
+TRIGGER aliases.aliases_same_domain_ins CREATE TRIGGER aliases_same_domain_ins BEFORE INSERT ON aliases FOR EACH ROW EXECUTE FUNCTION rs_alias_same_domain()
+TRIGGER aliases.aliases_same_domain_upd CREATE TRIGGER aliases_same_domain_upd BEFORE UPDATE OF domain_id, account_id ON aliases FOR EACH ROW EXECUTE FUNCTION rs_alias_same_domain()
 TRIGGER blobs.blobs_zero_since_ins CREATE TRIGGER blobs_zero_since_ins BEFORE INSERT ON blobs FOR EACH ROW EXECUTE FUNCTION rs_blobs_zero_since()
 TRIGGER blobs.blobs_zero_since_refcount CREATE TRIGGER blobs_zero_since_refcount BEFORE UPDATE OF refcount ON blobs FOR EACH ROW EXECUTE FUNCTION rs_blobs_zero_since()
 TRIGGER folders.folders_no_cycle CREATE TRIGGER folders_no_cycle BEFORE UPDATE OF parent_id ON folders FOR EACH ROW EXECUTE FUNCTION rs_folders_no_cycle()
+TRIGGER list_members.list_members_same_domain_ins CREATE TRIGGER list_members_same_domain_ins BEFORE INSERT ON list_members FOR EACH ROW EXECUTE FUNCTION rs_list_member_same_domain()
+TRIGGER list_members.list_members_same_domain_upd CREATE TRIGGER list_members_same_domain_upd BEFORE UPDATE OF account_id, list_id ON list_members FOR EACH ROW EXECUTE FUNCTION rs_list_member_same_domain()
 TRIGGER list_members.list_members_seq_ins CREATE TRIGGER list_members_seq_ins BEFORE INSERT ON list_members FOR EACH ROW WHEN (new.seq IS NULL) EXECUTE FUNCTION rs_list_members_seq()
 TRIGGER lists.lists_addr_truncate CREATE TRIGGER lists_addr_truncate AFTER TRUNCATE ON lists FOR EACH STATEMENT EXECUTE FUNCTION rs_address_truncate()
 TRIGGER lists.lists_addr_unique_del CREATE TRIGGER lists_addr_unique_del BEFORE DELETE ON lists FOR EACH ROW EXECUTE FUNCTION rs_address_unique()
@@ -413,6 +420,21 @@ BEGIN
   RETURN NEW;
 END;
 $function$
+FUNCTION rs_alias_same_domain
+CREATE OR REPLACE FUNCTION public.rs_alias_same_domain()
+ RETURNS trigger
+ LANGUAGE plpgsql
+ SET search_path TO 'pg_catalog', 'public'
+AS $function$
+BEGIN
+  -- A missing domain or account is left to the foreign keys (23503), so only a real mismatch is ours.
+  IF EXISTS (SELECT 1 FROM accounts WHERE id = NEW.account_id AND domain_id <> NEW.domain_id)
+     AND EXISTS (SELECT 1 FROM domains WHERE id = NEW.domain_id) THEN
+    RAISE EXCEPTION 'alias target is in another domain' USING ERRCODE = 'RS002';
+  END IF;
+  RETURN NEW;
+END;
+$function$
 FUNCTION rs_blobs_zero_since
 CREATE OR REPLACE FUNCTION public.rs_blobs_zero_since()
  RETURNS trigger
@@ -474,6 +496,21 @@ BEGIN
     SELECT 1 FROM chain WHERE depth >= 64
   ) THEN
     RAISE EXCEPTION 'folder tree too deep' USING ERRCODE = 'RS002';
+  END IF;
+  RETURN NEW;
+END;
+$function$
+FUNCTION rs_list_member_same_domain
+CREATE OR REPLACE FUNCTION public.rs_list_member_same_domain()
+ RETURNS trigger
+ LANGUAGE plpgsql
+ SET search_path TO 'pg_catalog', 'public'
+AS $function$
+BEGIN
+  IF NEW.account_id IS NOT NULL AND EXISTS (
+       SELECT 1 FROM accounts a JOIN lists l ON l.id = NEW.list_id
+       WHERE a.id = NEW.account_id AND a.domain_id <> l.domain_id) THEN
+    RAISE EXCEPTION 'list member is in another domain' USING ERRCODE = 'RS002';
   END IF;
   RETURN NEW;
 END;

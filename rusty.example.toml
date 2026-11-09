@@ -66,3 +66,4 @@ blob_dir = "/var/lib/rusty/blobs"
 # auth_failures_max = 5      # per (peer IP, identity) inside auth_window_secs
 # auth_window_secs = 300
 # auth_concurrent_max = 16   # authentication attempts running at once, process-wide
+# inflight_message_mib = 1024  # memory all SMTP sessions together may hold for messages in flight (16..=1048576)

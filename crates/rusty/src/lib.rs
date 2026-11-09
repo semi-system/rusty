@@ -6,6 +6,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing))]
 
-mod banner;
 pub mod cli;
+pub mod ctl;
 pub mod daemon;

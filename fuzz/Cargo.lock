@@ -1136,6 +1136,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusty-ctl"
+version = "0.1.0"
+dependencies = [
+ "rusty-core",
+ "rusty-directory",
+ "serde_json",
+]
+
+[[package]]
 name = "rusty-directory"
 version = "0.1.0"
 dependencies = [
@@ -1158,9 +1167,11 @@ version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "rusty-core",
+ "rusty-ctl",
  "rusty-directory",
  "rusty-imap",
  "rusty-mime",
+ "rusty-smtp",
  "rusty-svc",
  "unicode-general-category",
 ]
@@ -1187,6 +1198,24 @@ version = "0.1.0"
 dependencies = [
  "mail-parser",
  "rusty-core",
+]
+
+[[package]]
+name = "rusty-smtp"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "rusty-core",
+ "rusty-directory",
+ "rusty-mime",
+ "rusty-store",
+ "rusty-svc",
+ "serde_json",
+ "smtp-proto",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -1375,6 +1404,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "smtp-proto"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "142a5a642c6bd7ffd7e1b525ad6a6e9921ccef992dba4663974f8519209a00c1"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

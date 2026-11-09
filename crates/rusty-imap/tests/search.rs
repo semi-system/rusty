@@ -1,7 +1,7 @@
 //! SEARCH evaluation: flags, sets, sizes and dates from the snapshot facts; headers and body from
 //! the message bytes; three-valued logic so content is only loaded when it matters.
 
-use rusty_imap::codec::parse_command;
+use rusty_imap::adapter::parse_command;
 use rusty_imap::command::Body;
 use rusty_core::Flags;
 use rusty_imap::search::{eval, needs_content, Bounds, Content, Facts, Tri};

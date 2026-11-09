@@ -3,4 +3,7 @@
 # `sqlx-mysql` as an optional dependency (sqlx-mysql -> rsa). We build sqlx with the sqlite
 # feature only, so rsa is never compiled or linked. Verified: `cargo tree -i rsa --target all -e all`
 # prints nothing. Re-check on every sqlx upgrade.
-ignore = ["RUSTSEC-2023-0071"]
+# RUSTSEC-2026-0459 (bundled SQLite < 3.54.0, crafted -wal file): no sqlx release allows libsqlite3-sys >= 0.39;
+# we only open our own SQLite files (dev/test backend; Postgres in production). Full analysis and expiry
+# (2027-02-01) in deny.toml. Revisit on every sqlx upgrade.
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0459"]

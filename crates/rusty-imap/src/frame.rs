@@ -14,7 +14,7 @@
 //!   synchronising literals,
 //! * can switch to line mode for the AUTHENTICATE payload and the IDLE `DONE`.
 //!
-//! The command grammar itself is `imap-codec`'s job: a `Command` frame is a complete command that
+//! The command grammar itself is the grammar library's job: a `Command` frame is a complete command that
 //! the decoder never needs more input for.
 
 /// Size caps of one connection.

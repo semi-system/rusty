@@ -1,11 +1,11 @@
-//! Library evaluation of `imap-codec` 1.0.0 (plan U6, first step): the command lines the target
+//! Library evaluation of the grammar library 1.0.0 (plan U6, first step): the command lines the target
 //! clients send, run through the decoder. The table is built from the command forms Thunderbird,
 //! K-9 Mail and Apple Mail are documented/known to send (RFC examples and the clients' public
 //! traces), NOT from live captures: no client was available here. The U8 manual Thunderbird
 //! checklist is where a real capture confirms or extends it.
 //!
 //! Result, which is the decision record for the dependency:
-//! * every command of the U6 core and the U7 extras that `imap-codec` 1.0.0 knows decodes with
+//! * every command of the U6 core and the U7 extras that the grammar library 1.0.0 knows decodes with
 //!   the features `starttls` (plus the default quirks): CAPABILITY, STARTTLS, LOGIN,
 //!   AUTHENTICATE (with and without SASL-IR), SELECT/EXAMINE, CREATE/DELETE/RENAME,
 //!   SUBSCRIBE/UNSUBSCRIBE, LIST/LSUB, STATUS, APPEND (literal, LITERAL+, flags, date), CHECK,
@@ -25,7 +25,7 @@
 //!
 //! The assertions below pin both halves, so a library upgrade that changes either shows up here.
 
-use rusty_imap::codec::parse_command;
+use rusty_imap::adapter::parse_command;
 
 /// The variant name of the parsed command, or `"failed"`.
 fn name(line: &str) -> Result<String, String> {

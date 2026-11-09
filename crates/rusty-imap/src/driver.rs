@@ -169,7 +169,7 @@ async fn run(mut session: Session, limits: FrameLimits, stream: BoxedStream, shu
                 // IDLE ended: back to commands.
             }
             Frame::Command(bytes) => {
-                let decoded = crate::codec::parse_command(&bytes);
+                let decoded = crate::adapter::parse_command(&bytes);
                 let action = {
                     let mut sink = StreamSink(&mut stream);
                     let mut out = Out::new(&mut sink);

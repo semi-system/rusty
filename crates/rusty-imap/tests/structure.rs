@@ -1,7 +1,7 @@
 //! MIME structure: BODYSTRUCTURE, ENVELOPE and BODY[section] extraction over fixed messages, and
 //! the behaviour on hostile ones (the same properties are fuzzed by fuzz_imap_structure).
 
-use rusty_imap::codec::parse_command;
+use rusty_imap::adapter::parse_command;
 use rusty_imap::command::{Body, FetchItem};
 use rusty_imap::structure::{parse, Mime, MAX_DEPTH, MAX_PARTS};
 

@@ -1,0 +1,307 @@
+//! The command layer of `rustyctl` against the Directory facade, on every backend.
+
+mod common;
+
+use std::time::Duration;
+
+use common::{for_each_backend, Backend};
+use rusty_ctl::{Command, PasswordSource};
+use rusty_directory::{Authenticator, LocalAuthenticator, Resolved};
+
+fn dom_add(n: &str) -> Command {
+    Command::DomainAdd { name: n.into() }
+}
+fn acc_add(a: &str, p: PasswordSource) -> Command {
+    Command::AccountAdd { addr: a.into(), password: p }
+}
+fn set_pw(a: &str) -> Command {
+    Command::AccountSetPassword { addr: a.into(), password: PasswordSource::Stdin }
+}
+
+async fn auth(b: &Backend) -> LocalAuthenticator {
+    LocalAuthenticator::new(b.dir.clone()).await.unwrap()
+}
+
+#[tokio::test]
+async fn domain_and_account_then_login_works_and_a_wrong_password_fails() {
+    for_each_backend(|b| async move {
+        b.run(dom_add("example.com"), &[]).await.unwrap();
+        b.run(acc_add("Alice@Example.COM", PasswordSource::Stdin), &["correct-horse"]).await.unwrap();
+        let a = auth(&b).await;
+        let id = a.verify("alice@example.com", "correct-horse").await.unwrap();
+        assert!(id.is_some());
+        assert_eq!(a.verify("alice@example.com", "wrong-horse").await.unwrap(), None);
+        // The mailbox and the five system folders exist (the account is usable at once).
+        assert_eq!(b.count("mailboxes").await, 1);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn passwords_never_appear_in_any_output_or_error() {
+    for_each_backend(|b| async move {
+        let secret = "Sup3r-Secret-Value";
+        let mut seen = Vec::new();
+        b.run(dom_add("example.com"), &[]).await.unwrap();
+        for r in [
+            b.run(acc_add("a@example.com", PasswordSource::Prompt), &[secret]).await,
+            b.run(acc_add("a@example.com", PasswordSource::Prompt), &[secret]).await, // duplicate
+            b.run(acc_add("a@nodomain.test", PasswordSource::Prompt), &[secret]).await,
+            b.run(set_pw("a@example.com"), &[secret]).await,
+            b.run(set_pw("zz@example.com"), &[secret]).await,
+        ] {
+            match r {
+                Ok(o) => seen.push(format!("{} {}", o.text, o.json)),
+                Err(e) => seen.push(format!("{e} {e:?}")),
+            }
+        }
+        for s in seen {
+            assert!(!s.contains(secret), "password echoed: {s}");
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn too_short_a_password_is_refused_without_creating_the_account() {
+    for_each_backend(|b| async move {
+        b.run(dom_add("example.com"), &[]).await.unwrap();
+        let e = b.run(acc_add("a@example.com", PasswordSource::Stdin), &["short"]).await.unwrap_err();
+        assert_eq!(e.exit, 1);
+        assert!(!e.to_string().contains("short\""), "{e}");
+        assert_eq!(b.count("accounts").await, 0);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn idn_domains_and_addresses_are_normalised() {
+    for_each_backend(|b| async move {
+        let o = b.run(dom_add("BÜCHER.example"), &[]).await.unwrap();
+        assert!(o.text.contains("xn--bcher-kva.example"), "{}", o.text);
+        b.run(acc_add("Ünal@bücher.example", PasswordSource::None), &[]).await.unwrap();
+        let l = b.run(Command::AccountList { domain: Some("BÜCHER.example".into()) }, &[]).await.unwrap();
+        assert!(l.text.starts_with("ünal@xn--bcher-kva.example\tactive"), "{}", l.text);
+        // The same address in another spelling is a duplicate, not a second account.
+        assert!(b.run(acc_add("ÜNAL@xn--bcher-kva.example", PasswordSource::None), &[]).await.is_err());
+        assert_eq!(b.count("accounts").await, 1);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn duplicates_are_clean_errors_not_panics() {
+    for_each_backend(|b| async move {
+        b.run(dom_add("example.com"), &[]).await.unwrap();
+        let e = b.run(dom_add("EXAMPLE.com"), &[]).await.unwrap_err();
+        assert_eq!((e.exit, e.message.as_str()), (1, "domain: already exists"));
+        b.run(acc_add("a@example.com", PasswordSource::None), &[]).await.unwrap();
+        let e = b.run(acc_add("A@example.com", PasswordSource::None), &[]).await.unwrap_err();
+        assert_eq!(e.exit, 1);
+        assert!(e.message.contains("already used"), "{}", e.message);
+        assert_eq!(b.count("accounts").await, 1);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn account_in_a_missing_domain_fails_and_creates_nothing() {
+    for_each_backend(|b| async move {
+        let e = b.run(acc_add("a@nowhere.test", PasswordSource::None), &[]).await.unwrap_err();
+        assert_eq!(e.exit, 1);
+        assert!(e.message.contains("domain: not found"), "{}", e.message);
+        assert_eq!((b.count("accounts").await, b.count("mailboxes").await, b.count("aliases").await), (0, 0, 0));
+        // Malformed addresses are refused before anything else.
+        for bad in ["no-at-sign", "a b@example.com", "@example.com", "a@"] {
+            assert!(b.run(acc_add(bad, PasswordSource::None), &[]).await.is_err(), "{bad}");
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn first_account_gets_postmaster_and_abuse_aliases() {
+    for_each_backend(|b| async move {
+        b.run(dom_add("example.com"), &[]).await.unwrap();
+        let o = b.run(acc_add("alice@example.com", PasswordSource::None), &[]).await.unwrap();
+        assert!(o.text.contains("postmaster@example.com"), "{}", o.text);
+        let alice = b.dir.find_account("alice@example.com").await.unwrap().unwrap().id;
+        assert_eq!(b.dir.resolve("postmaster@example.com").await.unwrap(), Resolved::Account(alice));
+        assert_eq!(b.dir.resolve("abuse@example.com").await.unwrap(), Resolved::Account(alice));
+        // A second account does not touch them.
+        let o = b.run(acc_add("bob@example.com", PasswordSource::None), &[]).await.unwrap();
+        assert!(!o.text.contains("aliases created"), "{}", o.text);
+        assert_eq!(b.dir.resolve("postmaster@example.com").await.unwrap(), Resolved::Account(alice));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn postmaster_as_first_account_needs_no_alias_for_itself() {
+    for_each_backend(|b| async move {
+        b.run(dom_add("example.com"), &[]).await.unwrap();
+        b.run(acc_add("postmaster@example.com", PasswordSource::None), &[]).await.unwrap();
+        let pm = b.dir.find_account("postmaster@example.com").await.unwrap().unwrap().id;
+        assert_eq!(b.dir.resolve("postmaster@example.com").await.unwrap(), Resolved::Account(pm));
+        assert_eq!(b.dir.resolve("abuse@example.com").await.unwrap(), Resolved::Account(pm));
+        assert_eq!(b.count("aliases").await, 1);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_postmaster_account_can_replace_the_automatic_alias() {
+    for_each_backend(|b| async move {
+        b.run(dom_add("example.com"), &[]).await.unwrap();
+        b.run(acc_add("alice@example.com", PasswordSource::None), &[]).await.unwrap();
+        let e = b.run(acc_add("postmaster@example.com", PasswordSource::None), &[]).await.unwrap_err();
+        assert!(e.message.contains("alias remove"), "{}", e.message);
+        b.run(Command::AliasRemove { alias: "postmaster@example.com".into() }, &[]).await.unwrap();
+        b.run(acc_add("postmaster@example.com", PasswordSource::None), &[]).await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn aliases_stay_inside_their_domain() {
+    for_each_backend(|b| async move {
+        b.run(dom_add("a.test"), &[]).await.unwrap();
+        b.run(dom_add("b.test"), &[]).await.unwrap();
+        b.run(acc_add("alice@a.test", PasswordSource::None), &[]).await.unwrap();
+        b.run(acc_add("eve@b.test", PasswordSource::None), &[]).await.unwrap();
+        // Pointing into another tenant is refused; nothing is created.
+        let before = b.count("aliases").await;
+        let e = b
+            .run(Command::AliasAdd { alias: "info@a.test".into(), target: "eve@b.test".into() }, &[])
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("same domain"), "{}", e.message);
+        assert_eq!(b.count("aliases").await, before);
+        b.run(Command::AliasAdd { alias: "info@a.test".into(), target: "alice@a.test".into() }, &[]).await.unwrap();
+        let o = b.run(Command::AliasList { domain: Some("a.test".into()) }, &[]).await.unwrap();
+        assert!(o.text.contains("info@a.test\talice@a.test"), "{}", o.text);
+        assert!(!o.text.contains("b.test"), "{}", o.text);
+        // An alias of an unknown account / domain fails cleanly.
+        assert!(b.run(Command::AliasAdd { alias: "x@a.test".into(), target: "nobody@a.test".into() }, &[]).await.is_err());
+        assert!(b.run(Command::AliasAdd { alias: "x@nope.test".into(), target: "alice@a.test".into() }, &[]).await.is_err());
+        b.run(Command::AliasRemove { alias: "info@a.test".into() }, &[]).await.unwrap();
+        assert!(b.run(Command::AliasRemove { alias: "info@a.test".into() }, &[]).await.is_err());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn set_password_replaces_the_old_one_and_disable_blocks_login() {
+    for_each_backend(|b| async move {
+        b.run(dom_add("example.com"), &[]).await.unwrap();
+        b.run(acc_add("a@example.com", PasswordSource::Stdin), &["first-password"]).await.unwrap();
+        let a = auth(&b).await;
+        b.run(set_pw("a@example.com"), &["second-password"]).await.unwrap();
+        assert_eq!(a.verify("a@example.com", "first-password").await.unwrap(), None);
+        assert!(a.verify("a@example.com", "second-password").await.unwrap().is_some());
+
+        b.run(Command::AccountDisable { addr: "a@example.com".into() }, &[]).await.unwrap();
+        assert_eq!(a.verify("a@example.com", "second-password").await.unwrap(), None);
+        b.run(Command::AccountEnable { addr: "a@example.com".into() }, &[]).await.unwrap();
+        assert!(a.verify("a@example.com", "second-password").await.unwrap().is_some());
+
+        assert!(b.run(set_pw("ghost@example.com"), &["whatever-password"]).await.is_err());
+        // An alias is not an account: set-password on it must not reach the target.
+        b.run(Command::AliasAdd { alias: "al@example.com".into(), target: "a@example.com".into() }, &[]).await.unwrap();
+        assert!(b.run(set_pw("al@example.com"), &["whatever-password"]).await.is_err());
+        assert!(b.run(Command::AccountDisable { addr: "al@example.com".into() }, &[]).await.is_err());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn domain_disable_and_enable_are_visible_and_effective() {
+    for_each_backend(|b| async move {
+        b.run(dom_add("example.com"), &[]).await.unwrap();
+        b.run(acc_add("a@example.com", PasswordSource::Stdin), &["a-password-1"]).await.unwrap();
+        let a = auth(&b).await;
+        b.run(Command::DomainDisable { name: "example.com".into() }, &[]).await.unwrap();
+        let o = b.run(Command::DomainList, &[]).await.unwrap();
+        assert_eq!(o.text, "example.com\tdisabled");
+        assert_eq!(a.verify("a@example.com", "a-password-1").await.unwrap(), None);
+        b.run(Command::DomainEnable { name: "example.com".into() }, &[]).await.unwrap();
+        assert!(a.verify("a@example.com", "a-password-1").await.unwrap().is_some());
+        assert!(b.run(Command::DomainDisable { name: "nope.test".into() }, &[]).await.is_err());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn listings_cover_every_page_and_have_a_json_form() {
+    for_each_backend(|b| async move {
+        b.run(dom_add("big.test"), &[]).await.unwrap();
+        b.run(dom_add("small.test"), &[]).await.unwrap();
+        let dom = b.dir.find_domain("big.test").await.unwrap().unwrap().id;
+        for i in 0..205 {
+            b.dir.create_account(&format!("u{i:03}"), dom, None, None).await.unwrap();
+        }
+        b.run(acc_add("only@small.test", PasswordSource::Stdin), &["only-password"]).await.unwrap();
+        let o = b.run(Command::AccountList { domain: Some("big.test".into()) }, &[]).await.unwrap();
+        assert_eq!(o.text.lines().count(), 205);
+        assert!(o.text.lines().next().unwrap().starts_with("u000@big.test\tactive\tno-password"));
+        let all = b.run(Command::AccountList { domain: None }, &[]).await.unwrap();
+        assert_eq!(all.json["accounts"].as_array().unwrap().len(), 206);
+        let last = all.json["accounts"].as_array().unwrap().last().unwrap().clone();
+        assert_eq!(last["address"], "only@small.test");
+        assert_eq!(last["has_password"], true);
+        let d = b.run(Command::DomainList, &[]).await.unwrap();
+        assert_eq!(d.json["domains"].as_array().unwrap().len(), 2);
+        assert_eq!(rusty_ctl::render(&d, true), d.json.to_string());
+        assert_eq!(rusty_ctl::render(&d, false), d.text);
+        assert!(b.run(Command::AccountList { domain: Some("missing.test".into()) }, &[]).await.is_err());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn check_lists_dns_hints_for_active_domains_only() {
+    for_each_backend(|b| async move {
+        b.run(dom_add("on.test"), &[]).await.unwrap();
+        b.run(dom_add("off.test"), &[]).await.unwrap();
+        b.run(Command::DomainDisable { name: "off.test".into() }, &[]).await.unwrap();
+        let o = b.run(Command::Check, &[]).await.unwrap();
+        assert!(o.text.contains("on.test. 3600 IN MX 10 mail.example.net."), "{}", o.text);
+        assert!(o.text.contains("v=spf1 mx -all") && o.text.contains("_dmarc.on.test."), "{}", o.text);
+        assert!(!o.text.contains("off.test"), "{}", o.text);
+        let o = b.run_with_host(Command::Check, &[], None).await.unwrap();
+        assert!(o.text.contains("hostname: not set"), "{}", o.text);
+        assert!(!o.text.contains(" MX "), "{}", o.text);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn dkim_generate_is_reported_as_not_available_yet() {
+    for_each_backend(|b| async move {
+        let e = b
+            .run(Command::DkimGenerate { domain: "example.com".into(), selector: "rusty".into() }, &[])
+            .await
+            .unwrap_err();
+        assert_eq!(e.exit, 1);
+        assert!(e.message.contains("not available yet"), "{}", e.message);
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_command_waits_for_a_busy_writer_instead_of_failing() {
+    for_each_backend(|b| async move {
+        let lock = b.fx.hold_write_lock("domains").await;
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            drop(lock);
+        });
+        let started = std::time::Instant::now();
+        let r = b.run(dom_add("waited.test"), &[]).await;
+        release.await.unwrap();
+        r.unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(300), "did not wait: {:?}", started.elapsed());
+        assert_eq!(b.count("domains").await, 1);
+    })
+    .await;
+}

@@ -3,7 +3,7 @@
 # Usage: bash scripts/check-parametrised.sh [ROOT]
 #
 # Scans crates/rusty-store/tests/*.rs, crates/rusty-directory/tests/*.rs and, since U1, the service crates
-# crates/rusty-svc/tests/*.rs and crates/rusty/tests/*.rs (not common/; a service test that does not touch a
+# crates/rusty-svc/tests/*.rs, crates/rusty-ctl/tests/*.rs, crates/rusty-smtp/tests/*.rs and crates/rusty/tests/*.rs (not common/; a service test that does not touch a
 # database says so with a marker, one that builds a Context over a store names why the backend is irrelevant). Every
 # `#[test]` / `#[tokio::test]` function (also inside `proptest!`) must pass ONE of
 #   * RUNNER: its body, as CODE, calls a harness iterator `for_each_backend*` / `for_each_env*`
@@ -26,7 +26,7 @@ set -euo pipefail
 ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$ROOT"
 
-files="$(ls crates/rusty-store/tests/*.rs crates/rusty-directory/tests/*.rs crates/rusty-svc/tests/*.rs crates/rusty-imap/tests/*.rs crates/rusty/tests/*.rs 2>/dev/null | sort || true)"
+files="$(ls crates/rusty-store/tests/*.rs crates/rusty-directory/tests/*.rs crates/rusty-svc/tests/*.rs crates/rusty-imap/tests/*.rs crates/rusty-ctl/tests/*.rs crates/rusty-smtp/tests/*.rs crates/rusty/tests/*.rs 2>/dev/null | sort || true)"
 [ -n "$files" ] || { echo "check-parametrised: no test files found under $ROOT" >&2; exit 2; }
 
 total=0; param=0; marked=0; bad=""

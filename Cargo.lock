@@ -1422,10 +1422,13 @@ dependencies = [
  "rustix",
  "rustls",
  "rusty-core",
+ "rusty-ctl",
  "rusty-directory",
  "rusty-imap",
+ "rusty-smtp",
  "rusty-store",
  "rusty-svc",
+ "serde_json",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -1444,6 +1447,19 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "toml",
+]
+
+[[package]]
+name = "rusty-ctl"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "rusty-core",
+ "rusty-directory",
+ "rusty-store",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -1510,6 +1526,29 @@ dependencies = [
  "mail-parser",
  "proptest",
  "rusty-core",
+]
+
+[[package]]
+name = "rusty-smtp"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "proptest",
+ "rcgen",
+ "rusty-core",
+ "rusty-directory",
+ "rusty-mime",
+ "rusty-store",
+ "rusty-svc",
+ "serde_json",
+ "smtp-proto",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1720,6 +1759,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "smtp-proto"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "142a5a642c6bd7ffd7e1b525ad6a6e9921ccef992dba4663974f8519209a00c1"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

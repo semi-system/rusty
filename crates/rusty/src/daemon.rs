@@ -14,12 +14,20 @@ use rusty_core::{Error, Result};
 use rusty_store::{BlobStore, FsBlobStore, Store, StoreConfig};
 use rusty_svc::{
     listener_plan, run_services, Accept, BoundListener, Context, DirectTcp, DirectTls, FileSecretSource,
-    GcService, ListenerKind, ListenerService, Service, TlsProvider,
+    GcService, ListenerKind, ListenerService, Service, SessionHandler, SystemClock, TlsProvider,
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::banner::BannerSession;
+use rusty_smtp::inbound::{InboundHandler, InboundOptions, SubmissionDeps};
+use rusty_smtp::limits::{MemoryBudget, MemorySubmissionLimiter};
+use rusty_smtp::outbound_queue::JobOutbound;
+
+
+/// Messages one account may submit per hour (U4 default; becomes a config key with per-tenant limits).
+const SUBMISSIONS_PER_HOUR: u32 = 200;
+/// Messages per submission connection (mail clients reuse one connection for a whole outbox).
+const SUBMISSION_TRANSACTIONS: u32 = 100;
 
 /// How often the GC pass runs.
 const GC_EVERY: Duration = Duration::from_secs(3600);
@@ -59,7 +67,7 @@ impl Running {
 
 /// Dev profile only: the data directory is created 0700 (or must already be private and not a
 /// symlink) and the blob root is initialised. Production never creates anything implicitly.
-async fn prepare_dev_dirs(cfg: &StartupConfig) -> Result<()> {
+pub(crate) async fn prepare_dev_dirs(cfg: &StartupConfig) -> Result<()> {
     let dir = cfg
         .database_path
         .parent()
@@ -84,7 +92,7 @@ async fn prepare_dev_dirs(cfg: &StartupConfig) -> Result<()> {
     FsBlobStore::init(&cfg.blob_dir).await
 }
 
-fn sqlite_url(path: &Path) -> Result<String> {
+pub(crate) fn sqlite_url(path: &Path) -> Result<String> {
     let s = path.to_str().ok_or_else(|| Error::Invalid("database_path is not valid UTF-8".into()))?;
     if s.contains(['?', '#', '%']) {
         return Err(Error::Invalid("database_path must not contain '?', '#' or '%'".into()));
@@ -112,7 +120,7 @@ pub async fn start(cfg: StartupConfig, profile: Profile, shutdown: CancellationT
         prepare_dev_dirs(&cfg).await?;
     }
     let store = Store::open(StoreConfig::sqlite(sqlite_url(&cfg.database_path)?)).await?;
-    match build(&cfg, &hostname, &store, tls.clone(), shutdown.clone()).await {
+    match build(&cfg, &store, tls.clone(), shutdown.clone()).await {
         Ok((addrs, task)) => Ok(Running { addrs, shutdown, tls, store, task }),
         Err(e) => {
             let _ = store.close().await;
@@ -123,7 +131,6 @@ pub async fn start(cfg: StartupConfig, profile: Profile, shutdown: CancellationT
 
 async fn build(
     cfg: &StartupConfig,
-    hostname: &str,
     store: &Store,
     tls: TlsProvider,
     shutdown: CancellationToken,
@@ -135,6 +142,8 @@ async fn build(
     // Bind everything before serving anything: a clash fails the whole start.
     let mut addrs = Vec::new();
     let mut services: Vec<Box<dyn Service>> = Vec::new();
+    // One memory budget for every SMTP listener of the process.
+    let budget = MemoryBudget::new_mib(cfg.limits.inflight_message_mib);
     for planned in listener_plan(&cfg) {
         let bound = BoundListener::bind(planned.spec).await?;
         addrs.push((planned.kind, bound.local_addr()));
@@ -143,10 +152,23 @@ async fn build(
         } else {
             Arc::new(DirectTcp)
         };
-        let handler: Arc<dyn rusty_svc::SessionHandler> = if planned.kind.is_imap() {
-            Arc::new(rusty_imap::ImapHandler::new(ctx.clone()))
-        } else {
-            Arc::new(BannerSession::new(planned.kind, hostname))
+        let handler: Arc<dyn SessionHandler> = match planned.kind {
+            ListenerKind::Smtp25 => {
+                Arc::new(InboundHandler::new(&ctx, InboundOptions { budget: budget.clone(), ..InboundOptions::default() }))
+            }
+            ListenerKind::Submission587 | ListenerKind::Submissions465 => {
+                let deps = SubmissionDeps {
+                    outbound: Arc::new(JobOutbound::new(ctx.jobs.clone(), ctx.directory.clone())),
+                    limiter: Arc::new(MemorySubmissionLimiter::new(SUBMISSIONS_PER_HOUR, Arc::new(SystemClock::new()))),
+                };
+                let options = InboundOptions {
+                    max_transactions: SUBMISSION_TRANSACTIONS,
+                    budget: budget.clone(),
+                    ..InboundOptions::default()
+                };
+                Arc::new(InboundHandler::submission(&ctx, options, deps))
+            }
+            ListenerKind::Imap143 | ListenerKind::Imaps993 => Arc::new(rusty_imap::ImapHandler::new(ctx.clone())),
         };
         services.push(Box::new(ListenerService::new(bound, accept, handler)));
     }

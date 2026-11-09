@@ -3,7 +3,7 @@
 //! * codec/parser layer (no I/O, no state across calls): [`frame`] (bytes to whole commands with
 //!   size caps), [`wire`] (response writers), [`utf7`], [`seqset`], [`structure`] (MIME tree,
 //!   ENVELOPE, BODYSTRUCTURE, sections), [`search`] (key evaluation). Command grammar is
-//!   `imap-codec` 1.0.0.
+//!   the grammar library 1.0.0.
 //! * session layer: [`session`] is a state machine that takes decoded commands and returns bytes
 //!   to send plus a driver action; it talks to storage only through the `Mailbox` facade handed
 //!   out by `rusty_svc::MailboxHub`, and to the directory through `Authenticator`.
@@ -24,7 +24,7 @@ pub mod headers;
 pub mod search;
 pub mod fuzz_checks;
 pub mod auth;
-pub mod codec;
+pub mod adapter;
 pub mod command;
 pub mod ext;
 pub mod errors;

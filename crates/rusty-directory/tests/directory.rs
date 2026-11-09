@@ -813,9 +813,10 @@ async fn resolve_semantics_unchanged() {
     let two = d.create_domain("two.test").await.unwrap();
     let a1 = d.create_account("pat", one, None, None).await.unwrap();
     let a2 = d.create_account("pat", two, None, None).await.unwrap();
+    let a3 = d.create_account("member", one, None, None).await.unwrap();
     d.add_alias("al", one, a1).await.unwrap();
     let list = d.create_list("team", one).await.unwrap();
-    d.add_list_member(list, Some(a2), None).await.unwrap();
+    d.add_list_member(list, Some(a3), None).await.unwrap();
     d.add_list_member(list, None, Some("x@ext.test"))
         .await
         .unwrap();
@@ -826,7 +827,7 @@ async fn resolve_semantics_unchanged() {
     assert_eq!(
         d.resolve("team@one.test").await.unwrap(),
         Resolved::List(vec![
-            Resolved::Account(a2),
+            Resolved::Account(a3),
             Resolved::External("x@ext.test".into())
         ]),
         "members in insertion order"

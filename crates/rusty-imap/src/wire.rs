@@ -2,7 +2,7 @@
 //! reads the clock or the store. Strings are written as atoms, quoted strings or literals
 //! depending on their content, so arbitrary bytes (8-bit headers, NUL in a body) are always
 //! representable; the property tests in `tests/wire_roundtrip.rs` decode this output with
-//! `imap-codec`'s response parser.
+//! the grammar library's response parser.
 
 use rusty_core::Flags;
 
