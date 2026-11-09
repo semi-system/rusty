@@ -19,7 +19,7 @@ fn defaults() {
     assert_eq!(c.blob_dir, Path::new("/a/blobs"));
     assert_eq!(c.log_level, LogLevel::Info);
     assert_eq!(c.max_message_bytes, 52_428_800);
-    assert_eq!(c.gc_grace_seconds, 86_400);
+    assert_eq!(c.gc_grace_seconds, 604_800);
 }
 
 #[test]
@@ -56,7 +56,9 @@ fn max_message_bytes_bounds() {
 
 #[test]
 fn gc_grace_bounds() {
-    assert!(with("gc_grace_seconds = 3600").is_ok());
+    // The floor of 3600 only stands alone when no outbound retry window needs the blobs; the
+    // outbound rule (below) lifts it to max_age_secs + 1 day.
+    assert!(with("gc_grace_seconds = 518400").is_ok());
     invalid(with("gc_grace_seconds = 3599"));
 }
 
@@ -145,4 +147,58 @@ fn load_does_not_block_on_fifo() {
         .recv_timeout(std::time::Duration::from_secs(5))
         .expect("load blocked on a FIFO");
     invalid(r);
+}
+
+// ---- [outbound] (U5) ----
+
+#[test]
+fn outbound_defaults_are_safe() {
+    let c = StartupConfig::from_toml_str(BASE).unwrap();
+    let o = &c.outbound;
+    assert_eq!(o.max_age_secs, 5 * 86_400);
+    assert_eq!(o.backoff_secs, vec![300, 900, 1800, 3600, 7200, 14_400]);
+    assert_eq!(o.default_tls, rusty_core::config::TlsPolicy::Opportunistic);
+    assert!(o.relay.is_none() && o.nameserver.is_none() && o.ca_bundle.is_none() && o.bind_address.is_none());
+}
+
+#[test]
+fn outbound_unknown_keys_and_bad_values_are_rejected() {
+    invalid(with("[outbound]\nfrobnicate = 1"));
+    invalid(with("[outbound]\nmax_age_secs = 10"));
+    invalid(with("[outbound]\nbackoff_secs = []"));
+    invalid(with("[outbound]\nbackoff_secs = [0]"));
+    invalid(with("[outbound]\nmax_concurrent_per_domain = 0"));
+    invalid(with("[outbound]\nlease_secs = 5"));
+    invalid(with("[outbound]\nnameserver = \"not an address\""));
+    invalid(with("[outbound]\nca_bundle = \"relative.pem\""));
+    invalid(with("[outbound]\ndkim_selector = \"bad selector\""));
+    invalid(with("[outbound]\ndefault_tls = \"maybe\""));
+    invalid(with("[outbound.tls_policy]\n\"not a domain!\" = \"required\""));
+    assert!(with("[outbound]\nnameserver = \"10.77.0.10:53\"\nca_bundle = \"/etc/rusty/ca.pem\"\nbind_address = \"192.0.2.7\"").is_ok());
+    let c = with("[outbound.tls_policy]\n\"Example.ORG\" = \"verified\"").unwrap();
+    assert_eq!(c.outbound.tls_policy.get("example.org"), Some(&rusty_core::config::TlsPolicy::Verified));
+}
+
+#[test]
+fn outbound_relay_needs_a_password_file_not_an_inline_password() {
+    invalid(with("[outbound.relay]\nhost = \"smtp.example.net\"\nport = 587\npassword = \"inline\""));
+    invalid(with("[outbound.relay]\nhost = \"smtp.example.net\"\nport = 587\nusername = \"u\""));
+    invalid(with("[outbound.relay]\nhost = \"smtp.example.net\"\nport = 587\nusername = \"u\"\npassword_file = \"rel\""));
+    let c = with("[outbound.relay]\nhost = \"smtp.example.net\"\nport = 587\ntls = \"starttls\"\nusername = \"u\"\npassword_file = \"/etc/rusty/relay.pw\"").unwrap();
+    assert_eq!(c.outbound.relay.unwrap().port, 587);
+}
+
+/// U5 spike 1: a queued body has no database reference, so the blob GC collects it once it is
+/// older than the grace window (see crates/rusty-smtp/tests/outbound_gc.rs). The configuration
+/// therefore refuses a grace window shorter than the longest retry plus a day.
+#[test]
+fn gc_grace_must_outlive_the_outbound_retry_window() {
+    // The default grace and the default max age are consistent.
+    let c = StartupConfig::from_toml_str(BASE).unwrap();
+    assert!(c.gc_grace_seconds >= c.outbound.max_age_secs + 86_400);
+    invalid(with("gc_grace_seconds = 86400"));
+    invalid(with("gc_grace_seconds = 518399")); // max age 5 d + 1 d = 518400
+    assert!(with("gc_grace_seconds = 518400").is_ok());
+    invalid(with("gc_grace_seconds = 604800\n[outbound]\nmax_age_secs = 1209600"));
+    assert!(with("gc_grace_seconds = 1296000\n[outbound]\nmax_age_secs = 1209600").is_ok());
 }

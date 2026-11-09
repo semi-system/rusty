@@ -18,7 +18,7 @@ blob_dir = "/var/lib/rusty/blobs"
 # max_message_bytes = 52428800
 
 # Seconds an unreferenced blob is kept before GC may delete it. Minimum 3600. Default: 86400.
-# gc_grace_seconds = 86400
+# gc_grace_seconds = 604800   # must be >= [outbound] max_age_secs + 86400 (queued bodies are unreferenced blobs)
 
 # ---- Services (U1) ----------------------------------------------------------------------
 

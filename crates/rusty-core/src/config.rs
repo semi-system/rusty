@@ -12,7 +12,8 @@ use serde::Deserialize;
 use crate::{Error, Result};
 
 pub use crate::config_sections::{
-    valid_hostname, ImapConfig, LimitsConfig, Listen, LogFormat, OutboundConfig, SmtpConfig, TlsConfig,
+    valid_hostname, ImapConfig, LimitsConfig, Listen, LogFormat, OutboundConfig, RelayConfig, RelayTls, SmtpConfig, TlsConfig,
+    TlsPolicy,
 };
 
 /// Largest configuration file accepted by [`StartupConfig::load`].
@@ -85,7 +86,7 @@ fn default_max_message_bytes() -> u64 {
 }
 
 fn default_gc_grace_seconds() -> u64 {
-    86_400
+    604_800
 }
 
 /// Read at most `max` bytes from `r`. One extra byte is requested so that input longer than
@@ -104,7 +105,7 @@ fn read_bounded<R: Read>(r: R, max: usize) -> Result<Vec<u8>> {
 impl StartupConfig {
     /// Parse and validate. Syntax and schema errors are `Invalid` without the offending text.
     pub fn from_toml_str(s: &str) -> Result<StartupConfig> {
-        let c: StartupConfig = toml::from_str(s)
+        let mut c: StartupConfig = toml::from_str(s)
             .map_err(|_| Error::Invalid("configuration is not valid (syntax or schema)".into()))?;
         c.validate()?;
         Ok(c)
@@ -141,7 +142,7 @@ impl StartupConfig {
         Self::from_toml_str(&text)
     }
 
-    fn validate(&self) -> Result<()> {
+    fn validate(&mut self) -> Result<()> {
         if !self.database_path.is_absolute() {
             return Err(Error::Invalid("database_path must be absolute".into()));
         }
@@ -162,6 +163,12 @@ impl StartupConfig {
         self.tls.validate()?;
         self.smtp.validate(self.max_message_bytes)?;
         self.imap.validate()?;
+        self.outbound.validate()?;
+        // Queued message bodies carry no database reference (see crates/rusty-smtp/tests/outbound_gc.rs):
+        // the blob GC must not be allowed to collect one before the queue gives up on it.
+        if self.gc_grace_seconds < self.outbound.max_age_secs.saturating_add(86_400) {
+            return Err(Error::Invalid("gc_grace_seconds must be at least outbound.max_age_secs plus one day".into()));
+        }
         self.limits.validate()
     }
 
