@@ -91,7 +91,7 @@ fn is_stripped(name: &[u8]) -> bool {
 
 /// Drop the logical headers (a header line plus its folded continuation lines) that this server
 /// reserves for itself. `headers` is the header block without the blank line, CRLF-terminated.
-fn strip_reserved(headers: &[u8]) -> Vec<u8> {
+fn strip_reserved(headers: &[u8], strip_bcc: bool) -> Vec<u8> {
     let mut out = Vec::with_capacity(headers.len());
     let mut dropping = false;
     let mut seen_field = false;
@@ -108,7 +108,9 @@ fn strip_reserved(headers: &[u8]) -> Vec<u8> {
             // prefix is dropped even when the colon was damaged), without trailing blanks that lenient
             // parsers ignore.
             let name = line.split(|&b| b == b':').next().unwrap_or_default();
-            dropping = is_stripped(name.trim_ascii_end());
+            let name = name.trim_ascii_end();
+            // A submitting client's Bcc header must not reach the recipients (or the stored copy).
+            dropping = is_stripped(name) || (strip_bcc && name.eq_ignore_ascii_case(b"bcc"));
         }
         if !dropping {
             out.extend_from_slice(line);
@@ -135,7 +137,7 @@ pub fn prepare_message_with(original: &[u8], trace: &Trace<'_>, extra: &[(String
     } else {
         (&norm, &[])
     };
-    let mut kept = strip_reserved(headers);
+    let mut kept = strip_reserved(headers, trace.authenticated);
     if !kept.is_empty() && !kept.ends_with(b"\r\n") {
         kept.extend_from_slice(b"\r\n");
     }

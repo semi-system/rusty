@@ -225,3 +225,16 @@ fn a_from_header_with_more_addresses_than_the_mime_layer_keeps_is_refused() {
     let raw = b"From: \"Bob B\" <bob@example.net>\r\n folded\r\n\r\nb";
     assert!(from_addresses(raw).is_ok());
 }
+
+// backend-neutral: pure functions over bytes, no database
+#[test]
+fn a_submitting_clients_bcc_header_is_dropped_but_inbound_mail_keeps_it() {
+    let raw = b"From: a@example.org\r\nBcc: secret@elsewhere.example,\r\n other@x.example\r\nTo: b@example.org\r\nSubject: s\r\n\r\nbody";
+    let mut t = trace();
+    t.authenticated = true;
+    let sent = text(&prepare_message(raw, &t));
+    assert!(!sent.to_lowercase().contains("bcc") && !sent.contains("secret@") && !sent.contains("other@x"), "{sent}");
+    assert!(sent.contains("To: b@example.org") && sent.contains("Subject: s"));
+    let inbound = text(&prepare_message(raw, &trace()));
+    assert!(inbound.contains("Bcc: secret@elsewhere.example"), "mail from other servers is stored as it came");
+}
