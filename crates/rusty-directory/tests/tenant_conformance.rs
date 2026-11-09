@@ -147,7 +147,6 @@ async fn account_statuses_answers_many_ids_in_one_call() {
         assert_eq!(got[&ids[7]], AccountStatus::Locked);
         assert_eq!(got[&ids[8]], AccountStatus::Active);
         assert!(d.account_statuses(&[]).await.unwrap().is_empty());
-        let _ = b.scalar("SELECT 1", &[]).await;
     })
     .await;
 }
