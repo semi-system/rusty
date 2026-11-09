@@ -60,11 +60,16 @@ while read -r lib adapter _; do
         }
         for (i = 1; i <= NR; i++) {
           l = lines[i]
+          # a glob import of the library collects no identifiers, so it is refused outright
+          if (l ~ ("^[[:space:]]*(pub([(][a-z]+[)])?[[:space:]]+)?use[[:space:]]+(" lib "|" us ")::.*[*]")) { print FILENAME ":" i ": " l; continue }
           if (l !~ /^[[:space:]]*pub/) continue
+          # the whole item head (a signature may span lines) up to its `{` or `;`
+          st = l; j = i
+          while (st !~ /[{;]/ && j < NR) { j++; st = st " " lines[j] }
           # a pub use / pub type is a re-export or alias: never allowed in an adapter
           if (l ~ /^[[:space:]]*pub(\([a-z]+\))?[[:space:]]+(use|type)[[:space:]]/) { print FILENAME ":" i ": " l; continue }
-          if (index(l, lib) > 0 || index(l, us) > 0) { print FILENAME ":" i ": " l; continue }
-          for (id in ids) if (l ~ ("(^|[^A-Za-z0-9_])" id "([^A-Za-z0-9_]|$)")) { print FILENAME ":" i ": " l; break }
+          if (index(st, lib) > 0 || index(st, us) > 0) { print FILENAME ":" i ": " l; continue }
+          for (id in ids) if (st ~ ("(^|[^A-Za-z0-9_])" id "([^A-Za-z0-9_]|$)")) { print FILENAME ":" i ": " l; break }
         }
       }' "$f")"
     if [ -n "$bad" ]; then echo "adapter item exposes '$lib' (pub use/type, or a pub signature naming it):" >&2; printf '%s\n' "$bad" >&2; fail=1; fi
