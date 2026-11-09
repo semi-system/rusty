@@ -129,7 +129,8 @@ fn valid_mailbox(s: &str) -> bool {
 
 /// The records for one domain. `Invalid` for a name or key that could not be published.
 pub fn records_for_domain(i: &DnsInputs<'_>) -> Result<Vec<DnsRecord>> {
-    if !valid_hostname(i.domain) || !valid_hostname(i.mail_host) {
+    // Names come in WITHOUT a trailing dot (fq adds it): a dotted input would print `example.com..`.
+    if !valid_hostname(i.domain) || !valid_hostname(i.mail_host) || i.domain.ends_with('.') || i.mail_host.ends_with('.') {
         return Err(Error::Invalid("invalid host name".into()));
     }
     if let Some(k) = &i.dkim {
