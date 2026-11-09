@@ -292,7 +292,7 @@ fn parse_date_header(v: &[u8]) -> Option<i64> {
     };
     const MONTHS: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
     let m = MONTHS.iter().position(|m| mon.starts_with(m))? as i64 + 1;
-    (1..=31).contains(&day).then(|| days_from_civil(year, m, day))
+    ((1..=31).contains(&day) && (0..=9999).contains(&year)).then(|| days_from_civil(year, m, day))
 }
 
 // ---------------------------------------------------------------------------- evaluation

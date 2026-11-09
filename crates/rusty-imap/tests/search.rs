@@ -139,3 +139,13 @@ fn hostile_messages_do_not_panic() {
         let _ = run("TEXT x SUBJECT y BODY z FROM q SENTSINCE 1-Jan-2000", &f, Some(raw));
     }
 }
+
+// backend-neutral: pure parser over bytes, no store involved
+#[test]
+fn an_absurd_date_header_year_is_ignored_not_an_overflow() {
+    // Found by fuzz_imap_search_eval: a ten-digit year overflowed the day arithmetic.
+    let f = facts(Flags::empty());
+    let raw = b"Date: Fri, 06 Nov 99999999999 10:00:00 +0000\r\n\r\nx";
+    assert!(!yes("SENTSINCE 1-Jan-2000", &f, raw));
+    assert!(!yes("SENTBEFORE 1-Jan-2999", &f, raw));
+}
