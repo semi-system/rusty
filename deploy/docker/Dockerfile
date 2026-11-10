@@ -51,10 +51,25 @@ RUN set -eu; \
       *) echo "unsupported TARGETARCH '$TARGETARCH'" >&2; exit 1 ;; \
     esac; \
     rustup target add "$(cat /triple)"; \
-    # zig as C compiler and linker for the target (no sanitizer runtime: -fno-sanitize=undefined).
-    printf '#!/bin/sh\nexec /opt/zig/zig cc -target %s -fno-sanitize=undefined "$@"\n' "$(cat /ztarget)" > /usr/local/bin/zigcc; \
     printf '#!/bin/sh\nexec /opt/zig/zig ar "$@"\n' > /usr/local/bin/zigar; \
-    chmod 0755 /usr/local/bin/zigcc /usr/local/bin/zigar
+    chmod 0755 /usr/local/bin/zigar
+
+# zig is the C compiler and linker for the target (no sanitizer runtime: -fno-sanitize=undefined).
+# Compiler wrapper: cc-rs' own `--target=...` is dropped (zig's -target is authoritative).
+COPY --chmod=0755 <<'EOF' /usr/local/bin/zigcc
+#!/bin/sh
+n=$#; i=0
+while [ "$i" -lt "$n" ]; do a=$1; shift; i=$((i+1)); case "$a" in --target=*) ;; *) set -- "$@" "$a" ;; esac; done
+exec /opt/zig/zig cc -target "$(cat /ztarget)" -fno-sanitize=undefined "$@"
+EOF
+# Linker wrapper: zig supplies the C runtime start files for the musl target, so the copies rustc
+# adds from its own self-contained directory are dropped (they would define _start twice).
+COPY --chmod=0755 <<'EOF' /usr/local/bin/zigld
+#!/bin/sh
+n=$#; i=0
+while [ "$i" -lt "$n" ]; do a=$1; shift; i=$((i+1)); case "$a" in */self-contained/*.o|--target=*) ;; *) set -- "$@" "$a" ;; esac; done
+exec /opt/zig/zig cc -target "$(cat /ztarget)" -fno-sanitize=undefined "$@"
+EOF
 
 WORKDIR /src
 COPY . .
@@ -69,7 +84,7 @@ ENV CARGO_TERM_COLOR=never \
 RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
     set -eu; \
     triple="$(cat /triple)"; tu="$(echo "$triple" | tr 'a-z-' 'A-Z_')"; tl="$(echo "$triple" | tr '-' '_')"; \
-    export "CARGO_TARGET_${tu}_LINKER=/usr/local/bin/zigcc" "CC_${tl}=/usr/local/bin/zigcc" "AR_${tl}=/usr/local/bin/zigar" \
+    export "CARGO_TARGET_${tu}_LINKER=/usr/local/bin/zigld" "CC_${tl}=/usr/local/bin/zigcc" "AR_${tl}=/usr/local/bin/zigar" \
            "CFLAGS_${tl}=-O2" "RUSTFLAGS=-C target-feature=+crt-static --remap-path-prefix=/src=/build --remap-path-prefix=/usr/local/cargo=/cargo"; \
     if [ "$DEV_CERT" = 1 ]; then feat=""; else feat="--no-default-features"; fi; \
     cargo build --release --locked --target "$triple" -p rusty $feat --target-dir /out; \
