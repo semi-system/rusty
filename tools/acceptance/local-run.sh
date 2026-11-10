@@ -44,7 +44,6 @@ cleanup() {
   if [ "${KEEP:-0}" = 1 ]; then echo "kept: $WORK" >&2; else rm -rf "$WORK"; fi
 }
 trap cleanup EXIT
-FAILED=0
 fail() { echo "FAIL: $*" >&2; echo "---- daemon log tail" >&2; tail -n 20 "$LOG" >&2; exit 1; }
 expect() { # expect <label> <haystack> <needle>
   case "$2" in *"$3"*) echo "ok: $1";; *) echo "--- transcript"; printf '%s\n' "$2"; fail "$1: expected '$3'";; esac

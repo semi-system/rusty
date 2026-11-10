@@ -1,3 +1,4 @@
+# shellcheck shell=bash disable=SC2034
 # Shared naming for the throw-away test Postgres. Source it; do not execute.
 # Every run has an id (RUSTY_PG_RUN_ID, default "dev" for manual use). The container, compose
 # project and URL file are all derived from it, so concurrent runs never touch each other.

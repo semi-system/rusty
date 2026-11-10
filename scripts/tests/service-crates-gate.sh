@@ -2,7 +2,7 @@
 # Script test: scripts/check-service-crates.sh passes for facade-only code and fails for each way of
 # reaching around the traits (concrete store types, escape hatches, SqliteStore constructors, free GC functions).
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 GATE="$PWD/scripts/check-service-crates.sh"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 mk() { rm -rf "$tmp/t"; mkdir -p "$tmp/t/crates/rusty-svc/src" "$tmp/t/crates/rusty/src" "$tmp/t/crates/rusty-svc/tests"

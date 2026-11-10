@@ -2,7 +2,7 @@
 # Script test (needs Docker): two pg-up runs with different run ids yield two containers and
 # two URL files, and pg-down of one leaves the other alive.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 A="isoa$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
 B="isob$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
 fail() { echo "pg-isolation: $*" >&2; RUSTY_PG_RUN_ID=$A bash scripts/pg-down.sh >/dev/null 2>&1; RUSTY_PG_RUN_ID=$B bash scripts/pg-down.sh >/dev/null 2>&1; exit 1; }

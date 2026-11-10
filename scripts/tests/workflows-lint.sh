@@ -5,7 +5,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 mk() {
-  rm -rf "$tmp/t"; mkdir -p "$tmp/t/.github/workflows" "$tmp/t/scripts"
+  rm -rf "$tmp/t"; mkdir -p "$tmp/t/.github/workflows" "$tmp/t/scripts" "$tmp/t/.git"
   printf 'name: t\non: [push]\npermissions: {}\njobs:\n  a:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo hi\n' > "$tmp/t/.github/workflows/a.yml"
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho "$1"\n' > "$tmp/t/scripts/a.sh"
 }

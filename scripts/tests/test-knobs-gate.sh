@@ -2,7 +2,7 @@
 # Script test: scripts/check-test-knobs.sh static passes on a clean tree and fails for each way
 # of enabling the test-knobs feature outside rusty-store's own tests.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 GATE="$PWD/scripts/check-test-knobs.sh"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 mk() { rm -rf "$tmp/t"; mkdir -p "$tmp/t/crates/app/src" "$tmp/t/crates/rusty-store/src" "$tmp/t/deploy" "$tmp/t/fuzz" "$tmp/t/tools/x"

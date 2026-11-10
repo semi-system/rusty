@@ -81,6 +81,12 @@ stage "service crates use only facades" bash scripts/check-service-crates.sh
 # The `test-knobs` fault-injection feature of rusty-store is enabled only by its own tests.
 stage "test-knobs gate self-test" bash scripts/tests/test-knobs-gate.sh
 stage "no test knobs outside tests" bash scripts/check-test-knobs.sh static
+# Supply chain: Dockerfile bases and workflow actions are pinned by digest/SHA; workflows and shell
+# scripts are linted in pinned containers (skips with an explicit note when Docker is absent).
+stage "docker-pins gate self-test" bash scripts/tests/docker-pins-gate.sh
+stage "docker and workflow pins" bash scripts/check-docker-pins.sh
+stage "workflows-lint self-test" bash scripts/tests/workflows-lint.sh
+stage "actionlint and shellcheck" bash scripts/ci-workflows-lint.sh
 stage "clippy"       cargo clippy --workspace --all-targets -- -D warnings
 stage "test (glibc)" cargo test --workspace
 # The dev quickstart works from a clean checkout: build, start on spare ports, banner, SIGTERM, exit 0.

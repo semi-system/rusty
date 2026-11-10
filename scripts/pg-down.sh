@@ -3,7 +3,7 @@
 # Only touches the run named by RUSTY_PG_RUN_ID (default "dev"); other runs are left alone, and
 # a container is only removed when it carries this run's ownership label.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 # shellcheck source=/dev/null
 . scripts/pg-lib.sh
 RUSTY_PG_PASSWORD=unused "${COMPOSE[@]}" down -v >/dev/null 2>&1 || true
