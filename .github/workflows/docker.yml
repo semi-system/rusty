@@ -78,6 +78,7 @@ jobs:
         run: |
           set -euo pipefail
           docker build -f deploy/docker/Dockerfile --build-arg DEV_CERT=1 --build-arg "SOURCE_DATE_EPOCH=$SDE" -t rusty:smoke-dev .
+          bash scripts/check-image.sh rusty:smoke-dev dev
           IMAGE=rusty:smoke-dev bash tools/acceptance/local-run.sh
 
   # Exactly one of the two publish jobs runs. DOCKER_PUBLISH_MODE is a repository VARIABLE (not a
