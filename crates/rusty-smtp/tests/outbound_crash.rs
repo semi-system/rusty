@@ -134,7 +134,7 @@ async fn a_worker_process_killed_mid_delivery_loses_nothing_and_the_job_is_deliv
     };
     let mut done = false;
     for _ in 0..300 {
-        let n: i64 = sqlx_count(&store).await;
+        let n: i64 = done_jobs(&store).await;
         if n == 1 {
             done = true;
             break;
@@ -149,6 +149,6 @@ async fn a_worker_process_killed_mid_delivery_loses_nothing_and_the_job_is_deliv
     assert!(inbox.list_folder(rusty_core::FolderId(1), 0, 10).await.unwrap().is_empty(), "no bounce for a delivered message");
 }
 
-async fn sqlx_count(store: &Store) -> i64 {
+async fn done_jobs(store: &Store) -> i64 {
     rusty_store::fixtures::Fixtures::of(store).scalar("SELECT count(*) FROM jobs WHERE state = 'done'", &[]).await
 }
