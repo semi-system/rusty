@@ -209,6 +209,7 @@ fn the_senders_own_return_path_is_replaced_by_ours() {
     assert!(!text(&out).contains("forged"));
 }
 
+// backend-neutral: pure header function over bytes
 #[test]
 fn the_outbound_copy_drops_our_internal_headers_and_bcc_but_keeps_the_received_line() {
     use rusty_smtp::message::outbound_copy;
