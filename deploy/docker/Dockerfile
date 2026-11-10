@@ -79,6 +79,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
     chmod 0700 /rootfs/var/lib/rusty; chmod 0755 /rootfs/etc/rusty; \
     find /rootfs -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 
+# ---- release artefact stage ------------------------------------------------------------------
+# `docker buildx build --target binary --output type=local,dest=out .` exports just the binary
+# (release.yml). Not the default target: the last stage below is.
+FROM scratch AS binary
+COPY --from=build /rootfs/usr/local/bin/rusty /rusty
+
 # ---- final stage -----------------------------------------------------------------------------
 # distroless static (Debian 13): CA certificates, tzdata, /tmp, no shell. Default user 65532.
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329
