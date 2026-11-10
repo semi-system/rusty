@@ -239,3 +239,115 @@ fn port_offset_and_bind_rewrite_every_dev_listener() {
     assert_eq!(all.smtp.listen_587.addr(), Some("0.0.0.0:5587".parse().unwrap()));
     assert_eq!(all.imap.listen_143.addr(), Some("0.0.0.0:1143".parse().unwrap()));
 }
+
+/// One authenticated submission over implicit TLS (465) up to the answer to `RCPT TO:<rcpt>`.
+fn submit_rcpt(addr: SocketAddr, rcpt: &str) -> String {
+    use base64::Engine;
+    use std::io::{BufRead, BufReader, Write};
+    use std::sync::Arc;
+    #[derive(Debug)]
+    struct NoVerify;
+    impl rustls::client::danger::ServerCertVerifier for NoVerify {
+        fn verify_server_cert(&self, _: &rustls::pki_types::CertificateDer<'_>, _: &[rustls::pki_types::CertificateDer<'_>], _: &rustls::pki_types::ServerName<'_>, _: &[u8], _: rustls::pki_types::UnixTime) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        }
+        fn verify_tls12_signature(&self, _: &[u8], _: &rustls::pki_types::CertificateDer<'_>, _: &rustls::DigitallySignedStruct) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+        fn verify_tls13_signature(&self, _: &[u8], _: &rustls::pki_types::CertificateDer<'_>, _: &rustls::DigitallySignedStruct) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            rustls::crypto::ring::default_provider().signature_verification_algorithms.supported_schemes()
+        }
+    }
+    let cfg = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(NoVerify))
+        .with_no_client_auth();
+    let conn = rustls::ClientConnection::new(Arc::new(cfg), "localhost".try_into().unwrap()).unwrap();
+    let sock = std::net::TcpStream::connect(addr).unwrap();
+    sock.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut io = BufReader::new(rustls::StreamOwned::new(conn, sock));
+    let reply = |io: &mut BufReader<rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>>| {
+        let mut last;
+        loop {
+            let mut l = String::new();
+            io.read_line(&mut l).unwrap();
+            let done = l.as_bytes().get(3) != Some(&b'-');
+            last = l;
+            if done {
+                return last;
+            }
+        }
+    };
+    let cmd = |io: &mut BufReader<rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>>, line: &str| {
+        io.get_mut().write_all(format!("{line}\r\n").as_bytes()).unwrap();
+        io.get_mut().flush().unwrap();
+        reply(io)
+    };
+    assert!(reply_first(&mut io).starts_with("220"));
+    assert!(cmd(&mut io, "EHLO t.example").starts_with("250"));
+    let blob = base64::engine::general_purpose::STANDARD.encode("\0alice@example.net\0pw-alice-1234");
+    assert!(cmd(&mut io, &format!("AUTH PLAIN {blob}")).starts_with("235"));
+    assert!(cmd(&mut io, "MAIL FROM:<alice@example.net>").starts_with("250"));
+    cmd(&mut io, &format!("RCPT TO:<{rcpt}>"))
+}
+
+fn reply_first(io: &mut std::io::BufReader<rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>>) -> String {
+    use std::io::BufRead;
+    let mut l = String::new();
+    io.read_line(&mut l).unwrap();
+    l
+}
+
+async fn seed_alice(cfg: &StartupConfig) {
+    let store = Store::open(StoreConfig::sqlite(format!("sqlite://{}", cfg.database_path.display()))).await.unwrap();
+    let dir = rusty_directory::Directory::with_repo(store.repos().directory.clone());
+    let dom = dir.create_domain("example.net").await.unwrap();
+    dir.create_account("alice", dom, Some("pw-alice-1234"), None).await.unwrap();
+    store.close().await.unwrap();
+}
+
+// backend-neutral: the dev profile composition root over SQLite; the refusal is a session rule
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_recipients_are_accepted_only_while_the_outbound_worker_is_enabled() {
+    for enabled in [true, false] {
+        let tmp = private_tmp();
+        let data = tmp.path().join("data");
+        let mut cfg = dev_config(&data);
+        cfg.outbound.enabled = enabled;
+        let token = CancellationToken::new();
+        let run = start(cfg.clone(), Profile::Dev, token.clone()).await.unwrap();
+        seed_alice(&cfg).await;
+        let addr = addr_of(&run, ListenerKind::Submissions465);
+        let reply = tokio::task::spawn_blocking(move || submit_rcpt(addr, "someone@remote.test")).await.unwrap();
+        if enabled {
+            assert!(reply.starts_with("250"), "worker enabled: queued ({reply})");
+        } else {
+            assert!(reply.starts_with("451 4.3.2"), "worker disabled: never accepted into a queue nobody drains ({reply})");
+        }
+        token.cancel();
+        run.wait().await.unwrap();
+    }
+}
+
+// backend-neutral: the dev profile composition root and its data directory
+#[tokio::test]
+async fn the_dev_certificate_is_kept_in_the_data_dir_across_restarts() {
+    let tmp = private_tmp();
+    let data = tmp.path().join("data");
+    let cfg = dev_config(&data);
+    let mut leaves = Vec::new();
+    for _ in 0..2 {
+        let token = CancellationToken::new();
+        let run = start(cfg.clone(), Profile::Dev, token.clone()).await.unwrap();
+        leaves.push(run.tls().leaf_der().unwrap());
+        token.cancel();
+        run.wait().await.unwrap();
+    }
+    assert_eq!(leaves[0], leaves[1], "the same certificate after a restart");
+    assert_eq!(mode_of(&data.join("dev-tls-key.pem")), 0o600);
+}

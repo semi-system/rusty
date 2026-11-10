@@ -113,9 +113,13 @@ pub(crate) fn sqlite_url(path: &Path) -> Result<String> {
 pub async fn start(cfg: StartupConfig, profile: Profile, shutdown: CancellationToken) -> Result<Running> {
     cfg.check_startup(profile)?;
     let hostname = cfg.hostname.clone().unwrap_or_else(|| "localhost".to_owned());
+    // Dev profile: the data directory first, because the dev certificate is kept in it.
+    if profile == Profile::Dev {
+        prepare_dev_dirs(&cfg).await?;
+    }
     // TLS first: a bad certificate or key file must not get as far as opening the database.
     let tls = if cfg.tls.has_cert() || cfg.tls.dev_self_signed {
-        TlsProvider::from_config(&cfg.tls, &hostname, Arc::new(FileSecretSource::new()))?
+        TlsProvider::from_config_in(&cfg.tls, &hostname, Arc::new(FileSecretSource::new()), cfg.database_path.parent())?
     } else if cfg.authenticated_listeners() == 0 {
         // check_startup already refused every configuration with an authenticated listener.
         tracing::warn!("no TLS configured: port 25 will not offer STARTTLS");
@@ -123,9 +127,6 @@ pub async fn start(cfg: StartupConfig, profile: Profile, shutdown: CancellationT
     } else {
         return Err(Error::Invalid("TLS is not configured".into()));
     };
-    if profile == Profile::Dev {
-        prepare_dev_dirs(&cfg).await?;
-    }
     let store = Store::open(StoreConfig::sqlite(sqlite_url(&cfg.database_path)?)).await?;
     match build(&cfg, &hostname, &store, tls.clone(), shutdown.clone()).await {
         Ok((addrs, task)) => Ok(Running { addrs, shutdown, tls, store, task }),
