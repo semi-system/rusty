@@ -33,6 +33,7 @@ async fn new_msg(b: &Backend, folder: FolderId, subject: &str) -> NewMessage {
         size: bytes.len() as i64,
         flags: Flags::default(),
         env: rusty_mime::parse_envelope(&bytes).unwrap(),
+        internal_date: None,
     }
 }
 
@@ -124,12 +125,18 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
     shape!("set_flags", true, r.set_flags(id, rusty_core::MessageId(ids[0]), Flags::SEEN));
     shape!("set_flags_many (10)", true, r.set_flags_many(id, &ids[0..10], Flags::SEEN));
     shape!("set_flags_many (100)", true, r.set_flags_many(id, &ids[0..100], Flags::SEEN));
+    shape!("update_flags_many (10)", true, r.update_flags_many(id, &ids[0..10], Flags::FLAGGED, Flags::empty()));
+    shape!("update_flags_many (100)", true, r.update_flags_many(id, &ids[0..100], Flags::FLAGGED, Flags::SEEN));
+    shape!("expunge_deleted_many", true, r.expunge_deleted_many(id, &ids[390..400]));
     let m = rusty_core::MessageId(ids[1]);
     shape!("add_keyword", true, r.add_keyword(id, m, "kw"));
     shape!("remove_keyword", true, r.remove_keyword(id, m, "kw"));
     shape!("move_message", true, r.move_message(id, m, f));
     shape!("move_many (10)", true, r.move_many(id, &ids[100..110], f));
     shape!("move_many (100)", true, r.move_many(id, &ids[110..210], f));
+    shape!("copy_many (10)", true, r.copy_many(id, &ids[320..330], f));
+    shape!("copy_many (100)", true, r.copy_many(id, &ids[300..400], f));
+    shape!("set_subscribed", true, r.set_subscribed(id, f, false));
     shape!("expunge", true, r.expunge(id, rusty_core::MessageId(ids[2])));
     shape!("expunge_many (10)", true, r.expunge_many(id, &ids[210..220], Some(100)));
     shape!("purge_deleted (11 rows)", true, r.purge_deleted(id, i64::MAX, 1000));
@@ -143,6 +150,9 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
     shape!("get_message", false, r.get_message(id, rusty_core::MessageId(ids[3])));
     shape!("get_raw_ref", false, r.get_raw_ref(id, rusty_core::MessageId(ids[3])));
     shape!("keywords", false, r.keywords(id, rusty_core::MessageId(ids[3])));
+    shape!("keywords_many", false, r.keywords_many(id, &ids[0..10]));
+    shape!("latest_change_seq", false, r.latest_change_seq(id));
+    shape!("folder_counts", false, r.folder_counts(id, INBOX));
 
     // ---- JobRepo and GcRepo (PG5): not mailbox scoped, each write names its own first statement.
     let j = &b.jrepo;

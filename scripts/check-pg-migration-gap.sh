@@ -6,5 +6,5 @@
 set -euo pipefail
 ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$ROOT"
-bad="$(ls crates/rusty-store/migrations_pg 2>/dev/null | grep -E '^000[2-9]_' || true)"
+bad="$(ls crates/rusty-store/migrations_pg 2>/dev/null | grep -E '^0*[2-9]([^0-9]|$)' || true)"
 if [ -n "$bad" ]; then echo "migrations_pg must not contain 0002..0009:" >&2; echo "$bad" >&2; exit 1; fi

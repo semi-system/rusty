@@ -34,11 +34,11 @@ pub use directory::{
     MAX_LIST_PAGE, MAX_STATUS_IDS,
 };
 pub use mailbox::{
-    sql_text, Committed, DeliverEntry, Delivery, FolderInfo, JobFence, MailboxRepo, MessageDetail,
+    sql_text, Committed, DeliverEntry, Delivery, FlagUpdate, FolderCounts, FolderInfo, JobFence, MailboxRepo, MessageDetail,
     NewMessage, RawRef,
 };
 pub(crate) use mailbox::{
-    changes_since_generic, check_batch_len, check_distinct_ids, check_purge_limit, depth_verdict, moved_refs, not_found_folder,
+    changes_since_generic, flag_update, counts_from_row, folder_from_row, FolderRow, check_batch_len, check_distinct_ids, check_purge_limit, depth_verdict, moved_refs, not_found_folder,
     not_found_mailbox, not_found_message, plan_deliveries, plan_move, split_hits,
     summary_from_row, thread_candidates, Slot, SummaryRow,
 };

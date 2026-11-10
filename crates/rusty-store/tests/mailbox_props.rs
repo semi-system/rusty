@@ -435,7 +435,16 @@ async fn exec(mb: &Mailbox, ops: &[DOp]) -> Vec<String> {
         out.push(format!("{step}: {o:?} -> {line}"));
     }
     // Final snapshot.
-    out.push(format!("folders: {:?}", mb.list_folders().await));
+    // uid_validity is derived from each backend's own clock, so only its presence is compared;
+    // everything else of FolderInfo (uid_next, subscription) is deterministic.
+    let folders: Vec<_> = mb
+        .list_folders()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|f| (f.id, f.parent, f.name, f.role, f.uid_validity > 0, f.uid_next, f.subscribed))
+        .collect();
+    out.push(format!("folders: {folders:?}"));
     let changes = mb.changes_since(0, MAX_PAGE).await.unwrap().changes;
     out.push(format!("changes: {changes:?}"));
     for f in mb.list_folders().await.unwrap() {

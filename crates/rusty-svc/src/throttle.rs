@@ -107,7 +107,12 @@ impl AuthThrottle {
     }
 
     fn key(ip: IpAddr, identity: &str) -> (IpAddr, String) {
-        let mut id = identity.to_ascii_lowercase();
+        // The directory's own normalisation (trim, case, trailing dot, NFC, IDNA), so every spelling
+        // of one address is one key; anything that is not an address is kept as trimmed lower case.
+        let mut id = match rusty_directory::parse_address(identity) {
+            Ok((local, domain)) => format!("{local}@{domain}"),
+            Err(_) => identity.trim().to_ascii_lowercase(),
+        };
         if id.len() > MAX_IDENTITY_BYTES {
             let mut cut = MAX_IDENTITY_BYTES;
             while !id.is_char_boundary(cut) {
@@ -115,6 +120,15 @@ impl AuthThrottle {
             }
             id.truncate(cut);
         }
+        // An IPv6 peer is its /64: the low 64 bits rotate freely.
+        let ip = match ip {
+            IpAddr::V6(v6) => {
+                let mut o = v6.octets();
+                o.iter_mut().skip(8).for_each(|b| *b = 0);
+                IpAddr::V6(o.into())
+            }
+            v4 => v4,
+        };
         (ip, id)
     }
 }
@@ -143,9 +157,16 @@ impl RateLimiter for AuthThrottle {
             let window = self.window_ms;
             m.retain(|_, e| now.saturating_sub(e.window_start_ms) < window);
             if m.len() > MAX_TRACKED - MAX_TRACKED / 10 {
-                let victims: Vec<_> = m.keys().take(MAX_TRACKED / 10).cloned().collect();
-                for v in victims {
-                    m.remove(&v);
+                // Evict the OLDEST entries that are not blocked: a flood of fresh keys must not erase
+                // the state of a peer that is currently locked out.
+                let max = self.max_failures;
+                let mut evictable: Vec<_> = m.iter().filter(|(_, e)| e.failures < max).map(|(k, e)| (e.window_start_ms, k.clone())).collect();
+                evictable.sort_unstable_by_key(|(t, _)| *t);
+                for (_, k) in evictable.into_iter().take(MAX_TRACKED / 10) {
+                    m.remove(&k);
+                }
+                if m.len() >= MAX_TRACKED {
+                    return; // everything left is an active block: do not track one more
                 }
             }
         }
@@ -164,4 +185,21 @@ impl RateLimiter for AuthThrottle {
     fn try_begin_attempt(&self) -> Option<AttemptPermit> {
         self.slots.clone().try_acquire_owned().ok().map(AttemptPermit)
     }
+}
+
+/// The throttle keys of one authentication attempt (review U4 C1): the RESOLVED account (so the
+/// alias, the primary address and every spelling share one counter) plus the canonical text as a
+/// fallback counter that also bounds guessing at unknown identities. Check all of them, record
+/// failures and successes on all of them.
+pub async fn throttle_keys(directory: &rusty_directory::Directory, identity: &str) -> Vec<String> {
+    let canonical = match rusty_directory::parse_address(identity) {
+        Ok((local, domain)) => format!("{local}@{domain}"),
+        Err(_) => return vec![identity.trim().to_ascii_lowercase()],
+    };
+    let mut keys = Vec::with_capacity(2);
+    if let Ok(rusty_directory::Resolved::Account(id)) = directory.resolve(&canonical).await {
+        keys.push(format!("account:{}", id.0));
+    }
+    keys.push(canonical);
+    keys
 }

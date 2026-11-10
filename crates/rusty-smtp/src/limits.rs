@@ -16,30 +16,8 @@ pub trait SubmissionLimiter: Send + Sync {
     fn record(&self, account: AccountId);
 }
 
-/// A global budget for the memory messages in flight may hold, in 1 KiB units. Reserving never
-/// waits: when the budget is used up the caller refuses new data with a temporary status, so a flood
-/// of big transfers degrades into `421`/`451` instead of exhausting the host.
-#[derive(Debug, Clone)]
-pub struct MemoryBudget {
-    sem: Arc<tokio::sync::Semaphore>,
-}
-
-impl MemoryBudget {
-    pub fn new_mib(mib: u32) -> MemoryBudget {
-        MemoryBudget { sem: Arc::new(tokio::sync::Semaphore::new((mib as usize).saturating_mul(1024))) }
-    }
-
-    /// Reserve room for `bytes` (rounded up to KiB). `None`: the budget cannot cover it now.
-    pub fn try_reserve(&self, bytes: u64) -> Option<tokio::sync::OwnedSemaphorePermit> {
-        let kib = u32::try_from(bytes.div_ceil(1024)).ok()?;
-        self.sem.clone().try_acquire_many_owned(kib.max(1)).ok()
-    }
-
-    /// KiB still free (diagnostics and tests).
-    pub fn available_kib(&self) -> usize {
-        self.sem.available_permits()
-    }
-}
+/// The shared in-flight memory budget now lives in rusty-svc (IMAP APPEND draws on it too).
+pub use rusty_svc::MemoryBudget;
 
 /// Most accounts remembered at once; expired windows are dropped first.
 const MAX_TRACKED_ACCOUNTS: usize = 100_000;

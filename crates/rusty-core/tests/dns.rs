@@ -121,3 +121,17 @@ proptest! {
         let _ = parse_zone_line(&s);
     }
 }
+
+// backend-neutral: pure function, no database
+#[test]
+fn trailing_dot_inputs_are_refused_instead_of_producing_double_dot_names() {
+    // The generator takes names WITHOUT a trailing dot and adds it itself; a dotted input used to give
+    // `example.com..` (review U4 minor).
+    let ips: Vec<IpAddr> = vec!["192.0.2.10".parse().unwrap()];
+    for (domain, host) in [("example.com.", "mail.example.com"), ("example.com", "mail.example.com."), ("example.com.", "mail.example.com.")] {
+        let i = DnsInputs { domain, mail_host: host, outbound_ips: &ips, dkim: None, dmarc_rua: None };
+        assert!(records_for_domain(&i).is_err(), "{domain:?} {host:?}");
+    }
+    let ok = records_for_domain(&inputs(&ips, None, None)).unwrap();
+    assert!(ok.iter().all(|r| !r.name.contains("..") && !r.value.contains("..")));
+}

@@ -1,0 +1,7 @@
+a1 ID ("name" "Thunderbird" "version" "115.0")
+a2 NAMESPACE
+a3 UID EXPUNGE 5:7,9
+a4 LIST (SUBSCRIBED) "" ("INBOX" "Sent/%") RETURN (SUBSCRIBED CHILDREN SPECIAL-USE)
+a5 ID ({4+}
+name {2+}
+TB)

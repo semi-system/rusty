@@ -2,3 +2,5 @@
 # One library per line: <crate name as in Cargo.toml> <adapter directory>. Lines starting with # are comments.
 # The gate is scripts/check-wrapped-libs.sh.
 smtp-proto crates/rusty-smtp/src/adapter
+imap-codec crates/rusty-imap/src/adapter
+imap-types crates/rusty-imap/src/adapter

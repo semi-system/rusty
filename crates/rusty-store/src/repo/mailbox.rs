@@ -50,7 +50,7 @@ use rusty_core::{
 use rusty_mime::Envelope;
 
 use crate::mailbox::{
-    BatchOutcome, ChangePage, DeliverOutcome, MessageRef, MessageSummary, MoveBatch,
+    BatchOutcome, ChangePage, CopyBatch, DeliverOutcome, MessageRef, MessageSummary, MoveBatch,
     MAX_FOLDER_DEPTH, MAX_THREAD_CANDIDATES,
 };
 
@@ -64,6 +64,9 @@ pub struct NewMessage {
     pub size: i64,
     pub flags: Flags,
     pub env: Envelope,
+    /// The client's internal date (IMAP APPEND); `None` = database clock. The facade bounds it with
+    /// `MAX_SUPPLIED_TIME`. Honoured by `append` (a delivery's own `created_at` wins).
+    pub internal_date: Option<i64>,
 }
 
 /// Idempotency key of a delivery. `created_at: None` = database clock; `Some(t)` is stored
@@ -115,6 +118,38 @@ pub struct FolderInfo {
     pub name: String,
     /// `inbox`, `sent`, `drafts`, `trash`, `spam`, `archive` or `custom`.
     pub role: String,
+    /// IMAP UIDVALIDITY of the folder: never 0, and a folder id that is deleted and created again
+    /// gets a different value.
+    pub uid_validity: u32,
+    /// The uid the next message of the folder receives (IMAP UIDNEXT).
+    pub uid_next: u32,
+    /// IMAP SUBSCRIBE state.
+    pub subscribed: bool,
+}
+
+/// Result of `update_flags_many`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlagUpdate {
+    /// `(id, new flags)` in input order.
+    pub updated: Vec<(MessageId, Flags)>,
+    pub missing: Vec<MessageId>,
+}
+
+pub(crate) fn flag_update(applied: &[i64], now: &std::collections::HashMap<i64, i64>, missing: Vec<MessageId>) -> Result<FlagUpdate> {
+    let mut updated = Vec::with_capacity(applied.len());
+    for id in applied {
+        let bits = now.get(id).copied().ok_or_else(|| Error::storage("missing flags row"))?;
+        updated.push((MessageId(*id), crate::mailbox::to_flags(bits)?));
+    }
+    Ok(FlagUpdate { updated, missing })
+}
+
+/// Live message counts of one folder (IMAP STATUS).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FolderCounts {
+    pub messages: u32,
+    /// Messages without the `\Seen` flag.
+    pub unseen: u32,
 }
 
 /// One message with its location (soft-deleted messages included, see `deleted`).
@@ -141,6 +176,8 @@ pub trait MailboxRepo: Send + Sync {
     async fn folder_exists(&self, mb: MailboxId, folder: FolderId) -> Result<()>;
     /// All folders in id order.
     async fn list_folders(&self, mb: MailboxId) -> Result<Vec<FolderInfo>>;
+    /// Live and unseen message counts of one folder (`NotFound` if it is not in this mailbox).
+    async fn folder_counts(&self, mb: MailboxId, folder: FolderId) -> Result<FolderCounts>;
 
     // ---- folders
     async fn create_folder(
@@ -163,6 +200,14 @@ pub trait MailboxRepo: Send + Sync {
     /// Delete an empty custom folder; soft-deleted rows inside it are purged (their blobs are
     /// locked in ascending hash order first).
     async fn delete_folder(&self, mb: MailboxId, id: FolderId) -> Result<Committed<()>>;
+    /// Set the IMAP subscription state (idempotent; `NotFound` for a folder of another mailbox).
+    /// A folder update is logged in the change log.
+    async fn set_subscribed(
+        &self,
+        mb: MailboxId,
+        id: FolderId,
+        subscribed: bool,
+    ) -> Result<Committed<()>>;
 
     // ---- messages
     /// Store one message (plus a `deliveries` row if `delivery` is given), one transaction. With
@@ -195,6 +240,20 @@ pub trait MailboxRepo: Send + Sync {
     ) -> Result<Committed<Vec<DeliverOutcome>>>;
     async fn set_flags(&self, mb: MailboxId, id: MessageId, flags: Flags) -> Result<Committed<()>>;
     /// `ids`: 1..=MAX_BATCH, no duplicates (the facade dedups).
+    /// Delta flag update (IMAP STORE +FLAGS / -FLAGS): `flags = (flags | add) & ~remove` on the LIVE
+    /// value, atomically, so a stale snapshot never overwrites another session's change. Returns the
+    /// new flags of each updated message in input order; ids that are not live messages are `missing`.
+    /// `ids`: 1..=MAX_BATCH, no duplicates.
+    async fn update_flags_many(
+        &self,
+        mb: MailboxId,
+        ids: &[i64],
+        add: Flags,
+        remove: Flags,
+    ) -> Result<Committed<FlagUpdate>>;
+    /// Soft-delete the messages among `ids` whose live flags still contain Deleted (IMAP EXPUNGE must
+    /// not destroy a message another session un-deleted); the others are `missing`.
+    async fn expunge_deleted_many(&self, mb: MailboxId, ids: &[i64]) -> Result<Committed<BatchOutcome>>;
     async fn set_flags_many(
         &self,
         mb: MailboxId,
@@ -222,6 +281,18 @@ pub trait MailboxRepo: Send + Sync {
         ids: &[i64],
         to: FolderId,
     ) -> Result<Committed<MoveBatch>>;
+    /// Copy live messages into `to`: each copy is a NEW message (fresh id, consecutive uids in
+    /// input order, one `create` change each) that shares the blob and carries flags, keywords,
+    /// internal date, envelope fields and thread of its source. `ids`: 1..=MAX_BATCH, no
+    /// duplicates (the facade dedups). Ids that are not live messages of this mailbox are
+    /// `missing`; an unknown destination is `NotFound`. Blob rows are locked in ascending hash
+    /// order before the refcount trigger fires.
+    async fn copy_many(
+        &self,
+        mb: MailboxId,
+        ids: &[i64],
+        to: FolderId,
+    ) -> Result<Committed<CopyBatch>>;
     async fn expunge(&self, mb: MailboxId, id: MessageId) -> Result<Committed<()>>;
     /// `at: Some(t)` is stored verbatim as `deleted_at` (tests), `None` is the database clock.
     async fn expunge_many(
@@ -246,6 +317,11 @@ pub trait MailboxRepo: Send + Sync {
     async fn get_raw_ref(&self, mb: MailboxId, id: MessageId) -> Result<RawRef>;
     /// Keywords of a live message, sorted.
     async fn keywords(&self, mb: MailboxId, id: MessageId) -> Result<Vec<String>>;
+    /// Keywords of the live messages among `ids` (1..=MAX_BATCH, distinct): `(message id, keyword)`
+    /// rows ordered by message id then keyword; messages without keywords have no row.
+    async fn keywords_many(&self, mb: MailboxId, ids: &[i64]) -> Result<Vec<(i64, String)>>;
+    /// The change seq of the last change logged in this mailbox (`0` if none).
+    async fn latest_change_seq(&self, mb: MailboxId) -> Result<i64>;
     async fn list_folder(
         &self,
         mb: MailboxId,
@@ -265,8 +341,20 @@ pub trait MailboxRepo: Send + Sync {
 pub mod sql_text {
     pub const FOLDER_EXISTS: &str = "SELECT id FROM folders WHERE mailbox_id = $1 AND id = $2";
     pub const MAILBOX_FOR_ACCOUNT: &str = "SELECT id FROM mailboxes WHERE account_id = $1";
-    pub const LIST_FOLDERS: &str = "SELECT id, parent_id, name, role FROM folders \
-        WHERE mailbox_id = $1 ORDER BY id";
+    pub const LIST_FOLDERS: &str = "SELECT id, parent_id, name, role, uid_validity, next_uid, subscribed \
+        FROM folders WHERE mailbox_id = $1 ORDER BY id";
+    pub const FOLDER_COUNTS: &str = "SELECT COUNT(*), COUNT(CASE WHEN (flags & 1) = 0 THEN 1 END) \
+        FROM messages WHERE mailbox_id = $1 AND folder_id = $2 AND deleted_at IS NULL";
+    pub const SET_SUBSCRIBED: &str = "UPDATE folders SET subscribed = $3 WHERE mailbox_id = $1 AND id = $2";
+    /// Copy one live message row to message id `$3`, folder `$4`, uid `$5`.
+    pub const COPY_ROW: &str = "INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, size, \
+        internal_date, subject, from_addr, to_addrs, message_id_hdr, thread_id, flags) \
+        SELECT mailbox_id, CAST($3 AS BIGINT), CAST($4 AS BIGINT), CAST($5 AS BIGINT), blob_hash, size, \
+        internal_date, subject, from_addr, to_addrs, message_id_hdr, thread_id, flags \
+        FROM messages WHERE mailbox_id = $1 AND id = $2 AND deleted_at IS NULL";
+    pub const COPY_KEYWORDS: &str = "INSERT INTO keywords (mailbox_id, message_id, keyword) \
+        SELECT mailbox_id, CAST($3 AS BIGINT), keyword FROM keywords \
+        WHERE mailbox_id = $1 AND message_id = $2";
     pub const FOLDER_ROW: &str = "SELECT parent_id, role FROM folders WHERE mailbox_id = $1 AND id = $2";
     pub const ANCESTORS: &str = "WITH RECURSIVE up(id, parent_id, depth) AS ( \
           SELECT id, parent_id, 1 FROM folders WHERE mailbox_id = $1 AND id = $2 \
@@ -283,7 +371,8 @@ pub mod sql_text {
           WHERE s.depth <= $3 \
         ) SELECT MAX(depth) FROM sub";
     pub const INSERT_FOLDER: &str = "INSERT INTO folders \
-        (mailbox_id, id, parent_id, name, role, uid_validity) VALUES ($1, $2, $3, $4, 'custom', $5)";
+        (mailbox_id, id, parent_id, name, role, uid_validity, subscribed) \
+        VALUES ($1, $2, $3, $4, 'custom', $5, 0)";
     pub const RENAME_FOLDER: &str = "UPDATE folders SET name = $3 WHERE mailbox_id = $1 AND id = $2";
     pub const REPARENT_FOLDER: &str =
         "UPDATE folders SET parent_id = $3 WHERE mailbox_id = $1 AND id = $2";
@@ -337,6 +426,7 @@ pub mod sql_text {
         "INSERT INTO keywords (mailbox_id, message_id, keyword) VALUES ($1, $2, $3)";
     pub const KEYWORD_DELETE: &str =
         "DELETE FROM keywords WHERE mailbox_id = $1 AND message_id = $2 AND keyword = $3";
+    pub const LATEST_SEQ: &str = "SELECT next_change_seq - 1 FROM mailboxes WHERE id = $1";
     pub const KEYWORDS_OF: &str = "SELECT keyword FROM keywords \
         WHERE mailbox_id = $1 AND message_id = $2 ORDER BY keyword";
     pub const LIST_FOLDER: &str = "SELECT id, uid, size, internal_date, subject, from_addr, \
@@ -541,6 +631,28 @@ pub(crate) fn moved_refs(
         ));
     }
     Ok(moved)
+}
+
+/// Row of `list_folders` (`sql_text::LIST_FOLDERS`) to the DTO.
+pub(crate) type FolderRow = (i64, Option<i64>, String, String, i64, i64, i64);
+
+pub(crate) fn folder_from_row(row: FolderRow) -> Result<FolderInfo> {
+    let (id, parent, name, role, uid_validity, next_uid, subscribed) = row;
+    Ok(FolderInfo {
+        id: FolderId(id),
+        parent: parent.map(FolderId),
+        name,
+        role,
+        uid_validity: u32::try_from(uid_validity).map_err(|_| Error::storage("corrupt uid_validity"))?,
+        // next_uid may sit one past u32::MAX once the uid space is exhausted; clamp for display.
+        uid_next: u32::try_from(next_uid).unwrap_or(u32::MAX),
+        subscribed: subscribed != 0,
+    })
+}
+
+pub(crate) fn counts_from_row(row: (i64, i64)) -> Result<FolderCounts> {
+    let conv = |v| u32::try_from(v).map_err(|_| Error::storage("corrupt message count"));
+    Ok(FolderCounts { messages: conv(row.0)?, unseen: conv(row.1)? })
 }
 
 /// Row of `list_folder` (`sql_text::LIST_FOLDER`) to the DTO.

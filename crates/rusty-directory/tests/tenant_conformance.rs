@@ -150,3 +150,30 @@ async fn account_statuses_answers_many_ids_in_one_call() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn the_database_refuses_moving_a_list_member_or_alias_across_tenants_by_update() {
+    // Review U4 I7 (mutant M7c): only the INSERT triggers were tested; the UPDATE triggers could be
+    // dropped without any test noticing.
+    for_each_backend(|b| async move {
+        let d = b.dir.clone();
+        let (a, alice, dom_b, eve) = two_tenants(&d).await;
+        let list = d.create_list("team", a).await.unwrap();
+        d.add_list_member(list, Some(alice), None).await.unwrap();
+        d.add_alias("info", a, alice).await.unwrap();
+        let r = b
+            .try_run("UPDATE list_members SET account_id = ?1 WHERE list_id = ?2", &[Bind::I(eve.0), Bind::I(list.0)])
+            .await;
+        let f = r.expect_err("a list member cannot be re-pointed to another tenant's account");
+        assert!(matches!(f.mapped, Error::Invalid(_)), "{f:?}");
+        let r = b.try_run("UPDATE aliases SET account_id = ?1 WHERE local_part = 'info'", &[Bind::I(eve.0)]).await;
+        let f = r.expect_err("an alias cannot be re-pointed to another tenant's account");
+        assert!(matches!(f.mapped, Error::Invalid(_)), "{f:?}");
+        let r = b.try_run("UPDATE aliases SET domain_id = ?1 WHERE local_part = 'info'", &[Bind::I(dom_b.0)]).await;
+        let f = r.expect_err("an alias cannot be moved to another domain");
+        assert!(matches!(f.mapped, Error::Invalid(_)), "{f:?}");
+        // The legitimate state is untouched.
+        assert_eq!(d.resolve("info@a.test").await.unwrap(), Resolved::Account(alice));
+    })
+    .await;
+}
