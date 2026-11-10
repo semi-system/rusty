@@ -2,16 +2,19 @@
 //! invariants, driven by proptest. Run by scripts/ci.sh when cargo-fuzz/nightly are missing.
 
 use proptest::prelude::*;
-use rusty_core::config::{valid_hostname, Profile, StartupConfig};
+use rusty_core::config::{
+    is_loopback_host, parse_pg_url, valid_hostname, Profile, SslMode, StartupConfig, StoreSection, MAX_POOL_SIZE,
+};
 
 const SEED_FULL: &str = include_str!("../../../fuzz/seeds/fuzz_config/full");
+const SEED_PG: &str = include_str!("../../../fuzz/seeds/fuzz_config/postgres");
 const SEED_EXAMPLE: &str = include_str!("../../../rusty.example.toml");
 
 fn check(text: &str) {
     let Ok(c) = StartupConfig::from_toml_str(text) else {
         return;
     };
-    assert!(c.database_path.is_absolute() && c.blob_dir.is_absolute());
+    assert!(c.blob_dir.is_absolute());
     assert!((1024..=1024 * 1024 * 1024).contains(&c.max_message_bytes));
     assert!(c.smtp_max_message_bytes() >= 1024 && c.smtp_max_message_bytes() <= c.max_message_bytes);
     assert!(c.gc_grace_seconds >= 3600);
@@ -24,6 +27,26 @@ fn check(text: &str) {
     }
     if let Some(h) = &c.hostname {
         assert!(valid_hostname(h));
+    }
+    if c.store.is_postgres() {
+        assert!(c.database_path.as_os_str().is_empty());
+        let ep = parse_pg_url(c.store.url.as_deref().unwrap_or_default()).expect("validated url");
+        assert!(!ep.user.is_empty() && !ep.host.is_empty() && ep.port != 0);
+        assert!((1..=MAX_POOL_SIZE).contains(&c.store.pool_size));
+        assert!(c.store.lock_timeout_ms >= 1 && c.store.statement_timeout_ms >= 1);
+        // Never starts with an unverified remote database unless the explicit override is set.
+        if c.check_startup(Profile::Production).is_ok()
+            && !is_loopback_host(&ep.host)
+            && c.store.sslmode != SslMode::VerifyFull
+        {
+            assert!(c.store.insecure_allow_unverified_tls);
+        }
+        if c.check_startup(Profile::Production).is_ok() {
+            assert!(c.store.pool_size >= StoreSection::pool_floor(c.service_count()));
+        }
+    } else {
+        assert!(c.database_path.is_absolute());
+        assert!(c.store.url.is_none() && c.store.password_file.is_none());
     }
     let prod = c.check_startup(Profile::Production);
     let dev = c.check_startup(Profile::Dev);
@@ -39,6 +62,8 @@ fn check(text: &str) {
 fn seeds_pass() {
     check(SEED_FULL);
     check(SEED_EXAMPLE);
+    check(SEED_PG);
+    assert!(StartupConfig::from_toml_str(SEED_PG).is_ok());
 }
 
 proptest! {
@@ -61,6 +86,40 @@ proptest! {
         }
         if let Ok(s) = std::str::from_utf8(&b) {
             check(s);
+        }
+    }
+}
+
+mod pg_url {
+    use proptest::prelude::*;
+    use rusty_core::config::parse_pg_url;
+
+    fn check(text: &str) {
+        if let Ok(e) = parse_pg_url(text) {
+            assert!(!e.user.is_empty() && !e.host.is_empty() && !e.database.is_empty() && e.port != 0);
+            assert!(!text.contains(['?', '#', '%']));
+            assert!(!e.user.contains([':', '@', '/']));
+        }
+    }
+
+    #[test]
+    fn seeds_pass() {
+        check(include_str!("../../../fuzz/seeds/fuzz_pg_url/plain"));
+        check(include_str!("../../../fuzz/seeds/fuzz_pg_url/rejected"));
+        check(include_str!("../../../fuzz/seeds/fuzz_pg_url/ipv6"));
+        assert!(parse_pg_url(include_str!("../../../fuzz/seeds/fuzz_pg_url/plain")).is_ok());
+        assert!(parse_pg_url(include_str!("../../../fuzz/seeds/fuzz_pg_url/rejected")).is_err());
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(3000))]
+        #[test]
+        fn arbitrary_text_never_panics(s in "\\PC{0,120}") {
+            check(&s);
+        }
+        #[test]
+        fn url_shaped_text_never_panics(s in "postgres(ql)?://[a-z0-9:@/_%?#.-]{0,60}") {
+            check(&s);
         }
     }
 }
