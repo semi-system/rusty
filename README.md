@@ -53,6 +53,17 @@ cargo test -p rusty-directory --test acceptance -- --nocapture
 
 ## Development workflow
 
+**Preferred: the remote build server.** Once `.rusty-remote.env` exists (see
+[docs/buildserver.md](docs/buildserver.md)), build and test on the dedicated Ubuntu VM instead of
+WSL (WSL crashes under load):
+
+    bash scripts/remote-cargo.sh test --workspace
+    bash scripts/ci-run.sh --detach      # full gate, survives a dead session
+    bash scripts/remote-ci.sh --status   # also --tail, --wait
+
+`scripts/ci-run.sh` picks the remote server when `.rusty-remote.env` exists, else WSL. The WSL
+workflow below remains the fallback.
+
 Edit files in the Windows checkout (`<repo>`) and build in WSL, with the target
 directory on the WSL ext4 disk (`~/rusty-target`; much faster than building on `D:`):
 

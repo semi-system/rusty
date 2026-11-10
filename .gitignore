@@ -2,3 +2,7 @@
 target/
 deploy/compose/generated/
 rusty-dev-data/
+
+# remote build server config and pinned host key (per machine)
+.rusty-remote.env
+.rusty-remote.known_hosts
