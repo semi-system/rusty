@@ -64,7 +64,7 @@ WSL (WSL crashes under load):
 `scripts/ci-run.sh` picks the remote server when `.rusty-remote.env` exists, else WSL. The WSL
 workflow below remains the fallback.
 
-Edit files in the Windows checkout (`<repo>`) and build in WSL, with the target
+Edit files in a Windows checkout and build in WSL (or on a dedicated Linux build server, see `docs/buildserver.md`), with the target
 directory on the WSL ext4 disk (`~/rusty-target`; much faster than building on `D:`):
 
     bash scripts/wsl-cargo.sh test --workspace
