@@ -17,7 +17,9 @@ const DEFAULT_DEV_DIR: &str = "rusty-dev-data";
 
 pub const USAGE: &str = "usage:\n  \
 rusty d [--dev [--data-dir DIR] [--port-offset N] [--bind IP]] [--config FILE] [--log-format text|json]\n  \
-rusty ctl <command> ...        (rustyctl)\n\
+rusty ctl <command> ...        (rustyctl)\n  \
+rusty healthcheck [options of `rusty d`]   probe the listeners (exit 0 healthy, 1 not)\n  \
+rusty --version\n\
 \n\
   rusty d --dev      development profile: data under ./rusty-dev-data, high ports on 127.0.0.1\n\
                      (2525, 5587, 4465, 1143, 9993), self-signed certificate. Never for the internet.\n\
@@ -38,6 +40,9 @@ pub struct DaemonArgs {
 pub enum Invocation {
     Daemon(DaemonArgs),
     Ctl(Vec<OsString>),
+    /// `rusty healthcheck`: probe the listeners a daemon started with the same options would serve.
+    Healthcheck(DaemonArgs),
+    Version,
     Help,
 }
 
@@ -102,6 +107,11 @@ pub fn parse_args(argv: &[OsString]) -> Result<Invocation, String> {
         _ => match rest.first().and_then(|s| s.to_str()) {
             Some("d") => parse_daemon(rest.get(1..).unwrap_or_default()),
             Some("ctl") => Ok(Invocation::Ctl(rest.get(1..).unwrap_or_default().to_vec())),
+            Some("healthcheck") => match parse_daemon(rest.get(1..).unwrap_or_default())? {
+                Invocation::Daemon(a) => Ok(Invocation::Healthcheck(a)),
+                other => Ok(other),
+            },
+            Some("--version") | Some("-V") | Some("version") => Ok(Invocation::Version),
             Some("--help") | Some("-h") | Some("help") => Ok(Invocation::Help),
             Some(_) => Err("unknown command".into()),
             None => Err("a command is required".into()),
@@ -126,6 +136,20 @@ pub fn main(argv: Vec<OsString>) -> ExitCode {
             println!("{USAGE}");
             ExitCode::SUCCESS
         }
+        Ok(Invocation::Version) => {
+            println!("rusty {}", env!("CARGO_PKG_VERSION"));
+            ExitCode::SUCCESS
+        }
+        Ok(Invocation::Healthcheck(args)) => match load_config(&args).and_then(|(cfg, _)| crate::health::check(&cfg)) {
+            Ok(n) => {
+                println!("healthy: {n} listeners answered");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{prog}: unhealthy: {e}");
+                ExitCode::from(1)
+            }
+        },
         Ok(Invocation::Ctl(args)) => crate::ctl::run(args),
         Ok(Invocation::Daemon(args)) => {
             let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {

@@ -319,3 +319,55 @@ fn sighup_reloads_the_certificate_and_a_bad_reload_keeps_the_old_one() {
     assert!(err.contains("reload"), "reload outcome must be logged: {err}");
     assert!(!err.contains("garbage"), "key material must not be logged");
 }
+
+// backend-neutral: argument parsing only
+#[test]
+fn healthcheck_and_version_arguments() {
+    match parse_args(&os(&["rusty", "healthcheck", "--config", "/etc/rusty/rusty.toml"])) {
+        Ok(Invocation::Healthcheck(a)) => assert_eq!(a.config.as_deref(), Some(Path::new("/etc/rusty/rusty.toml"))),
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(parse_args(&os(&["rusty", "healthcheck", "--dev", "--port-offset", "5"])), Ok(Invocation::Healthcheck(_))));
+    // the same option rules as the daemon
+    assert!(parse_args(&os(&["rusty", "healthcheck", "--bogus"])).is_err());
+    assert!(parse_args(&os(&["rusty", "healthcheck", "--data-dir", "/x"])).is_err());
+    assert!(matches!(parse_args(&os(&["rusty", "--version"])), Ok(Invocation::Version)));
+    assert!(matches!(parse_args(&os(&["rusty", "-V"])), Ok(Invocation::Version)));
+}
+
+// backend-neutral: process behaviour of the probe over the default SQLite dev store
+#[test]
+fn healthcheck_is_ok_against_a_running_daemon_and_fails_when_nothing_listens() {
+    let tmp = private_tmp();
+    let data = tmp.path().join("data");
+    let off = offset() + 2;
+    let off_s = off.to_string();
+    let hc = |off: &str| {
+        Command::new(BIN).args(["healthcheck", "--dev", "--data-dir", data.to_str().unwrap(), "--port-offset", off]).output().unwrap()
+    };
+    // nothing listens yet: unhealthy, exit 1, and the output names a listener
+    let out = hc(&off_s);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unhealthy"), "{out:?}");
+
+    let mut child = spawn(Path::new(BIN), &["d", "--dev", "--data-dir", data.to_str().unwrap(), "--port-offset", &off_s]);
+    wait_for_port(2525 + off, &mut child);
+    wait_for_port(9993 + off, &mut child);
+    let out = hc(&off_s);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("healthy: 5 listeners"), "{out:?}");
+    // a different port range is not this daemon
+    assert_eq!(hc(&(off + 100).to_string()).status.code(), Some(1));
+
+    signal(&child, "TERM");
+    assert_eq!(wait_exit(&mut child, Duration::from_secs(20)).code(), Some(0));
+    assert_eq!(hc(&off_s).status.code(), Some(1));
+}
+
+// backend-neutral: the version line
+#[test]
+fn version_prints_the_package_version() {
+    let out = Command::new(BIN).arg("--version").output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), concat!("rusty ", env!("CARGO_PKG_VERSION")));
+}
