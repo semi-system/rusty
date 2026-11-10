@@ -1,0 +1,4 @@
+#![no_main]
+use libfuzzer_sys::fuzz_target;
+
+fuzz_target!(|data: &[u8]| rusty_imap::fuzz_checks::utf7_names(data));

@@ -26,7 +26,7 @@ set -euo pipefail
 ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$ROOT"
 
-files="$(ls crates/rusty-store/tests/*.rs crates/rusty-directory/tests/*.rs crates/rusty-svc/tests/*.rs crates/rusty-ctl/tests/*.rs crates/rusty-smtp/tests/*.rs crates/rusty/tests/*.rs 2>/dev/null | sort || true)"
+files="$(ls crates/rusty-store/tests/*.rs crates/rusty-directory/tests/*.rs crates/rusty-svc/tests/*.rs crates/rusty-imap/tests/*.rs crates/rusty-ctl/tests/*.rs crates/rusty-smtp/tests/*.rs crates/rusty/tests/*.rs 2>/dev/null | sort || true)"
 [ -n "$files" ] || { echo "check-parametrised: no test files found under $ROOT" >&2; exit 2; }
 
 total=0; param=0; marked=0; bad=""

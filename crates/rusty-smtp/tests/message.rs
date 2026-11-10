@@ -3,7 +3,7 @@
 
 use std::net::IpAddr;
 
-use rusty_smtp::message::{delivery_id_for, prepare_message, rfc5322_date, Trace};
+use rusty_smtp::message::{delivery_id_for, from_addresses, prepare_message, rfc5322_date, FromError, Trace};
 
 fn trace<'a>() -> Trace<'a> {
     Trace {
@@ -221,4 +221,35 @@ fn the_outbound_copy_drops_our_internal_headers_and_bcc_but_keeps_the_received_l
     assert!(out.starts_with("Received: from [x] by mx.example.net with ESMTPSA id 1;\r\n\tMon, 09 Nov 2026"), "{out}");
     assert!(out.contains("From: alice@example.net\r\n") && out.contains("To: bob@remote.test\r\n"), "{out}");
     assert!(out.ends_with("\r\nBcc: in the body stays\r\nbody\r\n"), "the body is untouched: {out}");
+}
+
+// backend-neutral: pure header parsing, no store involved
+#[test]
+fn a_from_header_with_more_addresses_than_the_mime_layer_keeps_is_refused() {
+    // Review U4 I1: rusty_mime stops at 100 addresses, so a trailing address was never looked at.
+    let mut from: Vec<String> = (0..100).map(|_| "bob@example.net".to_owned()).collect();
+    from.push("alice@example.net".to_owned());
+    let raw = format!("From: {}\r\nSubject: x\r\n\r\nbody", from.join(", "));
+    assert_eq!(from_addresses(raw.as_bytes()), Err(FromError::Unusable));
+    // Fewer, but still more at-signs than parsed addresses (an address the parser skipped).
+    let raw = b"From: bob@example.net, \"x y\"@bad space@example.net\r\n\r\nb";
+    assert_eq!(from_addresses(raw), Err(FromError::Unusable));
+    // Ordinary headers are unaffected.
+    let raw = b"From: Bob <bob@example.net>, carol@example.net\r\n\r\nb";
+    assert_eq!(from_addresses(raw).unwrap(), vec!["bob@example.net".to_owned(), "carol@example.net".to_owned()]);
+    let raw = b"From: \"Bob B\" <bob@example.net>\r\n folded\r\n\r\nb";
+    assert!(from_addresses(raw).is_ok());
+}
+
+// backend-neutral: pure functions over bytes, no database
+#[test]
+fn a_submitting_clients_bcc_header_is_dropped_but_inbound_mail_keeps_it() {
+    let raw = b"From: a@example.org\r\nBcc: secret@elsewhere.example,\r\n other@x.example\r\nTo: b@example.org\r\nSubject: s\r\n\r\nbody";
+    let mut t = trace();
+    t.authenticated = true;
+    let sent = text(&prepare_message(raw, &t));
+    assert!(!sent.to_lowercase().contains("bcc") && !sent.contains("secret@") && !sent.contains("other@x"), "{sent}");
+    assert!(sent.contains("To: b@example.org") && sent.contains("Subject: s"));
+    let inbound = text(&prepare_message(raw, &trace()));
+    assert!(inbound.contains("Bcc: secret@elsewhere.example"), "mail from other servers is stored as it came");
 }

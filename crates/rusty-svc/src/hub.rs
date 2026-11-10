@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use rusty_core::{AccountId, MailboxId, Result};
 use rusty_store::repo::MailboxRepo;
-use rusty_store::{BlobStore, Mailbox, MailboxLimits};
+use rusty_store::{BlobStore, ChangeNotifier, Mailbox, MailboxLimits};
 use tokio::sync::watch;
 
 /// Pruning of channels without subscribers starts when this many exist.
@@ -33,7 +33,7 @@ impl MailboxHub {
     /// The mailbox of `account` (`NotFound` if it has none), with the configured limits.
     pub async fn open_for(&self, account: AccountId) -> Result<Mailbox> {
         let mb = Mailbox::open_with(self.repo.clone(), self.blobs.clone(), account).await?;
-        Ok(mb.with_limits(self.limits))
+        Ok(mb.with_limits(self.limits).with_notifier(Arc::new(self.clone())))
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<MailboxId, watch::Sender<u64>>> {
@@ -73,5 +73,13 @@ impl MailboxHub {
     /// Number of live channels (diagnostics and the leak test).
     pub fn channels(&self) -> usize {
         self.lock().len()
+    }
+}
+
+/// Every mailbox the hub opens announces its committed writes here, so a delivery or an IMAP
+/// mutation wakes the IDLE sessions of that mailbox without any call site of its own.
+impl ChangeNotifier for MailboxHub {
+    fn changed(&self, mailbox: MailboxId, seq: i64) {
+        self.notify(mailbox, u64::try_from(seq).unwrap_or(0));
     }
 }

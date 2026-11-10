@@ -672,6 +672,66 @@ async fn postmaster_is_always_deliverable_where_there_is_somebody_to_give_it_to(
     .await;
 }
 
+/// Wait (bounded) until the shared budget is whole again: a session task releases its permits when it ends.
+async fn assert_budget_whole(budget: &rusty_smtp::limits::MemoryBudget, full: usize, what: &str) {
+    for _ in 0..100 {
+        if budget.available_kib() == full {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("{what}: the budget leaked: {} of {full} KiB free", budget.available_kib());
+}
+
+#[tokio::test]
+async fn the_memory_budget_is_returned_on_every_exit_path() {
+    // Review U4 I7: a leaked reservation survived every test (mutants M4/M4b).
+    for_each_backend(|b| async move {
+        b.seed().await;
+        let budget = rusty_smtp::limits::MemoryBudget::new_mib(8);
+        let full = budget.available_kib();
+        let mut o = Opts::default();
+        o.options.budget = budget.clone();
+        let s = start(&b, o).await;
+
+        // 1. a delivery that succeeds
+        let mut c = Client::hello(s.addr).await;
+        let r = c.mail("s@remote.example", &["alice@example.net"], MSG.strip_suffix(b"\r\n").unwrap()).await;
+        assert!(r.starts_with("250"), "{r}");
+        let _ = c.cmd("QUIT").await;
+        assert_budget_whole(&budget, full, "after a delivery").await;
+
+        // 2. a message refused after it was received (too big for the server's size limit)
+        let mut c = Client::hello(s.addr).await;
+        let huge = format!("Subject: big\r\n\r\n{}\r\n", "x".repeat(1_300_000));
+        let r = c.mail("s@remote.example", &["alice@example.net"], huge.as_bytes()).await;
+        assert!(r.starts_with("552"), "{r}");
+        drop(c);
+        assert_budget_whole(&budget, full, "after a refused message").await;
+
+        // 3. the client vanishes in the middle of DATA
+        let mut c = Client::hello(s.addr).await;
+        c.cmd("MAIL FROM:<s@remote.example>").await;
+        c.cmd("RCPT TO:<alice@example.net>").await;
+        c.cmd("DATA").await;
+        c.send(&vec![b'y'; 300_000]).await;
+        drop(c);
+        assert_budget_whole(&budget, full, "after an early close").await;
+
+        // 4. the server is told to stop in the middle of DATA
+        let mut c = Client::hello(s.addr).await;
+        c.cmd("MAIL FROM:<s@remote.example>").await;
+        c.cmd("RCPT TO:<alice@example.net>").await;
+        c.cmd("DATA").await;
+        c.send(&vec![b'z'; 300_000]).await;
+        s.token.cancel();
+        assert_budget_whole(&budget, full, "after a shutdown").await;
+        drop(c);
+        s.stop().await;
+    })
+    .await;
+}
+
 /// U5: the `none` stub of U3 is replaced by the real SPF/DKIM/DMARC results (log-only: the message is
 /// delivered whatever they say).
 #[tokio::test]

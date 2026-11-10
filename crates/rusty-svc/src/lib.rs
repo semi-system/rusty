@@ -10,6 +10,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing))]
 
 mod accept;
+mod budget;
 mod context;
 mod events;
 mod gc;
@@ -25,6 +26,7 @@ mod service;
 mod throttle;
 mod tls;
 
+pub use budget::MemoryBudget;
 pub use accept::{Accept, AsyncStream, BoxedStream, DirectTcp, DirectTls, PeerInfo, DEFAULT_HANDSHAKE_TIMEOUT};
 pub use context::Context;
 pub use events::{RejectReason, ServiceEvent, ServiceEvents, TracingEvents};
@@ -38,7 +40,7 @@ pub use quota::{QuotaPolicy, SizeCap};
 pub use redact::{redact_command, Redacted};
 pub use secret::{FileSecretSource, SecretSource, MAX_SECRET_BYTES};
 pub use service::{run_services, ListenerService, Service};
-pub use throttle::{AttemptPermit, AuthThrottle, Clock, RateLimiter, SystemClock, Verdict};
+pub use throttle::{throttle_keys, AttemptPermit, AuthThrottle, Clock, RateLimiter, SystemClock, Verdict};
 pub use tls::{
     certified_key, parse_cert_chain, parse_private_key, CertResolver, FileCertResolver, StaticCertResolver,
     TlsProvider, MAX_CERT_CHAIN,

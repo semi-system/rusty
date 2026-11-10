@@ -189,17 +189,20 @@ async fn shutdown_drains_idle_sessions_closes_listeners_and_checkpoints_the_data
     again.close().await.unwrap();
 }
 
-// backend-neutral: the idle timeout of the skeleton banner service does not involve the store
+// backend-neutral: the IMAP service in the daemon answers a command; no account is involved
 #[tokio::test]
-async fn the_skeleton_service_refuses_commands_politely() {
+async fn the_imap_listener_serves_real_imap() {
     let tmp = private_tmp();
     let token = CancellationToken::new();
     let run = start(dev_config(&tmp.path().join("d")), Profile::Dev, token.clone()).await.unwrap();
     let mut c = TcpStream::connect(addr_of(&run, ListenerKind::Imap143)).await.unwrap();
     read_line(&mut c).await;
-    c.write_all(b"EHLO x\r\n").await.unwrap();
+    c.write_all(b"x1 NOOP\r\n").await.unwrap();
     let l = read_line(&mut c).await;
-    assert!(l.starts_with("* BYE"), "{l}");
+    assert!(l.starts_with("x1 OK"), "{l}");
+    c.write_all(b"x2 LOGIN a b\r\n").await.unwrap();
+    let l = read_line(&mut c).await;
+    assert!(l.contains("PRIVACYREQUIRED"), "plaintext login is refused: {l}");
     token.cancel();
     run.wait().await.unwrap();
 }

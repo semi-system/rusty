@@ -99,12 +99,7 @@ fn is_stripped(name: &[u8]) -> bool {
 
 /// Drop the logical headers (a header line plus its folded continuation lines) that this server
 /// reserves for itself. `headers` is the header block without the blank line, CRLF-terminated.
-fn strip_reserved(headers: &[u8]) -> Vec<u8> {
-    strip_headers(headers, is_stripped)
-}
-
-/// [`strip_reserved`] with the set of dropped names chosen by `drop_name` (lower-case name tested).
-fn strip_headers(headers: &[u8], drop_name: fn(&[u8]) -> bool) -> Vec<u8> {
+fn strip_reserved(headers: &[u8], strip_bcc: bool) -> Vec<u8> {
     let mut out = Vec::with_capacity(headers.len());
     let mut dropping = false;
     let mut seen_field = false;
@@ -121,7 +116,9 @@ fn strip_headers(headers: &[u8], drop_name: fn(&[u8]) -> bool) -> Vec<u8> {
             // prefix is dropped even when the colon was damaged), without trailing blanks that lenient
             // parsers ignore.
             let name = line.split(|&b| b == b':').next().unwrap_or_default();
-            dropping = drop_name(name.trim_ascii_end());
+            let name = name.trim_ascii_end();
+            // A submitting client's Bcc header must not reach the recipients (or the stored copy).
+            dropping = is_stripped(name) || (strip_bcc && name.eq_ignore_ascii_case(b"bcc"));
         }
         if !dropping {
             out.extend_from_slice(line);
@@ -148,7 +145,7 @@ pub fn prepare_message_with(original: &[u8], trace: &Trace<'_>, extra: &[(String
     } else {
         (&norm, &[])
     };
-    let mut kept = strip_reserved(headers);
+    let mut kept = strip_reserved(headers, trace.authenticated);
     if !kept.is_empty() && !kept.ends_with(b"\r\n") {
         kept.extend_from_slice(b"\r\n");
     }
@@ -243,7 +240,45 @@ pub fn from_addresses(original: &[u8]) -> Result<Vec<String>, FromError> {
     if addrs.is_empty() {
         return Err(FromError::Unusable);
     }
+    // Fail closed: the MIME layer keeps at most 100 addresses and skips ones it cannot read, so
+    // every `@` of the raw header must be accounted for by a parsed address, else an address the
+    // ownership check never saw could still be displayed as the sender.
+    if raw_from_value(original).matches('@').count() > addrs.len() || addrs.len() > MAX_FROM_ADDRESSES {
+        return Err(FromError::Unusable);
+    }
     Ok(addrs)
+}
+
+/// A `From` header lists a handful of addresses at most; more is refused.
+const MAX_FROM_ADDRESSES: usize = 20;
+
+/// The unfolded value of the first `From` header.
+fn raw_from_value(original: &[u8]) -> String {
+    let text = String::from_utf8_lossy(original);
+    let mut value = String::new();
+    let mut inside = false;
+    for line in text.split(char::from(10)) {
+        let line = line.strip_suffix(char::from(13)).unwrap_or(line);
+        if line.is_empty() {
+            break;
+        }
+        if line.starts_with(' ') || line.starts_with(char::from(9)) {
+            if inside {
+                value.push_str(line);
+            }
+            continue;
+        }
+        if inside {
+            break;
+        }
+        if let Some((name, rest)) = line.split_once(':') {
+            if name.trim().eq_ignore_ascii_case("from") {
+                inside = true;
+                value.push_str(rest);
+            }
+        }
+    }
+    value
 }
 
 /// A `Message-ID` for a message that has none: derived from the content hash, so a client that
@@ -253,12 +288,6 @@ pub fn generated_message_id(original: &[u8], hostname: &str) -> String {
     let short: String = hash.as_str().chars().take(24).collect();
     let host: String = hostname.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-').collect();
     format!("<{short}@{host}>")
-}
-
-fn is_internal_for_relay(name: &[u8]) -> bool {
-    let lower: Vec<u8> = name.iter().map(u8::to_ascii_lowercase).collect();
-    // `Bcc` is removed because a client that put it in the header meant it as an envelope instruction.
-    lower == b"bcc" || is_stripped(name)
 }
 
 /// The message as it leaves for a remote server: what we stored for the sender (with our `Return-Path`,
@@ -276,7 +305,7 @@ pub fn outbound_copy(stored: &[u8]) -> Vec<u8> {
     } else {
         (&norm, &[])
     };
-    let mut out = strip_headers(headers, is_internal_for_relay);
+    let mut out = strip_reserved(headers, true);
     out.extend_from_slice(rest);
     out
 }

@@ -24,4 +24,24 @@ mk; printf '[dependencies]\nfoo = { package = "libx", version = "1" }\n' > "$tmp
 mk; printf '[dependencies]\nfoo = { package = "libx", version = "1" }\n' > "$tmp/t/Cargo.toml"; expect "package rename in the workspace root" 1
 mk; printf '[dependencies]\nlibx = "1"\n' > "$tmp/t/crates/b/Cargo.toml"; sed -i 's/libx/libx_y/' "$tmp/t/crates/b/Cargo.toml"; expect "a different crate with a similar name" 0
 mk; printf 'lib_x = "1"\n' > "$tmp/t/crates/b/Cargo.toml"; printf 'lib-x crates/a/src/adapter\n' > "$tmp/t/scripts/wrapped-libs.txt"; expect "underscore key of a hyphen-named library" 1
+mk; printf 'use libx::Request;
+pub fn leak(
+    raw: &[u8],
+) -> Request<String> { todo!() }
+' > "$tmp/t/crates/a/src/adapter/mod.rs"; expect "a multi-line pub fn returning a library type" 1
+mk; printf 'use libx::Request;
+pub(crate) fn leak(
+    r: Request<String>,
+) {}
+' > "$tmp/t/crates/a/src/adapter/mod.rs"; expect "a multi-line pub(crate) fn taking a library type" 1
+mk; printf 'use libx::*;
+fn private(r: Req) {}
+' > "$tmp/t/crates/a/src/adapter/mod.rs"; expect "a glob import of the library" 1
+mk; printf 'use libx::{self, *};
+' > "$tmp/t/crates/a/src/adapter/mod.rs"; expect "a braced glob import" 1
+mk; printf 'use libx::Request;
+pub(crate) fn ok(
+    line: &[u8],
+) -> Result<u8, u8> { Ok(0) }
+' > "$tmp/t/crates/a/src/adapter/mod.rs"; expect "a clean multi-line pub(crate) fn" 0
 echo "wrapped-libs gate self-test ok"

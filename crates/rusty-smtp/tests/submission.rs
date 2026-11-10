@@ -350,6 +350,45 @@ async fn passwords_and_auth_blobs_never_reach_the_log() {
     .await;
 }
 
+#[tokio::test]
+async fn the_throttle_follows_the_account_not_the_spelling_or_the_alias() {
+    // Review U4 C1: every spelling and the alias reached one account with a fresh guessing budget.
+    for_each_backend(|b| async move {
+        world(&b).await;
+        let mut o = opts();
+        o.auth_failures_max = 2;
+        let s = start(&b, o).await;
+        for _ in 0..2 {
+            let mut c = Client::secure_hello(s.addr, &s.cert_der).await;
+            let r = c.cmd(&format!("AUTH PLAIN {}", plain("alice@example.net", "wrong-password"))).await;
+            assert!(r.starts_with("535 5.7.8"), "{r}");
+        }
+        for spelling in [
+            "alice@example.net",
+            "ALICE@EXAMPLE.NET",
+            " alice@example.net",
+            "alice@example.net ",
+            "alice@example.net.",
+            "ally@example.net",
+            "ALLY@example.net.",
+        ] {
+            let mut c = Client::secure_hello(s.addr, &s.cert_der).await;
+            let r = c.cmd(&format!("AUTH PLAIN {}", plain(spelling, ALICE_PW))).await;
+            assert!(r.starts_with("454 4.7.0"), "{spelling:?} escaped the throttle: {r}");
+        }
+        // Unknown identities are bounded too, in whatever spelling.
+        for _ in 0..2 {
+            let mut c = Client::secure_hello(s.addr, &s.cert_der).await;
+            assert!(c.cmd(&format!("AUTH PLAIN {}", plain("nobody@example.net", "x"))).await.starts_with("535"));
+        }
+        let mut c = Client::secure_hello(s.addr, &s.cert_der).await;
+        let r = c.cmd(&format!("AUTH PLAIN {}", plain(" NOBODY@example.net.", "x"))).await;
+        assert!(r.starts_with("454 4.7.0"), "{r}");
+        s.stop().await;
+    })
+    .await;
+}
+
 // ---------------------------------------------------------------- U5 review fixes (I2-I5, minors)
 
 use rusty_smtp::outbound_queue::SubmitLimits;

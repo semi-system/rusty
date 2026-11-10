@@ -18,14 +18,15 @@ use sqlx::PgConnection;
 use super::tx::{tx_retry, TxResult};
 use super::{lock_blobs, lock_existing_blobs, PgRepo};
 use crate::mailbox::{
-    to_uid, BatchOutcome, ChangeItem, ChangeOp, ChangePage, DeliverOutcome, MessageRef,
+    to_uid, BatchOutcome, ChangeItem, ChangeOp, ChangePage, CopyBatch, DeliverOutcome, MessageRef,
     MessageSummary, MoveBatch, MAX_FOLDER_DEPTH, MAX_KEYWORDS_PER_MESSAGE,
 };
 use crate::repo::{
     changes_since_generic, check_batch_len, check_distinct_ids, check_purge_limit, depth_verdict, hash_bytes, moved_refs,
     not_found_folder, not_found_mailbox, not_found_message, plan_deliveries, plan_move,
     render_pg as r, split_hits, sql_text as q, summary_from_row, thread_candidates, Committed,
-    DeliverEntry, Delivery, FolderInfo, JobFence, MailboxRepo, MessageDetail, NewMessage, RawRef,
+    DeliverEntry, Delivery, FlagUpdate, flag_update, FolderCounts, FolderInfo, JobFence, MailboxRepo, MessageDetail, NewMessage, RawRef,
+    counts_from_row, folder_from_row, FolderRow,
     Slot, SummaryRow,
 };
 use crate::map_db_error;
@@ -342,20 +343,47 @@ impl MailboxRepo for PgRepo {
     }
 
     async fn list_folders(&self, mb: MailboxId) -> Result<Vec<FolderInfo>> {
-        let rows: Vec<(i64, Option<i64>, String, String)> = sqlx::query_as(&r(q::LIST_FOLDERS))
+        let rows: Vec<FolderRow> = sqlx::query_as(&r(q::LIST_FOLDERS))
             .bind(mb.0)
             .fetch_all(self.store.pool())
             .await
             .map_err(map_db_error)?;
-        Ok(rows
-            .into_iter()
-            .map(|(id, parent, name, role)| FolderInfo {
-                id: FolderId(id),
-                parent: parent.map(FolderId),
-                name,
-                role,
-            })
-            .collect())
+        rows.into_iter().map(folder_from_row).collect()
+    }
+
+    async fn folder_counts(&self, mb: MailboxId, folder: FolderId) -> Result<FolderCounts> {
+        self.folder_exists(mb, folder).await?;
+        let row: (i64, i64) = sqlx::query_as(&r(q::FOLDER_COUNTS))
+            .bind(mb.0)
+            .bind(folder.0)
+            .fetch_one(self.store.pool())
+            .await
+            .map_err(map_db_error)?;
+        counts_from_row(row)
+    }
+
+    async fn set_subscribed(
+        &self,
+        mb: MailboxId,
+        id: FolderId,
+        subscribed: bool,
+    ) -> Result<Committed<()>> {
+        let seq = tx_retry!(self, Some(mb), |c| {
+            {
+                let n = sqlx::query(&r(q::SET_SUBSCRIBED))
+                    .bind(mb.0)
+                    .bind(id.0)
+                    .bind(i64::from(subscribed))
+                    .execute(&mut *c)
+                    .await?
+                    .rows_affected();
+                if n == 0 {
+                    return Err(not_found_folder().into());
+                }
+                log_change(c, mb.0, ChangeItem::Folder(id), ChangeOp::Update).await
+            }
+        })?;
+        Ok(Committed::new((), Some(seq)))
     }
 
     async fn create_folder(
@@ -548,7 +576,7 @@ impl MailboxRepo for PgRepo {
                     Some(r) => (DeliverOutcome::Duplicate(r), None),
                     None => {
                         let dids: Vec<&[u8]> = delivery.iter().map(|d| &d.id.0[..]).collect();
-                        let at = delivery.and_then(|d| d.created_at);
+                        let at = delivery.and_then(|d| d.created_at).or(msg.internal_date);
                         let (mut refs, seq) =
                             insert_messages(c, mb.0, &[msg], &dids, at, knobs).await?;
                         (DeliverOutcome::Created(refs.remove(0)), Some(seq))
@@ -730,6 +758,61 @@ impl MailboxRepo for PgRepo {
         Ok(Committed::new(out, seq))
     }
 
+    async fn update_flags_many(
+        &self,
+        mb: MailboxId,
+        ids: &[i64],
+        add: Flags,
+        remove: Flags,
+    ) -> Result<Committed<FlagUpdate>> {
+        check_batch_len(ids.len())?;
+        check_distinct_ids(ids)?;
+        let (out, seq) = tx_retry!(self, Some(mb), |c| {
+            {
+                let now: HashMap<i64, i64> = sqlx::query_as::<_, (i64, i64)>(
+                    &crate::repo::pg_lit("UPDATE messages SET flags = (flags | $3) & ~$4 WHERE mailbox_id = $1 \
+                     AND deleted_at IS NULL AND id = ANY($2) RETURNING id, flags"),
+                )
+                .bind(mb.0)
+                .bind(ids)
+                .bind(i64::from(add.bits()))
+                .bind(i64::from(remove.bits()))
+                .fetch_all(&mut *c)
+                .await?
+                .into_iter()
+                .collect();
+                let hit: HashSet<i64> = now.keys().copied().collect();
+                let (applied, missing) = split_hits(ids, &hit);
+                let seq = log_message_changes(c, mb.0, &applied, ChangeOp::Update).await?;
+                Ok((flag_update(&applied, &now, missing)?, seq))
+            }
+        })?;
+        Ok(Committed::new(out, seq))
+    }
+
+    async fn expunge_deleted_many(&self, mb: MailboxId, ids: &[i64]) -> Result<Committed<BatchOutcome>> {
+        check_batch_len(ids.len())?;
+        check_distinct_ids(ids)?;
+        let (out, seq) = tx_retry!(self, Some(mb), |c| {
+            {
+                let hit: HashSet<i64> = sqlx::query_scalar::<_, i64>(
+                    &crate::repo::pg_lit("UPDATE messages SET deleted_at = rs_now() \
+                     WHERE mailbox_id = $1 AND deleted_at IS NULL AND (flags & 16) <> 0 AND id = ANY($2) RETURNING id"),
+                )
+                .bind(mb.0)
+                .bind(ids)
+                .fetch_all(&mut *c)
+                .await?
+                .into_iter()
+                .collect();
+                let (applied, missing) = split_hits(ids, &hit);
+                let seq = log_message_changes(c, mb.0, &applied, ChangeOp::Destroy).await?;
+                Ok((BatchOutcome { applied: applied.len() as u32, missing }, seq))
+            }
+        })?;
+        Ok(Committed::new(out, seq))
+    }
+
     async fn add_keyword(
         &self,
         mb: MailboxId,
@@ -899,6 +982,104 @@ impl MailboxRepo for PgRepo {
         Ok(Committed::new(batch, seq))
     }
 
+    async fn copy_many(
+        &self,
+        mb: MailboxId,
+        ids: &[i64],
+        to: FolderId,
+    ) -> Result<Committed<CopyBatch>> {
+        check_batch_len(ids.len())?;
+        check_distinct_ids(ids)?;
+        let knobs = self.knobs;
+        let (batch, seq) = tx_retry!(self, Some(mb), |c| {
+            {
+                folder_row(c, mb.0, to.0).await?;
+                let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as(
+                    &crate::repo::pg_lit("SELECT id, blob_hash FROM messages \
+                     WHERE mailbox_id = $1 AND deleted_at IS NULL AND id = ANY($2)"),
+                )
+                .bind(mb.0)
+                .bind(ids)
+                .fetch_all(&mut *c)
+                .await?;
+                let live: HashMap<i64, Vec<u8>> = rows.into_iter().collect();
+                let hit: HashSet<i64> = live.keys().copied().collect();
+                let (src, missing) = split_hits(ids, &hit);
+                if src.is_empty() {
+                    return Ok((CopyBatch { copied: Vec::new(), missing }, None));
+                }
+                // Blob rows are locked in ascending hash order before the refcount trigger fires.
+                let hashes: Vec<Vec<u8>> = src.iter().filter_map(|id| live.get(id).cloned()).collect();
+                lock_existing_blobs(c, &hashes, knobs).await?;
+                let n = src.len() as i64;
+                let first_uid: i64 = sqlx::query_scalar(&r(q::TAKE_UIDS))
+                    .bind(mb.0)
+                    .bind(to.0)
+                    .bind(n)
+                    .fetch_optional(&mut *c)
+                    .await?
+                    .ok_or_else(not_found_folder)?;
+                to_uid(first_uid + n - 1)?; // the last uid must still fit
+                let (first_id, first_seq): (i64, i64) = sqlx::query_as(&r(q::TAKE_MSG_IDS_AND_SEQS))
+                    .bind(mb.0)
+                    .bind(n)
+                    .fetch_optional(&mut *c)
+                    .await?
+                    .ok_or_else(not_found_mailbox)?;
+                let new_ids: Vec<i64> = (0..n).map(|k| first_id + k).collect();
+                let uids: Vec<i64> = (0..n).map(|k| first_uid + k).collect();
+                let seqs: Vec<i64> = (0..n).map(|k| first_seq + k).collect();
+                sqlx::query(
+                    &crate::repo::pg_lit("INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, size, \
+                     internal_date, subject, from_addr, to_addrs, message_id_hdr, thread_id, flags) \
+                     SELECT m.mailbox_id, t.new_id, $2, t.uid, m.blob_hash, m.size, m.internal_date, \
+                            m.subject, m.from_addr, m.to_addrs, m.message_id_hdr, m.thread_id, m.flags \
+                     FROM unnest($3::bigint[], $4::bigint[], $5::bigint[]) AS t(src, new_id, uid) \
+                     JOIN messages m ON m.mailbox_id = $1 AND m.id = t.src AND m.deleted_at IS NULL \
+                     ORDER BY t.new_id"),
+                )
+                .bind(mb.0)
+                .bind(to.0)
+                .bind(&src)
+                .bind(&new_ids)
+                .bind(&uids)
+                .execute(&mut *c)
+                .await?;
+                sqlx::query(
+                    &crate::repo::pg_lit("INSERT INTO keywords (mailbox_id, message_id, keyword) \
+                     SELECT k.mailbox_id, t.new_id, k.keyword \
+                     FROM unnest($2::bigint[], $3::bigint[]) AS t(src, new_id) \
+                     JOIN keywords k ON k.mailbox_id = $1 AND k.message_id = t.src \
+                     ORDER BY t.new_id, k.keyword"),
+                )
+                .bind(mb.0)
+                .bind(&src)
+                .bind(&new_ids)
+                .execute(&mut *c)
+                .await?;
+                sqlx::query(
+                    &crate::repo::pg_lit("INSERT INTO change_log (mailbox_id, seq, kind, item_id, op) \
+                     SELECT $1, t.seq, 'message', t.item, 'create' \
+                     FROM unnest($2::bigint[], $3::bigint[]) AS t(seq, item) ORDER BY t.seq"),
+                )
+                .bind(mb.0)
+                .bind(&seqs)
+                .bind(&new_ids)
+                .execute(&mut *c)
+                .await?;
+                let mut copied = Vec::with_capacity(src.len());
+                for (k, id) in src.iter().enumerate() {
+                    copied.push((
+                        MessageId(*id),
+                        MessageRef { id: MessageId(first_id + k as i64), uid: to_uid(first_uid + k as i64)? },
+                    ));
+                }
+                Ok((CopyBatch { copied, missing }, Some(first_seq + n - 1)))
+            }
+        })?;
+        Ok(Committed::new(batch, seq))
+    }
+
     async fn expunge(&self, mb: MailboxId, id: MessageId) -> Result<Committed<()>> {
         let seq = tx_retry!(self, Some(mb), |c| {
             {
@@ -1056,6 +1237,31 @@ impl MailboxRepo for PgRepo {
             .fetch_all(self.store.pool())
             .await
             .map_err(map_db_error)
+    }
+
+    async fn keywords_many(&self, mb: MailboxId, ids: &[i64]) -> Result<Vec<(i64, String)>> {
+        check_batch_len(ids.len())?;
+        check_distinct_ids(ids)?;
+        sqlx::query_as::<_, (i64, String)>(
+            &crate::repo::pg_lit("SELECT k.message_id, k.keyword FROM keywords k JOIN messages m \
+             ON m.mailbox_id = k.mailbox_id AND m.id = k.message_id \
+             WHERE k.mailbox_id = $1 AND m.deleted_at IS NULL AND k.message_id = ANY($2) \
+             ORDER BY k.message_id, k.keyword COLLATE \"C\""),
+        )
+        .bind(mb.0)
+        .bind(ids)
+        .fetch_all(self.store.pool())
+        .await
+        .map_err(map_db_error)
+    }
+
+    async fn latest_change_seq(&self, mb: MailboxId) -> Result<i64> {
+        sqlx::query_scalar(&r(q::LATEST_SEQ))
+            .bind(mb.0)
+            .fetch_optional(self.store.pool())
+            .await
+            .map_err(map_db_error)?
+            .ok_or_else(not_found_mailbox)
     }
 
     async fn list_folder(

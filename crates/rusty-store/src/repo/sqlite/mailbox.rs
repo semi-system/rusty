@@ -16,14 +16,15 @@ use sqlx::SqliteConnection;
 
 use super::SqliteRepo;
 use crate::mailbox::{
-    to_uid, BatchOutcome, ChangeItem, ChangeOp, ChangePage, DeliverOutcome, MessageRef,
+    to_uid, BatchOutcome, ChangeItem, ChangeOp, ChangePage, CopyBatch, DeliverOutcome, MessageRef,
     MessageSummary, MoveBatch, MAX_FOLDER_DEPTH, MAX_KEYWORDS_PER_MESSAGE,
 };
 use crate::repo::{
     changes_since_generic, check_batch_len, check_distinct_ids, check_purge_limit, depth_verdict, moved_refs, not_found_folder,
     not_found_mailbox, not_found_message, plan_deliveries, plan_move, render_sqlite as r,
     split_hits, sql_text as q, summary_from_row, thread_candidates, Committed, DeliverEntry,
-    Delivery, FolderInfo, JobFence, MailboxRepo, MessageDetail, NewMessage, RawRef, Slot,
+    Delivery, FlagUpdate, FolderCounts, FolderInfo, JobFence, MailboxRepo, MessageDetail, NewMessage, RawRef, Slot, flag_update,
+    counts_from_row, folder_from_row, FolderRow,
     SummaryRow,
 };
 use crate::map_db_error;
@@ -294,7 +295,7 @@ async fn insert_message(
         cands.iter().find_map(|k| known.get(*k).copied()).unwrap_or(id)
     };
     // internal_date: the database clock, or the caller's `_at(now)` value verbatim (D2).
-    let at = delivery.and_then(|d| d.created_at);
+    let at = delivery.and_then(|d| d.created_at).or(m.internal_date);
     sqlx::query(
         &crate::repo::sqlite_lit("INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, size, internal_date, \
          subject, from_addr, to_addrs, message_id_hdr, thread_id, flags) \
@@ -374,20 +375,46 @@ impl MailboxRepo for SqliteRepo {
     }
 
     async fn list_folders(&self, mb: MailboxId) -> Result<Vec<FolderInfo>> {
-        let rows: Vec<(i64, Option<i64>, String, String)> = sqlx::query_as(&r(q::LIST_FOLDERS))
+        let rows: Vec<FolderRow> = sqlx::query_as(&r(q::LIST_FOLDERS))
             .bind(mb.0)
             .fetch_all(self.store.pool())
             .await
             .map_err(map_db_error)?;
-        Ok(rows
-            .into_iter()
-            .map(|(id, parent, name, role)| FolderInfo {
-                id: FolderId(id),
-                parent: parent.map(FolderId),
-                name,
-                role,
-            })
-            .collect())
+        rows.into_iter().map(folder_from_row).collect()
+    }
+
+    async fn folder_counts(&self, mb: MailboxId, folder: FolderId) -> Result<FolderCounts> {
+        self.folder_exists(mb, folder).await?;
+        let row: (i64, i64) = sqlx::query_as(&r(q::FOLDER_COUNTS))
+            .bind(mb.0)
+            .bind(folder.0)
+            .fetch_one(self.store.pool())
+            .await
+            .map_err(map_db_error)?;
+        counts_from_row(row)
+    }
+
+    async fn set_subscribed(
+        &self,
+        mb: MailboxId,
+        id: FolderId,
+        subscribed: bool,
+    ) -> Result<Committed<()>> {
+        let mut tx = self.begin_locked(mb).await?;
+        let n = sqlx::query(&r(q::SET_SUBSCRIBED))
+            .bind(mb.0)
+            .bind(id.0)
+            .bind(i64::from(subscribed))
+            .execute(&mut *tx)
+            .await
+            .map_err(map_db_error)?
+            .rows_affected();
+        if n == 0 {
+            return Err(not_found_folder());
+        }
+        let seq = log_change(&mut tx, mb.0, ChangeItem::Folder(id), ChangeOp::Update).await?;
+        tx.commit().await.map_err(map_db_error)?;
+        Ok(Committed::new((), Some(seq)))
     }
 
     async fn create_folder(
@@ -849,6 +876,64 @@ impl MailboxRepo for SqliteRepo {
         ))
     }
 
+    async fn update_flags_many(
+        &self,
+        mb: MailboxId,
+        ids: &[i64],
+        add: Flags,
+        remove: Flags,
+    ) -> Result<Committed<FlagUpdate>> {
+        check_batch_len(ids.len())?;
+        check_distinct_ids(ids)?;
+        let mut tx = self.begin_locked(mb).await?;
+        let mut now: HashMap<i64, i64> = HashMap::with_capacity(ids.len());
+        for chunk in ids.chunks(SQL_CHUNK) {
+            let sql = format!(
+                "UPDATE messages SET flags = (flags | ?1) & ~?2 WHERE mailbox_id = ?3 \
+                 AND deleted_at IS NULL AND id IN ({}) RETURNING id, flags",
+                placeholders(4, chunk.len())
+            );
+            let mut qy = sqlx::query_as::<_, (i64, i64)>(&sql)
+                .bind(i64::from(add.bits()))
+                .bind(i64::from(remove.bits()))
+                .bind(mb.0);
+            for id in chunk {
+                qy = qy.bind(*id);
+            }
+            now.extend(qy.fetch_all(&mut *tx).await.map_err(map_db_error)?);
+        }
+        let hit: HashSet<i64> = now.keys().copied().collect();
+        let (applied, missing) = split_hits(ids, &hit);
+        let seq = log_message_changes(&mut tx, mb.0, &applied, ChangeOp::Update).await?;
+        tx.commit().await.map_err(map_db_error)?;
+        Ok(Committed::new(flag_update(&applied, &now, missing)?, seq))
+    }
+
+    async fn expunge_deleted_many(&self, mb: MailboxId, ids: &[i64]) -> Result<Committed<BatchOutcome>> {
+        check_batch_len(ids.len())?;
+        check_distinct_ids(ids)?;
+        let mut tx = self.begin_locked(mb).await?;
+        let mut hit = HashSet::with_capacity(ids.len());
+        for chunk in ids.chunks(SQL_CHUNK) {
+            // Only messages whose LIVE flags still contain Deleted (bit 16): the caller's snapshot
+            // may be stale.
+            let sql = format!(
+                "UPDATE messages SET deleted_at = unixepoch() \
+                 WHERE mailbox_id = ?1 AND deleted_at IS NULL AND (flags & 16) <> 0 AND id IN ({}) RETURNING id",
+                placeholders(2, chunk.len())
+            );
+            let mut qy = sqlx::query_scalar::<_, i64>(&sql).bind(mb.0);
+            for id in chunk {
+                qy = qy.bind(*id);
+            }
+            hit.extend(qy.fetch_all(&mut *tx).await.map_err(map_db_error)?);
+        }
+        let (applied, missing) = split_hits(ids, &hit);
+        let seq = log_message_changes(&mut tx, mb.0, &applied, ChangeOp::Destroy).await?;
+        tx.commit().await.map_err(map_db_error)?;
+        Ok(Committed::new(BatchOutcome { applied: applied.len() as u32, missing }, seq))
+    }
+
     async fn add_keyword(
         &self,
         mb: MailboxId,
@@ -1009,6 +1094,77 @@ impl MailboxRepo for SqliteRepo {
         ))
     }
 
+    async fn copy_many(
+        &self,
+        mb: MailboxId,
+        ids: &[i64],
+        to: FolderId,
+    ) -> Result<Committed<CopyBatch>> {
+        check_batch_len(ids.len())?;
+        check_distinct_ids(ids)?;
+        let mut tx = self.begin_locked(mb).await?;
+        folder_row(&mut tx, mb.0, to.0).await?;
+        let mut live: HashSet<i64> = HashSet::with_capacity(ids.len());
+        for chunk in ids.chunks(SQL_CHUNK) {
+            let sql = format!(
+                "SELECT id FROM messages WHERE mailbox_id = ?1 AND deleted_at IS NULL AND id IN ({})",
+                placeholders(2, chunk.len())
+            );
+            let mut qy = sqlx::query_scalar::<_, i64>(&sql).bind(mb.0);
+            for id in chunk {
+                qy = qy.bind(*id);
+            }
+            live.extend(qy.fetch_all(&mut *tx).await.map_err(map_db_error)?);
+        }
+        let (src, missing) = split_hits(ids, &live);
+        if src.is_empty() {
+            return Ok(Committed::new(CopyBatch { copied: Vec::new(), missing }, None));
+        }
+        let n = src.len() as i64;
+        let first_uid = take_uids(&mut tx, mb.0, to.0, n).await?;
+        to_uid(first_uid + n - 1)?; // the last uid must still fit
+        let (first_id, first_seq): (i64, i64) = sqlx::query_as(&r(q::TAKE_MSG_IDS_AND_SEQS))
+            .bind(mb.0)
+            .bind(n)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(map_db_error)?
+            .ok_or_else(not_found_mailbox)?;
+        let mut copied = Vec::with_capacity(src.len());
+        for (k, id) in src.iter().enumerate() {
+            let k = k as i64;
+            let (new_id, uid, seq) = (first_id + k, first_uid + k, first_seq + k);
+            sqlx::query(&r(q::COPY_ROW))
+                .bind(mb.0)
+                .bind(*id)
+                .bind(new_id)
+                .bind(to.0)
+                .bind(uid)
+                .execute(&mut *tx)
+                .await
+                .map_err(map_db_error)?;
+            sqlx::query(&r(q::COPY_KEYWORDS))
+                .bind(mb.0)
+                .bind(*id)
+                .bind(new_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(map_db_error)?;
+            sqlx::query(&r(q::INSERT_CHANGE))
+                .bind(mb.0)
+                .bind(seq)
+                .bind("message")
+                .bind(new_id)
+                .bind("create")
+                .execute(&mut *tx)
+                .await
+                .map_err(map_db_error)?;
+            copied.push((MessageId(*id), MessageRef { id: MessageId(new_id), uid: to_uid(uid)? }));
+        }
+        tx.commit().await.map_err(map_db_error)?;
+        Ok(Committed::new(CopyBatch { copied, missing }, Some(first_seq + n - 1)))
+    }
+
     async fn expunge(&self, mb: MailboxId, id: MessageId) -> Result<Committed<()>> {
         let mut tx = self.begin_locked(mb).await?;
         let n = sqlx::query(&r(q::EXPUNGE))
@@ -1133,6 +1289,36 @@ impl MailboxRepo for SqliteRepo {
             .fetch_all(&mut *conn)
             .await
             .map_err(map_db_error)
+    }
+
+    async fn keywords_many(&self, mb: MailboxId, ids: &[i64]) -> Result<Vec<(i64, String)>> {
+        check_batch_len(ids.len())?;
+        check_distinct_ids(ids)?;
+        let mut out: Vec<(i64, String)> = Vec::new();
+        for chunk in ids.chunks(SQL_CHUNK) {
+            let sql = format!(
+                "SELECT k.message_id, k.keyword FROM keywords k JOIN messages m \
+                 ON m.mailbox_id = k.mailbox_id AND m.id = k.message_id \
+                 WHERE k.mailbox_id = ?1 AND m.deleted_at IS NULL AND k.message_id IN ({})",
+                placeholders(2, chunk.len())
+            );
+            let mut qy = sqlx::query_as::<_, (i64, String)>(&sql).bind(mb.0);
+            for id in chunk {
+                qy = qy.bind(*id);
+            }
+            out.extend(qy.fetch_all(self.store.pool()).await.map_err(map_db_error)?);
+        }
+        out.sort();
+        Ok(out)
+    }
+
+    async fn latest_change_seq(&self, mb: MailboxId) -> Result<i64> {
+        sqlx::query_scalar(&r(q::LATEST_SEQ))
+            .bind(mb.0)
+            .fetch_optional(self.store.pool())
+            .await
+            .map_err(map_db_error)?
+            .ok_or_else(not_found_mailbox)
     }
 
     async fn list_folder(

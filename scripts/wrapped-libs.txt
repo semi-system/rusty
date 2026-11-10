@@ -4,3 +4,5 @@
 smtp-proto crates/rusty-smtp/src/adapter
 mail-auth crates/rusty-smtp/src/adapter
 hickory-resolver crates/rusty-smtp/src/adapter
+imap-codec crates/rusty-imap/src/adapter
+imap-types crates/rusty-imap/src/adapter

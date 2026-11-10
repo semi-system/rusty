@@ -39,7 +39,7 @@ use rusty_mime::Envelope;
 use crate::gc::PURGE_BATCH;
 use crate::repo::sqlite::SqliteRepo;
 use crate::repo::{
-    DeliverEntry, Delivery, FolderInfo, JobFence, MailboxRepo, MessageDetail, NewMessage, RawRef,
+    DeliverEntry, Delivery, FlagUpdate, FolderCounts, FolderInfo, JobFence, MailboxRepo, MessageDetail, NewMessage, RawRef,
 };
 use crate::{BlobStore, SqliteStore};
 
@@ -118,6 +118,15 @@ pub struct MoveBatch {
     /// `(id, new ref)` in input order. A message already in the destination is listed with
     /// its current ref and is not changed.
     pub moved: Vec<(MessageId, MessageRef)>,
+    pub missing: Vec<MessageId>,
+}
+
+/// Result of [`Mailbox::copy_many`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopyBatch {
+    /// `(source id, ref of the new copy)` in input order.
+    pub copied: Vec<(MessageId, MessageRef)>,
+    /// Ids that are not live messages of this mailbox, in input order (at most [`MAX_BATCH`]).
     pub missing: Vec<MessageId>,
 }
 
@@ -215,6 +224,14 @@ pub(crate) fn page_limit(limit: u32) -> Result<i64> {
     Ok(i64::from(limit.min(MAX_PAGE)))
 }
 
+/// Told after every committed write of a mailbox (the post-commit hook point of `MailboxRepo`):
+/// `seq` is the change-log seq of the last change the write logged. The one place where "this
+/// mailbox changed" is announced is this facade, so every writer (SMTP delivery, IMAP, a later JMAP
+/// service) notifies without a call site of its own. Implementations must never block.
+pub trait ChangeNotifier: Send + Sync {
+    fn changed(&self, mailbox: MailboxId, seq: i64);
+}
+
 /// One account's mailbox. Cheap to clone; clones share the pool and blob store.
 ///
 /// Invariant: every code path that inserts a row into `mailboxes` must also seed
@@ -226,6 +243,7 @@ pub struct Mailbox {
     blobs: Arc<dyn BlobStore>,
     id: MailboxId,
     limits: MailboxLimits,
+    notifier: Option<Arc<dyn ChangeNotifier>>,
 }
 
 impl fmt::Debug for Mailbox {
@@ -329,7 +347,22 @@ impl Mailbox {
             blobs,
             id,
             limits: MailboxLimits::default(),
+            notifier: None,
         })
+    }
+
+    /// Announce every committed write to `notifier` (see [`ChangeNotifier`]).
+    pub fn with_notifier(mut self, notifier: Arc<dyn ChangeNotifier>) -> Mailbox {
+        self.notifier = Some(notifier);
+        self
+    }
+
+    /// Unwrap a committed write, announcing its last change.
+    fn note<T>(&self, c: crate::repo::Committed<T>) -> T {
+        if let (Some(n), Some(seq)) = (&self.notifier, c.committed_seq) {
+            n.changed(self.id, seq);
+        }
+        c.value
     }
 
     pub fn with_limits(mut self, limits: MailboxLimits) -> Mailbox {
@@ -349,20 +382,20 @@ impl Mailbox {
 
     pub async fn create_folder(&self, parent: Option<FolderId>, name: &str) -> Result<FolderId> {
         validate_folder_name(name)?;
-        Ok(self.repo.create_folder(self.id, parent, name).await?.value)
+        Ok(self.note(self.repo.create_folder(self.id, parent, name).await?))
     }
 
     /// Rename a custom folder (system folders are `Invalid`).
     pub async fn rename_folder(&self, id: FolderId, name: &str) -> Result<()> {
         validate_folder_name(name)?;
-        self.repo.rename_folder(self.id, id, name).await?;
+        self.note(self.repo.rename_folder(self.id, id, name).await?);
         Ok(())
     }
 
     /// Re-parent a custom folder. Moving into itself or a descendant is `Conflict`; a result
     /// deeper than `MAX_FOLDER_DEPTH` is `Invalid`; system folders are `Invalid`.
     pub async fn move_folder(&self, id: FolderId, new_parent: Option<FolderId>) -> Result<()> {
-        self.repo.move_folder(self.id, id, new_parent).await?;
+        self.note(self.repo.move_folder(self.id, id, new_parent).await?);
         Ok(())
     }
 
@@ -370,7 +403,20 @@ impl Mailbox {
     /// folders are `Invalid`. Rows of messages already expunged from it are purged (their
     /// blobs drop to refcount 0 for the cleanup job).
     pub async fn delete_folder(&self, id: FolderId) -> Result<()> {
-        self.repo.delete_folder(self.id, id).await?;
+        self.note(self.repo.delete_folder(self.id, id).await?);
+        Ok(())
+    }
+
+    /// Live and unseen message counts of `folder` (IMAP STATUS); `NotFound` for a folder of
+    /// another mailbox.
+    pub async fn folder_counts(&self, folder: FolderId) -> Result<FolderCounts> {
+        self.repo.folder_counts(self.id, folder).await
+    }
+
+    /// Set the IMAP subscription state of a folder (idempotent). System folders may be
+    /// unsubscribed too: it is the client's list, not a property of the folder.
+    pub async fn set_subscribed(&self, folder: FolderId, subscribed: bool) -> Result<()> {
+        self.note(self.repo.set_subscribed(self.id, folder, subscribed).await?);
         Ok(())
     }
 
@@ -389,6 +435,25 @@ impl Mailbox {
     /// deliveries.
     pub async fn append(&self, folder: FolderId, raw: Bytes, flags: Flags) -> Result<MessageRef> {
         match self.store_message(folder, raw, flags, None, None).await? {
+            DeliverOutcome::Created(r) | DeliverOutcome::Duplicate(r) => Ok(r),
+        }
+    }
+
+    /// [`Mailbox::append`] with the internal date the client gave (IMAP APPEND), unix seconds in
+    /// `0..=MAX_SUPPLIED_TIME` (else `Invalid`, nothing stored).
+    pub async fn append_dated(
+        &self,
+        folder: FolderId,
+        raw: Bytes,
+        flags: Flags,
+        internal_date: i64,
+    ) -> Result<MessageRef> {
+        check_supplied_time(internal_date)?;
+        let parsed = self.parse_raw(&raw)?;
+        self.repo.folder_exists(self.id, folder).await?;
+        let mut msg = self.put_message(folder, raw, flags, parsed).await?;
+        msg.internal_date = Some(internal_date);
+        match self.note(self.repo.append(self.id, &msg, None, None).await?) {
             DeliverOutcome::Created(r) | DeliverOutcome::Duplicate(r) => Ok(r),
         }
     }
@@ -501,6 +566,7 @@ impl Mailbox {
             size: parsed.0,
             flags,
             env: parsed.1,
+            internal_date: None,
         })
     }
 
@@ -516,11 +582,7 @@ impl Mailbox {
         let parsed = self.parse_raw(&raw)?;
         self.repo.folder_exists(self.id, folder).await?;
         let msg = self.put_message(folder, raw, flags, parsed).await?;
-        Ok(self
-            .repo
-            .append(self.id, &msg, delivery.as_ref(), fence)
-            .await?
-            .value)
+        Ok(self.note(self.repo.append(self.id, &msg, delivery.as_ref(), fence).await?))
     }
 
     /// Append every message of `raws` to `folder` in ONE transaction: consecutive ids, uids
@@ -546,38 +608,38 @@ impl Mailbox {
         for (raw, p) in raws.into_iter().zip(parsed) {
             msgs.push(self.put_message(folder, raw, flags, p).await?);
         }
-        Ok(self.repo.append_many(self.id, &msgs).await?.value)
+        Ok(self.note(self.repo.append_many(self.id, &msgs).await?))
     }
 
     /// Replace the standard flags of a live message.
     pub async fn set_flags(&self, id: MessageId, flags: Flags) -> Result<()> {
-        self.repo.set_flags(self.id, id, flags).await?;
+        self.note(self.repo.set_flags(self.id, id, flags).await?);
         Ok(())
     }
 
     /// Add a keyword (lowercased). Idempotent; a 33rd distinct keyword is `Quota`.
     pub async fn add_keyword(&self, id: MessageId, keyword: &str) -> Result<()> {
         let kw = normalize_keyword(keyword)?;
-        self.repo.add_keyword(self.id, id, &kw).await?;
+        self.note(self.repo.add_keyword(self.id, id, &kw).await?);
         Ok(())
     }
 
     /// Remove a keyword (case-insensitive). Removing an absent keyword is a no-op.
     pub async fn remove_keyword(&self, id: MessageId, keyword: &str) -> Result<()> {
         let kw = normalize_keyword(keyword)?;
-        self.repo.remove_keyword(self.id, id, &kw).await?;
+        self.note(self.repo.remove_keyword(self.id, id, &kw).await?);
         Ok(())
     }
 
     /// Move a live message to `to`, giving it a fresh uid there. Moving to the folder it is
     /// already in changes nothing and returns the current ref.
     pub async fn move_message(&self, id: MessageId, to: FolderId) -> Result<MessageRef> {
-        Ok(self.repo.move_message(self.id, id, to).await?.value)
+        Ok(self.note(self.repo.move_message(self.id, id, to).await?))
     }
 
     /// Soft-delete a live message (sets `deleted_at`); the blob is untouched.
     pub async fn expunge(&self, id: MessageId) -> Result<()> {
-        self.repo.expunge(self.id, id).await?;
+        self.note(self.repo.expunge(self.id, id).await?);
         Ok(())
     }
 
@@ -594,13 +656,27 @@ impl Mailbox {
     /// [`Mailbox::set_flags`] for many messages.
     pub async fn set_flags_many(&self, ids: &[MessageId], flags: Flags) -> Result<BatchOutcome> {
         let ids = batch_ids(ids)?;
-        Ok(self.repo.set_flags_many(self.id, &ids, flags).await?.value)
+        Ok(self.note(self.repo.set_flags_many(self.id, &ids, flags).await?))
+    }
+
+    /// Delta flag update for many messages (IMAP STORE +FLAGS / -FLAGS): applied to the live flags in
+    /// one transaction, never overwriting what another session changed.
+    pub async fn update_flags_many(&self, ids: &[MessageId], add: Flags, remove: Flags) -> Result<FlagUpdate> {
+        let ids = batch_ids(ids)?;
+        Ok(self.note(self.repo.update_flags_many(self.id, &ids, add, remove).await?))
+    }
+
+    /// Expunge the messages among `ids` that are STILL flagged Deleted (IMAP EXPUNGE/CLOSE with a
+    /// possibly stale snapshot); the rest are reported as missing.
+    pub async fn expunge_deleted_many(&self, ids: &[MessageId]) -> Result<BatchOutcome> {
+        let ids = batch_ids(ids)?;
+        Ok(self.note(self.repo.expunge_deleted_many(self.id, &ids).await?))
     }
 
     /// [`Mailbox::expunge`] for many messages.
     pub async fn expunge_many(&self, ids: &[MessageId]) -> Result<BatchOutcome> {
         let ids = batch_ids(ids)?;
-        Ok(self.repo.expunge_many(self.id, &ids, None).await?.value)
+        Ok(self.note(self.repo.expunge_many(self.id, &ids, None).await?))
     }
 
     /// [`Mailbox::expunge_many`] with an explicit `deleted_at` (unix seconds), for tests.
@@ -608,7 +684,17 @@ impl Mailbox {
     pub async fn expunge_many_at(&self, ids: &[MessageId], now: i64) -> Result<BatchOutcome> {
         check_supplied_time(now)?;
         let ids = batch_ids(ids)?;
-        Ok(self.repo.expunge_many(self.id, &ids, Some(now)).await?.value)
+        Ok(self.note(self.repo.expunge_many(self.id, &ids, Some(now)).await?))
+    }
+
+    /// Copy live messages into `to` (IMAP COPY): each copy is a NEW message with a fresh id and
+    /// consecutive uids in input order, sharing the blob and carrying flags, keywords, internal
+    /// date and thread of its source. Duplicate ids copy once; ids that are not live messages of
+    /// this mailbox are `missing`; an unknown destination is `NotFound` even if every id is
+    /// missing. One transaction, all or nothing.
+    pub async fn copy_many(&self, ids: &[MessageId], to: FolderId) -> Result<CopyBatch> {
+        let ids = batch_ids(ids)?;
+        Ok(self.note(self.repo.copy_many(self.id, &ids, to).await?))
     }
 
     /// [`Mailbox::move_message`] for many messages: the moved ones get contiguous fresh uids
@@ -616,7 +702,7 @@ impl Mailbox {
     /// unknown destination folder is `NotFound` even if every id is missing.
     pub async fn move_many(&self, ids: &[MessageId], to: FolderId) -> Result<MoveBatch> {
         let ids = batch_ids(ids)?;
-        Ok(self.repo.move_many(self.id, &ids, to).await?.value)
+        Ok(self.note(self.repo.move_many(self.id, &ids, to).await?))
     }
 
     /// [`Mailbox::deliver`] for many messages into `folder`: at most [`MAX_BATCH`] items and
@@ -700,15 +786,12 @@ impl Mailbox {
                     size,
                     flags: it.flags,
                     env,
+                    internal_date: None,
                 },
                 delivery_id: it.delivery_id,
             });
         }
-        Ok(self
-            .repo
-            .deliver_many(self.id, &entries, at, fence)
-            .await?
-            .value)
+        Ok(self.note(self.repo.deliver_many(self.id, &entries, at, fence).await?))
     }
 
     /// Hard-delete the soft-deleted messages of THIS mailbox with `deleted_at < older_than`
@@ -742,6 +825,35 @@ impl Mailbox {
     /// Where the raw bytes of a live message are (blob hash and size).
     pub async fn get_raw_ref(&self, id: MessageId) -> Result<RawRef> {
         self.repo.get_raw_ref(self.id, id).await
+    }
+
+    /// The raw bytes of a live message (`NotFound` for an id of another mailbox or a deleted
+    /// message). The size is the stored size; the blob is read in one piece, so callers bound
+    /// what they ask for by the mailbox size limit.
+    pub async fn get_raw(&self, id: MessageId) -> Result<Bytes> {
+        let r = self.repo.get_raw_ref(self.id, id).await?;
+        self.blobs.get(&r.blob).await
+    }
+
+    /// Keywords of the live messages among `ids` in one call (`1..=MAX_BATCH` ids, else `Invalid`);
+    /// messages without keywords are absent from the map.
+    pub async fn keywords_many(
+        &self,
+        ids: &[MessageId],
+    ) -> Result<std::collections::HashMap<MessageId, Vec<String>>> {
+        let ids = batch_ids(ids)?;
+        let mut out: std::collections::HashMap<MessageId, Vec<String>> = std::collections::HashMap::new();
+        for (id, kw) in self.repo.keywords_many(self.id, &ids).await? {
+            out.entry(MessageId(id)).or_default().push(kw);
+        }
+        Ok(out)
+    }
+
+    /// The change seq of the last change of this mailbox (`0` before the first). A reader that
+    /// takes this number BEFORE it reads a snapshot can then follow `changes_since(seq)` without
+    /// missing anything.
+    pub async fn latest_change_seq(&self) -> Result<i64> {
+        self.repo.latest_change_seq(self.id).await
     }
 
     /// The keywords of a live message, sorted.

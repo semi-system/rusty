@@ -29,7 +29,6 @@ use rusty_smtp::outbound::worker::{OutboundWorker, Wake, WorkerDeps, WorkerOptio
 use rusty_smtp::outbound_queue::{JobOutbound, SubmitLimits};
 use rusty_smtp::stack::DnsStack;
 
-use crate::banner::BannerSession;
 
 /// Messages one account may submit per hour (U4 default; becomes a config key with per-tenant limits).
 const SUBMISSIONS_PER_HOUR: u32 = 200;
@@ -128,7 +127,7 @@ pub async fn start(cfg: StartupConfig, profile: Profile, shutdown: CancellationT
         return Err(Error::Invalid("TLS is not configured".into()));
     };
     let store = Store::open(StoreConfig::sqlite(sqlite_url(&cfg.database_path)?)).await?;
-    match build(&cfg, &hostname, &store, tls.clone(), shutdown.clone()).await {
+    match build(&cfg, &store, tls.clone(), shutdown.clone()).await {
         Ok((addrs, task)) => Ok(Running { addrs, shutdown, tls, store, task }),
         Err(e) => {
             let _ = store.close().await;
@@ -139,11 +138,12 @@ pub async fn start(cfg: StartupConfig, profile: Profile, shutdown: CancellationT
 
 async fn build(
     cfg: &StartupConfig,
-    hostname: &str,
     store: &Store,
     tls: TlsProvider,
     shutdown: CancellationToken,
 ) -> Result<(Vec<(ListenerKind, SocketAddr)>, JoinHandle<Result<()>>)> {
+    let hostname = cfg.hostname.clone().unwrap_or_else(|| "localhost".to_owned());
+    let hostname = hostname.as_str();
     let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::open(&cfg.blob_dir).await?);
     let cfg = Arc::new(cfg.clone());
     let ctx = Context::new(store.repos(), blobs, cfg.clone(), tls.clone()).await?;
@@ -190,7 +190,7 @@ async fn build(
                 };
                 Arc::new(InboundHandler::submission(&ctx, options, deps))
             }
-            _ => Arc::new(BannerSession::new(planned.kind, hostname)),
+            ListenerKind::Imap143 | ListenerKind::Imaps993 => Arc::new(rusty_imap::ImapHandler::new(ctx.clone()).with_budget(budget.clone())),
         };
         services.push(Box::new(ListenerService::new(bound, accept, handler)));
     }
