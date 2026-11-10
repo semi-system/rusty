@@ -209,3 +209,25 @@ pub fn check_queue_payload(data: &[u8]) {
         assert_eq!(OutboundPayload::decode(&p.encode()).ok(), Some(p));
     }
 }
+
+/// A hostile DKIM key record: arbitrary bytes as the `p=` of an RSA and of an Ed25519 key record (the DER
+/// reader that unwraps a SubjectPublicKeyInfo and measures the modulus is code we patched in), and a
+/// signature that must then verify to a verdict without a panic.
+pub fn check_dkim_key_record(data: &[u8]) {
+    use base64::Engine;
+    use crate::authres::AuthInput;
+    use crate::resolve::StaticDns;
+    let p = base64::engine::general_purpose::STANDARD.encode(data);
+    let mut dns = StaticDns::default();
+    dns.txt.insert("s1._domainkey.example.org".into(), format!("v=DKIM1; k=rsa; p={p}"));
+    dns.txt.insert("s2._domainkey.example.org".into(), format!("v=DKIM1; k=ed25519; p={p}"));
+    let Ok(stack) = crate::stack::DnsStack::with_static(dns, "mx.example.net") else { return };
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread().build() else { return };
+    for (alg, sel) in [("rsa-sha256", "s1"), ("ed25519-sha256", "s2")] {
+        let msg = format!(
+            "DKIM-Signature: v=1; a={alg}; c=relaxed/relaxed; d=example.org; s={sel}; h=from; bh=2jUSOH9NhtVGCQWNr9BrIAPreKQjO6Sn7XIkfJVOzv8=; b=AAAA\r\nFrom: a@example.org\r\n\r\nx\r\n"
+        );
+        let r = rt.block_on(stack.checker.check(&AuthInput { peer: [192, 0, 2, 1].into(), helo: "h", mail_from: "a@example.org", message: msg.as_bytes() }));
+        assert!(r.dkim != "pass", "a garbage key must never verify a garbage signature");
+    }
+}

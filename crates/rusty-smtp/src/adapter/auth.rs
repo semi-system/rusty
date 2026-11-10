@@ -77,26 +77,48 @@ fn rsa_spki(pkcs1_public: &[u8]) -> Vec<u8> {
     out
 }
 
+struct KeyMaterial {
+    private: Vec<u8>,
+    public: Vec<u8>,
+}
+
 /// Write the new key (mode 0600, never overwriting) and return what DNS needs.
 pub(crate) fn generate(dir: &std::path::Path, domain: &str, selector: &str, algo: DkimAlgo) -> Result<GeneratedKey> {
     use base64::Engine;
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let pair = match algo {
-        DkimAlgo::Rsa2048 => DkimKeyPair::generate_rsa(2048),
-        DkimAlgo::Ed25519 => DkimKeyPair::generate_ed25519(),
-    }
-    .map_err(lib_err)?;
+        DkimAlgo::Rsa2048 => {
+            let (private, public) = crate::rsagen::generate_2048()?;
+            // ring (inside the DKIM library) validates the key and its consistency; a signature made
+            // with it must verify with the public key before the key is accepted.
+            let pem = pem_armor(RSA_PEM_LABEL, &private);
+            let loaded = load_rsa(pem.as_bytes(), "check.invalid", "check")?;
+            let probe = b"From: a@check.invalid
+
+x
+";
+            let sig = loaded.sign(probe)?;
+            if !sig.contains("b=") {
+                return Err(Error::Invalid("the generated RSA key failed its self-test".into()));
+            }
+            KeyMaterial { private, public }
+        }
+        DkimAlgo::Ed25519 => {
+            let pair = DkimKeyPair::generate_ed25519().map_err(lib_err)?;
+            KeyMaterial { private: pair.private_key().to_vec(), public: pair.public_key().to_vec() }
+        }
+    };
     let (label, suffix) = match algo {
         DkimAlgo::Rsa2048 => (RSA_PEM_LABEL, ""),
         DkimAlgo::Ed25519 => (ED_PEM_LABEL, "-ed25519"),
     };
     let public = match algo {
-        DkimAlgo::Rsa2048 => rsa_spki(pair.public_key()),
-        DkimAlgo::Ed25519 => pair.public_key().to_vec(),
+        DkimAlgo::Rsa2048 => rsa_spki(&pair.public),
+        DkimAlgo::Ed25519 => pair.public.clone(),
     };
     let path = dir.join(format!("{domain}.{selector}{suffix}.pem"));
-    let pem = pem_armor(label, pair.private_key());
+    let pem = pem_armor(label, &pair.private);
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)

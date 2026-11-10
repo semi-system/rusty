@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/*", "tools/*"]
-exclude = ["fuzz"]
+exclude = ["fuzz", "vendor"]
 
 [workspace.package]
 edition = "2021"
@@ -51,4 +51,12 @@ rcgen = { version = "0.14", default-features = false, features = ["crypto", "rin
 mail-auth = { version = "=0.15.1", default-features = false, features = ["rust-crypto", "generate", "dns-hickory"] }
 # CA certificates of the host for `verified` outbound TLS when no ca_bundle is configured.
 rustls-native-certs = "0.8"
+num-bigint = "0.4"
+num-integer = "0.1"
+num-traits = "0.2"
 base64 = "0.22"
+
+# mail-auth with its RSA operations moved from the `rsa` crate (RUSTSEC-2023-0071) to `ring`; see
+# vendor/mail-auth/PATCHES.md. Drop when upstream ships a backend free of the advisory.
+[patch.crates-io]
+mail-auth = { path = "vendor/mail-auth" }

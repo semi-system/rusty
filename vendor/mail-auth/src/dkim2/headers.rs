@@ -1,0 +1,491 @@
+/*
+ * SPDX-FileCopyrightText: 2020 Stalwart Labs LLC <hello@stalw.art>
+ *
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ */
+
+//! Serialization of `DKIM2-Signature` and `Message-Instance` header fields.
+//!
+//! The inherent `write` methods emit a header field on one line. The
+//! [`HeaderWriter`] implementations fold long header fields, which does not
+//! change the signed bytes because DKIM2 canonicalization removes all
+//! whitespace (§12.8). The [`Display`] implementations format the value
+//! without the field name.
+
+use super::{ChainBinding, MessageInstance, Signature, SignatureValue};
+use crate::{
+    headers::{HEADER_CAPACITY, HeaderFolder, HeaderWriter, Writer, write_integer},
+    utf8::to_str_lossy,
+};
+use std::fmt::{Display, Formatter};
+
+const RECIPE_CAPACITY: usize = 256;
+
+impl SignatureValue {
+    fn write(&self, writer: &mut impl Writer, empty: bool) {
+        writer.write(self.selector.as_bytes());
+        writer.write(b":");
+        writer.write(self.a.as_str().as_bytes());
+        writer.write(b":");
+        if !empty {
+            writer.write_base64(&self.b);
+        }
+    }
+}
+
+impl Signature {
+    pub(crate) fn write_value(&self, writer: &mut impl Writer, empty_signature: bool) {
+        writer.write(b"i=");
+        write_integer(writer, self.i as u64);
+        writer.write(b"; m=");
+        write_integer(writer, self.m as u64);
+        writer.write(b"; t=");
+        write_integer(writer, self.t);
+        writer.write(b"; d=");
+        writer.write(self.d.as_bytes());
+        writer.write(b"; ");
+
+        match &self.chain {
+            ChainBinding::Envelope { mail_from, rcpt_to } => {
+                writer.write(b"mf=");
+                writer.write_base64(mail_from.as_bytes());
+                writer.write(b"; rt=");
+                for (pos, rcpt) in rcpt_to.iter().enumerate() {
+                    if pos > 0 {
+                        writer.write(b",");
+                    }
+                    writer.write_base64(rcpt.as_bytes());
+                }
+            }
+            ChainBinding::NextDomain(domain) => {
+                writer.write(b"nd=");
+                writer.write(domain.as_bytes());
+            }
+        }
+
+        writer.write(b"; s=");
+        let mut previous = None;
+        for value in &self.s {
+            write_separator(writer, &mut previous, value.group);
+            value.write(writer, empty_signature);
+        }
+        writer.write(b";");
+
+        if let Some(nonce) = &self.n {
+            writer.write(b" n=");
+            writer.write(nonce.as_bytes());
+            writer.write(b";");
+        }
+
+        if !self.flags.is_empty() {
+            writer.write(b" f=");
+            for (pos, flag) in self.flags.iter().enumerate() {
+                if pos > 0 {
+                    writer.write(b",");
+                }
+                writer.write(flag.as_bytes());
+            }
+            writer.write(b";");
+        }
+    }
+
+    /// Writes the complete `DKIM2-Signature` header field on one line,
+    /// terminated by CRLF.
+    pub fn write(&self, writer: &mut impl Writer) {
+        writer.write(b"DKIM2-Signature: ");
+        self.write_value(writer, false);
+        writer.write(b"\r\n");
+    }
+}
+
+impl MessageInstance {
+    pub(crate) fn write_value(&self, writer: &mut impl Writer) {
+        writer.write(b"m=");
+        write_integer(writer, self.m as u64);
+        writer.write(b"; h=");
+        let mut previous = None;
+        for hash in &self.hashes {
+            write_separator(writer, &mut previous, hash.group);
+            writer.write(hash.name.as_str().as_bytes());
+            writer.write(b":");
+            writer.write_base64(&hash.header_hash);
+            writer.write(b":");
+            writer.write_base64(&hash.body_hash);
+        }
+
+        if let Some(recipe) = &self.recipe {
+            let mut json = Vec::with_capacity(RECIPE_CAPACITY);
+            if recipe.write_json(&mut json).is_ok() {
+                writer.write(b"; r=");
+                writer.write_base64(&json);
+            }
+        }
+        writer.write(b";");
+    }
+
+    /// Writes the complete `Message-Instance` header field on one line,
+    /// terminated by CRLF. The recipe, if any, is written as base64-encoded
+    /// JSON in the `r=` tag as it is, including one accepted leniently when
+    /// parsed; the signers check [`Recipe::validate`](super::Recipe::validate)
+    /// on recipes they generate before signing.
+    pub fn write(&self, writer: &mut impl Writer) {
+        writer.write(b"Message-Instance: ");
+        self.write_value(writer);
+        writer.write(b"\r\n");
+    }
+}
+
+fn write_separator(writer: &mut impl Writer, previous: &mut Option<u32>, group: u32) {
+    match previous.replace(group) {
+        Some(previous) if previous == group => writer.write(b","),
+        Some(_) => writer.write(b"|"),
+        None => {}
+    }
+}
+
+impl HeaderWriter for Signature {
+    fn write_header(&self, writer: &mut impl Writer) {
+        self.write(&mut HeaderFolder::new(writer));
+    }
+}
+
+impl HeaderWriter for MessageInstance {
+    fn write_header(&self, writer: &mut impl Writer) {
+        self.write(&mut HeaderFolder::new(writer));
+    }
+}
+
+impl Display for Signature {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut buf = Vec::with_capacity(HEADER_CAPACITY);
+        self.write_value(&mut buf, false);
+        f.write_str(&to_str_lossy(&buf))
+    }
+}
+
+impl Display for MessageInstance {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut buf = Vec::with_capacity(HEADER_CAPACITY);
+        self.write_value(&mut buf);
+        f.write_str(&to_str_lossy(&buf))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::crypto::Algorithm;
+    use crate::dkim2::{
+        ChainBinding, Dkim2Hash, Flag, HashName, MessageHash, MessageInstance, Signature,
+        SignatureValue,
+    };
+    use crate::headers::HeaderWriter;
+
+    const MAX_HEADER_LINE_LEN: usize = 76;
+
+    fn strip_all_ws(bytes: &[u8]) -> Vec<u8> {
+        bytes
+            .iter()
+            .copied()
+            .filter(|c| !matches!(c, b' ' | b'\t' | b'\r' | b'\n'))
+            .collect()
+    }
+
+    /// The signature canonicalization unfolds and then deletes all
+    /// whitespace (§12.8), so a folded header field and its unfolded form must
+    /// reduce to identical bytes. Also asserts that no physical line exceeds
+    /// the fold limit (excluding the single leading fold tab).
+    fn assert_fold_is_transparent(field_name: &[u8], folded: &[u8], unfolded: &[u8]) {
+        assert!(
+            folded.ends_with(b"\r\n"),
+            "a folded header field must end with CRLF: {:?}",
+            String::from_utf8_lossy(folded)
+        );
+
+        for (n, line) in folded
+            .strip_suffix(b"\r\n")
+            .unwrap()
+            .split(|&c| c == b'\n')
+            .enumerate()
+        {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            let content = line.strip_prefix(b"\t").unwrap_or(line);
+            assert!(
+                content.len() <= MAX_HEADER_LINE_LEN,
+                "{}: line {n} is {} bytes, exceeds {MAX_HEADER_LINE_LEN}: {:?}",
+                String::from_utf8_lossy(field_name),
+                content.len(),
+                String::from_utf8_lossy(content),
+            );
+        }
+
+        for (i, &ch) in folded.iter().enumerate() {
+            if ch == b'\n' && i + 1 < folded.len() {
+                assert!(
+                    i >= 1 && folded[i - 1] == b'\r' && folded.get(i + 1) == Some(&b'\t'),
+                    "every interior LF must be part of a CRLF+TAB fold: {:?}",
+                    String::from_utf8_lossy(folded)
+                );
+            }
+        }
+
+        let mut expected = field_name.to_vec();
+        expected.extend_from_slice(unfolded);
+        assert_eq!(
+            strip_all_ws(folded),
+            strip_all_ws(&expected),
+            "folding changed the whitespace-stripped (signed) bytes of {}",
+            String::from_utf8_lossy(field_name)
+        );
+    }
+
+    fn dump_folded(title: &str, folded: &[u8]) {
+        println!("\n===== {title} ({} bytes) =====", folded.len());
+        for (n, line) in folded.split(|&c| c == b'\n').enumerate() {
+            if line.is_empty() {
+                continue;
+            }
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            let content = line.strip_prefix(b"\t").unwrap_or(line);
+            let leader = if line.len() != content.len() {
+                "\\t"
+            } else {
+                "  "
+            };
+            println!(
+                "  line {n:>2} | {:>3} | {leader}{}",
+                content.len(),
+                String::from_utf8_lossy(content)
+            );
+        }
+        println!("----- raw (escaped) -----");
+        println!("  {}", String::from_utf8_lossy(folded).escape_debug());
+    }
+
+    fn value_of<'a>(folded: &'a [u8], field_name: &[u8]) -> &'a [u8] {
+        folded
+            .strip_prefix(field_name)
+            .expect("folded header must start with the field name")
+    }
+
+    fn big_signature() -> Signature {
+        Signature {
+            i: 3,
+            m: 2,
+            t: 1782394336,
+            d: "test.dkim2.eu".to_string(),
+            s: vec![
+                SignatureValue {
+                    selector: "rsa2048".to_string(),
+                    a: Algorithm::RsaSha256.into(),
+                    b: (0u8..=255).cycle().take(256).collect(),
+                    group: 0,
+                },
+                SignatureValue {
+                    selector: "ed25519".to_string(),
+                    a: Algorithm::Ed25519Sha256.into(),
+                    b: (0u8..64).collect(),
+                    group: 1,
+                },
+                SignatureValue {
+                    selector: "mldsa44".to_string(),
+                    a: Algorithm::MlDsa44.into(),
+                    b: (0u8..=255).cycle().take(2420).collect(),
+                    group: 1,
+                },
+            ],
+            chain: ChainBinding::Envelope {
+                mail_from: "<sender@test.dkim2.eu>".to_string(),
+                rcpt_to: vec![
+                    "<recipient@example.com>".to_string(),
+                    "<second-recipient@another-example.org>".to_string(),
+                ],
+            },
+            n: Some("banana".to_string()),
+            flags: vec![Flag::Feedback, Flag::Exploded],
+        }
+    }
+
+    fn big_instance() -> MessageInstance {
+        MessageInstance {
+            m: 1,
+            hashes: vec![
+                MessageHash {
+                    name: Dkim2Hash::Sha256.into(),
+                    header_hash: (0u8..32).collect(),
+                    body_hash: (32u8..64).collect(),
+                    group: 0,
+                },
+                MessageHash {
+                    name: Dkim2Hash::Sha512.into(),
+                    header_hash: (64u8..128).collect(),
+                    body_hash: (128u8..192).collect(),
+                    group: 0,
+                },
+                MessageHash {
+                    name: HashName::Unknown("sha3-256".into()),
+                    header_hash: (0u8..32).collect(),
+                    body_hash: (32u8..64).collect(),
+                    group: 1,
+                },
+            ],
+            recipe: None,
+        }
+    }
+
+    #[test]
+    fn signature_write_header_folds_and_round_trips() {
+        let sig = big_signature();
+
+        let mut folded = Vec::new();
+        sig.write_header(&mut folded);
+
+        let mut unfolded = Vec::new();
+        sig.write_value(&mut unfolded, false);
+        unfolded.extend_from_slice(b"\r\n");
+
+        assert!(
+            folded.windows(3).any(|w| w == b"\r\n\t"),
+            "a large signature should have been folded: {:?}",
+            String::from_utf8_lossy(&folded)
+        );
+        dump_folded(
+            "DKIM2-Signature (large: rsa2048 | ed25519,mldsa44, 2 recipients)",
+            &folded,
+        );
+        assert_fold_is_transparent(b"DKIM2-Signature: ", &folded, &unfolded);
+
+        let value = value_of(&folded, b"DKIM2-Signature: ");
+        assert_eq!(
+            Signature::parse(value).unwrap(),
+            sig,
+            "folded signature must parse back to the original"
+        );
+    }
+
+    #[test]
+    fn message_instance_write_header_folds_and_round_trips() {
+        let instance = big_instance();
+
+        let mut folded = Vec::new();
+        instance.write_header(&mut folded);
+
+        assert!(
+            folded.windows(3).any(|w| w == b"\r\n\t"),
+            "a large message-instance should have been folded: {:?}",
+            String::from_utf8_lossy(&folded)
+        );
+        let mut unfolded = Vec::new();
+        instance.write_value(&mut unfolded);
+        unfolded.extend_from_slice(b"\r\n");
+        dump_folded("Message-Instance (large: sha256, sha512, unknown)", &folded);
+        assert_fold_is_transparent(b"Message-Instance: ", &folded, &unfolded);
+
+        let value = value_of(&folded, b"Message-Instance: ");
+        assert_eq!(
+            MessageInstance::parse(value).unwrap(),
+            instance,
+            "folded message-instance must parse back to the original"
+        );
+    }
+
+    #[test]
+    fn signature_folds_at_every_realistic_size() {
+        for extra_recipients in 0..6 {
+            let mut sig = big_signature();
+            if let ChainBinding::Envelope { rcpt_to, .. } = &mut sig.chain {
+                for n in 0..extra_recipients {
+                    rcpt_to.push(format!("<rcpt-{n}@padding-domain-for-length.example>"));
+                }
+            }
+
+            let mut folded = Vec::new();
+            sig.write_header(&mut folded);
+
+            let mut unfolded = Vec::new();
+            sig.write_value(&mut unfolded, false);
+            unfolded.extend_from_slice(b"\r\n");
+
+            dump_folded(
+                &format!("DKIM2-Signature ({} recipients)", extra_recipients + 2),
+                &folded,
+            );
+            assert_fold_is_transparent(b"DKIM2-Signature: ", &folded, &unfolded);
+            assert_eq!(
+                Signature::parse(value_of(&folded, b"DKIM2-Signature: ")).unwrap(),
+                sig
+            );
+        }
+    }
+
+    fn sample() -> Signature {
+        Signature {
+            i: 2,
+            m: 1,
+            t: 1700000000,
+            d: "example.com".to_string(),
+            s: vec![SignatureValue {
+                selector: "sel".to_string(),
+                a: Algorithm::Ed25519Sha256.into(),
+                b: vec![1, 2, 3, 4],
+                group: 0,
+            }],
+            chain: ChainBinding::Envelope {
+                mail_from: "<a@example.com>".to_string(),
+                rcpt_to: vec!["<b@example.org>".to_string()],
+            },
+            n: None,
+            flags: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn flags_emitted_in_order() {
+        let mut buf = Vec::new();
+        Signature {
+            flags: vec![Flag::Exploded, Flag::FeedHere],
+            ..sample()
+        }
+        .write_value(&mut buf, false);
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("f=exploded,feedhere;"), "{out}");
+    }
+
+    #[test]
+    fn next_domain_emits_nd_and_omits_envelope() {
+        let mut buf = Vec::new();
+        Signature {
+            chain: ChainBinding::NextDomain("relay.example".to_string()),
+            ..sample()
+        }
+        .write_value(&mut buf, false);
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("nd=relay.example"), "{out}");
+        assert!(!out.contains("mf="), "{out}");
+        assert!(!out.contains("rt="), "{out}");
+    }
+
+    // Entries of one group are joined with "," and groups with "|".
+    #[test]
+    fn group_separators() {
+        let mut buf = Vec::new();
+        big_signature().write_value(&mut buf, true);
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            out.contains("s=rsa2048:rsa-sha256:|ed25519:ed25519-sha256:,mldsa44:mldsa44:;"),
+            "{out}"
+        );
+        let out = big_instance().to_string();
+        assert!(
+            out.contains(",sha512:") && out.contains("|sha3-256:"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn write_then_parse_round_trips() {
+        let sig = sample();
+        let mut buf = Vec::new();
+        sig.write_value(&mut buf, false);
+        assert_eq!(Signature::parse(&buf).unwrap(), sig);
+    }
+}

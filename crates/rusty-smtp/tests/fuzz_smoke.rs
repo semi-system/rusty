@@ -4,7 +4,8 @@
 
 use proptest::prelude::*;
 use rusty_smtp::fuzzing::{
-    check_auth, check_command_stream, check_data, check_dsn_headers, check_headers, check_path, check_queue_payload, check_reply,
+    check_auth, check_command_stream, check_data, check_dkim_key_record, check_dsn_headers, check_headers, check_path, check_queue_payload,
+    check_reply,
 };
 
 const REPLY_SEEDS: [&[u8]; 4] = [
@@ -12,6 +13,11 @@ const REPLY_SEEDS: [&[u8]; 4] = [
     include_bytes!("../../../fuzz/seeds/fuzz_smtp_response/reject"),
     include_bytes!("../../../fuzz/seeds/fuzz_smtp_response/multi_and_trailing"),
     include_bytes!("../../../fuzz/seeds/fuzz_smtp_response/bad"),
+];
+const KEY_SEEDS: [&[u8]; 3] = [
+    include_bytes!("../../../fuzz/seeds/fuzz_dkim_key/spki_prefix"),
+    include_bytes!("../../../fuzz/seeds/fuzz_dkim_key/tiny_der"),
+    include_bytes!("../../../fuzz/seeds/fuzz_dkim_key/ed_zero"),
 ];
 const DSN_SEEDS: [&[u8]; 2] = [
     include_bytes!("../../../fuzz/seeds/fuzz_dsn_headers/simple"),
@@ -62,6 +68,7 @@ fn seeds_pass() {
     REPLY_SEEDS.iter().for_each(|s| check_reply(s));
     DSN_SEEDS.iter().for_each(|s| check_dsn_headers(s));
     PAYLOAD_SEEDS.iter().for_each(|s| check_queue_payload(s));
+    KEY_SEEDS.iter().for_each(|s| check_dkim_key_record(s));
 }
 
 fn mutate(seed: &[u8], pos: usize, byte: u8, cut: usize) -> Vec<u8> {
@@ -91,6 +98,12 @@ proptest! {
         check_reply(&data);
         check_dsn_headers(&data);
         check_queue_payload(&data);
+    }
+
+    // backend-neutral: key-record parsing over bytes, no database
+    #[test]
+    fn hostile_key_records_never_panic_or_verify(data in proptest::collection::vec(any::<u8>(), 0..400)) {
+        check_dkim_key_record(&data);
     }
 
     // backend-neutral: pure codecs over bytes, no database

@@ -27,5 +27,6 @@ pub mod outbound;
 pub mod outbound_queue;
 pub mod reply;
 pub mod resolve;
+mod rsagen;
 pub mod session;
 pub mod stack;

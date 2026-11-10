@@ -183,3 +183,20 @@ async fn a_message_without_a_trailing_blank_is_still_checked() {
         .await;
     assert_eq!(r.spf, "pass", "{r:?}");
 }
+
+// backend-neutral: key generation and an external validator, no database
+#[test]
+fn a_generated_rsa_key_is_a_valid_2048_bit_key_by_an_independent_validator() {
+    let d = tempfile::tempdir().unwrap();
+    let k = generate_key(d.path(), "example.org", "rusty", DkimAlgo::Rsa2048).unwrap();
+    let Ok(out) = std::process::Command::new("openssl").args(["rsa", "-check", "-noout", "-text", "-in"]).arg(&k.key_file).output() else {
+        eprintln!("openssl not installed: independent key validation skipped (sign/verify round trips still cover the key)");
+        return;
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success() && text.contains("RSA key ok"), "{text} {}", String::from_utf8_lossy(&out.stderr));
+    assert!(text.contains("Private-Key: (2048 bit") && text.contains("65537"), "{text}");
+    // Two keys are never the same.
+    let k2 = generate_key(d.path(), "example.net", "rusty", DkimAlgo::Rsa2048).unwrap();
+    assert_ne!(k.public_key_b64, k2.public_key_b64);
+}
