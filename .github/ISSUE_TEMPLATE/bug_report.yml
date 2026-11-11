@@ -1,0 +1,50 @@
+name: Bug report
+description: Something does not work as documented (not a security vulnerability)
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Security problems do not belong here.** If you think this is a vulnerability, stop and follow
+        [SECURITY.md](../blob/main/SECURITY.md). Never paste passwords, tokens, private keys, DKIM keys,
+        real mail or real addresses into an issue.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened and what did you expect
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal and with throw-away data only (for example `bash tools/acceptance/local-run.sh`).
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: "git rev-parse --short HEAD, or the image tag"
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options: [SMTP, IMAP, rustyctl, storage (SQLite), storage (Postgres), TLS, DNS records, container image, CI or build, documentation, other]
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: Redact addresses, hostnames you do not want public, and anything secret.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: This is not a security vulnerability, and nothing secret or personal is pasted above.
+          required: true
