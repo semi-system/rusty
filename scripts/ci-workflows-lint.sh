@@ -22,7 +22,10 @@ SHELLCHECK="$(ref koalaman/shellcheck:v0.10.0)"
 rc=0
 if [ -d .github/workflows ]; then
   echo "-- actionlint"
-  docker run --rm --network none -v "$PWD:/repo:ro" -w /repo "$ACTIONLINT" -color=false || rc=1
+  # Files are passed explicitly: actionlint otherwise needs a .git directory to find the project
+  # (absent in the synced copy on the build server and in the read-only mount).
+  mapfile -t wfs < <(find .github/workflows -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) | LC_ALL=C sort)
+  docker run --rm --network none -v "$PWD:/repo:ro" -w /repo "$ACTIONLINT" -color=false "${wfs[@]}" || rc=1
 fi
 
 echo "-- shellcheck"
