@@ -126,3 +126,10 @@ path = "fuzz_targets/fuzz_smtp_auth.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_pg_url"
+path = "fuzz_targets/fuzz_pg_url.rs"
+test = false
+doc = false
+bench = false

@@ -42,6 +42,10 @@ pub enum Command {
     AliasRemove { alias: String },
     DkimGenerate { domain: String, selector: String },
     Check,
+    /// `db migrate`: apply pending Postgres migrations with the migrator role (never the daemon).
+    DbMigrate { require_roles: bool },
+    /// `db status`: the schema state of the configured database.
+    DbStatus,
     Help,
 }
 
@@ -102,6 +106,7 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
     let mut selector: Option<String> = None;
     let mut help = false;
     let mut create = false;
+    let mut without_roles = false;
     let mut words: Vec<&str> = Vec::new();
 
     let mut it = args.iter();
@@ -109,6 +114,7 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         match a.as_str() {
             "--json" => json = true,
             "--create" => create = true,
+            "--without-roles" => without_roles = true,
             "--dev" => dev = true,
             "--prompt" => prompt = true,
             "--password-stdin" => stdin = true,
@@ -153,6 +159,12 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         }
         Ok(())
     };
+    let no_without_roles = || -> Result<(), UsageError> {
+        if without_roles {
+            return Err(err("--without-roles applies to db migrate only"));
+        }
+        Ok(())
+    };
     let no_selector = || -> Result<(), UsageError> {
         if selector.is_some() {
             return Err(err("--selector does not apply to this command"));
@@ -162,7 +174,8 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
     let plain = || -> Result<(), UsageError> {
         no_password()?;
         no_selector()
-    };
+        ?;
+        no_without_roles()    };
 
     match words.as_slice() {
         ["domain", "add", name] => {
@@ -235,13 +248,24 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
                 },
             })
         }
+        ["db", "migrate"] => {
+            no_password()?;
+            no_selector()?;
+            done(Command::DbMigrate { require_roles: !without_roles })
+        }
+        ["db", "status"] => {
+            no_password()?;
+            no_selector()?;
+            no_without_roles()?;
+            done(Command::DbStatus)
+        }
         ["check"] => {
             plain()?;
             done(Command::Check)
         }
         [] => Err(err("a command is required")),
-        ["domain" | "account" | "alias" | "dkim"] => Err(err("a subcommand is required")),
-        ["domain" | "account" | "alias" | "dkim", _, ..] | ["check", ..] => {
+        ["domain" | "account" | "alias" | "dkim" | "db"] => Err(err("a subcommand is required")),
+        ["domain" | "account" | "alias" | "dkim" | "db", _, ..] | ["check", ..] => {
             Err(err("unknown subcommand or wrong number of arguments"))
         }
         _ => Err(err("unknown command")),

@@ -176,7 +176,19 @@ pub(crate) fn dev_config(data_dir: Option<&Path>) -> Result<StartupConfig, Strin
     } else {
         std::env::current_dir().map_err(|e| format!("cannot read the current directory: {e}"))?.join(dir)
     };
-    Ok(StartupConfig::dev(&dir))
+    let cfg = StartupConfig::dev(&dir);
+    // Dev only: RUSTY_DEV_STORE_CONFIG names a file with a [store] section (the acceptance script runs the
+    // dev server on Postgres this way). Production reads its whole configuration from --config.
+    match std::env::var_os("RUSTY_DEV_STORE_CONFIG") {
+        None => Ok(cfg),
+        Some(path) => {
+            let text = std::fs::read_to_string(&path).map_err(|_| "cannot read RUSTY_DEV_STORE_CONFIG".to_owned())?;
+            if text.len() > 16 * 1024 {
+                return Err("RUSTY_DEV_STORE_CONFIG is too large".to_owned());
+            }
+            cfg.with_store_toml(&text).map_err(|e| format!("RUSTY_DEV_STORE_CONFIG: {e}"))
+        }
+    }
 }
 
 pub(crate) const DEFAULT_CONFIG_PATH: &str = DEFAULT_CONFIG;

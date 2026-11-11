@@ -15,7 +15,7 @@ use common::raw;
 use rusty_core::{Error, Flags, JobId};
 use rusty_store::repo::pg::{Knobs, PgRepo};
 use rusty_store::repo::GcRepo;
-use rusty_store::{Gc, JobFence, JobQueue, Mailbox, PgPoolConfig, PgStore};
+use rusty_store::{Gc, JobFence, JobQueue, Mailbox, PgLimits, PgStore};
 use serde_json::json;
 
 const HOUR: Duration = Duration::from_secs(3600);
@@ -168,7 +168,7 @@ async fn a_claim_that_hits_lock_timeout_is_busy_not_storage() {
     }
     let b = pg_backend().await.unwrap();
     let url = b._db.as_ref().unwrap().url().to_owned();
-    let cfg = PgPoolConfig { lock_timeout: Duration::from_millis(300), ..PgPoolConfig::default() };
+    let cfg = PgLimits { lock_timeout: Duration::from_millis(300), ..PgLimits::default() };
     let store = PgStore::connect_with_config(&url, cfg).await.unwrap();
     let r = Arc::new(PgRepo::new(store));
     let q = jq(&r);
@@ -560,7 +560,7 @@ async fn purge_deleted_batch_continues_past_a_busy_mailbox() {
         ids.push(m.id);
     }
     let boxes = common::backends::scalars(&b, "SELECT id FROM mailboxes ORDER BY id").await;
-    let cfg = PgPoolConfig { lock_timeout: Duration::from_millis(300), ..PgPoolConfig::default() };
+    let cfg = PgLimits { lock_timeout: Duration::from_millis(300), ..PgLimits::default() };
     let short = Arc::new(PgRepo::new(PgStore::connect_with_config(&url, cfg).await.unwrap()));
     let (admin, _) = b.pg.as_ref().unwrap();
     // Another session holds the LOWEST mailbox row.

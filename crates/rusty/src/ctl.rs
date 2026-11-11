@@ -17,7 +17,7 @@ use rusty_ctl::{
     execute, parse_args, render, CtlEnv, CtlError, PasswordReader, PasswordSource, Secret, Source, USAGE,
 };
 use rusty_directory::Directory;
-use rusty_store::{Store, StoreConfig};
+use rusty_store::Store;
 
 use crate::cli::{dev_config, DEFAULT_CONFIG_PATH};
 use crate::daemon::{prepare_dev_dirs, sqlite_url};
@@ -152,11 +152,11 @@ fn check_database_files(path: &Path, create: bool) -> Result<(), String> {
 async fn open_directory(cfg: &StartupConfig, dev: bool, create: bool) -> Result<(Store, Directory), String> {
     if dev {
         prepare_dev_dirs(cfg).await.map_err(|e| e.to_string())?;
-    } else {
+    } else if !cfg.store.is_postgres() {
         check_database_files(&cfg.database_path, create)?;
     }
-    let url = sqlite_url(&cfg.database_path).map_err(|e| e.to_string())?;
-    let store = Store::open(StoreConfig::sqlite(url)).await.map_err(|e| format!("cannot open the database: {e}"))?;
+    let sc = crate::storecfg::store_config(cfg, || sqlite_url(&cfg.database_path)).map_err(|e| e.to_string())?;
+    let store = Store::open(sc).await.map_err(|e| format!("cannot open the database: {e}"))?;
     let dir = Directory::with_repo(store.repos().directory.clone());
     Ok((store, dir))
 }
@@ -194,6 +194,9 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
                 return 1;
             }
         };
+        if matches!(parsed.command, rusty_ctl::Command::DbMigrate { .. } | rusty_ctl::Command::DbStatus) {
+            return run_db(prog, &cfg, &parsed).await;
+        }
         let (store, directory) = match open_directory(&cfg, dev, parsed.create).await {
             Ok(x) => x,
             Err(e) => {
@@ -232,6 +235,60 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         }
         code
     }))
+}
+
+/// `db migrate` and `db status`: the migrator role against Postgres directly; never the daemon's role,
+/// never through a pooler.
+async fn run_db(prog: &str, cfg: &StartupConfig, parsed: &rusty_ctl::Parsed) -> u8 {
+    use rusty_store::{migrate_postgres, schema_status, SchemaState};
+    let say = |text: String, json: serde_json::Value| {
+        println!("{}", if parsed.json { json.to_string() } else { text });
+    };
+    if !cfg.store.is_postgres() {
+        say(
+            "sqlite backend: the schema is managed by the daemon itself; nothing to do".to_owned(),
+            serde_json::json!({ "backend": "sqlite", "state": "managed" }),
+        );
+        return 0;
+    }
+    let (url, security) = match crate::storecfg::migrator_target(cfg) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("{prog}: {e}");
+            return 1;
+        }
+    };
+    let name = |s: &SchemaState| format!("{s:?}").to_lowercase();
+    match &parsed.command {
+        rusty_ctl::Command::DbStatus => match schema_status(&url, &security).await {
+            Ok(s) => {
+                say(
+                    format!("schema: {} (applied {}, expected {}, pending {:?})", name(&s.state), s.applied.len(), s.expected.len(), s.pending()),
+                    serde_json::json!({ "state": name(&s.state), "applied": s.applied, "expected": s.expected, "pending": s.pending() }),
+                );
+                if s.state == SchemaState::Current { 0 } else { 1 }
+            }
+            Err(e) => {
+                eprintln!("{prog}: {e}");
+                1
+            }
+        },
+        rusty_ctl::Command::DbMigrate { require_roles } => match migrate_postgres(&url, &security, *require_roles).await {
+            Ok(r) => {
+                let applied_now: Vec<i64> = r.after.applied.iter().copied().filter(|v| !r.before.applied.contains(v)).collect();
+                say(
+                    format!("schema: {} (newly applied {:?}); privilege matrix {}", name(&r.after.state), applied_now, if r.grants_applied { "applied" } else { "NOT applied (roles missing)" }),
+                    serde_json::json!({ "state": name(&r.after.state), "applied_now": applied_now, "grants_applied": r.grants_applied }),
+                );
+                0
+            }
+            Err(e) => {
+                eprintln!("{prog}: {e}");
+                1
+            }
+        },
+        _ => 2,
+    }
 }
 
 /// A failure in `--json` mode, so a script reads one format on both streams.

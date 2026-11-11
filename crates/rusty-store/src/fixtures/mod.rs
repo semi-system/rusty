@@ -285,3 +285,27 @@ impl Fixtures {
         unreachable!("a store has a backend")
     }
 }
+
+/// Pooled connections held away from the store (Postgres): the pool looks saturated.
+pub struct PoolHold {
+    #[cfg(feature = "postgres")]
+    _held: Vec<sqlx::pool::PoolConnection<sqlx::Postgres>>,
+}
+
+impl Fixtures {
+    /// Check out `n` connections of the Postgres pool until the guard drops, so every operation of
+    /// the store has to wait for a connection. `None` on SQLite (its writer lock is
+    /// [`hold_write_lock`](Self::hold_write_lock)).
+    pub async fn hold_pool(&self, n: u32) -> Option<PoolHold> {
+        #[cfg(feature = "postgres")]
+        if let Some(store) = &self.pg {
+            let mut held = Vec::new();
+            for _ in 0..n {
+                held.push(store.pool().acquire().await.expect("check out a pooled connection"));
+            }
+            return Some(PoolHold { _held: held });
+        }
+        let _ = n;
+        None
+    }
+}

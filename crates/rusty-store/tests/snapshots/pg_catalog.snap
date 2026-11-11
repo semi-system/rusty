@@ -371,7 +371,8 @@ FUNCTION rs_address_truncate
 CREATE OR REPLACE FUNCTION public.rs_address_truncate()
  RETURNS trigger
  LANGUAGE plpgsql
- SET search_path TO 'pg_catalog', 'public'
+ SECURITY DEFINER
+ SET search_path TO 'pg_catalog', 'public', 'pg_temp'
 AS $function$
 BEGIN
   DELETE FROM address_owners
@@ -384,7 +385,8 @@ FUNCTION rs_address_unique
 CREATE OR REPLACE FUNCTION public.rs_address_unique()
  RETURNS trigger
  LANGUAGE plpgsql
- SET search_path TO 'pg_catalog', 'public'
+ SECURITY DEFINER
+ SET search_path TO 'pg_catalog', 'public', 'pg_temp'
 AS $function$
 DECLARE
   kind text := CASE TG_TABLE_NAME

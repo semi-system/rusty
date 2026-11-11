@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use rusty_core::config::{Listen, Profile, StartupConfig};
 use rusty_core::{Error, Result};
-use rusty_store::{BlobStore, FsBlobStore, Store, StoreConfig};
+use rusty_store::{BlobStore, FsBlobStore, Store};
 use rusty_svc::{
     listener_plan, run_services, Accept, BoundListener, Context, DirectTcp, DirectTls, FileSecretSource,
     GcService, ListenerKind, ListenerService, Service, SessionHandler, SystemClock, TlsProvider,
@@ -68,10 +68,10 @@ impl Running {
 /// Dev profile only: the data directory is created 0700 (or must already be private and not a
 /// symlink) and the blob root is initialised. Production never creates anything implicitly.
 pub(crate) async fn prepare_dev_dirs(cfg: &StartupConfig) -> Result<()> {
-    let dir = cfg
-        .database_path
+    let (own, what) = if cfg.store.is_postgres() { (cfg.blob_dir.as_path(), "blob_dir") } else { (cfg.database_path.as_path(), "database_path") };
+    let dir = own
         .parent()
-        .ok_or_else(|| Error::Invalid("database_path has no directory".into()))?;
+        .ok_or_else(|| Error::Invalid(format!("{what} has no directory")))?;
     match std::fs::symlink_metadata(dir) {
         Ok(m) => {
             if !m.is_dir() {
@@ -119,7 +119,10 @@ pub async fn start(cfg: StartupConfig, profile: Profile, shutdown: CancellationT
     if profile == Profile::Dev {
         prepare_dev_dirs(&cfg).await?;
     }
-    let store = Store::open(StoreConfig::sqlite(sqlite_url(&cfg.database_path)?)).await?;
+    for w in cfg.startup_warnings(profile) {
+        tracing::warn!("{w}");
+    }
+    let store = Store::open(crate::storecfg::store_config(&cfg, || sqlite_url(&cfg.database_path))?).await?;
     match build(&cfg, &store, tls.clone(), shutdown.clone()).await {
         Ok((addrs, task)) => Ok(Running { addrs, shutdown, tls, store, task }),
         Err(e) => {

@@ -128,7 +128,19 @@ postgres_tests() {
   fi
   if [ "$rc" -eq 0 ]; then
     RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
-      cargo test -p rusty-directory -p rusty-imap --features postgres || rc=$?
+      cargo test -p rusty-directory -p rusty-imap -p rusty-smtp -p rusty-ctl --features postgres || rc=$?
+  fi
+  # The whole conformance suites again as the unprivileged runtime role rusty_app, on a database initialised
+  # with deploy/db/roles.sql and migrated by rusty_migrator (what production runs).
+  if [ "$rc" -eq 0 ]; then
+    RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 RUSTY_TEST_PG_ROLES=1 \
+      cargo test -p rusty-store --features postgres --test mailbox_conformance --test jobs_conformance \
+        --test gc_conformance --test imap_ops_conformance --test input_validation_conformance --test race_conformance \
+        --test mailbox --test jobs --test gc --test deliveries --test batch --test mailbox_paging --test known_diffs || rc=$?
+  fi
+  if [ "$rc" -eq 0 ]; then
+    RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 RUSTY_TEST_PG_ROLES=1 \
+      cargo test -p rusty-directory -p rusty-imap -p rusty-smtp -p rusty-ctl --features postgres || rc=$?
   fi
   # The mutation hook's table and probes (the full mutation run is scripts/pg-mutate.sh, not a CI stage).
   if [ "$rc" -eq 0 ]; then
@@ -137,7 +149,7 @@ postgres_tests() {
   fi
   if [ "$rc" -eq 0 ]; then
     RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
-      cargo clippy -p rusty-store -p rusty-directory -p rusty-imap --features postgres --all-targets -- -D warnings || rc=$?
+      cargo clippy -p rusty-store -p rusty-directory -p rusty-imap -p rusty-smtp -p rusty-ctl --features postgres --all-targets -- -D warnings || rc=$?
   fi
   bash scripts/pg-down.sh >/dev/null 2>&1 || true
   PG_RUN_ID=""
@@ -165,6 +177,19 @@ stage "no test knobs in release" bash scripts/check-test-knobs.sh symbols "$MUSL
 stage "no test fixtures in release" bash scripts/check-test-fixtures.sh symbols "$MUSL"
 stage "no mutation hook in release" bash scripts/check-mutation-hook.sh symbols "$MUSL"
 
+# The same end-to-end scenario on both backends (needs the musl release binary built above; Postgres needs Docker).
+acceptance() {
+  local bin="$TARGET_DIR/$MUSL/release/rusty"
+  RUSTY_BIN="$bin" BACKEND=sqlite bash tools/acceptance/local-run.sh || return 1
+  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+    PG_SKIPPED=1
+    echo "WARNING: Docker is unavailable; the Postgres acceptance run was not done." >&2
+    return 0
+  fi
+  RUSTY_BIN="$bin" BACKEND=postgres bash tools/acceptance/local-run.sh
+}
+stage "acceptance (sqlite, postgres)" acceptance
+
 check_static() {
   local found=0 f
   shopt -s nullglob
@@ -189,7 +214,7 @@ fuzz_all() {
     # Use the installed nightly by its exact name (e.g. nightly-2026-11-01-...): plain `+nightly` makes rustup
     # download the latest channel when only a dated nightly is installed.
     nightly_tc="$(rustup toolchain list | awk '/^nightly/{print $1; exit}')"
-    for t in parse_envelope parse_address fuzz_config fuzz_pem fuzz_ctl_args fuzz_smtp_command fuzz_smtp_data fuzz_smtp_path fuzz_smtp_headers fuzz_smtp_auth fuzz_imap_command fuzz_imap_structure fuzz_imap_search_eval fuzz_imap_seqset fuzz_imap_utf7; do
+    for t in parse_envelope parse_address fuzz_config fuzz_pg_url fuzz_pem fuzz_ctl_args fuzz_smtp_command fuzz_smtp_data fuzz_smtp_path fuzz_smtp_headers fuzz_smtp_auth fuzz_imap_command fuzz_imap_structure fuzz_imap_search_eval fuzz_imap_seqset fuzz_imap_utf7; do
       mkdir -p "fuzz/corpus/$t"
       # Working corpus first (new finds are written there), committed seeds second.
       (cd fuzz && cargo "+$nightly_tc" fuzz run "$t" "corpus/$t" "seeds/$t" -- "-max_total_time=$FUZZ_SECS" -rss_limit_mb=2048) || return 1

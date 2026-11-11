@@ -304,3 +304,46 @@ pub fn handler(ctx: Context) -> Arc<ImapHandler> {
 pub fn handler_with(ctx: Context, limits: Limits) -> Arc<ImapHandler> {
     Arc::new(ImapHandler::new(ctx).with_limits(limits))
 }
+
+/// Every backend with short waits (300 ms) and a two-connection pool, for the saturation tests.
+pub async fn for_each_backend_short_waits<F, Fut>(f: F)
+where
+    F: Fn(Backend, rusty_store::fixtures::Fixtures) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let ms = Duration::from_millis(300);
+    let tmp = tempfile::tempdir().unwrap();
+    let url = format!("sqlite://{}", tmp.path().join("meta.sqlite").display());
+    let store = Store::open(StoreConfig::Sqlite { url, busy_timeout: ms }).await.unwrap();
+    let fx = rusty_store::fixtures::Fixtures::of(&store);
+    eprintln!("-- backend sqlite");
+    f(
+        finish(
+            "sqlite",
+            store,
+            tmp,
+            #[cfg(feature = "postgres")]
+            None,
+        )
+        .await,
+        fx,
+    )
+    .await;
+    #[cfg(feature = "postgres")]
+    if let Some(url) = pg::pg_admin_url() {
+        let db = pg::PgTestDb::create(&url).await;
+        db.set_database_setting("statement_timeout", "300ms").await;
+        let limits = rusty_store::PgLimits {
+            max_connections: 2,
+            acquire_timeout: ms,
+            lock_timeout: ms,
+            queue_timeout: ms,
+            ..rusty_store::PgLimits::default()
+        };
+        let cfg = StoreConfig::Postgres { url: db.url().to_owned(), pool: limits, security: rusty_store::PgSecurity::default() };
+        let store = Store::open(cfg).await.unwrap();
+        let fx = rusty_store::fixtures::Fixtures::of(&store);
+        eprintln!("-- backend postgres");
+        f(finish("postgres", store, tempfile::tempdir().unwrap(), Some(db)).await, fx).await;
+    }
+}
