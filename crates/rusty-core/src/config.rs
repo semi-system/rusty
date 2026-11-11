@@ -12,7 +12,8 @@ use serde::Deserialize;
 use crate::{Error, Result};
 
 pub use crate::config_sections::{
-    valid_hostname, ImapConfig, LimitsConfig, Listen, LogFormat, OutboundConfig, SmtpConfig, TlsConfig,
+    valid_hostname, DnsCheckConfig, ImapConfig, LimitsConfig, Listen, LogFormat, Nameserver, OutboundConfig, SmtpConfig,
+    TlsConfig, DNS_CHECK_JOB_KIND,
 };
 
 /// Largest configuration file accepted by [`StartupConfig::load`].
@@ -71,6 +72,9 @@ pub struct StartupConfig {
     pub outbound: OutboundConfig,
     #[serde(default)]
     pub limits: LimitsConfig,
+    /// `[dns_check]`: periodic DNS re-validation (off by default).
+    #[serde(default)]
+    pub dns_check: DnsCheckConfig,
 }
 
 /// Which start-up rules apply (see [`StartupConfig::check_startup`]).
@@ -162,6 +166,7 @@ impl StartupConfig {
         self.tls.validate()?;
         self.smtp.validate(self.max_message_bytes)?;
         self.imap.validate()?;
+        self.dns_check.validate()?;
         self.limits.validate()
     }
 
@@ -220,6 +225,7 @@ impl StartupConfig {
             },
             outbound: OutboundConfig::default(),
             limits: LimitsConfig::default(),
+            dns_check: DnsCheckConfig::default(),
         }
     }
 }
