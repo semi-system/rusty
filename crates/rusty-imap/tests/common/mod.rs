@@ -342,7 +342,7 @@ where
         };
         let cfg = StoreConfig::Postgres { url: db.url().to_owned(), pool: limits, security: rusty_store::PgSecurity::default() };
         let store = Store::open(cfg).await.unwrap();
-        let fx = rusty_store::fixtures::Fixtures::of(&store);
+        let fx = rusty_store::fixtures::Fixtures::admin_of(&db, &store).await;
         eprintln!("-- backend postgres");
         f(finish("postgres", store, tempfile::tempdir().unwrap(), Some(db)).await, fx).await;
     }

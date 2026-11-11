@@ -103,12 +103,16 @@ macro_rules! bind_all {
 #[derive(Clone)]
 pub struct Fixtures {
     sqlite: Option<SqliteStore>,
+    /// The store under test (it may run as the unprivileged `rusty_app`): lock and pool holds use it.
     #[cfg(feature = "postgres")]
     pg: Option<crate::PgStore>,
+    /// A superuser connection to the same database for raw SQL (see [`Fixtures::admin_of`]).
+    #[cfg(feature = "postgres")]
+    admin: Option<crate::PgStore>,
 }
 
 /// Run `$body` with `$pool` bound to the backend's pool and `$s` to the SQL text in that
-/// backend's placeholder syntax.
+/// backend's placeholder syntax. On Postgres the raw SQL goes through the admin connection when there is one.
 macro_rules! on_backend {
     ($self:ident, $sql:ident, |$pool:ident, $s:ident| $body:expr) => {{
         if let Some(store) = &$self.sqlite {
@@ -117,7 +121,7 @@ macro_rules! on_backend {
             return $body;
         }
         #[cfg(feature = "postgres")]
-        if let Some(store) = &$self.pg {
+        if let Some(store) = $self.admin.as_ref().or($self.pg.as_ref()) {
             let $pool = store.pool();
             let converted = to_dollar_placeholders($sql);
             let $s: &str = &converted;
@@ -134,6 +138,8 @@ impl Fixtures {
             sqlite: store.sqlite().cloned(),
             #[cfg(feature = "postgres")]
             pg: store.postgres().cloned(),
+            #[cfg(feature = "postgres")]
+            admin: None,
         }
     }
 
@@ -143,7 +149,24 @@ impl Fixtures {
             sqlite: Some(store),
             #[cfg(feature = "postgres")]
             pg: None,
+            #[cfg(feature = "postgres")]
+            admin: None,
         }
+    }
+
+    /// Fixtures for `store` (the store under test) on the test database `db`: raw SQL runs with SUPERUSER
+    /// rights, while `hold_write_lock` / `hold_pool` act on the store under test itself. In roles mode
+    /// (`RUSTY_TEST_PG_ROLES=1`) that store connects as the unprivileged `rusty_app`, which may not run the
+    /// DDL some fixtures need (forcing a failure with a trigger, planting a drifted row).
+    #[cfg(feature = "postgres")]
+    pub async fn admin_of(db: &pg_db::PgTestDb, store: &Store) -> Fixtures {
+        let mut fx = Fixtures::of(store);
+        fx.admin = Some(
+            crate::PgStore::connect(db.admin_db_url())
+                .await
+                .expect("connect the fixture pool with the admin URL"),
+        );
+        fx
     }
 
     #[cfg(feature = "postgres")]
@@ -152,6 +175,7 @@ impl Fixtures {
         Fixtures {
             sqlite: None,
             pg: Some(store),
+            admin: None,
         }
     }
 

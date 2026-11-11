@@ -196,6 +196,17 @@ impl PgTestDb {
             .execute(&admin)
             .await
             .expect("alter the test database setting");
+        // In roles mode `rusty_app` carries its own role-level timeouts (deploy/db/roles.sql) and a role setting
+        // beats a database setting: override it for this database only, as an operator would per database.
+        if roles_mode() {
+            sqlx::query(&format!(
+                "ALTER ROLE rusty_app IN DATABASE \"{}\" SET {name} = '{value}'",
+                self.name
+            ))
+            .execute(&admin)
+            .await
+            .expect("alter the app role setting for the test database");
+        }
         admin.close().await;
     }
 
