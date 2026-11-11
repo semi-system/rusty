@@ -216,7 +216,7 @@ impl TlsProvider {
         Self::from_config_in(cfg, hostname, secrets, None)
     }
 
-/// From `[tls]`: the configured pair, or the explicit dev certificate; anything else is an
+    /// From `[tls]`: the configured pair, or the explicit dev certificate; anything else is an
     /// error (listeners that accept authentication must not start in plaintext).
     /// `state_dir`: where the development certificate is kept between starts (0600 key; unsafe permissions
     /// are an error).
@@ -262,7 +262,6 @@ impl TlsProvider {
     fn dev_self_signed(_hostname: &str, _state_dir: Option<&Path>) -> Result<TlsProvider> {
         Err(bad("dev_self_signed needs a build with the dev-cert feature"))
     }
-
 
     /// A provider without any certificate: [`is_available`](Self::is_available) is false and no
     /// handshake completes. Only for a start-up that runs no listener accepting authentication.
@@ -362,7 +361,7 @@ mod dev_cert {
             .write(true)
             .create_new(true)
             .mode(mode)
-            .custom_flags(0o400000) // O_NOFOLLOW
+            // create_new is O_CREAT | O_EXCL: a file or symlink planted at the name is never followed.
             .open(&tmp)
             .map_err(|e| Error::storage_with("cannot write the dev certificate", e))?;
         f.write_all(bytes).and_then(|()| f.sync_all()).map_err(|e| Error::storage_with("cannot write the dev certificate", e))?;
