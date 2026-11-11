@@ -69,7 +69,7 @@ Same gate everywhere: `bash scripts/ci.sh`.
   cargo commands with `bash scripts/remote-cargo.sh ...`, any other command with
   `bash scripts/remote-run.sh <cmd...>`. Only one full CI at a time on the server.
 * Windows with WSL: `bash scripts/wsl-ci.sh`, `bash scripts/wsl-cargo.sh ...`.
-* One worktree per task: `git worktree add -b type/name <repo> main`.
+* One worktree per task: `git worktree add -b type/name ../rusty-name main`.
 
 ## Before every push
 
