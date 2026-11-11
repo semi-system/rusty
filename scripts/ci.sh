@@ -62,6 +62,8 @@ stage "remote build helpers self-test" bash scripts/tests/remote-lib.sh
 stage "ci-changes self-test" bash scripts/tests/ci-changes.sh
 stage "ci-cache-prune self-test" bash scripts/tests/ci-cache-prune.sh
 stage "ci-tool self-test" bash scripts/tests/ci-tool.sh
+# Pre-push check (run bash scripts/prepush-check.sh yourself before every git push).
+stage "prepush-check self-test" bash scripts/tests/prepush-check.sh
 
 # Database access belongs to rusty-store (scripts/check-raw-db.sh documents what the text scan
 # covers and what it cannot see). The gate has its own self-test.

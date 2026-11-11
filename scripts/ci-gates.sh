@@ -11,6 +11,7 @@ case "${1:-}" in
     bash scripts/tests/ci-changes.sh
     bash scripts/tests/ci-cache-prune.sh
     bash scripts/tests/ci-tool.sh
+    bash scripts/tests/prepush-check.sh
     bash scripts/tests/raw-db-gate.sh
     bash scripts/check-raw-db.sh
     bash scripts/tests/test-fixtures-gate.sh
