@@ -3,8 +3,7 @@
 # ssh/rsync on PATH (no server needed): env loading, argument parsing, path safety, lock naming,
 # exit-code propagation, detach and status handling.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
-ROOT="$PWD"
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 fail() { echo "remote-lib: $*" >&2; exit 1; }
 
@@ -53,8 +52,8 @@ unset BUILD_HOST BUILD_USER BUILD_KEY BUILD_PORT BUILD_MUX BUILD_SYNC BUILD_LOCK
 # 2. validation: missing/invalid configuration is refused
 (
   . scripts/remote-lib.sh; RUSTY_REMOTE_ENV="$tmp/none"; rl_load_env
-  out="$( (rl_require_config) 2>&1)"; rc=$?
-  [ "$rc" -eq 2 ] && [[ "$out" == *BUILD_HOST* ]] || fail "missing host not refused ($rc)"
+  rcout="$( (rl_require_config) 2>&1)"; rc=$?
+  [ "$rc" -eq 2 ] && [[ "$rcout" == *BUILD_HOST* ]] || fail "missing host not refused ($rc)"
   BUILD_HOST='a;b' BUILD_KEY=k; (rl_require_config) >/dev/null 2>&1 && fail "bad host accepted"
   BUILD_HOST=h BUILD_KEY=k BUILD_PORT=x; (rl_require_config) >/dev/null 2>&1 && fail "bad port accepted"
   BUILD_PORT=22 BUILD_SYNC=ftp; (rl_require_config) >/dev/null 2>&1 && fail "bad sync accepted"
