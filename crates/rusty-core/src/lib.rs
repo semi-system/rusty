@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod dns;
+pub mod dns_state;
 mod config_sections;
 mod error;
 mod ids;
