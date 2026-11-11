@@ -4,7 +4,7 @@
 # a file-level marker, and the review-PG6 bypasses (iterator named in a comment or a string literal, a
 # marker inside a string, a closure that ignores its backend).
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 GATE="$PWD/scripts/check-parametrised.sh"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 mk() { rm -rf "$tmp/t"; mkdir -p "$tmp/t/crates/rusty-store/tests" "$tmp/t/crates/rusty-directory/tests"

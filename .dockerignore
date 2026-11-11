@@ -1,7 +1,15 @@
+# Build context of deploy/docker/Dockerfile: sources and lockfile only.
 .git
+.github
+.superpowers
+.claude
 target
-fuzz/target
-fuzz/artifacts
+**/target
+rusty-dev-data
 fuzz/corpus
+fuzz/artifacts
+docs
+*.md
+!crates/**/*.md
+**/*.sqlite*
 deploy/compose/generated
-*.log

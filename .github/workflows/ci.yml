@@ -1,0 +1,190 @@
+# CI gate. Mirrors scripts/ci.sh stage by stage (split into jobs); the repository's own gate
+# scripts are called, their logic is not copied. Security rules (docs/docker.md): every action is
+# pinned by full commit SHA, permissions are empty at the top and minimal per job, there is no
+# pull_request_target, fork PRs get no secrets (none are used), only the read-only GITHUB_TOKEN.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * *" # nightly: fuzz smoke and the edge suite
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "5"
+
+jobs:
+  workflows-lint:
+    name: actionlint and shellcheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: bash scripts/ci-workflows-lint.sh
+
+  gates:
+    name: repository gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Gate scripts and their self-tests (scripts/ci-gates.sh, as in scripts/ci.sh)
+        run: bash scripts/ci-gates.sh static
+      - name: Compose hardening check
+        run: cargo run -q -p compose-check -- deploy/compose/compose.yaml
+      - name: Fuzz lockfile consistent
+        run: cd fuzz && cargo metadata --locked --format-version 1 >/dev/null
+
+  test-glibc:
+    name: clippy and tests (glibc, Postgres)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    services:
+      postgres:
+        # Same digest as deploy/images.lock (checked by scripts/check-docker-pins.sh).
+        image: postgres@sha256:3a4264520e121176619f54ff867d12774bc81e95e7b84db58d63bccdb6144b81
+        env:
+          POSTGRES_USER: rusty
+          # Throw-away service container on the runner's private network: not a secret.
+          POSTGRES_PASSWORD: ci-throwaway-not-a-secret
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U rusty -d postgres"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      RUSTY_TEST_PG_URL: postgres://rusty:ci-throwaway-not-a-secret@127.0.0.1:5432/postgres?sslmode=disable
+      RUSTY_REQUIRE_PG: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-glibc-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: cargo-glibc-
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - name: Postgres suites
+        run: bash scripts/ci-pg-suites.sh
+      - name: Dev quickstart smoke
+        run: bash deploy/dev/quickstart.sh --smoke
+
+  supply-chain:
+    name: cargo-deny and cargo-audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+          key: cargo-tools-deny-audit-v1
+      - name: Install tools (locked)
+        run: |
+          set -euo pipefail
+          command -v cargo-deny >/dev/null || cargo install cargo-deny --locked
+          command -v cargo-audit >/dev/null || cargo install cargo-audit --locked
+      - run: cargo deny check
+      - run: cargo audit
+
+  musl:
+    name: tests, release build and static check (musl)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      CC_x86_64_unknown_linux_musl: musl-gcc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-musl-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: cargo-musl-
+      - run: cargo test --workspace --target x86_64-unknown-linux-musl
+      - run: cargo build --release --workspace --target x86_64-unknown-linux-musl
+      - name: Release builds contain no test hooks
+        run: bash scripts/ci-gates.sh symbols x86_64-unknown-linux-musl
+      - name: Binaries are statically linked
+        run: |
+          set -euo pipefail
+          for f in target/x86_64-unknown-linux-musl/release/*; do
+            if [ ! -f "$f" ] || [ ! -x "$f" ]; then continue; fi
+            file -L "$f" | grep -q ELF || continue
+            file -L "$f" | grep -qE "statically linked|static-pie linked" || { file -L "$f"; exit 1; }
+            echo "static: $f"
+          done
+
+  fuzz-smoke:
+    name: fuzz smoke (nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install nightly --profile minimal
+      - run: cargo install cargo-fuzz --locked
+      - name: Fuzz every target for 60 s (targets as in scripts/ci.sh)
+        run: |
+          set -euo pipefail
+          cd fuzz
+          for t in parse_envelope parse_address fuzz_config fuzz_pem fuzz_ctl_args fuzz_smtp_command fuzz_smtp_data fuzz_smtp_path fuzz_smtp_headers fuzz_smtp_auth fuzz_imap_command fuzz_imap_structure fuzz_imap_search_eval fuzz_imap_seqset fuzz_imap_utf7; do
+            mkdir -p "corpus/$t"
+            cargo +nightly fuzz run "$t" "corpus/$t" "seeds/$t" -- -max_total_time=60 -rss_limit_mb=2048
+          done
+
+  edge-suite:
+    name: edge behaviour suite (nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cargo test -p edge-tests -- --ignored --nocapture

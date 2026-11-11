@@ -15,10 +15,10 @@ action=run; tail_n=40; follow=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --detach) action=detach ;;
-    --status) action=status ;;
-    --tail) action=tail; if [[ "${2:-}" =~ ^[0-9]+$ ]]; then tail_n="$2"; shift; fi ;;
-    --follow) action=tail; follow=1 ;;
-    --wait) action=wait ;;
+    --status) action="status" ;;
+    --tail) action="tail"; if [[ "${2:-}" =~ ^[0-9]+$ ]]; then tail_n="$2"; shift; fi ;;
+    --follow) action="tail"; follow=1 ;;
+    --wait) action="wait" ;;
     -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
     *) echo "remote-ci: unknown argument '$1' (see --help)" >&2; exit 2 ;;
   esac
