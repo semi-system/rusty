@@ -132,12 +132,14 @@ printf '[Journal]\nSystemMaxUse=500M\nMaxRetentionSec=2week\n' > /etc/systemd/jo
 systemctl restart systemd-journald
 
 step "sshd hardening drop-in"
+# ALLOW_ROOT_LOGIN=1 keeps key-only root login (for an owner-managed, isolated build VM); default is build user only.
+if [ "${ALLOW_ROOT_LOGIN:-0}" = 1 ]; then SSHD_PERMIT_ROOT="prohibit-password"; SSHD_ALLOW_USERS="$BUILD_USER root"; else SSHD_PERMIT_ROOT="no"; SSHD_ALLOW_USERS="$BUILD_USER"; fi
 cat > /etc/ssh/sshd_config.d/00-rusty-hardening.conf <<EOS
-PermitRootLogin no
+PermitRootLogin $SSHD_PERMIT_ROOT
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 PubkeyAuthentication yes
-AllowUsers $BUILD_USER
+AllowUsers $SSHD_ALLOW_USERS
 X11Forwarding no
 MaxAuthTries 3
 ClientAliveInterval 30
