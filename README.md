@@ -1,109 +1,89 @@
-# Rusty
+# semi-mail (code name: Rusty)
 
-Rusty is a security-first rewrite of the Zimbra mail stack in Rust.
+A security-first, from-scratch rewrite of the Zimbra FOSS mail stack in Rust: standard
+protocols (SMTP, IMAP; JMAP, CalDAV and CardDAV are planned), multi-tenant by design
+(domain = tenant), content-addressed blob storage, and an import tool for Zimbra later.
+The crates and binaries keep the code name `rusty`.
 
-## Status
+## Status: early development, not production ready
 
-This is a library layer. There are no running services yet: no SMTP, IMAP, HTTP or other
-network listener, and no daemon. The libraries hold the data model, storage, parsing and
-the building blocks for a distributed deployment (idempotent delivery, a job queue,
-capabilities). Designs live in `docs/superpowers/specs/`, implementation plans in
-`docs/superpowers/plans/`, and the roadmap to feature parity with Zimbra in
-`docs/superpowers/plans/2026-11-03-roadmap-zimbra-parity.md`. Several specs (tenants, ACLs,
-KMS, edge, containers) describe things that are not implemented.
+What runs today (single process, `rusty d`):
+
+- SMTP inbound (port 25) and submission (587 STARTTLS / 465 implicit TLS, AUTH only over TLS).
+- IMAP (143 STARTTLS / 993 implicit TLS) with IDLE, UIDPLUS, NAMESPACE, SPECIAL-USE and more.
+- `rustyctl` administration (domains, accounts, aliases, DNS record hints, DKIM keys).
+- SQLite (dev/test) and Postgres (production target) storage behind repository traits; blobs on a
+  filesystem volume.
+
+Not done yet (see the plans): outbound delivery with DKIM (in progress), the production Postgres
+profile, the admin web UI with DNS setup and validation, packaging, anti-spam/anti-virus,
+webmail/JMAP, calendar and contacts. Do not put real mail in a development instance.
+
+Designs live in `docs/superpowers/specs/`, plans in `docs/superpowers/plans/` (index:
+[docs/README.md](docs/README.md)); the current work plan is
+`docs/superpowers/plans/2026-11-08-usable-mailserver.md`.
+
+## Try it locally
+
+```sh
+bash tools/acceptance/local-run.sh      # builds, starts a throwaway dev instance, sends and reads mail
+```
+
+Details, ports and Thunderbird settings: [docs/local-run.md](docs/local-run.md).
 
 ## Build and test
 
-Development happens in WSL on a native Linux filesystem (not under `/mnt/...`):
+Linux (or WSL on a native Linux filesystem):
 
 ```sh
-cd ~/Rusty
 cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+bash scripts/ci.sh        # the full gate (see below)
 ```
 
-The full gate runs clippy, tests (glibc and musl), cargo-deny, cargo-audit, a musl release
-build with a static-linking check, a fuzz lockfile check and 60 s of fuzzing per target:
+The toolchain is pinned in `rust-toolchain.toml`. The full gate (`scripts/ci.sh`) runs clippy, tests
+(glibc and musl, SQLite and Postgres), `cargo-deny`, `cargo-audit`, the repository policy checks in
+`scripts/check-*.sh`, a musl release build with a static-linking check, and fuzz smoke runs for every
+parser. `FUZZ_SECS` overrides the fuzz time. Postgres tests start a throwaway container
+(`scripts/pg-up.sh`). The tools it needs are listed in [SECURITY.md](SECURITY.md).
 
-```sh
-bash scripts/ci.sh
-```
-
-See `SECURITY.md` for the tools it needs. `FUZZ_SECS` overrides the fuzz time.
-
-The toolchain is pinned to an exact version in `rust-toolchain.toml` (rustup installs it on
-first use); bump it deliberately as described there. Licensed under MIT (`LICENSE`).
-
-## Acceptance test
-
-`acceptance_10k_messages` drives the whole stack on a file-backed SQLite database and a
-filesystem blob store: a domain and account, a three-level folder tree, 10,000 appended
-messages (500 exact duplicates, with replies for threading), flag changes, 1,000 moves,
-1,000 expunges, purge and blob garbage collection. It checks folder listings and a gapless
-change log (both read page by page), blob reference counts and file counts,
-`PRAGMA integrity_check` and `PRAGMA foreign_key_check`, and fails if it takes longer than
-60 seconds in a debug build.
-
-```sh
-cargo test -p rusty-directory --test acceptance -- --nocapture
-```
-
-`--nocapture` prints the elapsed time.
-
-## Development workflow
-
-Edit files in the Windows checkout (`<repo>`) and build in WSL, with the target
-directory on the WSL ext4 disk (`~/rusty-target`; much faster than building on `D:`):
-
-    bash scripts/wsl-cargo.sh test --workspace
-    bash scripts/wsl-cargo.sh clippy --workspace --all-targets -- -D warnings
-    bash scripts/wsl-ci.sh        # full gate; log in WSL at ~/rusty-ci.log
-
-`RUSTY_WSL_TARGET_DIR` overrides the target directory. `~/Rusty` inside WSL is an obsolete
-copy; do not use it. Files use LF line endings (`.gitattributes` enforces this). After an
-interrupted run, a corrupt musl artifact is fixed with
-`bash scripts/wsl-cargo.sh clean --target x86_64-unknown-linux-musl`.
+Development helpers: on Windows, build in WSL with `scripts/wsl-cargo.sh` / `scripts/wsl-ci.sh`, or on
+a dedicated Ubuntu build server with `scripts/remote-cargo.sh` / `scripts/ci-run.sh`
+([docs/buildserver.md](docs/buildserver.md)). Files use LF line endings (`.gitattributes`).
 
 ## Crates
 
-- `rusty-core`: ids, flags, the shared `Error` type, the startup configuration loader,
-  `proto` (protocol version negotiation) and `text` (shared text-hygiene helpers).
-- `rusty-store`: SQLite metadata store and the filesystem blob store.
-  - `mailbox`: `Mailbox` facade (folders, messages, change log), idempotent `deliver` with
-    delivery ids, and batch operations (`move_many`, `expunge_many`, `deliver_many`; one
-    transaction each, at most 1000 items).
-  - `jobs`: durable job queue with leases and fencing epochs (at-least-once).
-  - `blob`, `gc`: content-addressed blob store and garbage collection.
-  - `sqlite`, `traits`: schema, connection setup and storage traits.
-- `rusty-mime`: bounded parsing of message envelopes (header section only, at most 256 KiB;
-  sanitized, capped subject, addresses and threading headers).
-- `rusty-directory`: domains, accounts, aliases, lists (expansion capped at 10,000
-  members), address resolution, local authentication (`auth`) and hashed, revocable,
-  short-lived capability tokens (`caps`).
+- `rusty-core`: ids, flags, the shared `Error` type, configuration, protocol version
+  negotiation, text hygiene, and the pure DNS record generator.
+- `rusty-store`: storage traits and backends (SQLite, Postgres): `Mailbox` and `Directory`
+  repositories, idempotent delivery, batch operations, the durable job queue (leases, fencing),
+  content-addressed blob store and garbage collection.
+- `rusty-mime`: bounded message parsing (envelope, structure, sections).
+- `rusty-directory`: domains, accounts, aliases, lists, address resolution, authentication,
+  revocable capability tokens.
+- `rusty-svc`: service plumbing (TLS provider, listeners, throttling, memory budget, graceful shutdown).
+- `rusty-smtp`, `rusty-imap`: protocol servers (codec, sans-I/O session, driver; third-party
+  parsers only inside an adapter module).
+- `rusty-ctl`: the `rustyctl` command layer.
+- `rusty`: the composition root and multi-call binary (`rusty d`, `rusty ctl`).
+- `tools/`: acceptance scripts, the edge (HAProxy) behaviour suite and its fake backends,
+  and the compose hardening checker.
 
 ## Configuration
 
-Startup settings live in a small TOML file; see `rusty.example.toml` for every key and its
-default. Unknown keys, relative paths and out-of-range limits are rejected at load time.
+Startup settings live in a TOML file; see `rusty.example.toml` for every key and default. Unknown
+keys, relative paths and out-of-range limits are rejected at load time. Run the service under its
+own account with umask 077; key and data directories are checked for ownership and modes and the
+service refuses to start otherwise.
 
-Run the service under its own account with umask 077. The blob directory is prepared once
-with `FsBlobStore::init` (mode 0700 and a `.rusty-blobs` marker); `FsBlobStore::open`
-refuses a missing, unmarked, symlinked or group/world-writable directory instead of
-creating an empty store. A missing SQLite database file is created with mode 0600.
+## Security
 
-## Security posture
+No `unsafe` in project code (`#![forbid(unsafe_code)]`), hostile input everywhere (bounded parsers,
+fuzzed), fail closed, no secrets in logs or error messages, tenant isolation enforced in the
+database as well as in code, and a locked, audited dependency set. The threat model, invariants and
+how to report a vulnerability are in [SECURITY.md](SECURITY.md).
 
-Summary (the authoritative text is section 8b of
-`docs/superpowers/specs/2026-11-02-rusty-foundation-design.md`):
+## License
 
-- No unsafe in project code: each crate declares `#![forbid(unsafe_code)]`.
-- All external input is hostile: parsers must not panic and carry size, depth and count limits.
-- Default resource limits (message size, header section size, password length, folder
-  depth, keywords per message, page size of folder listings and change-log reads).
-- Fail closed: errors refuse the operation; error messages never echo caller input, and
-  `source()` chains (raw backend text) are never sent to clients.
-- Supply chain: `Cargo.lock` is committed; few, well-maintained dependencies.
-- Defence in depth: database constraints and triggers back up application checks; no secrets
-  in clear text; logs and error messages never contain passwords, hashes or message content.
-- Blob garbage collection enforces a minimum grace period and never deletes referenced blobs.
+MIT, see [LICENSE](LICENSE).

@@ -57,6 +57,7 @@ rustup target list --installed | grep -qx "$MUSL" || { echo "[FAIL] missing rust
 # The repo is not rustfmt-clean yet, so formatting is not gated here; clippy is.
 # (skipped when the hook is set: ci-trap.sh runs ci.sh itself)
 [ -n "${RUSTY_CI_FORCE_FAIL:-}" ] || stage "ci scripts" bash scripts/tests/ci-trap.sh
+stage "remote build helpers self-test" bash scripts/tests/remote-lib.sh
 
 # Database access belongs to rusty-store (scripts/check-raw-db.sh documents what the text scan
 # covers and what it cannot see). The gate has its own self-test.
