@@ -1,7 +1,8 @@
-# CI gate. Mirrors scripts/ci.sh stage by stage (split into jobs); the repository's own gate
-# scripts are called, their logic is not copied. Security rules (docs/docker.md): every action is
-# pinned by full commit SHA, permissions are empty at the top and minimal per job, there is no
-# pull_request_target, fork PRs get no secrets (none are used), only the read-only GITHUB_TOKEN.
+# CI gate. Mirrors scripts/ci.sh stage by stage (split into parallel jobs); the repository's own
+# gate scripts are called, their logic is not copied. Speed design and estimates: docs/ci.md.
+# Security rules (docs/docker.md): every action is pinned by full commit SHA, permissions are empty at
+# the top and minimal per job, there is no pull_request_target, fork PRs get no secrets (none are
+# used), only the read-only GITHUB_TOKEN. Branch protection needs ONE check: `ci-ok`.
 name: ci
 
 on:
@@ -14,18 +15,44 @@ on:
 
 permissions: {}
 
+# A newer push to the same pull request or to main cancels the older run. Scheduled and manual runs
+# have their own groups and are never cancelled by pushes.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 env:
   CARGO_TERM_COLOR: never
-  CARGO_INCREMENTAL: "0"
+  CARGO_INCREMENTAL: "0" # one-shot builds: incremental data only slows them and bloats the cache
   CARGO_NET_RETRY: "5"
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only # smaller artefacts, faster link; backtraces keep line numbers
 
 jobs:
+  # Decides from `git diff` (scripts/ci-changes.sh, plain shell) what a pull request touches.
+  # Pushes, schedules and manual runs always get everything. A docs-only pull request skips every
+  # heavy job and still ends in a green `ci-ok`.
+  changes:
+    name: what changed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      code: ${{ steps.c.outputs.code }}
+      rust: ${{ steps.c.outputs.rust }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2 # pull request: the merge commit and both parents
+      - name: Classify the changed paths
+        id: c
+        run: bash scripts/ci-changes.sh | tee -a "$GITHUB_OUTPUT"
+
   workflows-lint:
     name: actionlint and shellcheck
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -35,9 +62,13 @@ jobs:
         with:
           persist-credentials: false
       - run: bash scripts/ci-workflows-lint.sh
+      - name: workflows-lint self-test
+        run: bash scripts/tests/workflows-lint.sh
 
   gates:
     name: repository gates
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -46,15 +77,49 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Rust toolchain (minimal profile, no rust-docs download)
+        run: rustup set profile minimal
+      - name: Restore the cargo registry and git cache
+        id: registry
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-v1-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-registry-v1-${{ runner.os }}-
+      - name: Restore the build cache (gates)
+        id: target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: cargo-target-v1-gates-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-target-v1-gates-${{ runner.os }}-
       - name: Gate scripts and their self-tests (scripts/ci-gates.sh, as in scripts/ci.sh)
         run: bash scripts/ci-gates.sh static
       - name: Compose hardening check
         run: cargo run -q -p compose-check -- deploy/compose/compose.yaml
       - name: Fuzz lockfile consistent
         run: cd fuzz && cargo metadata --locked --format-version 1 >/dev/null
+      - name: Two concurrent Postgres runs stay isolated
+        run: bash scripts/tests/pg-isolation.sh
+      - name: Prune the build directory (workspace artefacts, test binaries) before saving
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.target.outputs.cache-hit != 'true' }}
+        run: bash scripts/ci-cache-prune.sh target
+      - name: Save the build cache (main only)
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.target.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: ${{ steps.target.outputs.cache-primary-key }}
 
+  # Clippy and the workspace tests share one target directory (one dependency build).
   test-glibc:
-    name: clippy and tests (glibc, Postgres)
+    name: clippy and tests (glibc)
+    needs: changes
+    if: ${{ needs.changes.outputs.rust == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -80,23 +145,116 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Rust toolchain (minimal profile, no rust-docs download)
+        run: rustup set profile minimal
+      - name: Restore the cargo registry and git cache
+        id: registry
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-glibc-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: cargo-glibc-
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-v1-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-registry-v1-${{ runner.os }}-
+      - name: Restore the build cache (test-glibc)
+        id: target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: cargo-target-v1-test-glibc-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-target-v1-test-glibc-${{ runner.os }}-
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
-      - name: Postgres suites
-        run: bash scripts/ci-pg-suites.sh
       - name: Dev quickstart smoke
         run: bash deploy/dev/quickstart.sh --smoke
+      - name: Prune the build directory (workspace artefacts, test binaries) before saving
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.target.outputs.cache-hit != 'true' }}
+        run: bash scripts/ci-cache-prune.sh target
+      - name: Save the build cache (main only)
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.target.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: ${{ steps.target.outputs.cache-primary-key }}
+      - name: Save the cargo registry and git cache (main only)
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.registry.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ steps.registry.outputs.cache-primary-key }}
+
+  # The Postgres suites run in parallel with test-glibc: they build the `postgres` feature graph,
+  # which the workspace build does not share, so one job would build it after the workspace.
+  test-postgres:
+    name: Postgres suites (both backends)
+    needs: changes
+    if: ${{ needs.changes.outputs.rust == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    services:
+      postgres:
+        # Same digest as deploy/images.lock (checked by scripts/check-docker-pins.sh).
+        image: postgres@sha256:3a4264520e121176619f54ff867d12774bc81e95e7b84db58d63bccdb6144b81
+        env:
+          POSTGRES_USER: rusty
+          # Throw-away service container on the runner's private network: not a secret.
+          POSTGRES_PASSWORD: ci-throwaway-not-a-secret
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U rusty -d postgres"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      RUSTY_TEST_PG_URL: postgres://rusty:ci-throwaway-not-a-secret@127.0.0.1:5432/postgres?sslmode=disable
+      RUSTY_REQUIRE_PG: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain (minimal profile, no rust-docs download)
+        run: rustup set profile minimal
+      - name: Restore the cargo registry and git cache
+        id: registry
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-v1-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-registry-v1-${{ runner.os }}-
+      - name: Restore the build cache (test-postgres)
+        id: target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: cargo-target-v1-test-postgres-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-target-v1-test-postgres-${{ runner.os }}-
+      - name: Postgres suites (scripts/ci-pg-suites.sh, as in scripts/ci.sh)
+        run: bash scripts/ci-pg-suites.sh
+      - name: Prune the build directory (workspace artefacts, test binaries) before saving
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.target.outputs.cache-hit != 'true' }}
+        run: bash scripts/ci-cache-prune.sh target
+      - name: Save the build cache (main only)
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.target.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: ${{ steps.target.outputs.cache-primary-key }}
 
   supply-chain:
     name: cargo-deny and cargo-audit
+    needs: changes
+    if: ${{ needs.changes.outputs.rust == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -105,22 +263,34 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Rust toolchain (minimal profile, no rust-docs download)
+        run: rustup set profile minimal
+      - name: Restore the installed tool binaries
+        id: tools
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: |
-            ~/.cargo/bin
-            ~/.cargo/registry
-          key: cargo-tools-deny-audit-v1
-      - name: Install tools (locked)
+          path: ~/.ci-tools
+          key: ci-tools-v1-deny-audit-${{ runner.os }}-${{ hashFiles('scripts/ci-tools.txt', 'rust-toolchain.toml') }}
+      - name: Install cargo-deny and cargo-audit (pinned versions, compiled only on a cache miss)
         run: |
           set -euo pipefail
-          command -v cargo-deny >/dev/null || cargo install cargo-deny --locked
-          command -v cargo-audit >/dev/null || cargo install cargo-audit --locked
+          CI_TOOLS_ROOT="$HOME/.ci-tools" bash scripts/ci-tool.sh cargo-deny cargo-audit
+          echo "$HOME/.ci-tools/bin" >> "$GITHUB_PATH"
       - run: cargo deny check
       - run: cargo audit
+      - name: Save the tool binaries (main only)
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.tools.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.ci-tools
+          key: ${{ steps.tools.outputs.cache-primary-key }}
 
-  musl:
-    name: tests, release build and static check (musl)
+  # musl debug tests and the musl release build are independent (different profiles share no
+  # artefacts), so they run as two parallel jobs instead of one after the other.
+  musl-test:
+    name: tests (musl)
+    needs: changes
+    if: ${{ needs.changes.outputs.rust == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -132,15 +302,72 @@ jobs:
         with:
           persist-credentials: false
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Rust toolchain (minimal profile, no rust-docs download)
+        run: rustup set profile minimal
+      - name: Restore the cargo registry and git cache
+        id: registry
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-musl-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: cargo-musl-
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-v1-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-registry-v1-${{ runner.os }}-
+      - name: Restore the build cache (musl-test)
+        id: target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: cargo-target-v1-musl-test-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-target-v1-musl-test-${{ runner.os }}-
       - run: cargo test --workspace --target x86_64-unknown-linux-musl
+      - name: Prune the build directory (workspace artefacts, test binaries) before saving
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.target.outputs.cache-hit != 'true' }}
+        run: bash scripts/ci-cache-prune.sh target
+      - name: Save the build cache (main only)
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.target.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: ${{ steps.target.outputs.cache-primary-key }}
+
+  musl-release:
+    name: release build and static check (musl)
+    needs: changes
+    if: ${{ needs.changes.outputs.rust == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      CC_x86_64_unknown_linux_musl: musl-gcc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+      - name: Rust toolchain (minimal profile, no rust-docs download)
+        run: rustup set profile minimal
+      - name: Restore the cargo registry and git cache
+        id: registry
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-v1-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-registry-v1-${{ runner.os }}-
+      - name: Restore the build cache (musl-release)
+        id: target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: cargo-target-v1-musl-release-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-target-v1-musl-release-${{ runner.os }}-
       - run: cargo build --release --workspace --target x86_64-unknown-linux-musl
       - name: Release builds contain no test hooks
         run: bash scripts/ci-gates.sh symbols x86_64-unknown-linux-musl
@@ -153,6 +380,15 @@ jobs:
             file -L "$f" | grep -qE "statically linked|static-pie linked" || { file -L "$f"; exit 1; }
             echo "static: $f"
           done
+      - name: Prune the build directory (workspace artefacts, test binaries) before saving
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.target.outputs.cache-hit != 'true' }}
+        run: bash scripts/ci-cache-prune.sh target
+      - name: Save the build cache (main only)
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.target.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: ${{ steps.target.outputs.cache-primary-key }}
 
   fuzz-smoke:
     name: fuzz smoke (nightly)
@@ -166,7 +402,25 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install nightly --profile minimal
-      - run: cargo install cargo-fuzz --locked
+      - name: Restore the installed tool binaries
+        id: tools
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.ci-tools
+          key: ci-tools-v1-fuzz-${{ runner.os }}-${{ hashFiles('scripts/ci-tools.txt') }}
+      - name: Install cargo-fuzz (pinned version, compiled only on a cache miss)
+        run: |
+          set -euo pipefail
+          CI_TOOLS_ROOT="$HOME/.ci-tools" bash scripts/ci-tool.sh cargo-fuzz
+          echo "$HOME/.ci-tools/bin" >> "$GITHUB_PATH"
+      - name: Restore the fuzz build cache
+        id: target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/target
+          key: cargo-target-v1-fuzz-${{ runner.os }}-${{ hashFiles('fuzz/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-target-v1-fuzz-${{ runner.os }}-
       - name: Fuzz every target for 60 s (targets as in scripts/ci.sh)
         run: |
           set -euo pipefail
@@ -175,6 +429,21 @@ jobs:
             mkdir -p "corpus/$t"
             cargo +nightly fuzz run "$t" "corpus/$t" "seeds/$t" -- -max_total_time=60 -rss_limit_mb=2048
           done
+      - name: Save the tool binaries (main only)
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.tools.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.ci-tools
+          key: ${{ steps.tools.outputs.cache-primary-key }}
+      - name: Prune the build directory (workspace artefacts, test binaries) before saving
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.target.outputs.cache-hit != 'true' }}
+        run: bash scripts/ci-cache-prune.sh fuzz/target
+      - name: Save the build cache (main only)
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.target.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/target
+          key: ${{ steps.target.outputs.cache-primary-key }}
 
   edge-suite:
     name: edge behaviour suite (nightly)
@@ -187,4 +456,59 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Rust toolchain (minimal profile, no rust-docs download)
+        run: rustup set profile minimal
+      - name: Restore the cargo registry and git cache
+        id: registry
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-v1-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-registry-v1-${{ runner.os }}-
+      - name: Restore the build cache (edge)
+        id: target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: cargo-target-v1-edge-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-target-v1-edge-${{ runner.os }}-
       - run: cargo test -p edge-tests -- --ignored --nocapture
+      - name: Prune the build directory (workspace artefacts, test binaries) before saving
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.target.outputs.cache-hit != 'true' }}
+        run: bash scripts/ci-cache-prune.sh target
+      - name: Save the build cache (main only)
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.target.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: ${{ steps.target.outputs.cache-primary-key }}
+
+  # The only check branch protection needs. Runs always; fails when any job it depends on failed or
+  # was cancelled; passes when jobs were legitimately skipped (docs-only change, nightly-only jobs).
+  ci-ok:
+    name: ci-ok
+    if: ${{ always() }}
+    needs: [changes, workflows-lint, gates, test-glibc, test-postgres, supply-chain, musl-test, musl-release, fuzz-smoke, edge-suite]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Every job succeeded or was skipped
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+          CHANGES: ${{ needs.changes.result }}
+          DETAIL: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$DETAIL"
+          [ "$CHANGES" = success ] || { echo "::error::the change classification did not succeed ($CHANGES)"; exit 1; }
+          ok=1
+          for r in $RESULTS; do
+            case "$r" in success|skipped) ;; *) ok=0 ;; esac
+          done
+          [ "$ok" = 1 ] || { echo "::error::a job failed or was cancelled"; exit 1; }
+          echo "ci-ok: all jobs succeeded or were skipped"

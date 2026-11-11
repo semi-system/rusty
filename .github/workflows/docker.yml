@@ -20,7 +20,7 @@ permissions: {}
 
 concurrency:
   group: docker-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }} # never cancel a publish that is pushing
 
 jobs:
   meta:
@@ -33,10 +33,13 @@ jobs:
       source-date-epoch: ${{ steps.m.outputs.epoch }}
       version: ${{ steps.m.outputs.version }}
       image: ${{ steps.m.outputs.image }}
+      image-changed: ${{ steps.c.outputs.docker }}
+      workflow-changed: ${{ steps.c.outputs.workflow }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2 # pull request: the merge commit and both parents (scripts/ci-changes.sh)
       - name: Compute version, commit time and the lower-case image name
         id: m
         env:
@@ -51,14 +54,28 @@ jobs:
             if [ "$REF_TYPE" = tag ]; then echo "version=${REF_NAME#v}"; else echo "version=0.0.0-dev+${SHA::12}"; fi
             echo "image=ghcr.io/${REPO,,}"
           } >> "$GITHUB_OUTPUT"
+      - name: Which inputs changed (pull requests only; pushes and tags build everything)
+        id: c
+        run: bash scripts/ci-changes.sh | grep -E "^(docker|workflow)=" >> "$GITHUB_OUTPUT"
 
+  # Three independent builds run in parallel (one runner each) instead of one after the other:
+  # the production image, the dev-cert variant (different cargo features, so no shared compile) and
+  # the arm64 cross compile (zig, no emulation; the same export release.yml uses). Pull requests
+  # that touch nothing the image is built from skip all of it.
   smoke:
-    name: image smoke test (amd64, dev-cert variant)
+    name: image smoke test (${{ matrix.variant }})
     needs: meta
+    if: ${{ needs.meta.outputs.image-changed == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [amd64-production, amd64-dev-cert, arm64-compile]
+    env:
+      SDE: ${{ needs.meta.outputs.source-date-epoch }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -66,27 +83,35 @@ jobs:
       - name: Pins match deploy/images.lock
         run: bash scripts/check-docker-pins.sh
       - name: Build the production image and check it
-        env:
-          SDE: ${{ needs.meta.outputs.source-date-epoch }}
+        if: ${{ matrix.variant == 'amd64-production' }}
         run: |
           set -euo pipefail
           docker build -f deploy/docker/Dockerfile --build-arg "SOURCE_DATE_EPOCH=$SDE" -t rusty:smoke .
           bash scripts/check-image.sh rusty:smoke
       - name: Build the dev-cert variant and run the local-run scenario against it
-        env:
-          SDE: ${{ needs.meta.outputs.source-date-epoch }}
+        if: ${{ matrix.variant == 'amd64-dev-cert' }}
         run: |
           set -euo pipefail
           docker build -f deploy/docker/Dockerfile --build-arg DEV_CERT=1 --build-arg "SOURCE_DATE_EPOCH=$SDE" -t rusty:smoke-dev .
           bash scripts/check-image.sh rusty:smoke-dev dev
           IMAGE=rusty:smoke-dev bash tools/acceptance/local-run.sh
+      - name: Cross compile the arm64 binary and check it is a static aarch64 ELF
+        if: ${{ matrix.variant == 'arm64-compile' }}
+        run: |
+          set -euo pipefail
+          docker buildx build --platform linux/arm64 --target binary \
+            -f deploy/docker/Dockerfile --build-arg "SOURCE_DATE_EPOCH=$SDE" \
+            --output type=local,dest=out-arm64 .
+          file out-arm64/rusty
+          file out-arm64/rusty | grep -q 'ARM aarch64'
+          file out-arm64/rusty | grep -qE 'statically linked|static-pie linked'
 
   # Exactly one of the two publish jobs runs. DOCKER_PUBLISH_MODE is a repository VARIABLE (not a
   # secret): unset or "no-scan" runs the plain publish action, "strict" adds the SAST and image
   # scan gate before pushing. Both actions are pinned by commit SHA (never @main).
   publish-no-scan:
     name: publish (no-scan)
-    if: ${{ vars.DOCKER_PUBLISH_MODE != 'strict' }}
+    if: ${{ vars.DOCKER_PUBLISH_MODE != 'strict' && (github.event_name != 'pull_request' || needs.meta.outputs.workflow-changed == 'true') }}
     needs: [meta, smoke]
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -125,7 +150,7 @@ jobs:
 
   publish-strict:
     name: publish (strict)
-    if: ${{ vars.DOCKER_PUBLISH_MODE == 'strict' }}
+    if: ${{ vars.DOCKER_PUBLISH_MODE == 'strict' && (github.event_name != 'pull_request' || needs.meta.outputs.workflow-changed == 'true') }}
     needs: [meta, smoke]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -260,3 +285,28 @@ jobs:
           path: trivy-report.json
           if-no-files-found: ignore
           retention-days: 30
+
+  # One result for the whole workflow (optional required check, see docs/ci.md): fails when any job
+  # failed or was cancelled, passes when jobs were skipped (nothing the image is built from changed,
+  # the other publish mode, pull request without publishing).
+  docker-ok:
+    name: docker-ok
+    if: ${{ always() }}
+    needs: [meta, smoke, publish-no-scan, publish-strict, sign, trivy]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Every job succeeded or was skipped
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+          META: ${{ needs.meta.result }}
+        run: |
+          set -euo pipefail
+          [ "$META" = success ] || { echo "::error::the build metadata job did not succeed ($META)"; exit 1; }
+          ok=1
+          for r in $RESULTS; do
+            case "$r" in success|skipped) ;; *) ok=0 ;; esac
+          done
+          [ "$ok" = 1 ] || { echo "::error::a job failed or was cancelled"; exit 1; }
+          echo "docker-ok: all jobs succeeded or were skipped"
