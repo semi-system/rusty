@@ -77,9 +77,13 @@ blob_dir = "/var/lib/rusty/blobs"
 # max_concurrent = 20
 # max_concurrent_per_domain = 5
 # default_tls = "opportunistic"     # none | opportunistic (STARTTLS if offered, certificate not checked) | required | verified
-# dkim_dir = "/var/lib/rusty/dkim"  # keys from `rustyctl dkim generate <domain>` (0600); unset: no signing
+# dkim_dir = "/var/lib/rusty/dkim"  # DKIM keys (0600); unset: no signing. Each key signs when its file exists:
+#                                   #   ed25519: rustyctl dkim generate <domain>
+#                                   #   RSA (needed by receivers that do not verify ed25519): make one with
+#                                   #   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out k.pem
+#                                   #   then rustyctl dkim import <domain> k.pem (Rusty does not generate RSA keys)
 # dkim_selector = "rusty"
-# dkim_ed25519 = false              # also sign with an ed25519 key (rustyctl dkim generate <domain> --ed25519)
+# dkim_ed25519 = true               # false: ignore the ed25519 key file (sign with RSA only)
 # bind_address = "192.0.2.7"        # dedicated sending address
 # nameserver = "10.77.0.10:53"      # DNS server instead of the system resolver (operator setting)
 # ca_bundle = "/etc/rusty/ca.pem"   # CA certificates for `verified` TLS instead of the system store (operator setting)

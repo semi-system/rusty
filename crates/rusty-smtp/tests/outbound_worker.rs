@@ -14,7 +14,7 @@ use common::fake_mta::*;
 use common::*;
 use rusty_core::config::{OutboundConfig, RelayConfig, RelayTls, TlsPolicy};
 use rusty_core::{AccountId, Error};
-use rusty_smtp::dkim::{generate_key, keyring, DkimAlgo};
+use rusty_smtp::dkim::{import_key, keyring};
 use rusty_smtp::outbound::dial::Dialer;
 use rusty_smtp::outbound::route::ConfigRoute;
 use rusty_smtp::outbound::tls::RustlsUpgrader;
@@ -605,7 +605,7 @@ async fn verified_tls_trusts_only_the_configured_ca_bundle() {
 async fn outgoing_mail_is_dkim_signed_for_the_sender_domain_and_verifies() {
     for_each_backend(|b| async move {
         let keys = tempfile::tempdir().unwrap();
-        let k = generate_key(keys.path(), "example.net", "rusty", DkimAlgo::Rsa2048).unwrap();
+        let k = import_key(keys.path(), "example.net", "rusty", include_bytes!("data/dkim-rsa2048.pem")).unwrap();
         let mta = FakeMta::start(|_| Script::default()).await;
         let dialer = MapDialer::new(&[("192.0.2.10", mta.addr)]);
         let mut cfg = fast_cfg();

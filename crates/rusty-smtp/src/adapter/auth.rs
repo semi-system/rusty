@@ -3,17 +3,20 @@
 //! type from `crate::dkim` or `crate::authres`; the library's types stay private to the adapter
 //! (`pub(crate)` only, which `scripts/check-wrapped-libs.sh` enforces).
 //!
-//! Crypto backend: the library's pure-Rust `rust-crypto` feature (RustCrypto `rsa`, `ed25519-dalek`,
-//! `sha2`); its default `aws-lc-rs` backend is a second C crypto stack and is not used. TLS is a
-//! separate matter (rustls with ring, see `outbound::tls`).
+//! Crypto backend: the library's pure-Rust `rust-crypto` feature, patched (vendor/mail-auth/PATCHES.md) so
+//! that its RSA operations run on `ring` instead of the RustCrypto `rsa` crate (RUSTSEC-2023-0071);
+//! Ed25519 is `ed25519-dalek`. Its default `aws-lc-rs` backend is a second C crypto stack and is not used.
+//! Key import checks keys with `ring` directly (the same library that signs them). TLS is a separate
+//! matter (rustls with ring, see `outbound::tls`).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mail_auth::crypto::{Ed25519Key, RsaKey, Sha256};
-use mail_auth::headers::HeaderWriter;
 use mail_auth::dkim::generate::DkimKeyPair;
 use mail_auth::dkim::DkimSigner as LibSigner;
+use mail_auth::headers::HeaderWriter;
+use ring::signature::{self as ring_sig, KeyPair as _};
 use rusty_core::{Error, Result};
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::PrivateKeyDer;
@@ -36,7 +39,13 @@ fn lib_err(_: mail_auth::Error) -> Error {
 // ------------------------------------------------------------------ key files
 
 const RSA_PEM_LABEL: &str = "RSA PRIVATE KEY";
-const ED_PEM_LABEL: &str = "PRIVATE KEY";
+const PKCS8_PEM_LABEL: &str = "PRIVATE KEY";
+/// RSA moduli accepted for signing: at least 2048 bits (RFC 8301 recommends it; 1024 is breakable by a
+/// well-funded attacker), at most 4096 (what ring signs with, and what still fits a DNS TXT record).
+const RSA_MIN_BITS: usize = 2048;
+const RSA_MAX_BITS: usize = 4096;
+/// An imported PEM larger than this is not a single private key.
+const MAX_IMPORT_PEM: usize = 64 * 1024;
 
 fn pem_armor(label: &str, der: &[u8]) -> String {
     use base64::Engine;
@@ -77,67 +86,118 @@ fn rsa_spki(pkcs1_public: &[u8]) -> Vec<u8> {
     out
 }
 
-struct KeyMaterial {
-    private: Vec<u8>,
+fn bad_key(why: &str) -> Error {
+    Error::Invalid(format!("DKIM key refused: {why}"))
+}
+
+/// A private key that passed every check, ready to be written.
+struct Checked {
+    algo: DkimAlgo,
+    /// The key file content (PEM, only the key itself).
+    pem: String,
+    /// The `p=` value (RSA: SubjectPublicKeyInfo DER; Ed25519: the raw 32-byte key).
     public: Vec<u8>,
 }
 
-/// Write the new key (mode 0600, never overwriting) and return what DNS needs.
-pub(crate) fn generate(dir: &std::path::Path, domain: &str, selector: &str, algo: DkimAlgo) -> Result<GeneratedKey> {
+const PROBE: &[u8] = b"rusty dkim key self-test";
+const PROBE_MESSAGE: &[u8] = b"From: a@check.invalid\r\nSubject: probe\r\n\r\nx\r\n";
+
+/// An RSA key (PKCS #1 or PKCS #8 DER): ring loads it (structure and consistency checks), the modulus is in
+/// range, a signature made with it verifies with its public key, and the DKIM signer loads and uses it.
+fn check_rsa(kp: ring_sig::RsaKeyPair, pem: String) -> Result<Checked> {
+    let bits = kp.public().modulus_len() * 8;
+    if !(RSA_MIN_BITS..=RSA_MAX_BITS).contains(&bits) {
+        return Err(bad_key("an RSA key must have 2048 to 4096 bits"));
+    }
+    let rng = ring::rand::SystemRandom::new();
+    let mut sig = vec![0u8; kp.public().modulus_len()];
+    kp.sign(&ring_sig::RSA_PKCS1_SHA256, &rng, PROBE, &mut sig).map_err(|_| bad_key("the RSA key cannot sign"))?;
+    let public = kp.public_key().as_ref().to_vec();
+    ring_sig::UnparsedPublicKey::new(&ring_sig::RSA_PKCS1_2048_8192_SHA256, &public)
+        .verify(PROBE, &sig)
+        .map_err(|_| bad_key("the RSA key failed its sign-and-verify self-test"))?;
+    load_rsa(pem.as_bytes(), "check.invalid", "check")?.sign(PROBE_MESSAGE)?;
+    Ok(Checked { algo: DkimAlgo::Rsa, pem, public: rsa_spki(&public) })
+}
+
+/// An Ed25519 key (PKCS #8 v1 or v2 DER): the same checks.
+fn check_ed25519(kp: ring_sig::Ed25519KeyPair, pem: String) -> Result<Checked> {
+    let sig = kp.sign(PROBE);
+    let public = kp.public_key().as_ref().to_vec();
+    ring_sig::UnparsedPublicKey::new(&ring_sig::ED25519, &public)
+        .verify(PROBE, sig.as_ref())
+        .map_err(|_| bad_key("the ed25519 key failed its sign-and-verify self-test"))?;
+    load_ed(pem.as_bytes(), "check.invalid", "check")?.sign(PROBE_MESSAGE)?;
+    Ok(Checked { algo: DkimAlgo::Ed25519, pem, public })
+}
+
+/// Recognise and check a private key. Only the key itself is kept (other PEM sections are dropped).
+fn check_key(der: PrivateKeyDer<'_>) -> Result<Checked> {
+    match der {
+        PrivateKeyDer::Pkcs1(k) => {
+            let der = k.secret_pkcs1_der();
+            let kp = ring_sig::RsaKeyPair::from_der(der).map_err(|_| bad_key("not a usable RSA key (2048 to 4096 bits)"))?;
+            check_rsa(kp, pem_armor(RSA_PEM_LABEL, der))
+        }
+        PrivateKeyDer::Pkcs8(k) => {
+            let der = k.secret_pkcs8_der();
+            let pem = pem_armor(PKCS8_PEM_LABEL, der);
+            if let Ok(kp) = ring_sig::RsaKeyPair::from_pkcs8(der) {
+                return check_rsa(kp, pem);
+            }
+            match ring_sig::Ed25519KeyPair::from_pkcs8_maybe_unchecked(der) {
+                Ok(kp) => check_ed25519(kp, pem),
+                Err(_) => Err(bad_key("only RSA (2048 to 4096 bits) and Ed25519 keys can sign DKIM")),
+            }
+        }
+        _ => Err(bad_key("only RSA (2048 to 4096 bits) and Ed25519 keys can sign DKIM")),
+    }
+}
+
+/// Write the checked key under the keyring's name for it (mode 0600, never overwriting) and return what DNS
+/// needs. `create_new` is `O_CREAT | O_EXCL`: an existing file or symlink at the name is never followed.
+fn write_key(dir: &std::path::Path, domain: &str, selector: &str, key: Checked) -> Result<GeneratedKey> {
     use base64::Engine;
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    let pair = match algo {
-        DkimAlgo::Rsa2048 => {
-            let (private, public) = crate::rsagen::generate_2048()?;
-            // ring (inside the DKIM library) validates the key and its consistency; a signature made
-            // with it must verify with the public key before the key is accepted.
-            let pem = pem_armor(RSA_PEM_LABEL, &private);
-            let loaded = load_rsa(pem.as_bytes(), "check.invalid", "check")?;
-            let probe = b"From: a@check.invalid
-
-x
-";
-            let sig = loaded.sign(probe)?;
-            if !sig.contains("b=") {
-                return Err(Error::Invalid("the generated RSA key failed its self-test".into()));
-            }
-            KeyMaterial { private, public }
-        }
-        DkimAlgo::Ed25519 => {
-            let pair = DkimKeyPair::generate_ed25519().map_err(lib_err)?;
-            KeyMaterial { private: pair.private_key().to_vec(), public: pair.public_key().to_vec() }
-        }
-    };
-    let (label, suffix) = match algo {
-        DkimAlgo::Rsa2048 => (RSA_PEM_LABEL, ""),
-        DkimAlgo::Ed25519 => (ED_PEM_LABEL, "-ed25519"),
-    };
-    let public = match algo {
-        DkimAlgo::Rsa2048 => rsa_spki(&pair.public),
-        DkimAlgo::Ed25519 => pair.public.clone(),
+    let suffix = match key.algo {
+        DkimAlgo::Rsa => "",
+        DkimAlgo::Ed25519 => "-ed25519",
     };
     let path = dir.join(format!("{domain}.{selector}{suffix}.pem"));
-    let pem = pem_armor(label, &pair.private);
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(0o400000) // O_NOFOLLOW on Linux
-        .open(&path)
-        .map_err(|e| match e.kind() {
-            std::io::ErrorKind::AlreadyExists => Error::Conflict("a DKIM key already exists for this domain and selector".into()),
-            _ => Error::storage_with("cannot create the DKIM key file", e),
-        })?;
-    f.write_all(pem.as_bytes())
-        .and_then(|()| f.sync_all())
-        .map_err(|e| Error::storage_with("cannot write the DKIM key file", e))?;
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => Error::Conflict("a DKIM key already exists for this domain and selector".into()),
+        _ => Error::storage_with("cannot create the DKIM key file", e),
+    })?;
+    if let Err(e) = f.write_all(key.pem.as_bytes()).and_then(|()| f.sync_all()) {
+        let _ = std::fs::remove_file(&path);
+        return Err(Error::storage_with("cannot write the DKIM key file", e));
+    }
     Ok(GeneratedKey {
-        algo,
+        algo: key.algo,
         key_file: path,
         selector: format!("{selector}{suffix}"),
-        public_key_b64: base64::engine::general_purpose::STANDARD.encode(public),
+        public_key_b64: base64::engine::general_purpose::STANDARD.encode(key.public),
     })
+}
+
+/// A new Ed25519 key, checked like an imported one, then written.
+pub(crate) fn generate_ed25519(dir: &std::path::Path, domain: &str, selector: &str) -> Result<GeneratedKey> {
+    let pair = DkimKeyPair::generate_ed25519().map_err(lib_err)?;
+    let der = rustls_pki_types::PrivatePkcs8KeyDer::from(pair.private_key());
+    let key = check_key(PrivateKeyDer::Pkcs8(der))?;
+    write_key(dir, domain, selector, key)
+}
+
+/// An operator-supplied PEM private key, checked, then written.
+pub(crate) fn import(dir: &std::path::Path, domain: &str, selector: &str, pem: &[u8]) -> Result<GeneratedKey> {
+    if pem.len() > MAX_IMPORT_PEM {
+        return Err(bad_key("the file is too large to be one private key"));
+    }
+    // An encrypted key, a certificate or anything else without an unencrypted private key block is refused.
+    let der = PrivateKeyDer::from_pem_slice(pem).map_err(|_| bad_key("no unencrypted PEM private key found"))?;
+    let key = check_key(der)?;
+    write_key(dir, domain, selector, key)
 }
 
 enum Loaded {
@@ -192,7 +252,8 @@ pub(crate) trait KeyFiles: Send + Sync {
 
 type Entry = (Instant, Vec<Arc<Loaded>>);
 
-/// Signs with `<dir>/<domain>.<selector>.pem` (RSA) and, when enabled, the ed25519 key beside it.
+/// Signs with `<dir>/<domain>.<selector>.pem` (RSA) and `<dir>/<domain>.<selector>-ed25519.pem` (unless
+/// ed25519 signing is switched off), each when its file exists.
 pub(crate) struct Keyring {
     dir: std::path::PathBuf,
     selector: String,
@@ -244,4 +305,3 @@ impl DkimSigner for Keyring {
         Ok(out.into_bytes())
     }
 }
-

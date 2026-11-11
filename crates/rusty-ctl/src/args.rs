@@ -40,7 +40,8 @@ pub enum Command {
     AliasAdd { alias: String, target: String },
     AliasList { domain: Option<String> },
     AliasRemove { alias: String },
-    DkimGenerate { domain: String, selector: String, ed25519: bool },
+    DkimGenerate { domain: String, selector: String },
+    DkimImport { domain: String, selector: String, key_file: PathBuf },
     Check,
     Help,
 }
@@ -82,7 +83,11 @@ pub const USAGE: &str = "usage: rustyctl [--config FILE | --dev [--data-dir DIR]
   account set-password <addr> (--password-stdin | --prompt)\n\
   account disable <addr> | enable <addr>\n\
   alias add <alias-addr> <account-addr> | list [domain] | remove <alias-addr>\n\
-  dkim generate <domain> [--selector S] [--ed25519]   create a DKIM key (0600) and print its DNS record\n\
+  dkim generate <domain> [--selector S]      create an ed25519 DKIM key (0600) and print its DNS record\n\
+  dkim import <domain> <key.pem> [--selector S]\n\
+                                             keep an RSA (2048-4096 bit) or ed25519 private key (0600)\n\
+                                             and print its DNS record; make an RSA key with\n\
+                                             openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048\n\
   check                                      configuration summary and DNS records to publish\n\
 \n\
 Passwords are read from standard input or the terminal, never from the command line.";
@@ -100,7 +105,6 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
     let mut prompt = false;
     let mut stdin = false;
     let mut selector: Option<String> = None;
-    let mut ed25519 = false;
     let mut help = false;
     let mut create = false;
     let mut words: Vec<&str> = Vec::new();
@@ -110,7 +114,6 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         match a.as_str() {
             "--json" => json = true,
             "--create" => create = true,
-            "--ed25519" => ed25519 = true,
             "--dev" => dev = true,
             "--prompt" => prompt = true,
             "--password-stdin" => stdin = true,
@@ -156,9 +159,6 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         Ok(())
     };
     let no_selector = || -> Result<(), UsageError> {
-        if ed25519 {
-            return Err(err("--ed25519 does not apply to this command"));
-        }
         if selector.is_some() {
             return Err(err("--selector does not apply to this command"));
         }
@@ -167,6 +167,13 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
     let plain = || -> Result<(), UsageError> {
         no_password()?;
         no_selector()
+    };
+    let dkim_selector = || -> Result<String, UsageError> {
+        match selector.as_deref() {
+            None => Ok(DEFAULT_SELECTOR.to_owned()),
+            Some(s) if valid_selector(s) => Ok(s.to_owned()),
+            Some(_) => Err(err("--selector must be a DNS label (letters, digits, - and .)")),
+        }
     };
 
     match words.as_slice() {
@@ -231,15 +238,11 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         }
         ["dkim", "generate", domain] => {
             no_password()?;
-            done(Command::DkimGenerate {
-                domain: (*domain).to_owned(),
-                ed25519,
-                selector: match selector.as_deref() {
-                    None => DEFAULT_SELECTOR.to_owned(),
-                    Some(s) if valid_selector(s) => s.to_owned(),
-                    Some(_) => return Err(err("--selector must be a DNS label (letters, digits, - and .)")),
-                },
-            })
+            done(Command::DkimGenerate { domain: (*domain).to_owned(), selector: dkim_selector()? })
+        }
+        ["dkim", "import", domain, key_file] => {
+            no_password()?;
+            done(Command::DkimImport { domain: (*domain).to_owned(), selector: dkim_selector()?, key_file: PathBuf::from(key_file) })
         }
         ["check"] => {
             plain()?;

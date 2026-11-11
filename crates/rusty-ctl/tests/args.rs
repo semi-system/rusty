@@ -84,12 +84,26 @@ fn alias_commands() {
 fn dkim_and_check() {
     assert_eq!(
         cmd(&["dkim", "generate", "example.com"]),
-        Command::DkimGenerate { domain: "example.com".into(), selector: "rusty".into(), ed25519: false }
+        Command::DkimGenerate { domain: "example.com".into(), selector: "rusty".into() }
     );
     assert_eq!(
         cmd(&["dkim", "generate", "example.com", "--selector", "s1"]),
-        Command::DkimGenerate { domain: "example.com".into(), selector: "s1".into(), ed25519: false }
+        Command::DkimGenerate { domain: "example.com".into(), selector: "s1".into() }
     );
+    assert_eq!(
+        cmd(&["dkim", "import", "example.com", "/root/dkim.pem"]),
+        Command::DkimImport { domain: "example.com".into(), selector: "rusty".into(), key_file: "/root/dkim.pem".into() }
+    );
+    assert_eq!(
+        cmd(&["dkim", "import", "example.com", "k.pem", "--selector", "s2"]),
+        Command::DkimImport { domain: "example.com".into(), selector: "s2".into(), key_file: "k.pem".into() }
+    );
+    // generate makes ed25519 keys only; the old switch is gone rather than silently ignored.
+    assert!(p(&["dkim", "generate", "example.com", "--ed25519"]).is_err());
+    assert!(p(&["dkim", "import", "example.com"]).is_err(), "import needs a key file");
+    assert!(p(&["dkim", "import", "example.com", "k.pem", "--selector", "-x"]).is_err());
+    assert!(p(&["dkim", "import", "example.com", "k.pem", "--prompt"]).is_err());
+    assert!(p(&["domain", "list", "--selector", "s"]).is_err(), "--selector only applies to dkim");
     assert_eq!(cmd(&["check"]), Command::Check);
 }
 

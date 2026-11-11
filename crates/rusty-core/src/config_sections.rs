@@ -189,8 +189,9 @@ pub struct OutboundConfig {
     pub dkim_dir: Option<PathBuf>,
     #[serde(default = "d_selector")]
     pub dkim_selector: String,
-    /// Also sign with an ed25519 key (`<domain>.<selector>-ed25519.pem`) when it exists.
-    #[serde(default)]
+    /// Sign with the ed25519 key (`<domain>.<selector>-ed25519.pem`, RFC 8463) when it exists, besides the RSA
+    /// key when that exists. Default on: `rustyctl dkim generate` makes ed25519 keys. `false` ignores the file.
+    #[serde(default = "d_true")]
     pub dkim_ed25519: bool,
     pub relay: Option<RelayConfig>,
     /// Run the outbound worker and accept mail for remote recipients on submission. When `false`,
@@ -279,7 +280,7 @@ impl Default for OutboundConfig {
             tls_policy: BTreeMap::new(),
             dkim_dir: None,
             dkim_selector: d_selector(),
-            dkim_ed25519: false,
+            dkim_ed25519: true,
             relay: None,
             enabled: true,
             max_pending_per_account: d_pending_account(),

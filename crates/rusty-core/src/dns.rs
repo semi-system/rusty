@@ -192,7 +192,7 @@ pub fn records_for_domain(i: &DnsInputs<'_>) -> Result<Vec<DnsRecord>> {
         None => DnsRecord {
             name: format!("<selector>._domainkey.{domain}"),
             rtype: RecordType::Txt,
-            value: "run `rustyctl dkim generate` to create the key and its record".to_owned(),
+            value: "run `rustyctl dkim generate` (ed25519) and/or `rustyctl dkim import` (RSA) to create the key and its record".to_owned(),
             ttl_hint: TTL,
             purpose: "DKIM public key (not generated yet)",
             required: Requirement::Recommended,

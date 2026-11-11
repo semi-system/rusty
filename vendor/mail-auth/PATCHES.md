@@ -16,8 +16,15 @@ Changes (and nothing else):
 2. `src/crypto/rust_crypto.rs`: `RsaKey` signs with `ring::signature::RsaKeyPair` (PKCS #1 or PKCS #8 input),
    `RsaPublicKey` verifies with `ring::signature` (`RSA_PKCS1_1024_8192_SHA256` / SHA1 legacy variants); small
    DER helpers unwrap an SPKI and read the modulus size. Ed25519, ML-DSA and the hashes are unchanged.
-3. `src/dkim/generate.rs`: `DkimKeyPair::generate_rsa` and its test removed (RSA key generation lives in
-   `rusty-smtp`, which does not depend on `rsa` either). `src/error.rs`: the `From<rsa::errors::Error>` impl removed.
+3. `src/dkim/generate.rs`: `DkimKeyPair::generate_rsa` and its test removed (ring cannot generate RSA keys; Rusty does
+   not generate them at all: the operator makes one with a standard tool and `rustyctl dkim import` checks and
+   keeps it). `src/error.rs`: the `From<rsa::errors::Error>` impl removed.
 
 Upstreaming: replacing `rsa` by `ring` behind the same feature is a candidate pull request. When mail-auth
 releases a version whose backend is free of RUSTSEC-2023-0071, drop this directory and the patch entry.
+
+Verification of this copy: apart from the three changes above, `src/` is byte-identical to the crates.io
+`mail-auth-0.15.1` package (`diff -r` against `~/.cargo/registry/src/*/mail-auth-0.15.1/src`; the
+package's `tests/`, `benches/`, `examples/` and `resources/` directories are not copied). Advisory scanners
+match registry packages and may not flag this path copy, so watch the upstream advisories for mail-auth 0.15 by hand when
+re-checking this patch.
