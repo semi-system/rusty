@@ -58,6 +58,12 @@ rustup target list --installed | grep -qx "$MUSL" || { echo "[FAIL] missing rust
 # (skipped when the hook is set: ci-trap.sh runs ci.sh itself)
 [ -n "${RUSTY_CI_FORCE_FAIL:-}" ] || stage "ci scripts" bash scripts/tests/ci-trap.sh
 stage "remote build helpers self-test" bash scripts/tests/remote-lib.sh
+# CI speed helpers (docs/ci.md): change classification, cache pruning, pinned tool install.
+stage "ci-changes self-test" bash scripts/tests/ci-changes.sh
+stage "ci-cache-prune self-test" bash scripts/tests/ci-cache-prune.sh
+stage "ci-tool self-test" bash scripts/tests/ci-tool.sh
+# Pre-push check (run bash scripts/prepush-check.sh yourself before every git push).
+stage "prepush-check self-test" bash scripts/tests/prepush-check.sh
 
 # Database access belongs to rusty-store (scripts/check-raw-db.sh documents what the text scan
 # covers and what it cannot see). The gate has its own self-test.

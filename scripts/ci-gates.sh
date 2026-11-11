@@ -7,6 +7,11 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 case "${1:-}" in
   static)
+    bash scripts/tests/remote-lib.sh
+    bash scripts/tests/ci-changes.sh
+    bash scripts/tests/ci-cache-prune.sh
+    bash scripts/tests/ci-tool.sh
+    bash scripts/tests/prepush-check.sh
     bash scripts/tests/raw-db-gate.sh
     bash scripts/check-raw-db.sh
     bash scripts/tests/test-fixtures-gate.sh

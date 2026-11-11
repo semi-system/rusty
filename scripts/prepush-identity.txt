@@ -1,0 +1,3 @@
+# Allowed author and committer identities, exactly "Name <email>", one per line.
+# scripts/prepush-check.sh fails on any commit whose author or committer is not listed here.
+morningstar-sudo <mornngstr1@gmail.com>
