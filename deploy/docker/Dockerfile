@@ -63,11 +63,12 @@ while [ "$i" -lt "$n" ]; do a=$1; shift; i=$((i+1)); case "$a" in --target=*) ;;
 exec /opt/zig/zig cc -target "$(cat /ztarget)" -fno-sanitize=undefined "$@"
 EOF
 # Linker wrapper: zig supplies the C runtime start files for the musl target, so the copies rustc
-# adds from its own self-contained directory are dropped (they would define _start twice).
+# adds from its own self-contained directory are dropped (they would define _start twice), as is the
+# GNU-ld-only Cortex-A53 erratum flag rustc passes for aarch64 (zig's lld rejects it).
 COPY --chmod=0755 <<'EOF' /usr/local/bin/zigld
 #!/bin/sh
 n=$#; i=0
-while [ "$i" -lt "$n" ]; do a=$1; shift; i=$((i+1)); case "$a" in */self-contained/*.o|--target=*) ;; *) set -- "$@" "$a" ;; esac; done
+while [ "$i" -lt "$n" ]; do a=$1; shift; i=$((i+1)); case "$a" in */self-contained/*.o|--target=*|-Wl,--fix-cortex-a53-843419) ;; *) set -- "$@" "$a" ;; esac; done
 exec /opt/zig/zig cc -target "$(cat /ztarget)" -fno-sanitize=undefined "$@"
 EOF
 

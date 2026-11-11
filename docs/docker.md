@@ -192,8 +192,12 @@ The workflows themselves have never run. What was checked on the writing machine
 * `actionlint` (pinned container) is clean on all three workflows, and `shellcheck` on all shell
   scripts, through `scripts/ci-workflows-lint.sh` (also a stage of `scripts/ci.sh`);
   `scripts/check-docker-pins.sh` passes, and both have self-tests.
-* The Dockerfile builds with plain `docker build` in WSL; see the verification record in the commit
-  message / hand-over for the outputs.
+* The amd64 image builds with plain `docker build` in WSL (production and dev-cert variants, about 20 MB):
+  `scripts/check-image.sh` passes (numeric user 65532, no shell, statically linked, `ldd` finds nothing,
+  healthcheck configured, labels, fail-closed start without a config on a read-only root), the dev-cert
+  variant runs read-only with all capabilities dropped and is healthy, and
+  `IMAGE=rusty:dev bash tools/acceptance/local-run.sh` passes every check against it. The production
+  image refuses `--dev` (no dev-cert feature).
 
 What could not be verified:
 
@@ -205,7 +209,9 @@ What could not be verified:
   pinned SHA, not executed; their tag template output; cosign keyless signing and verification
   (needs a real OIDC token), `anchore/sbom-action`, `attest-build-provenance`, Trivy against a pushed
   image.
-* The arm64 image: it is cross compiled, but there is no arm64 machine or emulator here, so the arm64
+* The arm64 image: it is cross compiled (the first attempt failed on a GNU-ld-only linker flag, now filtered
+  in the `zigld` wrapper; the re-run of the arm64 compile was interrupted by a WSL failure and is NOT
+  confirmed), and there is no arm64 machine or emulator here, so the arm64
   binary has not been run (it can only be compiled and its ELF header inspected).
 * `release.yml` end to end (the `--target binary` export with `buildx`, `gh release create`).
 * The pinned action SHAs were resolved through the GitHub API on the authoring date; they should be
