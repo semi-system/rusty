@@ -1,9 +1,10 @@
-# semi-mail (code name: Rusty)
+# Rusty Mail Server
 
 A security-first, from-scratch rewrite of the Zimbra FOSS mail stack in Rust: standard
 protocols (SMTP, IMAP; JMAP, CalDAV and CardDAV are planned), multi-tenant by design
 (domain = tenant), content-addressed blob storage, and an import tool for Zimbra later.
-The crates and binaries keep the code name `rusty`.
+Repository: <https://github.com/semi-system/rusty>. The crates and binaries keep the code name
+`rusty`.
 
 ## Status: early development, not production ready
 
