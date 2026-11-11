@@ -165,7 +165,7 @@ pub async fn exec(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> i64 {
         return q.fetch_one(s.pool()).await.unwrap();
     }
     #[cfg(feature = "postgres")]
-    if let Some((p, _)) = &b.pg {
+    if b.pg.is_some() {
         let sql = dialect_sql(b, sql);
         let mut q = sqlx::query_scalar::<_, i64>(&sql);
         for x in binds {
@@ -233,7 +233,7 @@ pub async fn fetch_i64s(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> Vec<i64> 
             .unwrap();
     }
     #[cfg(feature = "postgres")]
-    if let Some((p, _)) = &b.pg {
+    if b.pg.is_some() {
         return bind_all!(sqlx::query_scalar::<_, i64>(&sql), binds)
             .fetch_all(b.fx())
             .await
@@ -252,7 +252,7 @@ pub async fn fetch_strings(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> Vec<St
             .unwrap();
     }
     #[cfg(feature = "postgres")]
-    if let Some((p, _)) = &b.pg {
+    if b.pg.is_some() {
         return bind_all!(sqlx::query_scalar::<_, String>(&sql), binds)
             .fetch_all(b.fx())
             .await
@@ -271,7 +271,7 @@ pub async fn fetch_opt_i64(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> Option
             .unwrap();
     }
     #[cfg(feature = "postgres")]
-    if let Some((p, _)) = &b.pg {
+    if b.pg.is_some() {
         return bind_all!(sqlx::query_scalar::<_, Option<i64>>(&sql), binds)
             .fetch_one(b.fx())
             .await
@@ -308,7 +308,7 @@ pub async fn fetch_rows(
             .collect();
     }
     #[cfg(feature = "postgres")]
-    if let Some((p, _)) = &b.pg {
+    if b.pg.is_some() {
         let rows = bind_all!(sqlx::query(&sql), binds)
             .fetch_all(b.fx())
             .await
@@ -339,7 +339,7 @@ pub async fn execute(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> u64 {
             .rows_affected();
     }
     #[cfg(feature = "postgres")]
-    if let Some((p, _)) = &b.pg {
+    if b.pg.is_some() {
         return bind_all!(sqlx::query(&sql), binds)
             .execute(b.fx())
             .await
@@ -388,7 +388,7 @@ pub async fn try_execute(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> Result<u
             .map_err(failure);
     }
     #[cfg(feature = "postgres")]
-    if let Some((p, _)) = &b.pg {
+    if b.pg.is_some() {
         return bind_all!(sqlx::query(&sql), binds)
             .execute(b.fx())
             .await
@@ -455,7 +455,7 @@ pub async fn scalar(b: &Backend, sql: &str) -> i64 {
             .unwrap();
     }
     #[cfg(feature = "postgres")]
-    if let Some((p, _)) = &b.pg {
+    if b.pg.is_some() {
         return sqlx::query_scalar::<_, i64>(sql)
             .fetch_one(b.fx())
             .await
@@ -473,7 +473,7 @@ pub async fn scalars(b: &Backend, sql: &str) -> Vec<i64> {
             .unwrap();
     }
     #[cfg(feature = "postgres")]
-    if let Some((p, _)) = &b.pg {
+    if b.pg.is_some() {
         return sqlx::query_scalar::<_, i64>(sql)
             .fetch_all(b.fx())
             .await
@@ -575,7 +575,7 @@ pub async fn run(b: &Backend, sql: &str) {
         return;
     }
     #[cfg(feature = "postgres")]
-    if let Some((p, _)) = &b.pg {
+    if b.pg.is_some() {
         sqlx::query(sql).execute(b.fx()).await.unwrap();
         return;
     }
@@ -591,7 +591,7 @@ pub async fn text(b: &Backend, sql: &str) -> String {
             .unwrap();
     }
     #[cfg(feature = "postgres")]
-    if let Some((p, _)) = &b.pg {
+    if b.pg.is_some() {
         return sqlx::query_scalar::<_, String>(sql)
             .fetch_one(b.fx())
             .await
