@@ -3,7 +3,7 @@
 Ngày: 2026-11-02. Trạng thái: chờ người dùng duyệt spec.
 
 ## 1. Bối cảnh và mục tiêu
-Rusty là bản làm lại toàn bộ stack Zimbra FOSS bằng Rust (xem kế hoạch tổng ở `<home>\.claude\plans\review-h-th-ng-v-zesty-moon.md`). Quyết định đã chốt:
+Rusty là bản làm lại toàn bộ stack Zimbra FOSS bằng Rust. Quyết định đã chốt:
 - Thiết kế mới, giao thức chuẩn, kèm công cụ import từ Zimbra (dự án 8). Không giữ SOAP/LDAP/MariaDB schema của Zimbra.
 - Dự án 1 chỉ cung cấp **thư viện** (không có server mạng): tạo domain/account, cây folder, lưu thư, flag, move, expunge, change-log.
 - Hướng lưu trữ: trait `MetadataStore` + `BlobStore`, backend SQLite trước, Postgres sau (cùng lược đồ logic).
