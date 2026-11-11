@@ -5,7 +5,13 @@
 #   (a) mail to alice over SMTP :2525   (b) read it over IMAPS :9993 (LOGIN, LIST, SELECT, FETCH, STORE, EXPUNGE)
 #   (c) alice -> bob over submission :5587 (STARTTLS + AUTH PLAIN), bob reads it over IMAPS
 # Exits non-zero on the first mismatch and always tears the daemon and the data dir down.
-# Env: RUSTY_BIN (binary), BIND (default 127.0.0.1), KEEP=1 (keep the data dir and log).
+# Env: RUSTY_BIN (binary), BIND (default 127.0.0.1), KEEP=1 (keep the data dir and log),
+#      BACKEND=sqlite (default) | postgres.
+# BACKEND=postgres runs the SAME scenario against a throw-away Postgres 18 container (image pinned in
+# deploy/images.lock, TLS with a generated CA, connection verified with verify-full) initialised with
+# deploy/db/roles.sql: the daemon runs as rusty_app (DML only), `rusty ctl db migrate` as rusty_migrator.
+# It also checks that the daemon refuses an un-migrated database, and kills the daemon with SIGKILL in the
+# middle of a burst of deliveries: after the restart and the senders' retries every message exists once.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -29,7 +35,11 @@ fi
 
 WORK="$(mktemp -d "$HOME/rusty-local-run.XXXXXX")" || exit 1
 DATA="$WORK/data"; LOG="$WORK/rusty.log"; PID=""
+BACKEND="${BACKEND:-sqlite}"
+PGC=""
+case "$BACKEND" in sqlite|postgres) ;; *) echo "BACKEND must be sqlite or postgres" >&2; exit 2;; esac
 cleanup() {
+  [ -n "$PGC" ] && docker rm -f "$PGC" >/dev/null 2>&1
   [ -n "$PID" ] && kill -TERM "$PID" 2>/dev/null && { for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$PID" 2>/dev/null || break; sleep 0.5; done; kill -KILL "$PID" 2>/dev/null; }
   if [ "${KEEP:-0}" = 1 ]; then echo "kept: $WORK" >&2; else rm -rf "$WORK"; fi
 }
@@ -43,17 +53,81 @@ expect() { # expect <label> <haystack> <needle>
 ALICE_PW="$(openssl rand -hex 12)"; BOB_PW="$(openssl rand -hex 12)"
 RC() { "$BIN" ctl --dev --data-dir "$DATA" "$@"; }
 
-echo "== starting rusty d --dev (bind $BIND, data $DATA)"
-"$BIN" d --dev --data-dir "$DATA" --bind "$BIND" >"$LOG" 2>&1 &
-PID=$!
-up=0
-for _ in $(seq 1 150); do
-  kill -0 "$PID" 2>/dev/null || fail "daemon exited early"
-  grep -q 'service="imaps-993"' "$LOG" && { up=1; break; }
-  sleep 0.2
-done
-[ "$up" = 1 ] || fail "daemon did not report its listeners"
-sleep 0.5
+start_daemon() {
+  "$BIN" d --dev --data-dir "$DATA" --bind "$BIND" >>"$LOG" 2>&1 &
+  PID=$!
+  local up=0 _
+  for _ in $(seq 1 150); do
+    kill -0 "$PID" 2>/dev/null || fail "daemon exited early"
+    [ "$(grep -c 'service="imaps-993"' "$LOG")" -ge "${LISTENING:-1}" ] && { up=1; break; }
+    sleep 0.2
+  done
+  [ "$up" = 1 ] || fail "daemon did not report its listeners"
+  sleep 0.5
+}
+
+if [ "$BACKEND" = postgres ]; then
+  echo "== postgres: container with TLS, roles.sql, migrator"
+  IMAGE_REF="$(awk '$1 == "postgres:18" { print $2 }' "$ROOT/deploy/images.lock")"
+  [ -n "$IMAGE_REF" ] || fail "no postgres image in deploy/images.lock"
+  TLS="$WORK/pgtls"; mkdir -p "$TLS"; chmod 755 "$TLS"
+  openssl req -x509 -newkey rsa:2048 -nodes -keyout "$TLS/ca.key" -out "$TLS/ca.pem" -days 2 -subj "/CN=rusty-acceptance-ca" \
+    -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" 2>/dev/null || fail "ca"
+  openssl req -newkey rsa:2048 -nodes -keyout "$TLS/server.key" -out "$TLS/server.csr" -subj "/CN=localhost" 2>/dev/null || fail "csr"
+  printf 'subjectAltName=DNS:localhost,IP:127.0.0.1\nbasicConstraints=CA:FALSE\n' >"$TLS/ext.cnf"
+  openssl x509 -req -in "$TLS/server.csr" -CA "$TLS/ca.pem" -CAkey "$TLS/ca.key" -CAcreateserial -out "$TLS/server.pem" -days 2 -extfile "$TLS/ext.cnf" 2>/dev/null || fail "server cert"
+  chmod 644 "$TLS"/*
+  SUPER_PW="$(openssl rand -hex 16)"; APP_PW="$(openssl rand -hex 16)"; MIG_PW="$(openssl rand -hex 16)"
+  PGC="rusty-acc-pg-$$"
+  # The key must belong to the server user with mode 0600: copy it into place before starting.
+  docker run -d --name "$PGC" -e POSTGRES_USER=rusty -e POSTGRES_DB=rusty -e POSTGRES_PASSWORD="$SUPER_PW" \
+    -p 127.0.0.1::5432 -v "$TLS:/certs:ro" --user 999:999 --tmpfs /var/lib/postgresql:uid=999,gid=999,mode=0700,size=1g \
+    --tmpfs /var/run/postgresql:uid=999,gid=999,mode=0755 --tmpfs /ssl:uid=999,gid=999,mode=0700 --cap-drop ALL \
+    --security-opt no-new-privileges:true --entrypoint sh "$IMAGE_REF" -c \
+    'cp /certs/server.pem /certs/server.key /ssl/ && chmod 600 /ssl/server.key && exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/ssl/server.pem -c ssl_key_file=/ssl/server.key -c listen_addresses=* -c fsync=off' >/dev/null || fail "start postgres"
+  for _ in $(seq 1 60); do docker exec "$PGC" pg_isready -h 127.0.0.1 -U rusty -d rusty >/dev/null 2>&1 && break; sleep 1; done
+  docker exec "$PGC" pg_isready -h 127.0.0.1 -U rusty -d rusty >/dev/null 2>&1 || fail "postgres did not become ready"
+  sleep 2
+  PGPORT_HOST="$(docker port "$PGC" 5432/tcp | head -n1 | sed 's/.*://')"
+  docker exec -i "$PGC" psql -h 127.0.0.1 -U rusty -d rusty -v ON_ERROR_STOP=1 -q <"$ROOT/deploy/db/roles.sql" >/dev/null || fail "roles.sql"
+  printf "ALTER ROLE rusty_app LOGIN PASSWORD '%s'; ALTER ROLE rusty_migrator LOGIN PASSWORD '%s';\n" "$APP_PW" "$MIG_PW" |
+    docker exec -i "$PGC" psql -h 127.0.0.1 -U rusty -d rusty -v ON_ERROR_STOP=1 -q >/dev/null || fail "role logins"
+  umask 077
+  mkdir -p "$WORK/secrets"
+  printf %s "$APP_PW" >"$WORK/secrets/app.pw"; printf %s "$MIG_PW" >"$WORK/secrets/migrator.pw"
+  cp "$TLS/ca.pem" "$WORK/secrets/ca.pem"
+  cat >"$WORK/store.toml" <<TOML
+[store]
+backend = "postgres"
+url = "postgres://rusty_app@127.0.0.1:$PGPORT_HOST/rusty"
+password_file = "$WORK/secrets/app.pw"
+migrator_user = "rusty_migrator"
+migrator_password_file = "$WORK/secrets/migrator.pw"
+sslmode = "verify-full"
+ca_bundle = "$WORK/secrets/ca.pem"
+TOML
+  export RUSTY_DEV_STORE_CONFIG="$WORK/store.toml"
+  umask 022
+
+  echo "== postgres: the daemon refuses an un-migrated database"
+  "$BIN" d --dev --data-dir "$DATA" --bind "$BIND" >"$LOG" 2>&1 &
+  PID=$!
+  for _ in $(seq 1 50); do kill -0 "$PID" 2>/dev/null || break; sleep 0.2; done
+  if kill -0 "$PID" 2>/dev/null; then fail "the daemon started on an un-migrated database"; fi
+  wait "$PID"; RC_EXIT=$?; PID=""
+  [ "$RC_EXIT" != 0 ] || fail "the daemon exited 0 on an un-migrated database"
+  grep -q "not initialised" "$LOG" || fail "no clear error about the missing schema"
+  echo "ok: refused (exit $RC_EXIT): $(grep -m1 'not initialised' "$LOG")"
+  echo "== postgres: rustyctl db status / migrate (migrator role)"
+  "$BIN" ctl --dev --data-dir "$DATA" db status && fail "db status said current before migrating"
+  "$BIN" ctl --dev --data-dir "$DATA" db migrate || fail "db migrate"
+  "$BIN" ctl --dev --data-dir "$DATA" db migrate | grep -q "newly applied \[\]" || fail "a second migrate was not a no-op"
+  "$BIN" ctl --dev --data-dir "$DATA" db status || fail "db status after migrate"
+  : >"$LOG"
+fi
+
+echo "== starting rusty d --dev (bind $BIND, data $DATA, backend $BACKEND)"
+start_daemon
 
 echo "== provisioning"
 RC domain add "$DOMAIN" || fail "domain add"
@@ -131,7 +205,53 @@ echo "== a wrong password is refused"
 T5="$(imap "alice@$DOMAIN" "wrong-password" 'SELECT INBOX')"
 expect "(d) bad login refused" "$T5" "a1 NO"
 
+if [ "$BACKEND" = postgres ]; then
+  echo "== postgres: kill -9 in the middle of a burst of deliveries (no loss, no duplicate)"
+  N=300
+  : >"$WORK/acked"
+  burst_body() { printf 'From: carol@remote.test
+To: alice@example.test
+Subject: burst-%s
+Date: Mon, 10 Nov 2026 11:00:00 +0000
+Message-ID: <b%s@remote.test>
+
+burst %s
+.' "$1" "$1" "$1"; }
+  send_burst() { # n : prints n when the server answered 250 to the end of DATA
+    local t
+    t="$(printf '%s
+' "EHLO client.test" "MAIL FROM:<carol@remote.test>" "RCPT TO:<alice@$DOMAIN>" "DATA" "$(burst_body "$1")" "QUIT" | smtp_plain "$P_SMTP" 2>/dev/null)"
+    case "$t" in *"S: 250 2.0.0"*) echo "$1" >>"$WORK/acked";; esac
+  }
+  ( for i in $(seq 1 $N); do send_burst "$i"; done ) >/dev/null 2>&1 &
+  BURST=$!
+  for _ in $(seq 1 200); do [ "$(wc -l <"$WORK/acked")" -ge 10 ] && break; sleep 0.05; done
+  kill -KILL "$PID"; wait "$PID" 2>/dev/null; PID=""
+  ACKED_AT_KILL="$(wc -l <"$WORK/acked")"
+  wait "$BURST" 2>/dev/null
+  [ "$ACKED_AT_KILL" -lt "$N" ] || fail "the burst finished before the daemon was killed (test is vacuous)"
+  echo "ok: daemon killed with SIGKILL after $ACKED_AT_KILL of $N acknowledged messages"
+  LISTENING=2 start_daemon
+  sort -n "$WORK/acked" >"$WORK/acked.sorted"
+  retried=0
+  for i in $(seq 1 $N); do
+    grep -qx "$i" "$WORK/acked.sorted" && continue
+    retried=$((retried+1)); send_burst "$i"
+  done
+  echo "ok: $retried messages were not acknowledged before the kill and were sent again"
+  [ "$(sort -u "$WORK/acked" | wc -l)" -eq "$N" ] || fail "not every message was acknowledged after the retry"
+  T6="$(imap "alice@$DOMAIN" "$ALICE_PW" 'SELECT INBOX' 'FETCH 1:* (BODY.PEEK[HEADER.FIELDS (SUBJECT)])' | redact "$ALICE_PW")"
+  total="$(printf '%s
+' "$T6" | grep -c '^Subject: burst-')"
+  uniq_n="$(printf '%s
+' "$T6" | grep '^Subject: burst-' | sort -u | wc -l)"
+  [ "$total" = "$N" ] || fail "expected $N messages after the kill and the retries, found $total (loss or duplicate)"
+  [ "$uniq_n" = "$N" ] || fail "duplicates after the kill and the retries: $total messages, $uniq_n distinct"
+  echo "ok: $N messages, $uniq_n distinct: none lost, none duplicated"
+fi
+
 echo "== no secret in the daemon log"
+if [ "$BACKEND" = postgres ] && grep -qF -e "$APP_PW" -e "$MIG_PW" -e "$SUPER_PW" "$LOG"; then fail "a database password reached the log"; fi
 if grep -qF -e "$ALICE_PW" -e "$BOB_PW" -e "$AUTH" "$LOG"; then fail "a password reached the log"; fi
 echo "ok: log clean"
 echo "== ALL CHECKS PASSED"

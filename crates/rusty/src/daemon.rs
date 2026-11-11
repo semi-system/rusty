@@ -68,14 +68,10 @@ impl Running {
 /// Dev profile only: the data directory is created 0700 (or must already be private and not a
 /// symlink) and the blob root is initialised. Production never creates anything implicitly.
 pub(crate) async fn prepare_dev_dirs(cfg: &StartupConfig) -> Result<()> {
-    if cfg.store.is_postgres() {
-        // No local database file: only the blob root is prepared.
-        return FsBlobStore::init(&cfg.blob_dir).await;
-    }
-    let dir = cfg
-        .database_path
+    let (own, what) = if cfg.store.is_postgres() { (cfg.blob_dir.as_path(), "blob_dir") } else { (cfg.database_path.as_path(), "database_path") };
+    let dir = own
         .parent()
-        .ok_or_else(|| Error::Invalid("database_path has no directory".into()))?;
+        .ok_or_else(|| Error::Invalid(format!("{what} has no directory")))?;
     match std::fs::symlink_metadata(dir) {
         Ok(m) => {
             if !m.is_dir() {

@@ -233,6 +233,23 @@ impl StartupConfig {
         }
     }
 
+    /// Dev profile only: replace the `[store]` section with the one in `text` (a TOML document that
+    /// holds nothing but `[store]`). Used by the acceptance script to run the dev server on Postgres.
+    pub fn with_store_toml(mut self, text: &str) -> Result<StartupConfig> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Only {
+            store: StoreSection,
+        }
+        let only: Only = toml::from_str(text).map_err(|_| Error::Invalid("store configuration is not valid".into()))?;
+        self.store = only.store;
+        if self.store.is_postgres() {
+            self.database_path = PathBuf::new();
+        }
+        self.validate()?;
+        Ok(self)
+    }
+
     /// The `rusty d --dev` profile: everything under `data_dir`, high ports on loopback and
     /// the explicit dev certificate. `data_dir` should be absolute.
     pub fn dev(data_dir: &Path) -> StartupConfig {

@@ -133,3 +133,18 @@ fn debug_output_has_no_secret() {
     let text = format!("{c:?}");
     assert!(!text.contains("hunter2"));
 }
+
+#[test]
+fn the_dev_profile_can_take_a_store_section_from_a_separate_file() {
+    let dev = StartupConfig::dev(std::path::Path::new("/tmp/d"));
+    let text = "[store]\nbackend = \"postgres\"\nurl = \"postgres://rusty_app@127.0.0.1:5432/rusty\"\nsslmode = \"disable\"\n";
+    let c = dev.clone().with_store_toml(text).unwrap();
+    assert!(c.store.is_postgres() && c.database_path.as_os_str().is_empty());
+    assert!(c.check_startup(Profile::Dev).is_ok());
+    // Only the [store] section is accepted; anything else, or an invalid store, is refused.
+    invalid(dev.clone().with_store_toml("hostname = \"x.test\"\n"));
+    invalid(dev.clone().with_store_toml("[store]\nbackend = \"postgres\"\n"));
+    invalid(dev.clone().with_store_toml("[store]\nurl = \"postgres://u:pw@h/d\"\n"));
+    let sqlite = dev.with_store_toml("[store]\nbackend = \"sqlite\"\n").unwrap();
+    assert_eq!(sqlite.database_path, std::path::Path::new("/tmp/d/meta.sqlite"));
+}
