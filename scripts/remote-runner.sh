@@ -45,6 +45,8 @@ rm -f "$log.rc"
 # shellcheck source=/dev/null
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 export CARGO_TARGET_DIR="$target"
+# Keep the (small) build server disk usable: no incremental dirs, line-table debuginfo only.
+export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=line-tables-only
 if [ "$mode" = cargo ] && [ -z "${RUSTY_PG_RUN_ID:-}" ]; then
   # same charset rule as scripts/pg-lib.sh; one stable id per worktree for manual cargo runs
   RUSTY_PG_RUN_ID="wt$(printf '%s' "$name" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9' x | cut -c1-20)"
