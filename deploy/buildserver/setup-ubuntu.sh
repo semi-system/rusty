@@ -11,7 +11,7 @@ set -euo pipefail
 CARGO_DENY_VERSION="${CARGO_DENY_VERSION:-0.20.0}"
 CARGO_AUDIT_VERSION="${CARGO_AUDIT_VERSION:-0.22.0}"
 CARGO_FUZZ_VERSION="${CARGO_FUZZ_VERSION:-0.13.1}"
-NIGHTLY_TOOLCHAIN="${NIGHTLY_TOOLCHAIN:-nightly-2026-11-01}"   # for cargo-fuzz only
+NIGHTLY_TOOLCHAIN="${NIGHTLY_TOOLCHAIN:-nightly-2026-11-02}"   # for cargo-fuzz only (nightly-2026-11-01 fails to compile sqlx-core: E0391)
 RUSTUP_INIT_URL="https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init"
 RUSTUP_INIT_SHA256="${RUSTUP_INIT_SHA256:-}"   # optional hard pin; else the .sha256 from static.rust-lang.org
 DOCKER_KEY_FPR="9DC858229FC7DD38854AE2D88D81803C0EBFCD88"      # Docker Inc. apt signing key

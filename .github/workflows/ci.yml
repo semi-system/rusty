@@ -401,7 +401,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: rustup toolchain install nightly --profile minimal
+      - run: rustup toolchain install nightly-2026-11-02 --profile minimal
       - name: Restore the installed tool binaries
         id: tools
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -427,7 +427,7 @@ jobs:
           cd fuzz
           for t in parse_envelope parse_address fuzz_config fuzz_pem fuzz_ctl_args fuzz_smtp_command fuzz_smtp_data fuzz_smtp_path fuzz_smtp_headers fuzz_smtp_auth fuzz_imap_command fuzz_imap_structure fuzz_imap_search_eval fuzz_imap_seqset fuzz_imap_utf7; do
             mkdir -p "corpus/$t"
-            cargo +nightly fuzz run "$t" "corpus/$t" "seeds/$t" -- -max_total_time=60 -rss_limit_mb=2048
+            cargo +nightly-2026-11-02 fuzz run "$t" "corpus/$t" "seeds/$t" -- -max_total_time=60 -rss_limit_mb=2048
           done
       - name: Save the tool binaries (main only)
         if: ${{ success() && github.ref == 'refs/heads/main' && steps.tools.outputs.cache-hit != 'true' }}
