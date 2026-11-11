@@ -196,10 +196,10 @@ as_build "rustc --version; cargo --version; rustup toolchain list; rustup target
 as_build "cargo deny --version; cargo audit --version; cargo fuzz --version"
 docker --version
 docker compose version
-swaks --version | head -2
-shellcheck --version | head -2
+swaks --version | sed -n 1,2p
+shellcheck --version | sed -n 1,2p
 jq --version
-rsync --version | head -1
+rsync --version | sed -n 1p
 tdir="$(mktemp -d)"; chmod 755 "$tdir"; chown "$BUILD_USER" "$tdir"
 as_build "cd '$tdir' && cargo new --quiet --bin hello && cd hello && cargo build --quiet && ./target/debug/hello && cargo build --quiet --release --target x86_64-unknown-linux-musl"
 rm -rf "$tdir"
@@ -208,7 +208,7 @@ if [ -r "$lock" ]; then
   img="$(awk '$1 ~ /^haproxy:/ {print $2}' "$lock" | head -1)"
   [ -n "$img" ] || { echo "error: haproxy digest not found in images.lock" >&2; exit 1; }
   echo "docker check with pinned image $img"
-  sudo -u "$BUILD_USER" -H docker run --rm "$img" haproxy -v | head -1
+  sudo -u "$BUILD_USER" -H docker run --rm "$img" haproxy -v | sed -n 1p
 else
   echo "WARNING: deploy/images.lock not found next to this script; docker run check skipped" >&2
 fi
