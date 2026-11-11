@@ -24,7 +24,7 @@
 # survivor is listed with the written waiver argument from scripts/pg-mutate-waivers.tsv, if any;
 # an unwaived survivor is printed as UNEXPLAINED and fails the committed-table test.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 MODE="${1:-}"; shift || true
 : "${RUSTY_TEST_PG_URL:?RUSTY_TEST_PG_URL is required}"
 export RUSTY_REQUIRE_PG=1

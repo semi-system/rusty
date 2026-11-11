@@ -1,0 +1,3 @@
+# Reviewed Trivy exceptions for the image, one CVE id per line, each with the reason, the
+# reviewer and an expiry (re-check by that date). Empty on purpose: the image is distroless
+# static plus one static Rust binary. Do not add an entry without a review.

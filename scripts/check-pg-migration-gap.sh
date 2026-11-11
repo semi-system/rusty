@@ -6,7 +6,8 @@
 set -euo pipefail
 ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$ROOT"
-bad="$(ls crates/rusty-store/migrations_pg 2>/dev/null | grep -E '^0*[2-9]([^0-9]|$)' || true)"
+bad="$(cd crates/rusty-store/migrations_pg 2>/dev/null && printf "%s
+" * | grep -E "^0*[2-9]([^0-9]|$)" || true)"
 if [ -n "$bad" ]; then echo "migrations_pg must not contain 0002..0009:" >&2; echo "$bad" >&2; exit 1; fi
 
 # Twin rule (U11): every SQLite migration numbered 0010 or higher has a Postgres migration with the SAME

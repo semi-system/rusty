@@ -3,7 +3,9 @@
 A security-first, from-scratch rewrite of the Zimbra FOSS mail stack in Rust: standard
 protocols (SMTP, IMAP; JMAP, CalDAV and CardDAV are planned), multi-tenant by design
 (domain = tenant), content-addressed blob storage, and an import tool for Zimbra later.
-Repository: <https://github.com/semi-system/rusty>. The crates and binaries keep the code name
+[![ci](https://github.com/semi-system/rusty/actions/workflows/ci.yml/badge.svg)](https://github.com/semi-system/rusty/actions/workflows/ci.yml)
+
+Repository: <https://github.com/semi-system/rusty> (the slug of `repository` in `Cargo.toml`). The crates and binaries keep the code name
 `rusty`.
 
 ## Status: early development, not production ready
@@ -48,6 +50,8 @@ The toolchain is pinned in `rust-toolchain.toml`. The full gate (`scripts/ci.sh`
 `scripts/check-*.sh`, a musl release build with a static-linking check, and fuzz smoke runs for every
 parser. `FUZZ_SECS` overrides the fuzz time. Postgres tests start a throwaway container
 (`scripts/pg-up.sh`). The tools it needs are listed in [SECURITY.md](SECURITY.md).
+
+Contributing, branches and PRs: [CONTRIBUTING.md](CONTRIBUTING.md), [docs/git-workflow.md](docs/git-workflow.md); CI: [docs/ci.md](docs/ci.md); run `bash scripts/prepush-check.sh` before `git push`.
 
 Development helpers: on Windows, build in WSL with `scripts/wsl-cargo.sh` / `scripts/wsl-ci.sh`, or on
 a dedicated Ubuntu build server with `scripts/remote-cargo.sh` / `scripts/ci-run.sh`

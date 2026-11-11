@@ -1,0 +1,38 @@
+name: Feature request
+description: Propose a capability or a change of behaviour
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the plans in `docs/superpowers/plans/` first: many items are scheduled. Do not put
+        vulnerability details in a public issue; follow [SECURITY.md](../blob/main/SECURITY.md).
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem to solve
+      description: What can you not do today, and who needs it?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security and tenancy considerations
+      description: New input from the network? New credentials or keys? Does it cross a tenant (domain) boundary?
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: This does not disclose a vulnerability and contains no secrets or real mail.
+          required: true

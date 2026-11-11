@@ -58,6 +58,12 @@ rustup target list --installed | grep -qx "$MUSL" || { echo "[FAIL] missing rust
 # (skipped when the hook is set: ci-trap.sh runs ci.sh itself)
 [ -n "${RUSTY_CI_FORCE_FAIL:-}" ] || stage "ci scripts" bash scripts/tests/ci-trap.sh
 stage "remote build helpers self-test" bash scripts/tests/remote-lib.sh
+# CI speed helpers (docs/ci.md): change classification, cache pruning, pinned tool install.
+stage "ci-changes self-test" bash scripts/tests/ci-changes.sh
+stage "ci-cache-prune self-test" bash scripts/tests/ci-cache-prune.sh
+stage "ci-tool self-test" bash scripts/tests/ci-tool.sh
+# Pre-push check (run bash scripts/prepush-check.sh yourself before every git push).
+stage "prepush-check self-test" bash scripts/tests/prepush-check.sh
 
 # Database access belongs to rusty-store (scripts/check-raw-db.sh documents what the text scan
 # covers and what it cannot see). The gate has its own self-test.
@@ -82,6 +88,12 @@ stage "service crates use only facades" bash scripts/check-service-crates.sh
 # The `test-knobs` fault-injection feature of rusty-store is enabled only by its own tests.
 stage "test-knobs gate self-test" bash scripts/tests/test-knobs-gate.sh
 stage "no test knobs outside tests" bash scripts/check-test-knobs.sh static
+# Supply chain: Dockerfile bases and workflow actions are pinned by digest/SHA; workflows and shell
+# scripts are linted in pinned containers (skips with an explicit note when Docker is absent).
+stage "docker-pins gate self-test" bash scripts/tests/docker-pins-gate.sh
+stage "docker and workflow pins" bash scripts/check-docker-pins.sh
+stage "workflows-lint self-test" bash scripts/tests/workflows-lint.sh
+stage "actionlint and shellcheck" bash scripts/ci-workflows-lint.sh
 stage "clippy"       cargo clippy --workspace --all-targets -- -D warnings
 stage "test (glibc)" cargo test --workspace
 # The dev quickstart works from a clean checkout: build, start on spare ports, banner, SIGTERM, exit 0.

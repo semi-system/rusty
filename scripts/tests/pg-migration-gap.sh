@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Script test: scripts/check-pg-migration-gap.sh refuses every spelling of a version 2..9 and accepts 1 and 10+.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 GATE="$PWD/scripts/check-pg-migration-gap.sh"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 expect() { # name, rc, files...

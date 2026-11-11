@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Script test: scripts/check-raw-db.sh passes on a clean tree and fails for each bypass variant.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 GATE="$PWD/scripts/check-raw-db.sh"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 mk() { rm -rf "$tmp/t"; mkdir -p "$tmp/t/crates/app/src" "$tmp/t/crates/app/tests" "$tmp/t/fuzz/fuzz_targets" "$tmp/t/tools/x/src" "$tmp/t/crates/rusty-store/src"

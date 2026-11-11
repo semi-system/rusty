@@ -1,0 +1,103 @@
+# Release on a version tag: musl binaries (amd64, arm64) + SHA256SUMS + the compose file and the
+# installer (when present in the tree), all signed keyless with cosign (OIDC). The image itself is
+# built, signed and attested by docker.yml on the same tag. Notes are generated from the git log.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  binaries:
+    name: static binary (${{ matrix.arch }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            triple: x86_64-unknown-linux-musl
+            zig: x86_64-linux-musl
+          - arch: arm64
+            triple: aarch64-unknown-linux-musl
+            zig: aarch64-linux-musl
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build with the same Dockerfile as the image (zig cross compile, --locked)
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          # The `binary` stage holds only /rusty; the platform selects the target triple.
+          docker buildx build --platform "linux/${ARCH}" --target binary \
+            -f deploy/docker/Dockerfile --build-arg "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" \
+            --output "type=local,dest=out-${ARCH}" .
+      - name: Extract the binary
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          install -m 0755 "out-${ARCH}/rusty" "dist/rusty-linux-${ARCH}"
+          file "dist/rusty-linux-${ARCH}" | grep -qE "statically linked|static-pie linked"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rusty-linux-${{ matrix.arch }}
+          path: dist/rusty-linux-${{ matrix.arch }}
+          if-no-files-found: error
+
+  release:
+    name: checksums, signatures, GitHub release
+    needs: binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write # create the release and upload assets
+      id-token: write # keyless cosign signing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      - name: Assemble, checksum and sign
+        run: |
+          set -euo pipefail
+          cp deploy/compose/compose.yaml dist/compose.yaml
+          [ ! -f deploy/standalone/install.sh ] || cp deploy/standalone/install.sh dist/install.sh
+          cd dist
+          sha256sum -- * > SHA256SUMS
+          cosign sign-blob --yes --bundle SHA256SUMS.cosign.bundle SHA256SUMS
+      - name: Changelog from the git log
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          prev="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
+          {
+            echo "## ${TAG}"
+            echo
+            if [ -n "$prev" ]; then git log --no-merges --format='- %s (%h)' "${prev}..${TAG}"; else git log --no-merges --format='- %s (%h)' "${TAG}"; fi
+          } > CHANGELOG-release.md
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" dist/* --verify-tag --title "$TAG" --notes-file CHANGELOG-release.md

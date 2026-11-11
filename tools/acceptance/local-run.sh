@@ -12,6 +12,8 @@
 # deploy/db/roles.sql: the daemon runs as rusty_app (DML only), `rusty ctl db migrate` as rusty_migrator.
 # It also checks that the daemon refuses an un-migrated database, and kills the daemon with SIGKILL in the
 # middle of a burst of deliveries: after the restart and the senders' retries every message exists once.
+#      IMAGE=<ref> run the daemon from a container image built with --build-arg DEV_CERT=1 instead (only with BACKEND=sqlite)
+#      (read-only root, all capabilities dropped, ports published on 127.0.0.1; Docker required).
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -21,40 +23,62 @@ P_SMTP=2525 P_SUB=5587 P_IMAPS=9993
 DOMAIN=example.test
 for t in openssl base64 timeout; do command -v "$t" >/dev/null || { echo "missing tool: $t" >&2; exit 127; }; done
 
+IMAGE="${IMAGE:-}"
+CNAME="rusty-local-run-$$"
 BIN="${RUSTY_BIN:-}"
-if [ -z "$BIN" ]; then
-  for c in "${CARGO_TARGET_DIR:-$HOME/rusty-target}/x86_64-unknown-linux-musl/release/rusty" \
-           "${CARGO_TARGET_DIR:-$HOME/rusty-target}/release/rusty"; do [ -x "$c" ] && BIN="$c" && break; done
+if [ -n "$IMAGE" ]; then
+  command -v docker >/dev/null || { echo "missing tool: docker (IMAGE mode)" >&2; exit 127; }
+  HOST=127.0.0.1
+else
+  if [ -z "$BIN" ]; then
+    for c in "${CARGO_TARGET_DIR:-$HOME/rusty-target}/x86_64-unknown-linux-musl/release/rusty" \
+             "${CARGO_TARGET_DIR:-$HOME/rusty-target}/release/rusty"; do [ -x "$c" ] && BIN="$c" && break; done
+  fi
+  if [ -z "$BIN" ]; then
+    echo "== building the release binary" >&2
+    (cd "$ROOT" && cargo build --release --target x86_64-unknown-linux-musl -p rusty) || exit 1
+    BIN="${CARGO_TARGET_DIR:-$HOME/rusty-target}/x86_64-unknown-linux-musl/release/rusty"
+  fi
+  [ -x "$BIN" ] || { echo "no binary at $BIN" >&2; exit 1; }
 fi
-if [ -z "$BIN" ]; then
-  echo "== building the release binary" >&2
-  (cd "$ROOT" && cargo build --release --target x86_64-unknown-linux-musl -p rusty) || exit 1
-  BIN="${CARGO_TARGET_DIR:-$HOME/rusty-target}/x86_64-unknown-linux-musl/release/rusty"
-fi
-[ -x "$BIN" ] || { echo "no binary at $BIN" >&2; exit 1; }
 
 WORK="$(mktemp -d "$HOME/rusty-local-run.XXXXXX")" || exit 1
 DATA="$WORK/data"; LOG="$WORK/rusty.log"; PID=""
 BACKEND="${BACKEND:-sqlite}"
 PGC=""
 case "$BACKEND" in sqlite|postgres) ;; *) echo "BACKEND must be sqlite or postgres" >&2; exit 2;; esac
+if [ -n "$IMAGE" ] && [ "$BACKEND" != sqlite ]; then echo "IMAGE mode runs the SQLite dev profile only; do not combine IMAGE with BACKEND=$BACKEND" >&2; exit 2; fi
 cleanup() {
   [ -n "$PGC" ] && docker rm -f "$PGC" >/dev/null 2>&1
+  if [ -n "$IMAGE" ]; then docker rm -f "$CNAME" >/dev/null 2>&1; docker volume rm -f "$CNAME-data" >/dev/null 2>&1; fi
   [ -n "$PID" ] && kill -TERM "$PID" 2>/dev/null && { for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$PID" 2>/dev/null || break; sleep 0.5; done; kill -KILL "$PID" 2>/dev/null; }
   if [ "${KEEP:-0}" = 1 ]; then echo "kept: $WORK" >&2; else rm -rf "$WORK"; fi
 }
 trap cleanup EXIT
-FAILED=0
 fail() { echo "FAIL: $*" >&2; echo "---- daemon log tail" >&2; tail -n 20 "$LOG" >&2; exit 1; }
 expect() { # expect <label> <haystack> <needle>
   case "$2" in *"$3"*) echo "ok: $1";; *) echo "--- transcript"; printf '%s\n' "$2"; fail "$1: expected '$3'";; esac
 }
 
 ALICE_PW="$(openssl rand -hex 12)"; BOB_PW="$(openssl rand -hex 12)"
-RC() { "$BIN" ctl --dev --data-dir "$DATA" "$@"; }
+if [ -n "$IMAGE" ]; then
+  RC() { docker exec -i "$CNAME" /usr/local/bin/rusty ctl --dev --data-dir /var/lib/rusty/dev "$@"; }
+else
+  RC() { "$BIN" ctl --dev --data-dir "$DATA" "$@"; }
+fi
 
 start_daemon() {
-  "$BIN" d --dev --data-dir "$DATA" --bind "$BIND" >>"$LOG" 2>&1 &
+  if [ -n "$IMAGE" ]; then
+    echo "== starting $IMAGE (read-only root, no capabilities, ports on 127.0.0.1)"
+    docker volume create "$CNAME-data" >/dev/null || exit 1
+    docker run -d --name "$CNAME" --read-only --cap-drop ALL --security-opt no-new-privileges \
+      -v "$CNAME-data:/var/lib/rusty" \
+      -p "127.0.0.1:$P_SMTP:$P_SMTP" -p "127.0.0.1:$P_SUB:$P_SUB" -p "127.0.0.1:$P_IMAPS:$P_IMAPS" \
+      "$IMAGE" d --dev --data-dir /var/lib/rusty/dev --bind 0.0.0.0 >/dev/null || exit 1
+    docker logs -f "$CNAME" >"$LOG" 2>&1 &
+  else
+    "$BIN" d --dev --data-dir "$DATA" --bind "$BIND" >>"$LOG" 2>&1 &
+  fi
   PID=$!
   local up=0 _
   for _ in $(seq 1 150); do

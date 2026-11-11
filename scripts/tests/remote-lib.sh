@@ -3,8 +3,7 @@
 # ssh/rsync on PATH (no server needed): env loading, argument parsing, path safety, lock naming,
 # exit-code propagation, detach and status handling.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
-ROOT="$PWD"
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 fail() { echo "remote-lib: $*" >&2; exit 1; }
 
@@ -53,8 +52,8 @@ unset BUILD_HOST BUILD_USER BUILD_KEY BUILD_PORT BUILD_MUX BUILD_SYNC BUILD_LOCK
 # 2. validation: missing/invalid configuration is refused
 (
   . scripts/remote-lib.sh; RUSTY_REMOTE_ENV="$tmp/none"; rl_load_env
-  out="$( (rl_require_config) 2>&1)"; rc=$?
-  [ "$rc" -eq 2 ] && [[ "$out" == *BUILD_HOST* ]] || fail "missing host not refused ($rc)"
+  rcout="$( (rl_require_config) 2>&1)"; rc=$?
+  [ "$rc" -eq 2 ] && [[ "$rcout" == *BUILD_HOST* ]] || fail "missing host not refused ($rc)"
   BUILD_HOST='a;b' BUILD_KEY=k; (rl_require_config) >/dev/null 2>&1 && fail "bad host accepted"
   BUILD_HOST=h BUILD_KEY=k BUILD_PORT=x; (rl_require_config) >/dev/null 2>&1 && fail "bad port accepted"
   BUILD_PORT=22 BUILD_SYNC=ftp; (rl_require_config) >/dev/null 2>&1 && fail "bad sync accepted"
@@ -114,6 +113,18 @@ grep -qxF -- "/target/" "$FAKE_LOG" || fail "target/ not excluded"
 ! grep -q -- '--- ssh' "$FAKE_LOG" || fail "ssh called without configuration"
 # unpinned host key -> refused
 ( BUILD_KNOWN_HOSTS="$tmp/nokh" bash scripts/remote-cargo.sh --version ) >/dev/null 2>&1 && fail "ran without a pinned host key"
+
+# 5b. remote-run: arbitrary command, exact quoting, rc propagated, no config -> refused
+: > "$FAKE_LOG"
+BUILD_SYNC=tar bash scripts/remote-run.sh bash scripts/x.sh "a b" >/dev/null 2>"$tmp/err"; rc=$?
+[ "$rc" -eq 0 ] || fail "remote-run rc=$rc: $(cat "$tmp/err")"
+grep -q 'flock' "$FAKE_LOG" && grep -q 'a\\ b' "$FAKE_LOG" || fail "remote-run command not quoted exactly"
+grep -q '/srv/rusty/work/wt-test' "$FAKE_LOG" || fail "remote-run work dir missing"
+bash scripts/remote-run.sh >/dev/null 2>&1; [ $? -eq 2 ] || fail "remote-run without a command not refused"
+: > "$FAKE_LOG"
+( unset BUILD_KNOWN_HOSTS; RUSTY_REMOTE_ENV="$tmp/none" bash scripts/remote-run.sh true ) >/dev/null 2>&1 && fail "remote-run ran without configuration"
+! grep -q -- '--- ssh' "$FAKE_LOG" || fail "remote-run called ssh without configuration"
+( BUILD_KNOWN_HOSTS="$tmp/nokh" bash scripts/remote-run.sh true ) >/dev/null 2>&1 && fail "remote-run ran without a pinned host key"
 
 # 6. remote-ci: detach, status codes, bad arguments
 : > "$FAKE_LOG"

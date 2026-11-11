@@ -3,7 +3,7 @@
 # trap of ci.sh. RUSTY_CI_FORCE_FAIL=<stage> replaces that stage's command with `false`; the
 # hook exists for this test only.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 out="$(RUSTY_CI_FORCE_FAIL=clippy bash scripts/ci.sh 2>&1)"
 rc=$?
 if [ "$rc" -eq 0 ]; then

@@ -110,6 +110,9 @@ One command for the full gate, whichever machine is configured:
 Cargo on the server: `bash scripts/remote-cargo.sh test -p rusty-store`,
 `bash scripts/remote-cargo.sh clippy --workspace --all-targets -- -D warnings`.
 
+Any other command (gates, lint) in the worktree on the server: `bash scripts/remote-run.sh bash scripts/ci-workflows-lint.sh`
+(syncs first, takes the per-worktree lock, does not take the global CI lock).
+
 - The worktree (including uncommitted changes; excluding `target/`, `.git`, fuzz artifacts and
   git-ignored files) is synced to `/srv/rusty/work/<worktree-name>/` with rsync, or with tar over
   SSH when rsync is not installed on Windows (the helper says so). `--delete` applies only inside
