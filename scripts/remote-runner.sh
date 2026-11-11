@@ -6,6 +6,9 @@
 # /srv/rusty/logs/<name>-<timestamp>-<mode>.log and records the exit code in <log>.rc.
 # Exit 75 = a lock is held by someone else.
 set -uo pipefail
+# CI parity with the GitHub runners and WSL (umask 022). Ubuntu's default 002 makes bare temp dirs group-writable,
+# which the blob store (correctly) refuses; tests must not depend on the umask, but keep the runner predictable.
+umask 022
 
 mode="${1:-}"; name="${2:-}"; ts="${3:-}"
 [ "$#" -ge 3 ] || { echo "usage: remote-runner.sh <cargo|ci> <name> <ts> [args]" >&2; exit 2; }
