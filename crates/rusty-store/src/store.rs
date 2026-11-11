@@ -16,12 +16,13 @@ use crate::{SqliteStore, DEFAULT_BUSY_TIMEOUT};
 pub enum StoreConfig {
     /// SQLite: `url` is a sqlx URL (`sqlite://path` or `sqlite::memory:`).
     Sqlite { url: String, busy_timeout: Duration },
-    /// Postgres. TLS mode and certificates come from the URL (`sslmode=`); a hardened
-    /// `verify-full` policy is PG8.
+    /// Postgres. `security` carries the TLS mode, CA, password and role policy; with the default
+    /// value the URL decides (and a non-loopback host must still use `verify-full`).
     #[cfg(feature = "postgres")]
     Postgres {
         url: String,
         pool: crate::PgPoolConfig,
+        security: crate::PgSecurity,
     },
 }
 
@@ -36,10 +37,11 @@ impl std::fmt::Debug for StoreConfig {
                 .field("busy_timeout", busy_timeout)
                 .finish(),
             #[cfg(feature = "postgres")]
-            StoreConfig::Postgres { pool, .. } => f
+            StoreConfig::Postgres { pool, security, .. } => f
                 .debug_struct("Postgres")
                 .field("url", &"<redacted>")
                 .field("pool", pool)
+                .field("security", security)
                 .finish(),
         }
     }
@@ -60,6 +62,7 @@ impl StoreConfig {
         StoreConfig::Postgres {
             url: url.into(),
             pool: crate::PgPoolConfig::default(),
+            security: crate::PgSecurity::default(),
         }
     }
 }
@@ -84,7 +87,8 @@ pub struct Store {
 }
 
 impl Store {
-    /// Open (and migrate) the configured backend.
+    /// Open the configured backend. SQLite migrates its own file; Postgres is NEVER migrated here
+    /// (`rustyctl db migrate` does that): a schema that is not exactly this binary's is refused.
     pub async fn open(config: StoreConfig) -> Result<Store> {
         match config {
             StoreConfig::Sqlite { url, busy_timeout } => {
@@ -106,8 +110,8 @@ impl Store {
                 })
             }
             #[cfg(feature = "postgres")]
-            StoreConfig::Postgres { url, pool } => {
-                let store = crate::PgStore::connect_with_config(&url, pool).await?;
+            StoreConfig::Postgres { url, pool, security } => {
+                let store = crate::PgStore::connect_with(&url, pool, &security).await?;
                 let repo = Arc::new(crate::repo::pg::PgRepo::new(store.clone()));
                 Ok(Store {
                     repos: Repos {

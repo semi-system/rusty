@@ -34,6 +34,18 @@ pub struct Backend {
     pub _tmp: tempfile::TempDir,
     #[cfg(feature = "postgres")]
     pub _db: Option<PgTestDb>,
+    /// Superuser pool of the Postgres test database: raw fixture SQL (setup, fault injection, catalog
+    /// probes) is not part of the system under test, so it runs with full rights even when the
+    /// repositories run as the unprivileged `rusty_app` (RUSTY_TEST_PG_ROLES=1).
+    #[cfg(feature = "postgres")]
+    pub _fixture: Option<sqlx::PgPool>,
+}
+
+#[cfg(feature = "postgres")]
+impl Backend {
+    pub fn fx(&self) -> &sqlx::PgPool {
+        self._fixture.as_ref().expect("a Postgres backend has a fixture pool")
+    }
 }
 
 pub async fn blob_dir(tmp: &tempfile::TempDir) -> Arc<dyn BlobStore> {
@@ -68,6 +80,8 @@ async fn sqlite_backend_over(store: SqliteStore, tmp: tempfile::TempDir) -> Back
         _tmp: tmp,
         #[cfg(feature = "postgres")]
         _db: None,
+        #[cfg(feature = "postgres")]
+        _fixture: None,
     }
 }
 
@@ -90,6 +104,7 @@ pub async fn pg_backend() -> Option<Backend> {
         sqlite: None,
         pg: Some((store, repo)),
         _tmp: tmp,
+        _fixture: Some(sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(db.admin_db_url()).await.unwrap()),
         _db: Some(db),
     })
 }
@@ -160,7 +175,7 @@ pub async fn exec(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> i64 {
                 Bind::B(v) => q.bind(*v),
             };
         }
-        return q.fetch_one(p.pool()).await.unwrap();
+        return q.fetch_one(b.fx()).await.unwrap();
     }
     unreachable!()
 }
@@ -220,7 +235,7 @@ pub async fn fetch_i64s(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> Vec<i64> 
     #[cfg(feature = "postgres")]
     if let Some((p, _)) = &b.pg {
         return bind_all!(sqlx::query_scalar::<_, i64>(&sql), binds)
-            .fetch_all(p.pool())
+            .fetch_all(b.fx())
             .await
             .unwrap();
     }
@@ -239,7 +254,7 @@ pub async fn fetch_strings(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> Vec<St
     #[cfg(feature = "postgres")]
     if let Some((p, _)) = &b.pg {
         return bind_all!(sqlx::query_scalar::<_, String>(&sql), binds)
-            .fetch_all(p.pool())
+            .fetch_all(b.fx())
             .await
             .unwrap();
     }
@@ -258,7 +273,7 @@ pub async fn fetch_opt_i64(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> Option
     #[cfg(feature = "postgres")]
     if let Some((p, _)) = &b.pg {
         return bind_all!(sqlx::query_scalar::<_, Option<i64>>(&sql), binds)
-            .fetch_one(p.pool())
+            .fetch_one(b.fx())
             .await
             .unwrap();
     }
@@ -295,7 +310,7 @@ pub async fn fetch_rows(
     #[cfg(feature = "postgres")]
     if let Some((p, _)) = &b.pg {
         let rows = bind_all!(sqlx::query(&sql), binds)
-            .fetch_all(p.pool())
+            .fetch_all(b.fx())
             .await
             .unwrap();
         return rows
@@ -326,7 +341,7 @@ pub async fn execute(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> u64 {
     #[cfg(feature = "postgres")]
     if let Some((p, _)) = &b.pg {
         return bind_all!(sqlx::query(&sql), binds)
-            .execute(p.pool())
+            .execute(b.fx())
             .await
             .unwrap()
             .rows_affected();
@@ -375,7 +390,7 @@ pub async fn try_execute(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> Result<u
     #[cfg(feature = "postgres")]
     if let Some((p, _)) = &b.pg {
         return bind_all!(sqlx::query(&sql), binds)
-            .execute(p.pool())
+            .execute(b.fx())
             .await
             .map(|r| r.rows_affected())
             .map_err(failure);
@@ -442,7 +457,7 @@ pub async fn scalar(b: &Backend, sql: &str) -> i64 {
     #[cfg(feature = "postgres")]
     if let Some((p, _)) = &b.pg {
         return sqlx::query_scalar::<_, i64>(sql)
-            .fetch_one(p.pool())
+            .fetch_one(b.fx())
             .await
             .unwrap();
     }
@@ -460,7 +475,7 @@ pub async fn scalars(b: &Backend, sql: &str) -> Vec<i64> {
     #[cfg(feature = "postgres")]
     if let Some((p, _)) = &b.pg {
         return sqlx::query_scalar::<_, i64>(sql)
-            .fetch_all(p.pool())
+            .fetch_all(b.fx())
             .await
             .unwrap();
     }
@@ -561,7 +576,7 @@ pub async fn run(b: &Backend, sql: &str) {
     }
     #[cfg(feature = "postgres")]
     if let Some((p, _)) = &b.pg {
-        sqlx::query(sql).execute(p.pool()).await.unwrap();
+        sqlx::query(sql).execute(b.fx()).await.unwrap();
         return;
     }
     unreachable!()
@@ -578,7 +593,7 @@ pub async fn text(b: &Backend, sql: &str) -> String {
     #[cfg(feature = "postgres")]
     if let Some((p, _)) = &b.pg {
         return sqlx::query_scalar::<_, String>(sql)
-            .fetch_one(p.pool())
+            .fetch_one(b.fx())
             .await
             .unwrap();
     }

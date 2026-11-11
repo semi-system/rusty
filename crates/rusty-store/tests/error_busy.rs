@@ -177,10 +177,11 @@ mod pg {
         let db = PgTestDb::create(&admin).await;
         let setup = PgRepo::new(db.connect().await);
         let (_, mb) = account(&setup, "st").await;
+        // The statement timeout is a property of the role/database now, not of the session.
+        db.set_database_setting("statement_timeout", "150ms").await;
         let store = PgStore::connect_with_config(
             db.url(),
             PgPoolConfig {
-                statement_timeout: Duration::from_millis(150),
                 lock_timeout: Duration::from_secs(30),
                 ..PgPoolConfig::default()
             },
