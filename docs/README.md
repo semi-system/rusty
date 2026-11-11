@@ -1,4 +1,4 @@
-# Rusty - Tài liệu thiết kế và kế hoạch
+# Rusty Mail Server - Tài liệu thiết kế và kế hoạch
 
 Mục lục của mọi spec (thiết kế) và plan (kế hoạch) trong `docs/superpowers/`. Cập nhật lần cuối: 2026-11-08.
 
