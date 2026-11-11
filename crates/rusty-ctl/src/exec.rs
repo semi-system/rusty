@@ -386,6 +386,9 @@ pub async fn execute(command: &Command, env: &mut CtlEnv<'_>) -> Result<Outcome,
         )),
 
         Command::Check => check(env).await,
+        Command::DbMigrate { .. } | Command::DbStatus => {
+            Err(CtlError::runtime("db commands are run by the composition root, not against the directory"))
+        }
     }
 }
 

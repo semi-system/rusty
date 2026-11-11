@@ -49,7 +49,7 @@ pub use migrate::{
     MIGRATOR_ROLE, RO_ROLE,
 };
 #[cfg(feature = "postgres")]
-pub use pg::{PgPassword, PgPoolConfig, PgSecurity, PgStore};
+pub use pg::{PgPassword, PgLimits, PgSecurity, PgStore};
 #[cfg(feature = "postgres")]
 pub use pg_queue::{MailboxPermit, MailboxQueue, STRIPES};
 pub use repo::{FlagUpdate, FolderCounts, FolderInfo, JobFence, MessageDetail, PurgeBatch, RawRef};

@@ -911,7 +911,7 @@ async fn lock_blobs_giving_up_is_busy_and_leaves_nothing_behind() {
 
 // ---------------------------------------------------------------- future cancellation
 
-use rusty_store::PgPoolConfig;
+use rusty_store::PgLimits;
 
 /// A database whose pool has ONE connection, so a connection that came back dirty (an open
 /// transaction, a held lock) poisons every later operation.
@@ -926,10 +926,10 @@ struct OneConn {
 async fn one_conn() -> Option<OneConn> {
     let url = pg_admin_url()?;
     let db = PgTestDb::create(&url).await;
-    let cfg = PgPoolConfig {
+    let cfg = PgLimits {
         max_connections: 1,
         acquire_timeout: Duration::from_secs(10),
-        ..PgPoolConfig::default()
+        ..PgLimits::default()
     };
     let store = rusty_store::PgStore::connect_with_config(db.url(), cfg).await.unwrap();
     let tmp = tempfile::tempdir().unwrap();

@@ -10,7 +10,7 @@ use common::pg::{pg_admin_url, PgTestDb};
 use rusty_core::{AccountId, Error, MailboxId};
 use rusty_store::repo::pg::{Knobs, PgRepo};
 use rusty_store::repo::{DirectoryRepo, MailboxRepo, NewAccount};
-use rusty_store::{MailboxQueue, PgPoolConfig, PgStore, STRIPES};
+use rusty_store::{MailboxQueue, PgLimits, PgStore, STRIPES};
 
 async fn account(repo: &PgRepo, tag: &str) -> (AccountId, MailboxId) {
     let dom = repo.create_domain(&format!("{tag}.test")).await.unwrap();
@@ -101,7 +101,7 @@ async fn a_hot_mailbox_does_not_starve_a_cold_one_with_a_small_pool() {
     let db = PgTestDb::create(&admin).await;
     let store = PgStore::connect_with_config(
         db.url(),
-        PgPoolConfig { max_connections: 2, acquire_timeout: Duration::from_secs(10), ..PgPoolConfig::default() },
+        PgLimits { max_connections: 2, acquire_timeout: Duration::from_secs(10), ..PgLimits::default() },
     )
     .await
     .unwrap();
@@ -136,11 +136,11 @@ async fn a_hot_mailbox_does_not_starve_a_cold_one_with_a_small_pool() {
 async fn a_saturated_pool_and_a_saturated_queue_answer_busy_not_a_hang() {
     let Some(admin) = pg_admin_url() else { return };
     let db = PgTestDb::create(&admin).await;
-    let cfg = PgPoolConfig {
+    let cfg = PgLimits {
         max_connections: 1,
         acquire_timeout: Duration::from_millis(300),
         queue_timeout: Duration::from_millis(300),
-        ..PgPoolConfig::default()
+        ..PgLimits::default()
     };
     let store = PgStore::connect_with_config(db.url(), cfg).await.unwrap();
     let repo = PgRepo::new(store.clone());
@@ -178,9 +178,9 @@ async fn a_saturated_pool_and_a_saturated_queue_answer_busy_not_a_hang() {
 #[tokio::test]
 async fn pool_validation_rejects_zero_limits() {
     for cfg in [
-        PgPoolConfig { max_connections: 0, ..PgPoolConfig::default() },
-        PgPoolConfig { queue_timeout: Duration::ZERO, ..PgPoolConfig::default() },
-        PgPoolConfig { acquire_timeout: Duration::ZERO, ..PgPoolConfig::default() },
+        PgLimits { max_connections: 0, ..PgLimits::default() },
+        PgLimits { queue_timeout: Duration::ZERO, ..PgLimits::default() },
+        PgLimits { acquire_timeout: Duration::ZERO, ..PgLimits::default() },
     ] {
         let r = PgStore::connect_with_config("postgres://u@127.0.0.1:1/d?sslmode=disable", cfg).await;
         assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");

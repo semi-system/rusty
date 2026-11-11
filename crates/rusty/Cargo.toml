@@ -13,7 +13,7 @@ dev-cert = ["rusty-svc/dev-cert"]
 
 [dependencies]
 rusty-core = { path = "../rusty-core" }
-rusty-store = { path = "../rusty-store" }
+rusty-store = { path = "../rusty-store", features = ["postgres"] }
 rusty-directory = { path = "../rusty-directory" }
 rusty-ctl = { path = "../rusty-ctl" }
 rusty-smtp = { path = "../rusty-smtp" }

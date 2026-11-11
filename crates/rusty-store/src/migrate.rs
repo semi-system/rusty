@@ -15,7 +15,7 @@ use sqlx::migrate::Migrator;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
-use crate::pg::{connect_options, PgPoolConfig, PgSecurity};
+use crate::pg::{connect_options, PgLimits, PgSecurity};
 
 /// The embedded Postgres migrations (version numbers equal the SQLite twins from 0010 on).
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations_pg");
@@ -145,7 +145,7 @@ fn role_err(what: &str) -> Error {
 }
 
 /// Refuse a role with more power than the daemon needs. Reads catalogs only.
-pub(crate) async fn verify_runtime_role(pool: &PgPool, config: &PgPoolConfig) -> Result<()> {
+pub(crate) async fn verify_runtime_role(pool: &PgPool, config: &PgLimits) -> Result<()> {
     let powerful: bool = sqlx::query_scalar(
         "SELECT COALESCE(bool_or(rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication OR rolbypassrls), false) \
          FROM pg_roles WHERE rolname = current_user",

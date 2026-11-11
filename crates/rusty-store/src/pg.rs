@@ -23,7 +23,7 @@ use crate::pg_queue::{MailboxPermit, MailboxQueue};
 
 /// Settings applied to every PostgreSQL connection pool.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PgPoolConfig {
+pub struct PgLimits {
     pub max_connections: u32,
     /// Longest wait for a pooled connection before the operation fails with `Error::Busy`.
     pub acquire_timeout: Duration,
@@ -43,7 +43,7 @@ pub struct PgPoolConfig {
     pub queue_timeout: Duration,
 }
 
-impl Default for PgPoolConfig {
+impl Default for PgLimits {
     fn default() -> Self {
         Self {
             max_connections: 4,
@@ -146,19 +146,19 @@ pub(crate) fn connect_options(url: &str, security: &PgSecurity) -> Result<PgConn
 }
 
 impl PgStore {
-    /// Connect with the bounded defaults in [`PgPoolConfig`] and the TLS mode named by the URL.
+    /// Connect with the bounded defaults in [`PgLimits`] and the TLS mode named by the URL.
     pub async fn connect(url: &str) -> Result<Self> {
-        Self::connect_with_config(url, PgPoolConfig::default()).await
+        Self::connect_with_config(url, PgLimits::default()).await
     }
 
     /// Connect with explicit pool limits (no extra security policy).
-    pub async fn connect_with_config(url: &str, config: PgPoolConfig) -> Result<Self> {
+    pub async fn connect_with_config(url: &str, config: PgLimits) -> Result<Self> {
         Self::connect_with(url, config, &PgSecurity::default()).await
     }
 
     /// Connect, apply the TLS policy, optionally verify the role, and require the schema version
     /// this binary embeds. Never migrates.
-    pub async fn connect_with(url: &str, config: PgPoolConfig, security: &PgSecurity) -> Result<Self> {
+    pub async fn connect_with(url: &str, config: PgLimits, security: &PgSecurity) -> Result<Self> {
         validate_config(&config)?;
         let options = connect_options(url, security)?;
         let lock_timeout = pg_millis(config.lock_timeout)?;
@@ -233,7 +233,7 @@ impl PgStore {
     }
 }
 
-fn validate_config(config: &PgPoolConfig) -> Result<()> {
+fn validate_config(config: &PgLimits) -> Result<()> {
     if config.max_connections == 0
         || config.acquire_timeout.is_zero()
         || config.statement_timeout.is_zero()

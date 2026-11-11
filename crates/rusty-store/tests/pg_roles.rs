@@ -13,7 +13,7 @@ use rusty_core::Error;
 use rusty_store::repo::pg::PgRepo;
 use rusty_store::repo::{DirectoryRepo, NewAccount};
 use rusty_store::{
-    migrate_postgres, schema_status, PgPoolConfig, PgSecurity, PgStore, SchemaState, Store, StoreConfig,
+    migrate_postgres, schema_status, PgLimits, PgSecurity, PgStore, SchemaState, Store, StoreConfig,
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
@@ -238,7 +238,7 @@ fn invalid_role<T: std::fmt::Debug>(r: rusty_core::Result<T>, needle: &str) {
 async fn startup_refuses_a_runtime_role_with_ddl_rights_or_without_timeouts() {
     let Some(admin) = pg_admin_url() else { return };
     let db = PgTestDb::create_with_roles(&admin).await;
-    let cfg = PgPoolConfig::default();
+    let cfg = PgLimits::default();
 
     // The proper runtime role passes.
     PgStore::connect_with(&db.role_url("rusty_app"), cfg.clone(), &strict()).await.unwrap().close().await;
@@ -422,14 +422,14 @@ async fn tls_policy_refuses_unverified_remote_hosts_without_connecting() {
     }
     // The explicit key overrides the URL; verify-full passes the policy (and then fails to connect: the host does not exist).
     let sec = PgSecurity { ssl_mode: Some(SslMode::Disable), ..PgSecurity::default() };
-    let r = PgStore::connect_with("postgres://u@db.example.test/d?sslmode=verify-full", PgPoolConfig::default(), &sec).await;
+    let r = PgStore::connect_with("postgres://u@db.example.test/d?sslmode=verify-full", PgLimits::default(), &sec).await;
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
     let sec = PgSecurity { ssl_mode: Some(SslMode::VerifyFull), ..PgSecurity::default() };
-    let r = PgStore::connect_with("postgres://u@nonexistent.invalid/d?sslmode=disable", PgPoolConfig::default(), &sec).await;
+    let r = PgStore::connect_with("postgres://u@nonexistent.invalid/d?sslmode=disable", PgLimits::default(), &sec).await;
     assert!(matches!(r, Err(Error::Storage { .. })), "{r:?}");
     // The explicit insecure override lets an unverified remote host through the policy.
     let sec = PgSecurity { allow_unverified_tls: true, ..PgSecurity::default() };
-    let r = PgStore::connect_with("postgres://u@nonexistent.invalid/d?sslmode=disable", PgPoolConfig::default(), &sec).await;
+    let r = PgStore::connect_with("postgres://u@nonexistent.invalid/d?sslmode=disable", PgLimits::default(), &sec).await;
     assert!(matches!(r, Err(Error::Storage { .. })), "{r:?}");
     // Loopback needs no TLS for the policy (the test servers listen there).
     let r = PgStore::connect("postgres://u@127.0.0.1:1/d?sslmode=disable").await;
@@ -449,10 +449,10 @@ async fn password_comes_from_the_security_struct_and_never_shows_in_errors_or_de
     assert!(!format!("{sec:?}").contains(secret));
     let url = db.role_url("rusty_app");
     let no_pw = url.replace("rusty-test-app", "x");
-    let err = PgStore::connect_with(&no_pw, PgPoolConfig::default(), &sec).await.unwrap_err();
+    let err = PgStore::connect_with(&no_pw, PgLimits::default(), &sec).await.unwrap_err();
     let shown = format!("{err} {err:?}");
     assert!(!shown.contains(secret) && !shown.contains("rusty-test-app"), "{shown}");
-    let cfg = StoreConfig::Postgres { url: no_pw.clone(), pool: PgPoolConfig::default(), security: sec };
+    let cfg = StoreConfig::Postgres { url: no_pw.clone(), pool: PgLimits::default(), security: sec };
     assert!(!format!("{cfg:?}").contains(secret));
     db.cleanup().await;
 }

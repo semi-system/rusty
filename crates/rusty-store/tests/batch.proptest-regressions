@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc cb40b7a556d48590dedc88699b760cdcfc9783dbc642400ec9443f834455630c # shrinks to deleted = [], batches = [[DItem { did: 4, own: None, irt: None, refs: [7, 4], variant: false }, DItem { did: 1, own: Some(4), irt: Some(0), refs: [7, 7], variant: false }]]

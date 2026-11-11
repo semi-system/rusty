@@ -69,7 +69,7 @@ mod pg {
     use rusty_core::{AccountId, MailboxId};
     use rusty_store::repo::pg::PgRepo;
     use rusty_store::repo::{DirectoryRepo, MailboxRepo, NewAccount};
-    use rusty_store::{PgPoolConfig, PgStore};
+    use rusty_store::{PgLimits, PgStore};
     use sqlx::postgres::PgPoolOptions;
 
     async fn account(repo: &PgRepo, tag: &str) -> (AccountId, MailboxId) {
@@ -111,9 +111,9 @@ mod pg {
         let (_, mb) = account(&setup, "lt").await;
         let store = PgStore::connect_with_config(
             db.url(),
-            PgPoolConfig {
+            PgLimits {
                 lock_timeout: Duration::from_millis(200),
-                ..PgPoolConfig::default()
+                ..PgLimits::default()
             },
         )
         .await
@@ -139,10 +139,10 @@ mod pg {
         let db = PgTestDb::create(&admin).await;
         let store = PgStore::connect_with_config(
             db.url(),
-            PgPoolConfig {
+            PgLimits {
                 max_connections: 1,
                 lock_timeout: Duration::from_millis(2345),
-                ..PgPoolConfig::default()
+                ..PgLimits::default()
             },
         )
         .await
@@ -181,9 +181,9 @@ mod pg {
         db.set_database_setting("statement_timeout", "150ms").await;
         let store = PgStore::connect_with_config(
             db.url(),
-            PgPoolConfig {
+            PgLimits {
                 lock_timeout: Duration::from_secs(30),
-                ..PgPoolConfig::default()
+                ..PgLimits::default()
             },
         )
         .await
@@ -202,10 +202,10 @@ mod pg {
         let db = PgTestDb::create(&admin).await;
         let store = PgStore::connect_with_config(
             db.url(),
-            PgPoolConfig {
+            PgLimits {
                 max_connections: 1,
                 acquire_timeout: Duration::from_millis(200),
-                ..PgPoolConfig::default()
+                ..PgLimits::default()
             },
         )
         .await
@@ -326,9 +326,9 @@ mod pg {
         let (_, mb) = account(&setup, "rst").await;
         let store = PgStore::connect_with_config(
             db.url(),
-            PgPoolConfig {
+            PgLimits {
                 lock_timeout: Duration::from_secs(30),
-                ..PgPoolConfig::default()
+                ..PgLimits::default()
             },
         )
         .await

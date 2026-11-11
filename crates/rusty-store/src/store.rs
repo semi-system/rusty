@@ -21,7 +21,7 @@ pub enum StoreConfig {
     #[cfg(feature = "postgres")]
     Postgres {
         url: String,
-        pool: crate::PgPoolConfig,
+        pool: crate::PgLimits,
         security: crate::PgSecurity,
     },
 }
@@ -61,7 +61,7 @@ impl StoreConfig {
     pub fn postgres(url: impl Into<String>) -> Self {
         StoreConfig::Postgres {
             url: url.into(),
-            pool: crate::PgPoolConfig::default(),
+            pool: crate::PgLimits::default(),
             security: crate::PgSecurity::default(),
         }
     }
