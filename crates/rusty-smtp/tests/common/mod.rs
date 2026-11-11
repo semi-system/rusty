@@ -353,3 +353,56 @@ impl Client {
         c
     }
 }
+
+/// Every backend with short waits (300 ms) and a two-connection pool, for the saturation tests.
+pub async fn backends_short_waits() -> Vec<Backend> {
+    let ms = Duration::from_millis(300);
+    let tmp = tempfile::tempdir().unwrap();
+    let url = format!("sqlite://{}", tmp.path().join("meta.sqlite").display());
+    let store = Store::open(StoreConfig::Sqlite { url, busy_timeout: ms }).await.unwrap();
+    #[allow(unused_mut)]
+    let mut v = vec![Backend {
+        name: "sqlite",
+        dir: Directory::with_repo(store.repos().directory.clone()),
+        fx: Fixtures::of(&store),
+        store,
+        tmp,
+        #[cfg(feature = "postgres")]
+        _db: None,
+    }];
+    #[cfg(feature = "postgres")]
+    if let Some(url) = pg::pg_admin_url() {
+        let db = pg::PgTestDb::create(&url).await;
+        // A statement waiting on a lock is cut at the role/database timeout (the role-level setting of production).
+        db.set_database_setting("statement_timeout", "300ms").await;
+        let limits = rusty_store::PgLimits {
+            max_connections: 2,
+            acquire_timeout: ms,
+            lock_timeout: ms,
+            queue_timeout: ms,
+            ..rusty_store::PgLimits::default()
+        };
+        let cfg = StoreConfig::Postgres { url: db.url().to_owned(), pool: limits, security: rusty_store::PgSecurity::default() };
+        let store = Store::open(cfg).await.unwrap();
+        v.push(Backend {
+            name: "postgres",
+            dir: Directory::with_repo(store.repos().directory.clone()),
+            fx: Fixtures::of(&store),
+            store,
+            tmp: tempfile::tempdir().unwrap(),
+            _db: Some(db),
+        });
+    }
+    v
+}
+
+pub async fn for_each_backend_short_waits<F, Fut>(f: F)
+where
+    F: Fn(Backend) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    for b in backends_short_waits().await {
+        eprintln!("-- backend {}", b.name);
+        f(b).await;
+    }
+}
