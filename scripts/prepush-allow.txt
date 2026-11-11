@@ -25,3 +25,8 @@ privkey scripts/tests/prepush-check.sh
 secret scripts/tests/prepush-check.sh
 password scripts/prepush-check.sh
 password scripts/tests/prepush-check.sh
+# This page documents the patterns the checker searches for.
+workpath docs/git-workflow.md
+password docs/git-workflow.md
+# The allowlist itself names the example path above.
+workpath scripts/prepush-allow.txt
