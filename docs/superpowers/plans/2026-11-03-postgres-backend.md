@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - SQLite stays the default backend; ALL existing tests (376+) stay green after every task; refactors change no behaviour. Backends are cargo features: `sqlite` (default) and `postgres`.
-- Workflow: edit on `<repo>`, build/test via `bash scripts/wsl-cargo.sh ...` (Docker and Postgres run in WSL). WSL `/tmp` is wiped on restart: logs go to `$HOME`.
+- Workflow: edit in the Windows checkout, build/test via `bash scripts/wsl-cargo.sh ...` (Docker and Postgres run in WSL). WSL `/tmp` is wiped on restart: logs go to `$HOME`.
 - Postgres tests need a real server. `RUSTY_TEST_PG_URL` points at it (an admin role able to CREATE DATABASE); each test run creates an isolated database and drops it in a guard. If the variable is unset the Postgres tests print a loud SKIPPED notice; `scripts/ci.sh` stage `postgres` FAILS when Docker is available but the tests did not run (never a silent skip).
 - Container for tests: `postgres:18` pinned by digest in `deploy/images.lock`, bound to 127.0.0.1 only, random password per run (never committed), data on tmpfs, resource limits, no published port beyond loopback.
 - Parameterised queries only; no SQL built by concatenating caller data; errors are fixed strings (the existing `map_db_error` contract), mapped by SQLSTATE: custom codes `RS001` = Conflict and `RS002` = Invalid raised by our triggers, `23505`/`23503`/`23514`/`23502` as in the SQLite mapping, `40001`/`40P01` (serialization/deadlock) -> retried a bounded number of times then `Storage`.

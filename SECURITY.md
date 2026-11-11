@@ -1,11 +1,16 @@
-# Security
-Rusty is a security-first Rust rewrite of the Zimbra mail stack. This file says what the
+# Security (Rusty Mail Server)
+Rusty Mail Server is a security-first Rust rewrite of the Zimbra mail stack. This file says what the
 code defends against today, what it does not, and how to check it.
 
 ## Threat model (current state)
-Today Rusty is a set of libraries (core, store, directory, MIME); no network services yet.
-An attacker who controls any of the following can:
+Rusty is early-stage software, not production ready. It now runs network services (SMTP inbound
+and submission, IMAP) in a single process, but without a process sandbox and without the planned
+edge layer in front. An attacker who controls any of the following can:
 
+- **Network input to SMTP/IMAP:** the protocol parsers are ours (a library codec confined to an
+  adapter module), bounded (line, literal, command, message, recipient and time limits), fuzzed
+  and fail closed; AUTH is accepted only over TLS; failed logins are throttled per resolved
+  account and per source (in memory, per process).
 - **Mail content (raw messages):** feed arbitrary bytes to the envelope parser. Only the
   header section (up to the first empty line, at most 256 KiB, else `Invalid`) is parsed,
   so cost is independent of body size, MIME part count and nesting. Output fields carry no
@@ -68,9 +73,11 @@ rejects `unsafe` in `crates/*/src`. Dependencies do use `unsafe` (SQLite, rustix
 Limits: bind-mounted test keys, 300 s idle on pass-through ports, CN fallback, no cap on  chunked bodies, plaintext at the edge on 465/993/995/443.
 
 ## Not covered yet
-- No Rusty network services yet (edge fixtures only), so no auth exposure or protocol parsing.
-- No process sandbox (seccomp, privilege drop), no encryption at rest, no login rate
-  limiting or lockout (Argon2 hashing exists).
+- Network services exist but are young: protocol surface reviews are ongoing, there is no
+  external penetration test yet, and no process sandbox (seccomp/Landlock, privilege drop).
+- Limiters (per-account submission, auth throttle, memory budget) are in memory and per
+  process; the planned edge layer (HAProxy) and the separate store service are not in front yet.
+- No encryption at rest (database and blob volume rely on host/disk protection).
 - Capability tokens are wiped best effort (no `zeroize` crate); copies may remain in memory.
   Positive capability validations must never be cached once a cache exists (revocation).
 - The `_at(.., now)` clock twins are `doc(hidden)` but still public; move them behind a
