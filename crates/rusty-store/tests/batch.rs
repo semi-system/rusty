@@ -401,31 +401,20 @@ async fn empty_and_oversized_batches_are_invalid() {
 }
 
 async fn install_trigger(e: &Env, abort_at_seq: i64) {
-    if e.is_sqlite() {
-        e.exec(
-            &format!(
-                "CREATE TRIGGER boom BEFORE INSERT ON change_log WHEN NEW.seq = {abort_at_seq} \
-                 BEGIN SELECT RAISE(ABORT, 'boom'); END"
-            ),
-            &[],
-        )
-        .await;
-    } else {
-        e.exec(
-            "CREATE FUNCTION boom_fn() RETURNS trigger LANGUAGE plpgsql AS \
-             $$ BEGIN RAISE EXCEPTION 'boom'; END $$",
-            &[],
-        )
-        .await;
-        e.exec(
-            &format!(
-                "CREATE TRIGGER boom BEFORE INSERT ON change_log FOR EACH ROW \
-                 WHEN (NEW.seq = {abort_at_seq}) EXECUTE FUNCTION boom_fn()"
-            ),
-            &[],
-        )
-        .await;
-    }
+    e.exec(
+        "CREATE FUNCTION boom_fn() RETURNS trigger LANGUAGE plpgsql AS \
+         $$ BEGIN RAISE EXCEPTION 'boom'; END $$",
+        &[],
+    )
+    .await;
+    e.exec(
+        &format!(
+            "CREATE TRIGGER boom BEFORE INSERT ON change_log FOR EACH ROW \
+             WHEN (NEW.seq = {abort_at_seq}) EXECUTE FUNCTION boom_fn()"
+        ),
+        &[],
+    )
+    .await;
 }
 
 #[tokio::test]

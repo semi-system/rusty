@@ -177,14 +177,6 @@ fn dkim_selectors_are_dns_labels() {
 
 // backend-neutral: argument parsing only, no database
 #[test]
-fn create_is_an_explicit_flag() {
-    assert!(!p(&["domain", "list"]).unwrap().create);
-    assert!(p(&["--create", "domain", "list"]).unwrap().create);
-    assert!(p(&["domain", "add", "a.test", "--create"]).unwrap().create);
-}
-
-// backend-neutral: argument parsing only, no database
-#[test]
 fn db_commands() {
     assert_eq!(cmd(&["db", "migrate"]), Command::DbMigrate { require_roles: true });
     assert_eq!(cmd(&["db", "migrate", "--without-roles"]), Command::DbMigrate { require_roles: false });

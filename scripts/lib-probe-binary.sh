@@ -43,12 +43,16 @@ EOF
 fn main() {
     let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
     rt.block_on(async {
-        // The production path: opening a store runs the migrations through the hook.
-        let store = rusty_store::SqliteStore::open("sqlite::memory:").await.unwrap();
+        // The production path: opening a store (the gates only inspect the linked executable, they never run it).
+        let store = rusty_store::Store::open(rusty_store::StoreConfig::postgres("postgres://probe@127.0.0.1/probe"))
+            .await
+            .unwrap();
         #[cfg(feature = "m")]
         println!("{:?}", rusty_store::mutation::active_id());
         #[cfg(feature = "f")]
-        println!("{}", rusty_store::fixtures::Fixtures::from_sqlite(store).is_sqlite());
+        {
+            let _ = rusty_store::fixtures::Fixtures::of(&store);
+        }
         #[cfg(not(feature = "f"))]
         drop(store);
     });

@@ -1,10 +1,7 @@
-# Rusty startup configuration. Every key except the two paths is optional.
+# Rusty startup configuration. Every key except `blob_dir` and `[store] url` is optional.
 # Unknown keys are rejected.
 
 # Run the service under its own account with umask 077; /var/lib/rusty is owned by it, 0700.
-
-# SQLite metadata database (absolute path; created with mode 0600 if missing).
-database_path = "/var/lib/rusty/meta.sqlite"
 
 # Directory holding the content-addressed message blobs (absolute path). It must be
 # initialized once (FsBlobStore::init: mode 0700 plus a .rusty-blobs marker); startup
@@ -108,3 +105,22 @@ blob_dir = "/var/lib/rusty/blobs"
 # tls = "starttls"                  # starttls | implicit | none (credentials need TLS)
 # username = "mailer"
 # password_file = "/etc/rusty/relay.pw"   # mode 0600, never inline
+
+# ---- Database (PostgreSQL) ----
+# The metadata (domains, accounts, mailboxes, the queue, DNS state) lives in PostgreSQL; message bodies are the
+# files under blob_dir. `url` is required and carries no password and no query parameters (TLS is set by
+# `sslmode`/`ca_bundle`). The daemon connects as the unprivileged runtime role and never changes the schema:
+# `rustyctl db migrate` does that as the migrator role (deploy/db/roles.sql creates both roles).
+[store]
+url = "postgres://rusty_app@db.internal:5432/rusty"
+password_file = "/run/secrets/rusty_pg_password"        # mode 0600; required in production
+# migrator_user = "rusty_migrator"                       # role of `rustyctl db migrate` (DDL); never used by the daemon
+# migrator_password_file = "/run/secrets/rusty_pg_migrator_password"
+# pool_size = 16                       # at least services + 4; 1..=200
+# acquire_timeout_ms = 5000            # wait for a pooled connection
+# lock_timeout_ms = 10000              # longest wait for a row lock
+# statement_timeout_ms = 30000         # the runtime role must carry a timeout at most this long (roles.sql)
+# idle_in_transaction_timeout_ms = 30000
+# sslmode = "verify-full"              # disable | require | verify-ca | verify-full (default). Not verified is refused for a remote host
+# ca_bundle = "/etc/rusty/db-ca.pem"   # CA that signs the server certificate (verify-ca / verify-full)
+# insecure_allow_unverified_tls = false

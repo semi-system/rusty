@@ -1,24 +1,17 @@
-//! `Store::open(StoreConfig)`: chooses the backend and hands out the repositories.
+//! `Store::open(StoreConfig)`: connects to Postgres and hands out the repositories.
 //!
-//! `Repos` holds the directory, mailbox, jobs and GC repositories as `Arc<dyn Trait>`.
+//! `Repos` holds the directory, mailbox, jobs, GC and DNS repositories as `Arc<dyn Trait>`.
 
 use std::sync::Arc;
-use std::time::Duration;
 
-use rusty_core::{Error, Result};
+use rusty_core::Result;
 
-use crate::repo::sqlite::SqliteRepo;
 use crate::repo::{DirectoryRepo, DnsRepo, GcRepo, JobRepo, MailboxRepo};
-use crate::{SqliteStore, DEFAULT_BUSY_TIMEOUT};
 
-/// Which backend to open and how.
+/// How to reach the database. `security` carries the TLS mode, CA, password and role policy; with
+/// the default value the URL decides (and a non-loopback host must still use `verify-full`).
 #[derive(Clone)]
 pub enum StoreConfig {
-    /// SQLite: `url` is a sqlx URL (`sqlite://path` or `sqlite::memory:`).
-    Sqlite { url: String, busy_timeout: Duration },
-    /// Postgres. `security` carries the TLS mode, CA, password and role policy; with the default
-    /// value the URL decides (and a non-loopback host must still use `verify-full`).
-    #[cfg(feature = "postgres")]
     Postgres {
         url: String,
         pool: crate::PgLimits,
@@ -27,16 +20,10 @@ pub enum StoreConfig {
 }
 
 // Manual Debug: the Postgres URL carries the password, so it is never printed (same contract as
-// `PgStore`). SQLite URLs are file paths and stay visible.
+// `PgStore`).
 impl std::fmt::Debug for StoreConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            StoreConfig::Sqlite { url, busy_timeout } => f
-                .debug_struct("Sqlite")
-                .field("url", url)
-                .field("busy_timeout", busy_timeout)
-                .finish(),
-            #[cfg(feature = "postgres")]
             StoreConfig::Postgres { pool, security, .. } => f
                 .debug_struct("Postgres")
                 .field("url", &"<redacted>")
@@ -48,16 +35,7 @@ impl std::fmt::Debug for StoreConfig {
 }
 
 impl StoreConfig {
-    /// SQLite with the default busy timeout.
-    pub fn sqlite(url: impl Into<String>) -> Self {
-        StoreConfig::Sqlite {
-            url: url.into(),
-            busy_timeout: DEFAULT_BUSY_TIMEOUT,
-        }
-    }
-
     /// Postgres with the default pool settings.
-    #[cfg(feature = "postgres")]
     pub fn postgres(url: impl Into<String>) -> Self {
         StoreConfig::Postgres {
             url: url.into(),
@@ -77,41 +55,18 @@ pub struct Repos {
     pub dns: Arc<dyn DnsRepo>,
 }
 
-/// An opened store: the repositories plus the backend handle that not-yet-converted facades
-/// (`Mailbox`, `JobQueue`, GC) still take.
+/// An opened store: the repositories plus the Postgres handle.
 #[derive(Clone)]
 pub struct Store {
     repos: Repos,
-    sqlite: Option<SqliteStore>,
-    #[cfg(feature = "postgres")]
-    pg: Option<crate::PgStore>,
+    pg: crate::PgStore,
 }
 
 impl Store {
-    /// Open the configured backend. SQLite migrates its own file; Postgres is NEVER migrated here
-    /// (`rustyctl db migrate` does that): a schema that is not exactly this binary's is refused.
+    /// Connect to Postgres. The schema is NEVER migrated here (`rustyctl db migrate` does that): a
+    /// schema that is not exactly this binary's is refused.
     pub async fn open(config: StoreConfig) -> Result<Store> {
         match config {
-            StoreConfig::Sqlite { url, busy_timeout } => {
-                if busy_timeout.is_zero() {
-                    return Err(Error::Invalid("invalid SQLite busy timeout".into()));
-                }
-                let store = SqliteStore::open_with_busy_timeout(&url, busy_timeout).await?;
-                let repo = Arc::new(SqliteRepo::new(store.clone()));
-                Ok(Store {
-                    repos: Repos {
-                        directory: repo.clone(),
-                        mailbox: repo.clone(),
-                        jobs: repo.clone(),
-                        gc: repo.clone(),
-                        dns: repo,
-                    },
-                    sqlite: Some(store),
-                    #[cfg(feature = "postgres")]
-                    pg: None,
-                })
-            }
-            #[cfg(feature = "postgres")]
             StoreConfig::Postgres { url, pool, security } => {
                 let store = crate::PgStore::connect_with(&url, pool, &security).await?;
                 let repo = Arc::new(crate::repo::pg::PgRepo::new(store.clone()));
@@ -123,8 +78,7 @@ impl Store {
                         gc: repo.clone(),
                         dns: repo,
                     },
-                    sqlite: None,
-                    pg: Some(store),
+                    pg: store,
                 })
             }
         }
@@ -134,26 +88,14 @@ impl Store {
         &self.repos
     }
 
-    /// Graceful shutdown of the backend (SQLite: WAL checkpointed, then connections closed;
-    /// Postgres: pool closed). Call once after every service holding `Repos` has stopped.
+    /// Graceful shutdown: the pool is closed. Call once after every service holding `Repos` has stopped.
     pub async fn close(&self) -> Result<()> {
-        if let Some(s) = &self.sqlite {
-            s.close().await?;
-        }
-        #[cfg(feature = "postgres")]
-        if let Some(p) = &self.pg {
-            p.close().await;
-        }
+        self.pg.close().await;
         Ok(())
     }
 
-    /// The SQLite handle, `None` on Postgres. For facades that are not converted yet.
-    pub fn sqlite(&self) -> Option<&SqliteStore> {
-        self.sqlite.as_ref()
-    }
-
-    #[cfg(feature = "postgres")]
-    pub fn postgres(&self) -> Option<&crate::PgStore> {
-        self.pg.as_ref()
+    /// The Postgres handle.
+    pub fn postgres(&self) -> &crate::PgStore {
+        &self.pg
     }
 }

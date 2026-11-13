@@ -306,16 +306,7 @@ async fn acceptance_10k_messages() {
     let zero: i64 = b.scalar("SELECT COUNT(*) FROM blobs WHERE refcount = 0", &[]).await;
     assert_eq!(zero, 0);
 
-    // Database integrity.
-    if b.is_sqlite() {
-        assert_eq!(b.scalar("PRAGMA foreign_keys", &[]).await, 1);
-        assert_eq!(b.strings("PRAGMA integrity_check", &[]).await, vec!["ok".to_string()]);
-        assert!(
-            b.rows("PRAGMA foreign_key_check", &[], 0).await.is_empty(),
-            "foreign_key_check returned rows"
-        );
-    }
-    // Both backends: no message points at a missing blob, no folder at a missing mailbox.
+    // Database integrity: no message points at a missing blob, no folder at a missing mailbox.
     assert_eq!(
         b.scalar(
             "SELECT count(*) FROM messages m LEFT JOIN blobs bl ON bl.hash = m.blob_hash \

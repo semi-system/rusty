@@ -6,7 +6,6 @@ cert_file = "/etc/rusty/tls/cert.pem"
 key_file = "/etc/rusty/tls/key.pem"
 
 [store]
-backend = "postgres"
 url = "postgres://rusty_app@db.internal:5432/rusty"
 password_file = "/run/secrets/rusty_pg_password"
 migrator_user = "rusty_migrator"

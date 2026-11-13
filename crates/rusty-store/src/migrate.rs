@@ -18,7 +18,7 @@ use sqlx::PgPool;
 use crate::pg::{connect_options, PgLimits, PgSecurity};
 
 /// The embedded Postgres migrations (version numbers equal the SQLite twins from 0010 on).
-static MIGRATOR: Migrator = sqlx::migrate!("./migrations_pg");
+static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// Privilege matrix applied after the migrations (see the file header).
 const GRANTS_SQL: &str = include_str!("../grants_pg.sql");

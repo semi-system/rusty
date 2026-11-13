@@ -204,7 +204,6 @@ async fn head_of_line_blocking_through_the_pool() {
                 pct(&mut lat, 0.99)
             );
         }
-        #[cfg(feature = "postgres")]
         if let Some(db) = &b._db {
             use rusty_store::repo::pg::PgRepo;
             let cfg = rusty_store::PgLimits {

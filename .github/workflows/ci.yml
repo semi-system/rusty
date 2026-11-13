@@ -169,6 +169,10 @@ jobs:
       - run: cargo test --workspace
       - name: Dev quickstart smoke
         run: bash deploy/dev/quickstart.sh --smoke
+        env:
+          # The dev profile names its database in the environment: the service container above.
+          RUSTY_DEV_PG_URL: postgres://rusty@127.0.0.1:5432/postgres
+          RUSTY_DEV_PG_PASSWORD: ci-throwaway-not-a-secret
       - name: Prune the build directory (workspace artefacts, test binaries) before saving
         if: ${{ success() && github.ref == 'refs/heads/main' && steps.target.outputs.cache-hit != 'true' }}
         run: bash scripts/ci-cache-prune.sh target

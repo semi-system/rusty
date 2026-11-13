@@ -25,14 +25,12 @@ pub const HOOK_MARKER: &str = "rusty-sql-mutation-hook-marker";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dialect {
-    Sqlite,
     Postgres,
 }
 
 impl Dialect {
     pub fn name(self) -> &'static str {
         match self {
-            Dialect::Sqlite => "sqlite",
             Dialect::Postgres => "postgres",
         }
     }
@@ -55,7 +53,7 @@ const fn text(id: &'static str, dialect: Dialect, find: &'static str, replace: &
     Mutation { id, dialect, find, replace, flag: "", what }
 }
 
-use Dialect::{Postgres as PG, Sqlite as LITE};
+use Dialect::Postgres as PG;
 
 /// The dialect and repository mutations of the committed table
 /// (`docs/superpowers/plans/2026-11-03-postgres-backend-mutation-table.md`).
@@ -67,7 +65,6 @@ pub const TABLE: &[Mutation] = &[
     text("D03b-limit-least-for-greatest", PG, "LIMIT GREATEST(", "LIMIT LEAST(", "the capability revoke LIMIT GREATEST(0, ..) uses LEAST (a negative LIMIT)"),
     text("D04-in-for-any", PG, "= ANY($", "IN ($", "= ANY($n) written as IN ($n): invalid for an array parameter"),
     text("D05-unixepoch-in-postgres", PG, "rs_now()", "unixepoch()", "the SQLite clock function in a Postgres statement"),
-    text("D06-rs-now-in-sqlite", LITE, "unixepoch()", "rs_now()", "the Postgres clock function in a SQLite statement"),
     text("D07-question-placeholders", PG, "$1", "?1", "$N placeholders written as ?N on Postgres"),
     text("D08-unnest-insert-unordered", PG, "FROM unnest($2::bigint[], $3::bigint[]) AS t(seq, item) ORDER BY t.seq", "FROM unnest($2::bigint[], $3::bigint[]) AS t(seq, item)", "change_log unnest insert loses its ORDER BY"),
     text("D09-blob-insert-unordered", PG, "AS t(h, s) ORDER BY t.h", "AS t(h, s)", "batch blob insert loses its ORDER BY (the ascending lock order)"),
@@ -104,9 +101,8 @@ fn active() -> &'static Active {
         let mut post_migrate = vec![];
         if let Ok(spec) = std::env::var("RUSTY_SQL_MUTATION_POST_MIGRATE") {
             for part in spec.split("\n;;\n") {
-                if let Some((d, sql)) = part.split_once('|') {
-                    let d = if d.trim() == "sqlite" { Dialect::Sqlite } else { Dialect::Postgres };
-                    post_migrate.push((d, sql.trim().to_owned()));
+                if let Some((_dialect, sql)) = part.split_once('|') {
+                    post_migrate.push((Dialect::Postgres, sql.trim().to_owned()));
                 }
             }
         }

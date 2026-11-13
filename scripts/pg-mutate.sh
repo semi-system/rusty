@@ -31,8 +31,8 @@ export RUSTY_REQUIRE_PG=1
 RES="${PG_MUTATE_RESULTS:-$HOME/pg-mutate.results.tsv}"
 LIST="${PG_MUTATE_LIST:-$HOME/pg-mutate.list.tsv}"
 READY="${RES}.baseline"
-F=rusty-store/postgres,rusty-store/mutation-testing,rusty-directory/postgres
-FS=rusty-store/postgres,rusty-store/mutation-testing
+F=rusty-store/mutation-testing
+FS=rusty-store/mutation-testing
 WORK="${TMPDIR:-$HOME}/pg-mutate.$$"; mkdir -p "$WORK"; trap 'rm -rf "$WORK"' EXIT
 PROBE=the_selected_mutation_changed_at_least_one_statement
 SKIP=(-- --skip the_committed_mutation_table_lists_every_dialect_mutation)
@@ -53,7 +53,7 @@ judges() {
   local s=(-p rusty-store --features "$FS" --test mailbox_conformance --test jobs_conformance --test gc_conformance)
   local d=(-p rusty-store -p rusty-directory --features "$F" --test mailbox_conformance --test jobs_conformance --test gc_conformance --test directory_conformance)
   case "$1" in
-    D01*|D03*|D05*|D06*|D07*|D11*|D12*) printf '%s\n' "${d[@]}" -- --skip the_committed_mutation_table_lists_every_dialect_mutation ;;
+    D01*|D03*|D05*|D07*|D11*|D12*) printf '%s\n' "${d[@]}" -- --skip the_committed_mutation_table_lists_every_dialect_mutation ;;
     D09*|R01*) printf '%s\n' "${s[@]}" --test pg_mailbox_concurrency ;;
     R02*|R03*|R04*|R05*|R06*) printf '%s\n' "${s[@]}" --test pg_jobs_gc_concurrency ;;
     R08*) printf '%s\n' "${s[@]}" --test query_shape ;;

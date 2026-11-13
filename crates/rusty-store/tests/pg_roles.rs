@@ -1,4 +1,3 @@
-#![cfg(feature = "postgres")]
 //! Roles, privileges, the schema-version check and the explicit migration step (U11, PG8).
 //!
 //! Every test creates its own database, initialises it with deploy/db/roles.sql (the file the

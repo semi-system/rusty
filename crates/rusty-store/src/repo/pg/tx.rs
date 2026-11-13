@@ -31,7 +31,7 @@ use sqlx::PgConnection;
 
 use super::PgRepo;
 use crate::repo::not_found_mailbox;
-use crate::sqlite::busy;
+use crate::error_map::busy;
 use crate::map_db_error;
 
 /// Attempts of one unit of work (first try included).

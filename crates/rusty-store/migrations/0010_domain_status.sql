@@ -1,4 +1,5 @@
--- A domain can be switched off without deleting anything (rustyctl domain disable): its
--- addresses stop resolving and its accounts stop authenticating. See repo/directory.rs.
-ALTER TABLE domains ADD COLUMN status TEXT NOT NULL DEFAULT 'active'
-  CHECK (status IN ('active','disabled'));
+-- Twin of SQLite migration 0010_domain_status.sql. The PG history is consolidated in 0001, so
+-- this file takes the SQLite number (the gap 0002..0009 is intentional: it keeps parallel
+-- worktrees that add twins from colliding on a "next free number").
+ALTER TABLE domains ADD COLUMN status text NOT NULL DEFAULT 'active'
+  CONSTRAINT domains_status_valid CHECK (status IN ('active','disabled'));

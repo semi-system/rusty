@@ -117,8 +117,19 @@ pg_start() {
 stage "postgres test server" pg_start
 
 stage "test (glibc)" cargo test --workspace
-# The dev quickstart works from a clean checkout: build, start on spare ports, banner, SIGTERM, exit 0.
-stage "dev quickstart smoke" bash deploy/dev/quickstart.sh --smoke
+# The dev quickstart works from a clean checkout: build, build the schema, start on spare ports, banner, SIGTERM, exit 0.
+# The dev profile names its database in RUSTY_DEV_PG_URL / RUSTY_DEV_PG_PASSWORD: here, the test server above.
+quickstart_smoke() {
+  (
+    u="${RUSTY_TEST_PG_URL#postgres://}"
+    cred="${u%%@*}"
+    rest="${u#*@}"
+    export RUSTY_DEV_PG_URL="postgres://${cred%%:*}@${rest%%\?*}"
+    export RUSTY_DEV_PG_PASSWORD="${cred#*:}"
+    bash deploy/dev/quickstart.sh --smoke
+  )
+}
+stage "dev quickstart smoke" quickstart_smoke
 
 # The plain suites already ran in "test (glibc)" against the server above. What is left needs a special
 # setup: the smoke test, the suites again as the unprivileged runtime role rusty_app (a database initialised
@@ -166,18 +177,13 @@ stage "no test knobs in release" bash scripts/check-test-knobs.sh symbols "$MUSL
 stage "no test fixtures in release" bash scripts/check-test-fixtures.sh symbols "$MUSL"
 stage "no mutation hook in release" bash scripts/check-mutation-hook.sh symbols "$MUSL"
 
-# The same end-to-end scenario on both backends (needs the musl release binary built above; Postgres needs Docker).
+# The end-to-end scenario against a throw-away Postgres with TLS and roles (needs the musl release binary built above
+# and Docker).
 acceptance() {
   local bin="$TARGET_DIR/$MUSL/release/rusty"
-  RUSTY_BIN="$bin" BACKEND=sqlite bash tools/acceptance/local-run.sh || return 1
-  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
-    PG_SKIPPED=1
-    echo "WARNING: Docker is unavailable; the Postgres acceptance run was not done." >&2
-    return 0
-  fi
-  RUSTY_BIN="$bin" BACKEND=postgres bash tools/acceptance/local-run.sh
+  RUSTY_BIN="$bin" bash tools/acceptance/local-run.sh
 }
-stage "acceptance (sqlite, postgres)" acceptance
+stage "acceptance" acceptance
 
 check_static() {
   local found=0 f

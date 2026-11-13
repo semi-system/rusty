@@ -6,16 +6,12 @@ use std::sync::Arc;
 
 use rusty_core::PlanId;
 use rusty_core::{AccountId, DomainId, Error, FolderId};
-use rusty_store::repo::sqlite::SqliteRepo;
 use rusty_store::repo::{DirectoryRepo, DnsRepo, GcRepo, JobRepo, MailboxRepo, NewAccount, Resolution};
-use rusty_store::{BlobStore, SqliteStore};
+use rusty_store::BlobStore;
 use rusty_store::{DnsStore, Gc, JobQueue, Mailbox};
 
-#[cfg(feature = "postgres")]
 use super::pg::{pg_admin_url, PgTestDb};
-#[cfg(feature = "postgres")]
 use rusty_store::repo::pg::PgRepo;
-#[cfg(feature = "postgres")]
 use rusty_store::PgStore;
 
 pub const INBOX: FolderId = FolderId(1);
@@ -29,20 +25,15 @@ pub struct Backend {
     pub nrepo: Arc<dyn DnsRepo>,
     pub grepo: Arc<dyn GcRepo>,
     pub blobs: Arc<dyn BlobStore>,
-    pub sqlite: Option<SqliteStore>,
-    #[cfg(feature = "postgres")]
     pub pg: Option<(PgStore, PgRepo)>,
     pub _tmp: tempfile::TempDir,
-    #[cfg(feature = "postgres")]
     pub _db: Option<PgTestDb>,
     /// Superuser pool of the Postgres test database: raw fixture SQL (setup, fault injection, catalog
     /// probes) is not part of the system under test, so it runs with full rights even when the
     /// repositories run as the unprivileged `rusty_app` (RUSTY_TEST_PG_ROLES=1).
-    #[cfg(feature = "postgres")]
     pub _fixture: Option<sqlx::PgPool>,
 }
 
-#[cfg(feature = "postgres")]
 impl Backend {
     pub fn fx(&self) -> &sqlx::PgPool {
         self._fixture.as_ref().expect("a Postgres backend has a fixture pool")
@@ -53,41 +44,6 @@ pub async fn blob_dir(tmp: &tempfile::TempDir) -> Arc<dyn BlobStore> {
     Arc::new(super::blob_store(&tmp.path().join("blobs")).await)
 }
 
-pub async fn sqlite_backend() -> Backend {
-    let tmp = tempfile::tempdir().unwrap();
-    let store = super::file_store(tmp.path()).await;
-    sqlite_backend_over(store, tmp).await
-}
-
-/// SQLite over a private in-memory database (one connection) with blobs in a temp dir.
-pub async fn sqlite_mem_backend() -> Backend {
-    let tmp = tempfile::tempdir().unwrap();
-    sqlite_backend_over(super::mem().await, tmp).await
-}
-
-async fn sqlite_backend_over(store: SqliteStore, tmp: tempfile::TempDir) -> Backend {
-    let repo = Arc::new(SqliteRepo::new(store.clone()));
-    Backend {
-        name: "sqlite",
-        dir: TestDir::new(repo.clone()),
-        drepo: repo.clone(),
-        mrepo: repo.clone(),
-        jrepo: repo.clone(),
-        nrepo: repo.clone(),
-        grepo: repo,
-        blobs: blob_dir(&tmp).await,
-        sqlite: Some(store),
-        #[cfg(feature = "postgres")]
-        pg: None,
-        _tmp: tmp,
-        #[cfg(feature = "postgres")]
-        _db: None,
-        #[cfg(feature = "postgres")]
-        _fixture: None,
-    }
-}
-
-#[cfg(feature = "postgres")]
 pub async fn pg_backend() -> Option<Backend> {
     let url = pg_admin_url()?;
     let db = PgTestDb::create(&url).await;
@@ -104,7 +60,6 @@ pub async fn pg_backend() -> Option<Backend> {
         nrepo: arc.clone(),
         grepo: arc,
         blobs: blob_dir(&tmp).await,
-        sqlite: None,
         pg: Some((store, repo)),
         _tmp: tmp,
         _fixture: Some(sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(db.admin_db_url()).await.unwrap()),
@@ -150,18 +105,6 @@ pub enum Bind<'a> {
 
 pub async fn exec(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> i64 {
     // Every fixture statement ends in `RETURNING id`.
-    if let Some(s) = &b.sqlite {
-        let mut q = sqlx::query_scalar::<_, i64>(sql);
-        for x in binds {
-            q = match x {
-                Bind::I(v) => q.bind(*v),
-                Bind::S(v) => q.bind(*v),
-                Bind::B(v) => q.bind(*v),
-            };
-        }
-        return q.fetch_one(s.pool()).await.unwrap();
-    }
-    #[cfg(feature = "postgres")]
     if b.pg.is_some() {
         let sql = dialect_sql(b, sql);
         let mut q = sqlx::query_scalar::<_, i64>(&sql);
@@ -178,11 +121,8 @@ pub async fn exec(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> i64 {
 }
 
 /// Dialect-neutral placeholders: bare `?` (numbered left to right) and `?N` become `$N` on
-/// Postgres and stay as written on SQLite (which accepts both forms).
-pub fn dialect_sql(b: &Backend, sql: &str) -> String {
-    if b.sqlite.is_some() {
-        return sql.to_owned();
-    }
+/// Postgres.
+pub fn dialect_sql(_b: &Backend, sql: &str) -> String {
     let mut out = String::with_capacity(sql.len() + 8);
     let mut n = 0;
     let mut it = sql.chars().peekable();
@@ -223,13 +163,6 @@ macro_rules! bind_all {
 /// Rows of a one-column `bigint` fixture query with binds.
 pub async fn fetch_i64s(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> Vec<i64> {
     let sql = dialect_sql(b, sql);
-    if let Some(s) = &b.sqlite {
-        return bind_all!(sqlx::query_scalar::<_, i64>(&sql), binds)
-            .fetch_all(s.pool())
-            .await
-            .unwrap();
-    }
-    #[cfg(feature = "postgres")]
     if b.pg.is_some() {
         return bind_all!(sqlx::query_scalar::<_, i64>(&sql), binds)
             .fetch_all(b.fx())
@@ -242,13 +175,6 @@ pub async fn fetch_i64s(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> Vec<i64> 
 /// Rows of a one-column text fixture query with binds.
 pub async fn fetch_strings(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> Vec<String> {
     let sql = dialect_sql(b, sql);
-    if let Some(s) = &b.sqlite {
-        return bind_all!(sqlx::query_scalar::<_, String>(&sql), binds)
-            .fetch_all(s.pool())
-            .await
-            .unwrap();
-    }
-    #[cfg(feature = "postgres")]
     if b.pg.is_some() {
         return bind_all!(sqlx::query_scalar::<_, String>(&sql), binds)
             .fetch_all(b.fx())
@@ -261,13 +187,6 @@ pub async fn fetch_strings(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> Vec<St
 /// One nullable `bigint` (`None` when the column is NULL).
 pub async fn fetch_opt_i64(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> Option<i64> {
     let sql = dialect_sql(b, sql);
-    if let Some(s) = &b.sqlite {
-        return bind_all!(sqlx::query_scalar::<_, Option<i64>>(&sql), binds)
-            .fetch_one(s.pool())
-            .await
-            .unwrap();
-    }
-    #[cfg(feature = "postgres")]
     if b.pg.is_some() {
         return bind_all!(sqlx::query_scalar::<_, Option<i64>>(&sql), binds)
             .fetch_one(b.fx())
@@ -287,24 +206,6 @@ pub async fn fetch_rows(
 ) -> Vec<Vec<String>> {
     use sqlx::Row;
     let sql = dialect_sql(b, sql);
-    if let Some(s) = &b.sqlite {
-        let rows = bind_all!(sqlx::query(&sql), binds)
-            .fetch_all(s.pool())
-            .await
-            .unwrap();
-        return rows
-            .iter()
-            .map(|r| {
-                (0..cols)
-                    .map(|i| {
-                        r.get::<Option<String>, _>(i)
-                            .unwrap_or_else(|| "NULL".into())
-                    })
-                    .collect()
-            })
-            .collect();
-    }
-    #[cfg(feature = "postgres")]
     if b.pg.is_some() {
         let rows = bind_all!(sqlx::query(&sql), binds)
             .fetch_all(b.fx())
@@ -328,14 +229,6 @@ pub async fn fetch_rows(
 /// Run one statement with binds, no result; returns the rows affected.
 pub async fn execute(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> u64 {
     let sql = dialect_sql(b, sql);
-    if let Some(s) = &b.sqlite {
-        return bind_all!(sqlx::query(&sql), binds)
-            .execute(s.pool())
-            .await
-            .unwrap()
-            .rows_affected();
-    }
-    #[cfg(feature = "postgres")]
     if b.pg.is_some() {
         return bind_all!(sqlx::query(&sql), binds)
             .execute(b.fx())
@@ -347,7 +240,7 @@ pub async fn execute(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> u64 {
 }
 
 /// What a rejected fixture statement tells a test: the SQLSTATE and constraint name on
-/// Postgres, the extended result code and message on SQLite.
+/// Postgres.
 #[derive(Debug)]
 pub struct SqlFailure {
     pub sqlstate: Option<String>,
@@ -377,14 +270,6 @@ fn failure(e: sqlx::Error) -> SqlFailure {
 /// Like [`execute`], but returns the database's rejection instead of panicking.
 pub async fn try_execute(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> Result<u64, SqlFailure> {
     let sql = dialect_sql(b, sql);
-    if let Some(s) = &b.sqlite {
-        return bind_all!(sqlx::query(&sql), binds)
-            .execute(s.pool())
-            .await
-            .map(|r| r.rows_affected())
-            .map_err(failure);
-    }
-    #[cfg(feature = "postgres")]
     if b.pg.is_some() {
         return bind_all!(sqlx::query(&sql), binds)
             .execute(b.fx())
@@ -398,41 +283,26 @@ pub async fn try_execute(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> Result<u
 /// Make every INSERT into `table` fail (fault injection for atomicity tests).
 pub async fn inject_insert_failure(b: &Backend, table: &str) {
     assert!(table.bytes().all(|c| c.is_ascii_lowercase() || c == b'_'));
-    if b.sqlite.is_some() {
-        run(
-            b,
-            &format!(
-                "CREATE TRIGGER inject_fail BEFORE INSERT ON {table} \
-                 BEGIN SELECT RAISE(ABORT, 'injected failure'); END"
-            ),
-        )
-        .await;
-    } else {
-        run(
-            b,
-            "CREATE FUNCTION inject_fail_fn() RETURNS trigger LANGUAGE plpgsql AS \
-             $$ BEGIN RAISE EXCEPTION 'injected failure'; END $$",
-        )
-        .await;
-        run(
-            b,
-            &format!(
-                "CREATE TRIGGER inject_fail BEFORE INSERT ON {table} \
-                 FOR EACH ROW EXECUTE FUNCTION inject_fail_fn()"
-            ),
-        )
-        .await;
-    }
+    run(
+        b,
+        "CREATE FUNCTION inject_fail_fn() RETURNS trigger LANGUAGE plpgsql AS \
+         $$ BEGIN RAISE EXCEPTION 'injected failure'; END $$",
+    )
+    .await;
+    run(
+        b,
+        &format!(
+            "CREATE TRIGGER inject_fail BEFORE INSERT ON {table} \
+             FOR EACH ROW EXECUTE FUNCTION inject_fail_fn()"
+        ),
+    )
+    .await;
 }
 
 /// Undo [`inject_insert_failure`].
 pub async fn clear_injected_failure(b: &Backend, table: &str) {
-    if b.sqlite.is_some() {
-        run(b, "DROP TRIGGER inject_fail").await;
-    } else {
-        run(b, &format!("DROP TRIGGER inject_fail ON {table}")).await;
-        run(b, "DROP FUNCTION inject_fail_fn()").await;
-    }
+    run(b, &format!("DROP TRIGGER inject_fail ON {table}")).await;
+    run(b, "DROP FUNCTION inject_fail_fn()").await;
 }
 
 /// A further account in an existing domain, with its mailbox.
@@ -445,13 +315,6 @@ pub async fn acct_in(b: &Backend, dom: DomainId, local: &str) -> Mailbox {
 
 /// One `bigint` from a fixture query (no parameters; use `count(*)`, never `sum`).
 pub async fn scalar(b: &Backend, sql: &str) -> i64 {
-    if let Some(s) = &b.sqlite {
-        return sqlx::query_scalar::<_, i64>(sql)
-            .fetch_one(s.pool())
-            .await
-            .unwrap();
-    }
-    #[cfg(feature = "postgres")]
     if b.pg.is_some() {
         return sqlx::query_scalar::<_, i64>(sql)
             .fetch_one(b.fx())
@@ -463,13 +326,6 @@ pub async fn scalar(b: &Backend, sql: &str) -> i64 {
 
 /// All rows of a one-column `bigint` fixture query.
 pub async fn scalars(b: &Backend, sql: &str) -> Vec<i64> {
-    if let Some(s) = &b.sqlite {
-        return sqlx::query_scalar::<_, i64>(sql)
-            .fetch_all(s.pool())
-            .await
-            .unwrap();
-    }
-    #[cfg(feature = "postgres")]
     if b.pg.is_some() {
         return sqlx::query_scalar::<_, i64>(sql)
             .fetch_all(b.fx())
@@ -487,7 +343,7 @@ pub fn is_conflict<T: std::fmt::Debug>(r: Result<T, Error>) -> bool {
 
 // A `Drop` impl makes closures capture a `Backend` as a whole. Without it, an `async move`
 // block that names only `b.dir` (edition-2021 disjoint capture) leaves `_tmp` behind in the
-// closure parameter, which is dropped at once: the temp dir (and the SQLite file) vanishes
+// closure parameter, which is dropped at once: the temp dir vanishes
 // under the test ("attempt to write a readonly database").
 impl Drop for Backend {
     fn drop(&mut self) {}
@@ -572,11 +428,6 @@ impl Backend {
 
 /// Run one fixture statement with no parameters and no result (dialect-neutral SQL text).
 pub async fn run(b: &Backend, sql: &str) {
-    if let Some(s) = &b.sqlite {
-        sqlx::query(sql).execute(s.pool()).await.unwrap();
-        return;
-    }
-    #[cfg(feature = "postgres")]
     if b.pg.is_some() {
         sqlx::query(sql).execute(b.fx()).await.unwrap();
         return;
@@ -586,13 +437,6 @@ pub async fn run(b: &Backend, sql: &str) {
 
 /// One text value from a fixture query.
 pub async fn text(b: &Backend, sql: &str) -> String {
-    if let Some(s) = &b.sqlite {
-        return sqlx::query_scalar::<_, String>(sql)
-            .fetch_one(s.pool())
-            .await
-            .unwrap();
-    }
-    #[cfg(feature = "postgres")]
     if b.pg.is_some() {
         return sqlx::query_scalar::<_, String>(sql)
             .fetch_one(b.fx())
@@ -604,25 +448,17 @@ pub async fn text(b: &Backend, sql: &str) -> String {
 
 /// The database clock, read through a fixture session (unix seconds).
 pub async fn db_clock(b: &Backend) -> i64 {
-    if b.sqlite.is_some() {
-        scalar(b, "SELECT unixepoch()").await
-    } else {
-        scalar(
-            b,
-            "SELECT extract(epoch FROM statement_timestamp())::bigint",
-        )
-        .await
-    }
+    scalar(
+        b,
+        "SELECT extract(epoch FROM statement_timestamp())::bigint",
+    )
+    .await
 }
 
-/// SQL literal of a blob hash (`BlobHash` hex) for this dialect: text on SQLite, `bytea` on Postgres.
-pub fn hash_lit(b: &Backend, hex: &str) -> String {
+/// SQL literal of a blob hash (`BlobHash` hex): `bytea`.
+pub fn hash_lit(_b: &Backend, hex: &str) -> String {
     assert!(hex.bytes().all(|c| c.is_ascii_hexdigit()));
-    if b.sqlite.is_some() {
-        format!("'{hex}'")
-    } else {
-        format!("decode('{hex}', 'hex')")
-    }
+    format!("decode('{hex}', 'hex')")
 }
 
 /// Insert an unreferenced `blobs` row (refcount 0; the trigger stamps `zero_since` with the DB clock).
@@ -705,25 +541,14 @@ impl GcRepo for SkewedGc {
     }
 }
 
-/// The Postgres backend, or `None` (feature off, or `RUSTY_TEST_PG_URL` unset: the skip notice
-/// is printed by `pg_admin_url`).
+/// The Postgres backend (`RUSTY_TEST_PG_URL` is mandatory: a missing server panics in `pg_admin_url`).
 pub async fn pg_backend_or_skip() -> Option<Backend> {
-    #[cfg(feature = "postgres")]
-    {
-        pg_backend().await
-    }
-    #[cfg(not(feature = "postgres"))]
-    {
-        eprintln!("POSTGRES_TESTS_SKIPPED: built without the postgres feature");
-        None
-    }
+    pg_backend().await
 }
 
 /// A second, independent database of the same kind as `b`.
 pub async fn fresh_like(b: &Backend) -> Backend {
-    if b.sqlite.is_some() {
-        return sqlite_backend().await;
-    }
+    let _ = b;
     pg_backend_or_skip().await.expect("postgres backend")
 }
 

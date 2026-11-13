@@ -2,7 +2,7 @@ use rusty_core::config::{LogLevel, StartupConfig};
 use rusty_core::Error;
 use std::path::Path;
 
-const BASE: &str = "database_path = \"/a/db.sqlite\"\nblob_dir = \"/a/blobs\"\n";
+const BASE: &str = "blob_dir = \"/a/blobs\"\nstore = { url = \"postgres://rusty_app@db.internal:5432/rusty\", password_file = \"/run/secrets/pg\" }\n";
 
 fn with(extra: &str) -> rusty_core::Result<StartupConfig> {
     StartupConfig::from_toml_str(&format!("{BASE}{extra}\n"))
@@ -15,7 +15,6 @@ fn invalid<T: std::fmt::Debug>(r: rusty_core::Result<T>) {
 #[test]
 fn defaults() {
     let c = StartupConfig::from_toml_str(BASE).unwrap();
-    assert_eq!(c.database_path, Path::new("/a/db.sqlite"));
     assert_eq!(c.blob_dir, Path::new("/a/blobs"));
     assert_eq!(c.log_level, LogLevel::Info);
     assert_eq!(c.max_message_bytes, 52_428_800);
@@ -41,8 +40,15 @@ fn missing_required_rejected() {
 
 #[test]
 fn relative_paths_rejected() {
-    invalid(StartupConfig::from_toml_str("database_path = \"db.sqlite\"\nblob_dir = \"/b\""));
-    invalid(StartupConfig::from_toml_str("database_path = \"/d\"\nblob_dir = \"blobs\""));
+    let store = "store = { url = \"postgres://rusty_app@db.internal:5432/rusty\", password_file = \"/run/secrets/pg\" }";
+    assert!(StartupConfig::from_toml_str(&format!("blob_dir = \"/b\"\n{store}")).is_ok());
+    invalid(StartupConfig::from_toml_str(&format!("blob_dir = \"blobs\"\n{store}")));
+}
+
+#[test]
+fn the_sqlite_database_path_no_longer_exists() {
+    // Postgres is the only backend: a file that still names a database file is refused, not ignored.
+    invalid(with("database_path = \"/a/db.sqlite\""));
 }
 
 #[test]

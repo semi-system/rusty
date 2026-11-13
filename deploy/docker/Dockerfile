@@ -8,8 +8,8 @@
 #
 # Design (see docs/docker.md):
 #  * The compile stage always runs on the BUILD platform (no QEMU for the compile) and cross
-#    compiles to the TARGET platform's musl triple with zig as the C compiler/linker (ring and the
-#    bundled SQLite are the only C code; zig ships musl headers, so the result is fully static).
+#    compiles to the TARGET platform's musl triple with zig as the C compiler/linker (ring is the
+#    only C code; zig ships musl headers, so the result is fully static).
 #  * Every base image is pinned by digest (deploy/images.lock; scripts/check-docker-pins.sh keeps
 #    this file and the lock in step). zig is pinned by SHA-256.
 #  * Dependencies are resolved with `--locked`: a stale Cargo.lock fails the build.

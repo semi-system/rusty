@@ -28,8 +28,7 @@ fn check(text: &str) {
     if let Some(h) = &c.hostname {
         assert!(valid_hostname(h));
     }
-    if c.store.is_postgres() {
-        assert!(c.database_path.as_os_str().is_empty());
+    {
         let ep = parse_pg_url(c.store.url.as_deref().unwrap_or_default()).expect("validated url");
         assert!(!ep.user.is_empty() && !ep.host.is_empty() && ep.port != 0);
         assert!((1..=MAX_POOL_SIZE).contains(&c.store.pool_size));
@@ -44,9 +43,6 @@ fn check(text: &str) {
         if c.check_startup(Profile::Production).is_ok() {
             assert!(c.store.pool_size >= StoreSection::pool_floor(c.service_count()));
         }
-    } else {
-        assert!(c.database_path.is_absolute());
-        assert!(c.store.url.is_none() && c.store.password_file.is_none());
     }
     let prod = c.check_startup(Profile::Production);
     let dev = c.check_startup(Profile::Dev);

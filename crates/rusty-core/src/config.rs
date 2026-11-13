@@ -12,13 +12,16 @@ use serde::Deserialize;
 use crate::{Error, Result};
 
 pub use crate::config_store::{
-    is_loopback_host, parse_pg_url, PgEndpoint, SslMode, StoreBackend, StoreSection, DEFAULT_POOL_SIZE, MAX_POOL_SIZE,
+    is_loopback_host, parse_pg_url, PgEndpoint, SslMode, StoreSection, DEFAULT_POOL_SIZE, MAX_POOL_SIZE,
     POOL_HEADROOM,
 };
 pub use crate::config_sections::{
     valid_hostname, DnsCheckConfig, ImapConfig, LimitsConfig, Listen, LogFormat, Nameserver, OutboundConfig, RelayConfig,
     RelayTls, SmtpConfig, TlsConfig, TlsPolicy, DNS_CHECK_JOB_KIND,
 };
+
+/// The Postgres server of the dev profile when `RUSTY_DEV_PG_URL` does not name another one.
+pub const DEV_DEFAULT_PG_URL: &str = "postgres://rusty@127.0.0.1:5432/rusty";
 
 /// Largest configuration file accepted by [`StartupConfig::load`].
 pub const MAX_CONFIG_FILE_BYTES: u64 = 64 * 1024;
@@ -40,18 +43,13 @@ pub enum LogLevel {
 /// Startup settings.
 ///
 /// Filesystem expectations (security baseline, see SECURITY.md): the service runs as its own
-/// account with umask 077. The directory holding `database_path` and the `blob_dir` itself
-/// are owned by that account with mode 0700. The database file is created 0600 when missing
-/// (`SqliteStore::open`); the blob directory must be prepared once with
-/// `FsBlobStore::init` and is refused by `FsBlobStore::open` when it is missing, unmarked,
-/// a symlink, or writable by group or others. Loading this file checks none of this.
+/// account with umask 077. The `blob_dir` is owned by that account with mode 0700; it must be
+/// prepared once with `FsBlobStore::init` and is refused by `FsBlobStore::open` when it is missing,
+/// unmarked, a symlink, or writable by group or others. Loading this file checks none of this. The
+/// metadata lives in Postgres (`[store]`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StartupConfig {
-    /// Absolute path of the SQLite metadata database (created 0600 if missing; its directory
-    /// must exist, mode 0700).
-    #[serde(default)]
-    pub database_path: PathBuf,
     /// Absolute path of the blob root (mode 0700, initialized with `FsBlobStore::init`;
     /// never created implicitly).
     pub blob_dir: PathBuf,
@@ -154,15 +152,6 @@ impl StartupConfig {
 
     fn validate(&mut self) -> Result<()> {
         self.store.validate()?;
-        match self.store.backend {
-            StoreBackend::Sqlite if !self.database_path.is_absolute() => {
-                return Err(Error::Invalid("database_path must be absolute".into()));
-            }
-            StoreBackend::Postgres if !self.database_path.as_os_str().is_empty() => {
-                return Err(Error::Invalid("database_path applies to the sqlite backend only".into()));
-            }
-            _ => {}
-        }
         if !self.blob_dir.is_absolute() {
             return Err(Error::Invalid("blob_dir must be absolute".into()));
         }
@@ -244,19 +233,24 @@ impl StartupConfig {
         }
     }
 
-    /// Dev profile only: replace the `[store]` section with the one in `text` (a TOML document that
-    /// holds nothing but `[store]`). Used by the acceptance script to run the dev server on Postgres.
-    pub fn with_store_toml(mut self, text: &str) -> Result<StartupConfig> {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Only {
-            store: StoreSection,
-        }
-        let only: Only = toml::from_str(text).map_err(|_| Error::Invalid("store configuration is not valid".into()))?;
-        self.store = only.store;
-        if self.store.is_postgres() {
-            self.database_path = PathBuf::new();
-        }
+    /// Dev profile only: point the `[store]` section at the Postgres server `url` (`postgres://user@host:port/db`,
+    /// no password: that comes from `RUSTY_DEV_PG_PASSWORD`). Without `sslmode` a loopback host is reached without
+    /// TLS and any other host keeps the default `verify-full`; `ca_bundle` is the CA that signs the server
+    /// certificate. Naming a mode that does not verify the server for a remote host is the developer's explicit
+    /// choice: it turns on `insecure_allow_unverified_tls` (a warning at every start).
+    pub fn with_dev_postgres(
+        mut self,
+        url: &str,
+        sslmode: Option<SslMode>,
+        ca_bundle: Option<PathBuf>,
+    ) -> Result<StartupConfig> {
+        let ep = crate::config_store::parse_pg_url(url)?;
+        let loopback = is_loopback_host(&ep.host);
+        self.store.url = Some(url.to_owned());
+        self.store.password_from_dev_env = true;
+        self.store.sslmode = sslmode.unwrap_or(if loopback { SslMode::Disable } else { SslMode::VerifyFull });
+        self.store.ca_bundle = ca_bundle;
+        self.store.insecure_allow_unverified_tls = !loopback && self.store.sslmode != SslMode::VerifyFull;
         self.validate()?;
         Ok(self)
     }
@@ -265,7 +259,6 @@ impl StartupConfig {
     /// the explicit dev certificate. `data_dir` should be absolute.
     pub fn dev(data_dir: &Path) -> StartupConfig {
         StartupConfig {
-            database_path: data_dir.join("meta.sqlite"),
             blob_dir: data_dir.join("blobs"),
             log_level: LogLevel::default(),
             max_message_bytes: default_max_message_bytes(),
@@ -287,7 +280,12 @@ impl StartupConfig {
             outbound: OutboundConfig::default(),
             limits: LimitsConfig::default(),
             dns_check: DnsCheckConfig::default(),
-            store: StoreSection::default(),
+            store: StoreSection {
+                url: Some(DEV_DEFAULT_PG_URL.to_owned()),
+                sslmode: SslMode::Disable,
+                password_from_dev_env: true,
+                ..StoreSection::default()
+            },
         }
     }
 }

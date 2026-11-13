@@ -17,7 +17,6 @@ use rusty_svc::{BoxedStream, Context, FileSecretSource, PeerInfo, SessionHandler
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
-#[cfg(feature = "postgres")]
 pub use rusty_store::fixtures::pg_db as pg;
 
 pub struct Backend {
@@ -26,7 +25,6 @@ pub struct Backend {
     pub dir: Directory,
     pub blobs: Arc<dyn BlobStore>,
     pub tmp: tempfile::TempDir,
-    #[cfg(feature = "postgres")]
     _db: Option<pg::PgTestDb>,
 }
 
@@ -34,7 +32,7 @@ impl Drop for Backend {
     fn drop(&mut self) {}
 }
 
-async fn finish(name: &'static str, store: Store, tmp: tempfile::TempDir, #[cfg(feature = "postgres")] db: Option<pg::PgTestDb>) -> Backend {
+async fn finish(name: &'static str, store: Store, tmp: tempfile::TempDir, db: Option<pg::PgTestDb>) -> Backend {
     let root = tmp.path().join("blobs");
     FsBlobStore::init(&root).await.unwrap();
     let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::open(&root).await.unwrap());
@@ -44,26 +42,10 @@ async fn finish(name: &'static str, store: Store, tmp: tempfile::TempDir, #[cfg(
         store,
         blobs,
         tmp,
-        #[cfg(feature = "postgres")]
         _db: db,
     }
 }
 
-pub async fn sqlite_backend() -> Backend {
-    let tmp = tempfile::tempdir().unwrap();
-    let url = format!("sqlite://{}", tmp.path().join("meta.sqlite").display());
-    let store = Store::open(StoreConfig::sqlite(url)).await.unwrap();
-    finish(
-        "sqlite",
-        store,
-        tmp,
-        #[cfg(feature = "postgres")]
-        None,
-    )
-    .await
-}
-
-#[cfg(feature = "postgres")]
 pub async fn pg_backend() -> Option<Backend> {
     let url = pg::pg_admin_url()?;
     let db = pg::PgTestDb::create(&url).await;
@@ -306,7 +288,6 @@ where
     Fut: Future<Output = ()>,
 {
     let ms = Duration::from_millis(300);
-    #[cfg(feature = "postgres")]
     if let Some(url) = pg::pg_admin_url() {
         let db = pg::PgTestDb::create(&url).await;
         db.set_database_setting("statement_timeout", "300ms").await;

@@ -15,7 +15,6 @@ Schema coverage: every named CHECK, UNIQUE, FOREIGN KEY and PRIMARY KEY constrai
 | `D02-no-derived-table-alias` | KILLED | `gc_conformance::gc_report_errors_carry_no_database_detail` | unnest derived table loses its alias (Postgres requires one) | `before per-row stamps` |
 | `D04-in-for-any` | KILLED | `gc_conformance::grace_boundary_is_exact_at_the_cutoff` | = ANY($n) written as IN ($n): invalid for an array parameter | `before per-row stamps` |
 | `D05-unixepoch-in-postgres` | KILLED | `directory_conformance::capability_issue_validate_roundtrip_and_hash_only` | the SQLite clock function in a Postgres statement | `before per-row stamps` |
-| `D06-rs-now-in-sqlite` | KILLED | `directory_conformance::capability_issue_validate_roundtrip_and_hash_only` | the Postgres clock function in a SQLite statement | `before per-row stamps` |
 | `D07-question-placeholders` | KILLED | `directory_conformance::account_creates_mailbox_and_five_system_folders` | $N placeholders written as ?N on Postgres | `before per-row stamps` |
 | `D08-unnest-insert-unordered` | SURVIVED | `-` | change_log unnest insert loses its ORDER BY | `before per-row stamps` |
 | `D09-blob-insert-unordered` | SURVIVED | `-` | batch blob insert loses its ORDER BY (the ascending lock order) | `before per-row stamps` |

@@ -4,16 +4,15 @@
 //! build contains none of this code). Production code never links it.
 //!
 //! The API is deliberately narrow: statements are plain text with `?` / `?N` placeholders
-//! (rewritten to `$N` on Postgres), arguments are integers, text or bytes, results are integers,
+//! (rewritten to `$N`), arguments are integers, text or bytes, results are integers,
 //! strings or text cells. There is no transaction handle and no way to keep a connection.
 
-#[cfg(feature = "postgres")]
 pub mod pg_db;
 mod probe;
 
 pub use probe::StatementProbe;
 
-use crate::{SqliteStore, Store};
+use crate::Store;
 use rusty_core::Error;
 
 /// Marker string that exists only in builds with this feature (checked by the release gate).
@@ -99,35 +98,24 @@ macro_rules! bind_all {
     }};
 }
 
-/// Raw SQL against one store, either backend.
+/// Raw SQL against one Postgres store.
 #[derive(Clone)]
 pub struct Fixtures {
-    sqlite: Option<SqliteStore>,
     /// The store under test (it may run as the unprivileged `rusty_app`): lock and pool holds use it.
-    #[cfg(feature = "postgres")]
-    pg: Option<crate::PgStore>,
+    pg: crate::PgStore,
     /// A superuser connection to the same database for raw SQL (see [`Fixtures::admin_of`]).
-    #[cfg(feature = "postgres")]
     admin: Option<crate::PgStore>,
 }
 
-/// Run `$body` with `$pool` bound to the backend's pool and `$s` to the SQL text in that
-/// backend's placeholder syntax. On Postgres the raw SQL goes through the admin connection when there is one.
+/// Run `$body` with `$pool` bound to the pool and `$s` to the SQL text with `$N` placeholders. The raw
+/// SQL goes through the admin connection when there is one.
 macro_rules! on_backend {
     ($self:ident, $sql:ident, |$pool:ident, $s:ident| $body:expr) => {{
-        if let Some(store) = &$self.sqlite {
-            let $pool = store.pool();
-            let $s: &str = $sql;
-            return $body;
-        }
-        #[cfg(feature = "postgres")]
-        if let Some(store) = $self.admin.as_ref().or($self.pg.as_ref()) {
-            let $pool = store.pool();
-            let converted = to_dollar_placeholders($sql);
-            let $s: &str = &converted;
-            return $body;
-        }
-        unreachable!("a store has a backend")
+        let store = $self.admin.as_ref().unwrap_or(&$self.pg);
+        let $pool = store.pool();
+        let converted = to_dollar_placeholders($sql);
+        let $s: &str = &converted;
+        return $body;
     }};
 }
 
@@ -135,21 +123,7 @@ impl Fixtures {
     pub fn of(store: &Store) -> Fixtures {
         keep_marker();
         Fixtures {
-            sqlite: store.sqlite().cloned(),
-            #[cfg(feature = "postgres")]
-            pg: store.postgres().cloned(),
-            #[cfg(feature = "postgres")]
-            admin: None,
-        }
-    }
-
-    pub fn from_sqlite(store: SqliteStore) -> Fixtures {
-        keep_marker();
-        Fixtures {
-            sqlite: Some(store),
-            #[cfg(feature = "postgres")]
-            pg: None,
-            #[cfg(feature = "postgres")]
+            pg: store.postgres().clone(),
             admin: None,
         }
     }
@@ -158,7 +132,6 @@ impl Fixtures {
     /// rights, while `hold_write_lock` / `hold_pool` act on the store under test itself. In roles mode
     /// (`RUSTY_TEST_PG_ROLES=1`) that store connects as the unprivileged `rusty_app`, which may not run the
     /// DDL some fixtures need (forcing a failure with a trigger, planting a drifted row).
-    #[cfg(feature = "postgres")]
     pub async fn admin_of(db: &pg_db::PgTestDb, store: &Store) -> Fixtures {
         let mut fx = Fixtures::of(store);
         fx.admin = Some(
@@ -169,27 +142,17 @@ impl Fixtures {
         fx
     }
 
-    #[cfg(feature = "postgres")]
     pub fn from_postgres(store: crate::PgStore) -> Fixtures {
         keep_marker();
         Fixtures {
-            sqlite: None,
-            pg: Some(store),
+            pg: store,
             admin: None,
         }
     }
 
-    pub fn is_sqlite(&self) -> bool {
-        self.sqlite.is_some()
-    }
-
-    /// The SQL text as this backend receives it.
+    /// The SQL text as the database receives it.
     pub fn dialect(&self, sql: &str) -> String {
-        if self.is_sqlite() {
-            sql.to_owned()
-        } else {
-            to_dollar_placeholders(sql)
-        }
+        to_dollar_placeholders(sql)
     }
 
     /// All rows of a one-column `bigint` query.
@@ -272,64 +235,43 @@ impl Fixtures {
 
     /// The database clock, unix seconds.
     pub async fn db_clock(&self) -> i64 {
-        if self.is_sqlite() {
-            self.scalar("SELECT unixepoch()", &[]).await
-        } else {
-            self.scalar("SELECT extract(epoch FROM statement_timestamp())::bigint", &[])
-                .await
-        }
+        self.scalar("SELECT extract(epoch FROM statement_timestamp())::bigint", &[])
+            .await
     }
 }
 
-/// A held write lock: SQLite keeps `BEGIN IMMEDIATE` open (the single-writer lock), Postgres keeps
-/// a transaction holding an `ACCESS EXCLUSIVE` lock on one table. Dropping it rolls back.
-pub enum WriteLock {
-    Sqlite(#[allow(dead_code)] sqlx::Transaction<'static, sqlx::Sqlite>),
-    #[cfg(feature = "postgres")]
-    Postgres(#[allow(dead_code)] sqlx::Transaction<'static, sqlx::Postgres>),
+/// A held write lock: a transaction holding an `ACCESS EXCLUSIVE` lock on one table. Dropping it rolls back.
+pub struct WriteLock {
+    _tx: sqlx::Transaction<'static, sqlx::Postgres>,
 }
 
 impl Fixtures {
-    /// Block every writer (SQLite) / every statement on `table` (Postgres) until the guard drops.
+    /// Block every statement on `table` until the guard drops.
     /// `table` must be a plain lowercase identifier.
     pub async fn hold_write_lock(&self, table: &str) -> WriteLock {
         assert!(table.bytes().all(|c| c.is_ascii_lowercase() || c == b'_'));
-        if let Some(store) = &self.sqlite {
-            return WriteLock::Sqlite(store.begin_write().await.expect("hold the writer lock"));
-        }
-        #[cfg(feature = "postgres")]
-        if let Some(store) = &self.pg {
-            let mut tx = store.begin_write().await.expect("begin");
-            sqlx::query(&format!("LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE"))
-                .execute(&mut *tx)
-                .await
-                .expect("lock table");
-            return WriteLock::Postgres(tx);
-        }
-        unreachable!("a store has a backend")
+        let mut tx = self.pg.begin_write().await.expect("begin");
+        sqlx::query(&format!("LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE"))
+            .execute(&mut *tx)
+            .await
+            .expect("lock table");
+        WriteLock { _tx: tx }
     }
 }
 
 /// Pooled connections held away from the store (Postgres): the pool looks saturated.
 pub struct PoolHold {
-    #[cfg(feature = "postgres")]
     _held: Vec<sqlx::pool::PoolConnection<sqlx::Postgres>>,
 }
 
 impl Fixtures {
-    /// Check out `n` connections of the Postgres pool until the guard drops, so every operation of
-    /// the store has to wait for a connection. `None` on SQLite (its writer lock is
-    /// [`hold_write_lock`](Self::hold_write_lock)).
-    pub async fn hold_pool(&self, n: u32) -> Option<PoolHold> {
-        #[cfg(feature = "postgres")]
-        if let Some(store) = &self.pg {
-            let mut held = Vec::new();
-            for _ in 0..n {
-                held.push(store.pool().acquire().await.expect("check out a pooled connection"));
-            }
-            return Some(PoolHold { _held: held });
+    /// Check out `n` connections of the pool until the guard drops, so every operation of the store has
+    /// to wait for a connection.
+    pub async fn hold_pool(&self, n: u32) -> PoolHold {
+        let mut held = Vec::new();
+        for _ in 0..n {
+            held.push(self.pg.pool().acquire().await.expect("check out a pooled connection"));
         }
-        let _ = n;
-        None
+        PoolHold { _held: held }
     }
 }

@@ -18,7 +18,7 @@
 # repository (CARGO_FEATURE flags, `cargo build --features rusty-store/test-knobs` typed by hand);
 # the symbols mode is the backstop for those.
 #
-# symbols: builds rusty-store (--features postgres, --release) and the same crate WITH the
+# symbols: builds rusty-store (--release) and the same crate WITH the
 # feature as a positive control, and requires every marker (SQL text and identifiers that exist
 # only in the knob code) to be present in the control and absent in the production build. A marker
 # missing from the control means the gate went stale and fails too. TARGET (optional) is a rustc
@@ -87,18 +87,19 @@ static_check() {
 # Markers that exist only in knob code: SQL text and identifiers.
 MARKERS=(pg_sleep injected with_knobs_for_test inject_deadlocks_for_test with_work_done_signal_for_test)
 
-rlib_of() { # features [target]
+rlib_of() { # features (may be empty) [target]
   local feat="$1" target="${2:-}" args=()
   [ -z "$target" ] || args=(--target "$target")
-  cargo build -p rusty-store --features "$feat" --release --lib "${args[@]}" --message-format=json 2>/dev/null \
+  [ -z "$feat" ] || args+=(--features "$feat")
+  cargo build -p rusty-store --release --lib "${args[@]}" --message-format=json 2>/dev/null \
     | { grep -o '"[^"]*/deps/librusty_store-[^"]*.rmeta"' || true; } | tail -1 | tr -d '"' | sed 's/.rmeta$/.rlib/'
 }
 
 symbols_check() {
   local target="${1:-}" prod ctl fail=0 m
   cd "$(dirname "${BASH_SOURCE[0]}")/.."
-  prod="$(rlib_of postgres "$target")"
-  ctl="$(rlib_of postgres,test-knobs "$target")"
+  prod="$(rlib_of "" "$target")"
+  ctl="$(rlib_of test-knobs "$target")"
   [ -n "$prod" ] && [ -f "$prod" ] || { echo "no production rlib found" >&2; return 1; }
   [ -n "$ctl" ] && [ -f "$ctl" ] || { echo "no control rlib found" >&2; return 1; }
   [ "$prod" != "$ctl" ] || { echo "production and control rlib are the same file" >&2; return 1; }

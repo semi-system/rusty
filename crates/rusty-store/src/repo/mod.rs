@@ -13,19 +13,16 @@
 //! because nothing outside the repository observes a half-finished attempt.
 //!
 //! Statement text that is identical up to placeholder syntax is shared (`sql_text`, `directory::sql`);
-//! the Rust glue (bind and decode) is per backend. Placeholders are `$N` on both backends and
-//! `{NOW}` is the database clock (`unixepoch()` / `rs_now()`).
+//! the Rust glue is Postgres. Placeholders are `$N` and
+//! `{NOW}` is the database clock (`rs_now()`).
 
 mod directory;
 mod gc;
 mod dns;
 pub(crate) mod jobs;
 mod mailbox;
-#[cfg(feature = "postgres")]
 #[allow(clippy::needless_borrow)] // statement literals go through the mutation hook (see mutation.rs)
 pub mod pg;
-#[allow(clippy::needless_borrow)]
-pub mod sqlite;
 
 pub use dns::{DnsConfig, DnsConfigRow, DnsEventRow, DnsRepo};
 pub use gc::{GcRepo, PurgeBatch};
@@ -57,24 +54,12 @@ pub const SYSTEM_FOLDER_TABLE: [(i64, &str, &str); 5] = [
     (5, "Spam", "spam"),
 ];
 
-#[cfg(feature = "postgres")]
 /// Blob hash as the 32 raw bytes Postgres stores. `BlobHash` is validated lowercase hex.
 pub(crate) fn hash_bytes(h: &rusty_core::BlobHash) -> rusty_core::Result<Vec<u8>> {
     hex::decode(h.as_str()).map_err(|_| rusty_core::Error::Invalid("invalid blob hash".into()))
 }
 
-/// SQLite text: the database clock is `unixepoch()`. Placeholders are `$N` on every backend:
-/// sqlx-sqlite maps `$N` to the N-th bound value (see the tripwire test
-/// `sqlite_dollar_placeholders_follow_their_number`), so no placeholder rewriting is needed.
-pub(crate) fn render_sqlite(sql: &str) -> String {
-    let s = sql.replace("{NOW}", "unixepoch()").replace("{JSONB}", "");
-    #[cfg(feature = "mutation-testing")]
-    let s = crate::mutation::rendered(crate::mutation::Dialect::Sqlite, s);
-    s
-}
-
 /// Postgres text: the database clock is `rs_now()` (`statement_timestamp()`).
-#[cfg(any(test, feature = "postgres"))]
 pub(crate) fn render_pg(sql: &str) -> String {
     let s = sql.replace("{NOW}", "rs_now()").replace("{JSONB}", "::jsonb");
     #[cfg(feature = "mutation-testing")]
@@ -95,17 +80,6 @@ pub(crate) fn pg_lit(sql: &'static str) -> &'static str {
     sql
 }
 
-/// A SQLite-only statement literal (see [`pg_lit`]).
-#[cfg(feature = "mutation-testing")]
-pub(crate) fn sqlite_lit(sql: &'static str) -> std::borrow::Cow<'static, str> {
-    crate::mutation::statement(crate::mutation::Dialect::Sqlite, sql)
-}
-#[cfg(not(feature = "mutation-testing"))]
-#[inline(always)]
-pub(crate) fn sqlite_lit(sql: &'static str) -> &'static str {
-    sql
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,10 +89,6 @@ mod tests {
         assert_eq!(
             render_pg("SELECT 1 WHERE a = $1 AND t = {NOW}"),
             "SELECT 1 WHERE a = $1 AND t = rs_now()"
-        );
-        assert_eq!(
-            render_sqlite("SELECT {NOW}, $1"),
-            "SELECT unixepoch(), $1"
         );
         for s in [
             sql_text::FOLDER_EXISTS,
@@ -135,7 +105,6 @@ mod tests {
         ] {
             assert!(!s.contains('?'), "{s}");
             assert!(!render_pg(s).contains("{NOW}") && !render_pg(s).contains("{JSONB}"), "{s}");
-            assert!(!render_sqlite(s).contains("{NOW}"), "{s}");
         }
     }
 }

@@ -9,7 +9,6 @@
 //! test, an improvement does not. A separate snapshot test only complains when the measured
 //! count is MORE than `SNAPSHOT_TOLERANCE` below the ceiling, so that the ceilings are tightened
 //! after a real optimisation and cannot rot into a limit nobody would hit.
-#![cfg(feature = "postgres")]
 
 mod common;
 

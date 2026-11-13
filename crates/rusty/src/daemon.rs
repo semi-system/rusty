@@ -5,7 +5,6 @@
 
 use std::net::SocketAddr;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -60,7 +59,7 @@ impl Running {
     }
 
     /// Wait for every service to finish (sessions drain up to the configured grace), then close
-    /// the store: the SQLite WAL is checkpointed before the process exits.
+    /// the store (the connection pool).
     pub async fn wait(self) -> Result<()> {
         let served = match self.task.await {
             Ok(r) => r,
@@ -74,10 +73,10 @@ impl Running {
 /// Dev profile only: the data directory is created 0700 (or must already be private and not a
 /// symlink) and the blob root is initialised. Production never creates anything implicitly.
 pub(crate) async fn prepare_dev_dirs(cfg: &StartupConfig) -> Result<()> {
-    let (own, what) = if cfg.store.is_postgres() { (cfg.blob_dir.as_path(), "blob_dir") } else { (cfg.database_path.as_path(), "database_path") };
-    let dir = own
+    let dir = cfg
+        .blob_dir
         .parent()
-        .ok_or_else(|| Error::Invalid(format!("{what} has no directory")))?;
+        .ok_or_else(|| Error::Invalid("blob_dir has no directory".into()))?;
     match std::fs::symlink_metadata(dir) {
         Ok(m) => {
             if !m.is_dir() {
@@ -98,14 +97,6 @@ pub(crate) async fn prepare_dev_dirs(cfg: &StartupConfig) -> Result<()> {
     FsBlobStore::init(&cfg.blob_dir).await
 }
 
-pub(crate) fn sqlite_url(path: &Path) -> Result<String> {
-    let s = path.to_str().ok_or_else(|| Error::Invalid("database_path is not valid UTF-8".into()))?;
-    if s.contains(['?', '#', '%']) {
-        return Err(Error::Invalid("database_path must not contain '?', '#' or '%'".into()));
-    }
-    Ok(format!("sqlite://{s}"))
-}
-
 /// Check the configuration, open the store and TLS, bind every listener, and start serving.
 /// Nothing is left half-started: on any error the store is closed and no listener runs. A refused
 /// configuration touches no file.
@@ -118,7 +109,7 @@ pub async fn start(cfg: StartupConfig, profile: Profile, shutdown: CancellationT
     }
     // TLS first: a bad certificate or key file must not get as far as opening the database.
     let tls = if cfg.tls.has_cert() || cfg.tls.dev_self_signed {
-        TlsProvider::from_config_in(&cfg.tls, &hostname, Arc::new(FileSecretSource::new()), cfg.database_path.parent())?
+        TlsProvider::from_config_in(&cfg.tls, &hostname, Arc::new(FileSecretSource::new()), cfg.blob_dir.parent())?
     } else if cfg.authenticated_listeners() == 0 {
         // check_startup already refused every configuration with an authenticated listener.
         tracing::warn!("no TLS configured: port 25 will not offer STARTTLS");
@@ -129,7 +120,7 @@ pub async fn start(cfg: StartupConfig, profile: Profile, shutdown: CancellationT
     for w in cfg.startup_warnings(profile) {
         tracing::warn!("{w}");
     }
-    let store = Store::open(crate::storecfg::store_config(&cfg, || sqlite_url(&cfg.database_path))?).await?;
+    let store = Store::open(crate::storecfg::store_config(&cfg, profile)?).await?;
     match build(&cfg, &store, tls.clone(), shutdown.clone()).await {
         Ok((addrs, task)) => Ok(Running { addrs, shutdown, tls, store, task }),
         Err(e) => {

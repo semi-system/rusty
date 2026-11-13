@@ -271,14 +271,10 @@ async fn purge_deliveries_batches_beyond_1000() {
         let DeliverOutcome::Created(r) = r else {
             panic!()
         };
-        let (delivery_id, blob_hash) = if e.is_sqlite() {
-            ("randomblob(32)", "hex(randomblob(32))")
-        } else {
-            (
-                "decode(md5(i::text || 'a') || md5(i::text || 'b'), 'hex')",
-                "decode(md5(i::text || 'c') || md5(i::text || 'd'), 'hex')",
-            )
-        };
+        let (delivery_id, blob_hash) = (
+            "decode(md5(i::text || 'a') || md5(i::text || 'b'), 'hex')",
+            "decode(md5(i::text || 'c') || md5(i::text || 'd'), 'hex')",
+        );
         e.exec(
             &format!(
                 "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2500) \

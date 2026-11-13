@@ -332,14 +332,8 @@ async fn list_member_cap_is_quota_on_add_and_on_resolve() {
         let dom = b.dir.create_domain("cap.test").await.unwrap();
         let list = b.dir.create_list("big", dom).await.unwrap();
         // Bulk-fill with raw statements (10,000 API calls would dominate the test time).
-        let fill = if b.is_sqlite() {
-            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2) \
-             INSERT INTO list_members (list_id, external, seq) \
-             SELECT ?1, 'm' || i || '@r.example', i FROM n"
-        } else {
-            "INSERT INTO list_members (list_id, external) \
-             SELECT ?1, 'm' || i || '@r.example' FROM generate_series(1, ?2::int) AS i"
-        };
+        let fill = "INSERT INTO list_members (list_id, external) \
+             SELECT ?1, 'm' || i || '@r.example' FROM generate_series(1, ?2::int) AS i";
         b.run(fill, &[Bind::I(list.0), Bind::I(MAX_LIST_MEMBERS as i64)]).await;
         kind!(b.dir.add_list_member(list, None, Some("one-more@r.example")).await, Error::Quota(_));
         match b.dir.resolve("big@cap.test").await.unwrap() {
@@ -790,14 +784,8 @@ async fn concurrent_adders_at_the_list_cap_boundary_admit_exactly_one() {
         let dom = b.dir.create_domain("boundary.test").await.unwrap();
         for round in 0..6 {
             let list = b.dir.create_list(&format!("big{round}"), dom).await.unwrap();
-            let fill = if b.is_sqlite() {
-                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2) \
-                 INSERT INTO list_members (list_id, external, seq) \
-                 SELECT ?1, 'm' || i || '@r.example', i FROM n"
-            } else {
-                "INSERT INTO list_members (list_id, external) \
-                 SELECT ?1, 'm' || i || '@r.example' FROM generate_series(1, ?2::int) AS i"
-            };
+            let fill = "INSERT INTO list_members (list_id, external) \
+                 SELECT ?1, 'm' || i || '@r.example' FROM generate_series(1, ?2::int) AS i";
             b.run(fill, &[Bind::I(list.0), Bind::I(MAX_LIST_MEMBERS as i64 - 1)]).await;
             let mut tasks = Vec::new();
             for i in 0..8 {
@@ -902,9 +890,6 @@ async fn capability_eviction_tie_break_is_token_hash_order_on_both_backends() {
 #[tokio::test]
 async fn account_create_conflicts_when_the_registry_row_is_missing() {
     for b in common::backends().await {
-        if b.is_sqlite() {
-            continue; // SQLite has no registry; its unique key is exercised by every duplicate test
-        }
         let dom = b.dir.create_domain("drift.test").await.unwrap();
         b.run("ALTER TABLE accounts DISABLE TRIGGER accounts_addr_unique_ins", &[]).await;
         b.run(

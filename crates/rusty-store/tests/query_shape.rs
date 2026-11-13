@@ -361,12 +361,8 @@ async fn cyclic_folder_data_is_invalid_not_a_hang() {
         let b = e.mb.create_folder(Some(a), "b").await.unwrap();
         let c = e.mb.create_folder(None, "c").await.unwrap();
         // Corrupt data: drop the guard trigger and close a cycle a -> b -> a by raw SQL.
-        if e.is_sqlite() {
-            e.exec("DROP TRIGGER folders_no_cycle", &[]).await;
-        } else {
-            e.exec("ALTER TABLE folders DISABLE TRIGGER folders_no_cycle", &[])
-                .await;
-        }
+        e.exec("ALTER TABLE folders DISABLE TRIGGER folders_no_cycle", &[])
+            .await;
         e.exec(
             "UPDATE folders SET parent_id = ? WHERE id = ?",
             &[Bind::I(b.0), Bind::I(a.0)],

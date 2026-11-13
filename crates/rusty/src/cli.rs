@@ -5,12 +5,20 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use rusty_core::config::{LogFormat, Profile, StartupConfig};
+use rusty_core::config::{LogFormat, Profile, SslMode, StartupConfig};
 use rusty_svc::init_logging;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio_util::sync::CancellationToken;
 
 use crate::daemon::{start, with_bind, with_port_offset};
+use crate::storecfg::DEV_PG_PASSWORD_ENV;
+
+/// The Postgres server of the dev profile (`postgres://user@host:port/database`, no password).
+pub(crate) const DEV_PG_URL_ENV: &str = "RUSTY_DEV_PG_URL";
+/// Optional: `disable`, `require`, `verify-ca` or `verify-full` (default: `disable` on loopback, `verify-full` elsewhere).
+pub(crate) const DEV_PG_SSLMODE_ENV: &str = "RUSTY_DEV_PG_SSLMODE";
+/// Optional: the CA bundle (PEM, absolute path) that signs the database server's certificate.
+pub(crate) const DEV_PG_CA_ENV: &str = "RUSTY_DEV_PG_CA_BUNDLE";
 
 const DEFAULT_CONFIG: &str = "/etc/rusty/rusty.toml";
 const DEFAULT_DEV_DIR: &str = "rusty-dev-data";
@@ -140,7 +148,7 @@ pub fn main(argv: Vec<OsString>) -> ExitCode {
             println!("rusty {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        Ok(Invocation::Healthcheck(args)) => match load_config(&args).and_then(|(cfg, _)| crate::health::check(&cfg)) {
+        Ok(Invocation::Healthcheck(args)) => match load_config(&args, false).and_then(|(cfg, _)| crate::health::check(&cfg)) {
             Ok(n) => {
                 println!("healthy: {n} listeners answered");
                 ExitCode::SUCCESS
@@ -165,8 +173,8 @@ pub fn main(argv: Vec<OsString>) -> ExitCode {
 }
 
 /// The dev profile configuration for `data_dir` (default `./rusty-dev-data`), shared by `rusty d --dev`
-/// and `rustyctl --dev`.
-pub(crate) fn dev_config(data_dir: Option<&Path>) -> Result<StartupConfig, String> {
+/// and `rustyctl --dev`. The metadata database is the Postgres server named by the environment.
+pub(crate) fn dev_config(data_dir: Option<&Path>, with_store: bool) -> Result<StartupConfig, String> {
     let dir = match data_dir {
         Some(d) => d.to_path_buf(),
         None => PathBuf::from(DEFAULT_DEV_DIR),
@@ -177,25 +185,37 @@ pub(crate) fn dev_config(data_dir: Option<&Path>) -> Result<StartupConfig, Strin
         std::env::current_dir().map_err(|e| format!("cannot read the current directory: {e}"))?.join(dir)
     };
     let cfg = StartupConfig::dev(&dir);
-    // Dev only: RUSTY_DEV_STORE_CONFIG names a file with a [store] section (the acceptance script runs the
-    // dev server on Postgres this way). Production reads its whole configuration from --config.
-    match std::env::var_os("RUSTY_DEV_STORE_CONFIG") {
-        None => Ok(cfg),
-        Some(path) => {
-            let text = std::fs::read_to_string(&path).map_err(|_| "cannot read RUSTY_DEV_STORE_CONFIG".to_owned())?;
-            if text.len() > 16 * 1024 {
-                return Err("RUSTY_DEV_STORE_CONFIG is too large".to_owned());
-            }
-            cfg.with_store_toml(&text).map_err(|e| format!("RUSTY_DEV_STORE_CONFIG: {e}"))
-        }
+    if !with_store {
+        // `rusty healthcheck` only probes the listeners: it needs no database.
+        return Ok(cfg);
+    }
+    // The dev profile keeps its metadata in Postgres: the developer names the server in RUSTY_DEV_PG_URL
+    // (postgres://user@host:port/database, no password) and may give the password in RUSTY_DEV_PG_PASSWORD. The
+    // schema is built once with `rustyctl --dev db migrate --without-roles`. Production reads its whole
+    // configuration from --config.
+    let sslmode = match std::env::var(DEV_PG_SSLMODE_ENV).ok().as_deref() {
+        None | Some("") => None,
+        Some("disable") => Some(SslMode::Disable),
+        Some("require") => Some(SslMode::Require),
+        Some("verify-ca") => Some(SslMode::VerifyCa),
+        Some("verify-full") => Some(SslMode::VerifyFull),
+        Some(_) => return Err(format!("{DEV_PG_SSLMODE_ENV} must be disable, require, verify-ca or verify-full")),
+    };
+    let ca_bundle = std::env::var_os(DEV_PG_CA_ENV).filter(|v| !v.is_empty()).map(PathBuf::from);
+    match std::env::var(DEV_PG_URL_ENV) {
+        Ok(url) if !url.is_empty() => cfg.with_dev_postgres(&url, sslmode, ca_bundle).map_err(|e| format!("{DEV_PG_URL_ENV}: {e}")),
+        Ok(_) | Err(std::env::VarError::NotPresent) => Err(format!(
+            "the dev profile needs a Postgres server: set {DEV_PG_URL_ENV} (postgres://user@host:5432/database, no password) and optionally {DEV_PG_PASSWORD_ENV}, then run `rustyctl --dev db migrate --without-roles` once"
+        )),
+        Err(_) => Err(format!("{DEV_PG_URL_ENV} is not valid UTF-8")),
     }
 }
 
 pub(crate) const DEFAULT_CONFIG_PATH: &str = DEFAULT_CONFIG;
 
-fn load_config(args: &DaemonArgs) -> Result<(StartupConfig, Profile), String> {
+fn load_config(args: &DaemonArgs, with_store: bool) -> Result<(StartupConfig, Profile), String> {
     if args.dev {
-        let mut cfg = with_port_offset(dev_config(args.data_dir.as_deref())?, args.port_offset).map_err(|e| e.to_string())?;
+        let mut cfg = with_port_offset(dev_config(args.data_dir.as_deref(), with_store)?, args.port_offset).map_err(|e| e.to_string())?;
         if let Some(ip) = args.bind {
             cfg = with_bind(cfg, ip);
         }
@@ -221,7 +241,7 @@ async fn run_daemon(prog: &str, args: DaemonArgs) -> u8 {
             return 1;
         }
     };
-    let (mut cfg, profile) = match load_config(&args) {
+    let (mut cfg, profile) = match load_config(&args, true) {
         Ok(x) => x,
         Err(e) => {
             eprintln!("{prog}: {e}");

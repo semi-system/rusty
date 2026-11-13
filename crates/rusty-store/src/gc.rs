@@ -49,8 +49,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rusty_core::{BlobHash, Error, MailboxId, Result};
 
 use crate::blob::unix_secs;
-use crate::repo::{sqlite::SqliteRepo, GcRepo};
-use crate::{BlobStore, SqliteStore};
+use crate::repo::GcRepo;
+use crate::BlobStore;
 
 /// Messages hard-deleted per transaction by [`purge_deleted`].
 pub const PURGE_BATCH: i64 = 1000;
@@ -435,96 +435,3 @@ impl Gc {
     }
 }
 
-// ---------------------------------------------------------------- SQLite entry points
-
-fn sqlite_gc(store: &SqliteStore) -> Gc {
-    Gc::new(Arc::new(SqliteRepo::new(store.clone())))
-}
-
-/// [`Gc::purge_deleted`] on a SQLite store.
-pub async fn purge_deleted(store: &SqliteStore, older_than: i64) -> Result<u64> {
-    sqlite_gc(store).purge_deleted(older_than).await
-}
-
-/// [`Gc::purge_deliveries`] on a SQLite store.
-pub async fn purge_deliveries(store: &SqliteStore, older_than: i64) -> Result<u64> {
-    sqlite_gc(store).purge_deliveries(older_than).await
-}
-
-/// [`Gc::purge_deliveries_at`] on a SQLite store.
-#[doc(hidden)]
-pub async fn purge_deliveries_at(
-    store: &SqliteStore,
-    now: i64,
-    retention_secs: i64,
-) -> Result<u64> {
-    sqlite_gc(store).purge_deliveries_at(now, retention_secs).await
-}
-
-/// [`Gc::purge_deliveries_default`] on a SQLite store.
-pub async fn purge_deliveries_default(store: &SqliteStore) -> Result<u64> {
-    sqlite_gc(store).purge_deliveries_default().await
-}
-
-/// [`Gc::purge_capabilities`] on a SQLite store.
-pub async fn purge_capabilities(store: &SqliteStore, older_than: i64) -> Result<u64> {
-    sqlite_gc(store).purge_capabilities(older_than).await
-}
-
-/// [`Gc::purge_capabilities_at`] on a SQLite store.
-#[doc(hidden)]
-pub async fn purge_capabilities_at(
-    store: &SqliteStore,
-    now: i64,
-    retention_secs: i64,
-) -> Result<u64> {
-    sqlite_gc(store).purge_capabilities_at(now, retention_secs).await
-}
-
-/// [`Gc::purge_capabilities_default`] on a SQLite store.
-pub async fn purge_capabilities_default(store: &SqliteStore) -> Result<u64> {
-    sqlite_gc(store).purge_capabilities_default().await
-}
-
-/// [`Gc::collect_blobs`] on a SQLite store.
-pub async fn collect_blobs(
-    store: &SqliteStore,
-    blobs: &dyn BlobStore,
-    grace: Duration,
-) -> Result<GcReport> {
-    sqlite_gc(store).collect_blobs(blobs, grace).await
-}
-
-/// [`collect_blobs`] reading "now" from `clock_sql` (a statement returning one integer, unix
-/// seconds) instead of the real database clock. Tests pass a skewed clock to prove that the
-/// cutoff follows the DATABASE and not the process clock. It runs an arbitrary SQL string on the
-/// store pool, so it exists only with the `test-knobs` feature (never in a release build).
-#[doc(hidden)]
-#[cfg(feature = "test-knobs")]
-pub async fn collect_blobs_with_db_clock(
-    store: &SqliteStore,
-    blobs: &dyn BlobStore,
-    grace: Duration,
-    clock_sql: &str,
-) -> Result<GcReport> {
-    if grace < MIN_GC_GRACE {
-        return Err(Error::Invalid("gc grace must be at least one hour".into()));
-    }
-    let db_now: i64 = sqlx::query_scalar(clock_sql)
-        .fetch_one(store.pool())
-        .await
-        .map_err(crate::map_db_error)?;
-    let now = UNIX_EPOCH + Duration::from_secs(u64::try_from(db_now).unwrap_or(0));
-    sqlite_gc(store).collect_blobs_at(blobs, grace, now).await
-}
-
-/// [`Gc::collect_blobs_at`] on a SQLite store.
-#[doc(hidden)]
-pub async fn collect_blobs_at(
-    store: &SqliteStore,
-    blobs: &dyn BlobStore,
-    grace: Duration,
-    now: SystemTime,
-) -> Result<GcReport> {
-    sqlite_gc(store).collect_blobs_at(blobs, grace, now).await
-}

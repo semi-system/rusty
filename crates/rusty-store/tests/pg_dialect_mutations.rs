@@ -74,10 +74,8 @@ fn the_hook_is_identity_without_a_selected_mutation() {
         return; // the runner selected one: this test is about the unselected state
     }
     let before = mutation::hits();
-    for d in [Dialect::Sqlite, Dialect::Postgres] {
-        let s = mutation::rendered(d, "SELECT rs_now() FROM unnest($1) AS t(a, b)".to_owned());
-        assert_eq!(s, "SELECT rs_now() FROM unnest($1) AS t(a, b)");
-    }
+    let s = mutation::rendered(Dialect::Postgres, "SELECT rs_now() FROM unnest($1) AS t(a, b)".to_owned());
+    assert_eq!(s, "SELECT rs_now() FROM unnest($1) AS t(a, b)");
     assert_eq!(mutation::hits(), before);
     assert!(!mutation::flag("no-retry"));
 }
