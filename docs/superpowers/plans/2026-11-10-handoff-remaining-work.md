@@ -1,6 +1,8 @@
 # Rusty - hand-off: remaining work to a usable MVP (for Codex or any second implementer)
 
 Date: 2026-11-10. Owner/decider: the user (writes Vietnamese; answer them in Vietnamese; these docs are English where the code is). This file is self-contained: read it, then `2026-11-08-usable-mailserver.md` (the master plan, sections 1b, 4, 5) for the details of each task.
+**Newer status snapshot: `2026-11-13-status-and-next-steps.md` (read it first; where it differs from this file, it wins).**
+
 
 ## 1. What Rusty is, in five lines
 Security-first Rust remake of Zimbra FOSS (mail + groupware). Standard protocols only (IMAP/SMTP now; JMAP/CalDAV/CardDAV later) plus a Zimbra import tool later. Cargo workspace, `#![forbid(unsafe_code)]`, musl static binary. **Postgres is the production backend** (user decision 2026-11-09, so no SQLite->Postgres data migration is ever needed); SQLite stays as the dev/test backend and the conformance reference; message bodies are content-addressed files on a volume. Current priority (user): **usable first, performance/hardening later, but never break the architecture model for speed**.
