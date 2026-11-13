@@ -1,4 +1,3 @@
-database_path = "/a/db.sqlite"
 blob_dir = "/a/blobs"
 hostname = "mail.example.com"
 log_format = "json"
@@ -12,5 +11,6 @@ max_recipients = 50
 max_message_bytes = 1048576
 [imap]
 listen_143 = "[::1]:1143"
-[limits]
-shutdown_grace_secs = 5
+
+url = "postgres://rusty_app@db.internal:5432/rusty"
+password_file = "/run/secrets/pg"

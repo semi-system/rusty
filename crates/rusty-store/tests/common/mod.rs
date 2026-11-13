@@ -4,10 +4,9 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use rusty_core::{AccountId, FolderId};
-use rusty_store::{BlobStore, FsBlobStore, Mailbox, SqliteStore, BLOB_ROOT_MARKER, GC_LOCK_FILE};
+use rusty_store::{BlobStore, FsBlobStore, Mailbox, BLOB_ROOT_MARKER, GC_LOCK_FILE};
 
 pub mod backends;
-#[cfg(feature = "postgres")]
 pub mod pg;
 pub mod shapes;
 #[allow(unused_imports)]
@@ -16,138 +15,16 @@ pub use backends::{
     set_zero_since, Bind,
 };
 
-/// Fresh private in-memory store with migrations applied.
-pub async fn mem() -> SqliteStore {
-    SqliteStore::open("sqlite::memory:").await.unwrap()
-}
-
-/// File-backed store (pool of 4) inside `dir`.
-pub async fn file_store(dir: &Path) -> SqliteStore {
-    let url = format!("sqlite://{}", dir.join("meta.sqlite").display());
-    SqliteStore::open(&url).await.unwrap()
-}
-
 pub const INBOX: FolderId = FolderId(1);
 pub const SENT: FolderId = FolderId(2);
 pub const DRAFTS: FolderId = FolderId(3);
 pub const TRASH: FolderId = FolderId(4);
 pub const SPAM: FolderId = FolderId(5);
 
-/// Insert domain `example.com` (if missing), account `local`, its mailbox and the five
-/// system folders with ids 1..=5, mirroring `rusty_directory::Directory::create_account`
-/// (rusty-store cannot depend on rusty-directory).
-pub async fn account(store: &SqliteStore, local: &str) -> AccountId {
-    let p = store.pool();
-    sqlx::query(
-        "INSERT OR IGNORE INTO domains (id, name, created_at) VALUES (1, 'example.com', 0)",
-    )
-    .execute(p)
-    .await
-    .unwrap();
-    let acc: i64 = sqlx::query_scalar(
-        "INSERT INTO accounts (local_part, domain_id, status, created_at) \
-         VALUES (?, 1, 'active', 0) RETURNING id",
-    )
-    .bind(local)
-    .fetch_one(p)
-    .await
-    .unwrap();
-    let mb: i64 = sqlx::query_scalar(
-        "INSERT INTO mailboxes (account_id, uid_validity, next_folder_id) VALUES (?, 7, 6) \
-         RETURNING id",
-    )
-    .bind(acc)
-    .fetch_one(p)
-    .await
-    .unwrap();
-    let system = [
-        (1i64, "Inbox", "inbox"),
-        (2, "Sent", "sent"),
-        (3, "Drafts", "drafts"),
-        (4, "Trash", "trash"),
-        (5, "Spam", "spam"),
-    ];
-    for (id, name, role) in system {
-        sqlx::query(
-            "INSERT INTO folders (mailbox_id, id, parent_id, name, role, uid_validity) \
-             VALUES (?, ?, NULL, ?, ?, 11)",
-        )
-        .bind(mb)
-        .bind(id)
-        .bind(name)
-        .bind(role)
-        .execute(p)
-        .await
-        .unwrap();
-    }
-    AccountId(acc)
-}
-
-/// A mailbox over an in-memory store with filesystem blobs in a temp dir.
-pub struct LiteEnv {
-    pub store: SqliteStore,
-    pub blobs: Arc<FsBlobStore>,
-    pub dir: tempfile::TempDir,
-    pub account: AccountId,
-    pub mb: Mailbox,
-}
-
-impl LiteEnv {
-    /// Files under the blob root except the root's own marker and GC lock file.
-    pub fn blob_files(&self) -> Vec<PathBuf> {
-        let root = self.dir.path().join("blobs");
-        all_files(&root)
-            .into_iter()
-            .filter(|p| {
-                !(p.parent() == Some(root.as_path())
-                    && (p.ends_with(BLOB_ROOT_MARKER) || p.ends_with(GC_LOCK_FILE)))
-            })
-            .collect()
-    }
-
-    /// Open a mailbox for another account sharing this store and blob store.
-    pub async fn other(&self, local: &str) -> Mailbox {
-        let acc = account(&self.store, local).await;
-        Mailbox::open(
-            self.store.clone(),
-            self.blobs.clone() as Arc<dyn BlobStore>,
-            acc,
-        )
-        .await
-        .unwrap()
-    }
-
-    pub async fn scalar(&self, sql: &str) -> i64 {
-        sqlx::query_scalar(sql)
-            .fetch_one(self.store.pool())
-            .await
-            .unwrap()
-    }
-}
-
-pub async fn lite_env_with(store: SqliteStore, dir: tempfile::TempDir) -> LiteEnv {
-    let blobs = Arc::new(blob_store(&dir.path().join("blobs")).await);
-    let account = account(&store, "alice").await;
-    let mb = Mailbox::open(store.clone(), blobs.clone() as Arc<dyn BlobStore>, account)
-        .await
-        .unwrap();
-    LiteEnv {
-        store,
-        blobs,
-        dir,
-        account,
-        mb,
-    }
-}
-
 /// `init` + `open` a blob store at `root`.
 pub async fn blob_store(root: &Path) -> FsBlobStore {
     FsBlobStore::init(root).await.unwrap();
     FsBlobStore::open(root).await.unwrap()
-}
-
-pub async fn lite_env() -> LiteEnv {
-    lite_env_with(mem().await, tempfile::tempdir().unwrap()).await
 }
 
 pub fn all_files(root: &Path) -> Vec<PathBuf> {
@@ -323,7 +200,7 @@ pub mod stmts {
 
 // ------------------------------------------------------------------ backend-aware Env (PG6)
 
-/// A mailbox over one backend (SQLite file store or a fresh Postgres database) with filesystem
+/// A mailbox over a fresh Postgres database with filesystem
 /// blobs in a temp dir. Fixtures go through the repositories and the dialect-neutral helpers of
 /// [`backends`]; no test holds a raw pool.
 pub struct Env {
@@ -345,10 +222,6 @@ impl Env {
             account,
             mb,
         }
-    }
-
-    pub fn is_sqlite(&self) -> bool {
-        self.b.sqlite.is_some()
     }
 
     /// Files under the blob root except the root's own marker and GC lock file.
@@ -417,13 +290,6 @@ where
             Env::new(b).await
         };
         f(e).await;
-    }
-}
-
-impl Env {
-    /// SQLite over a private in-memory database (a single connection).
-    pub async fn sqlite_mem() -> Env {
-        Env::new(backends::sqlite_mem_backend().await).await
     }
 }
 

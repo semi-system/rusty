@@ -3,7 +3,6 @@
 //! kill the mutants found in review. Each case runs in its own rolled-back transaction on one
 //! seeded database; every rejection asserts the expected SQLSTATE and, where the engine reports
 //! one, the constraint name, so a case cannot pass for the wrong reason.
-#![cfg(feature = "postgres")]
 
 mod common;
 

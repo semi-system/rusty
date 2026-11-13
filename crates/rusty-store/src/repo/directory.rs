@@ -315,11 +315,7 @@ pub(crate) mod sql {
     /// The status is the effective one: an account of a disabled domain is disabled.
     pub const ACCOUNT_AUTH: &str = "SELECT CASE WHEN d.status <> 'active' THEN 'disabled' ELSE a.status END, \
         a.password_hash FROM accounts a JOIN domains d ON d.id = a.domain_id WHERE a.id = $1";
-    /// Effective status of many accounts. The id list is one bound parameter: a JSON array on SQLite,
-    /// an int8 array on Postgres (two statement texts, same result).
-    pub const ACCOUNT_STATUSES_SQLITE: &str = "SELECT a.id, CASE WHEN d.status <> 'active' THEN 'disabled' ELSE a.status END \
-        FROM accounts a JOIN domains d ON d.id = a.domain_id WHERE a.id IN (SELECT value FROM json_each($1))";
-    #[cfg(feature = "postgres")]
+    /// Effective status of many accounts. The id list is one bound parameter: an int8 array.
     pub const ACCOUNT_STATUSES_PG: &str = "SELECT a.id, CASE WHEN d.status <> 'active' THEN 'disabled' ELSE a.status END \
         FROM accounts a JOIN domains d ON d.id = a.domain_id WHERE a.id = ANY($1)";
     pub const INSERT_ALIAS: &str =

@@ -14,7 +14,7 @@ from `github.repository` (lower-cased for the registry). The crates and binaries
 
 * **Compile stage** (`rust:1.99.1-alpine3.22`, pinned by digest): always runs on the build platform and
   cross-compiles to `x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl`, so the arm64 image is
-  not compiled under QEMU. The only C code (ring, bundled SQLite) is compiled with zig 0.15.2 acting
+  not compiled under QEMU. The only C code (ring) is compiled with zig 0.15.2 acting
   as the C compiler and linker for the musl target (tarballs pinned by SHA-256 in the Dockerfile).
   Dependencies are resolved with `--locked`; `SOURCE_DATE_EPOCH` (the commit time) and
   `--remap-path-prefix` make the build reproducible as far as the toolchain allows.

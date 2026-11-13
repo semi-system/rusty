@@ -16,7 +16,7 @@ homepage = "https://github.com/semi-system/rusty"
 # No features here: each crate names the minimal set it needs (libraries: "rt"; tests add
 # "macros", "rt-multi-thread" and "time" as dev-dependencies).
 tokio = { version = "1.40", default-features = false }
-sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "macros", "migrate"] }
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "macros", "migrate", "tls-rustls-ring-native-roots"] }
 async-trait = "0.1"
 thiserror = "1"
 serde = { version = "1", features = ["derive"] }

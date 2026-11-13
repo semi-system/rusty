@@ -1,6 +1,5 @@
 //! PG5: real-concurrency behaviour of the Postgres job and GC repositories.
 //! Requires `RUSTY_TEST_PG_URL` (loud SKIPPED notice otherwise).
-#![cfg(feature = "postgres")]
 
 mod common;
 

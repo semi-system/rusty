@@ -16,11 +16,7 @@ use rusty_core::{DeliveryId, Flags};
 
 /// The database's own notion of now.
 async fn db_now(b: &Backend) -> i64 {
-    if b.sqlite.is_some() {
-        exec(b, "SELECT unixepoch()", &[]).await
-    } else {
-        exec(b, "SELECT rs_now()", &[]).await
-    }
+    exec(b, "SELECT rs_now()", &[]).await
 }
 
 fn within(value: i64, lo: i64, hi: i64, what: &str) {

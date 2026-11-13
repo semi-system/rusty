@@ -37,11 +37,10 @@ use rusty_core::{
 use rusty_mime::Envelope;
 
 use crate::gc::PURGE_BATCH;
-use crate::repo::sqlite::SqliteRepo;
 use crate::repo::{
     DeliverEntry, Delivery, FlagUpdate, FolderCounts, FolderInfo, JobFence, MailboxRepo, MessageDetail, NewMessage, RawRef,
 };
-use crate::{BlobStore, SqliteStore};
+use crate::BlobStore;
 
 pub const DEFAULT_MAX_MESSAGE_BYTES: usize = 50 * 1024 * 1024;
 pub const MAX_KEYWORDS_PER_MESSAGE: usize = 32;
@@ -326,16 +325,7 @@ fn batch_ids(ids: &[MessageId]) -> Result<Vec<i64>> {
 // ---------- the facade ----------
 
 impl Mailbox {
-    /// Open the mailbox of `account` on a SQLite store (`NotFound` if it has none).
-    pub async fn open(
-        store: SqliteStore,
-        blobs: Arc<dyn BlobStore>,
-        account: AccountId,
-    ) -> Result<Mailbox> {
-        Self::open_with(Arc::new(SqliteRepo::new(store)), blobs, account).await
-    }
-
-    /// Open the mailbox of `account` over any backend (`Store::repos().mailbox`).
+    /// Open the mailbox of `account` over a repository (`Store::repos().mailbox`; `NotFound` if it has none).
     pub async fn open_with(
         repo: Arc<dyn MailboxRepo>,
         blobs: Arc<dyn BlobStore>,

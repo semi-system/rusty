@@ -6,7 +6,6 @@
 //! RUSTY_UPDATE_PG_SNAPSHOT=1 and review the diff. The constraints themselves are exercised
 //! behaviourally by pg_schema_cases.rs.
 
-#![cfg(feature = "postgres")]
 #![allow(clippy::type_complexity)]
 
 mod common;

@@ -5,7 +5,6 @@
 //! table statistics or row counts. A separate scale test (`claim_plan_at_scale`) checks the
 //! claim statement on 100k rows with the planner left alone.
 //! Requires `RUSTY_TEST_PG_URL` (loud SKIPPED notice otherwise).
-#![cfg(feature = "postgres")]
 
 mod common;
 

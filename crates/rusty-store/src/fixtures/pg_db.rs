@@ -217,6 +217,17 @@ impl PgTestDb {
         &self.url
     }
 
+    /// This database as the daemon's configuration wants it: `(postgres://user@host:port/database, password)`.
+    /// The configuration refuses a password and query parameters in the URL; the test server is reached
+    /// without TLS (`sslmode = "disable"` in the configuration).
+    pub fn split_url(&self) -> (String, String) {
+        let mut u = Url::parse(&self.url).expect("the test database URL parses");
+        let password = u.password().unwrap_or_default().to_owned();
+        u.set_password(None).expect("the URL can carry a user name");
+        u.set_query(None);
+        (u.to_string(), password)
+    }
+
     pub async fn connect(&self) -> PgStore {
         PgStore::connect(&self.url)
             .await

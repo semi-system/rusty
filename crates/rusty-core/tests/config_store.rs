@@ -1,13 +1,13 @@
-//! `[store]` section: backend choice, Postgres URL and TLS policy (U11).
+//! `[store]` section: Postgres URL and TLS policy (U11).
 
-use rusty_core::config::{Profile, SslMode, StartupConfig, StoreBackend};
+use rusty_core::config::{Profile, SslMode, StartupConfig};
 use rusty_core::Error;
 
 const BASE: &str = "blob_dir = \"/a/blobs\"\nhostname = \"mail.example.test\"\n[tls]\ncert_file = \"/c\"\nkey_file = \"/k\"\n";
 
 fn pg(extra: &str) -> String {
     format!(
-        "{BASE}[store]\nbackend = \"postgres\"\nurl = \"postgres://rusty_app@db.internal:5432/rusty\"\npassword_file = \"/run/secrets/pg\"\n{extra}"
+        "{BASE}[store]\nurl = \"postgres://rusty_app@db.internal:5432/rusty\"\npassword_file = \"/run/secrets/pg\"\n{extra}"
     )
 }
 
@@ -20,18 +20,17 @@ fn invalid<T: std::fmt::Debug>(r: Result<T, Error>) {
 }
 
 #[test]
-fn default_backend_is_sqlite_and_needs_database_path() {
-    let c = parse("database_path = \"/a/db.sqlite\"\nblob_dir = \"/a/blobs\"\n").unwrap();
-    assert_eq!(c.store.backend, StoreBackend::Sqlite);
-    // SQLite without a database_path is not a configuration.
+fn the_store_url_is_required_and_the_old_sqlite_keys_are_gone() {
     invalid(parse("blob_dir = \"/a/blobs\"\n"));
-    invalid(parse("database_path = \"rel.sqlite\"\nblob_dir = \"/a/blobs\"\n"));
+    invalid(parse(&format!("{BASE}[store]\n")));
+    // Postgres is the only backend: neither `backend` nor `database_path` exists any more.
+    invalid(parse(&pg("backend = \"postgres\"\n")));
+    invalid(parse("database_path = \"/a/db.sqlite\"\nblob_dir = \"/a/blobs\"\n"));
 }
 
 #[test]
-fn postgres_needs_no_database_path_and_defaults_to_verify_full() {
+fn the_store_defaults_to_verify_full() {
     let c = parse(&pg("")).unwrap();
-    assert_eq!(c.store.backend, StoreBackend::Postgres);
     assert_eq!(c.store.sslmode, SslMode::VerifyFull);
     assert!(c.check_startup(Profile::Production).is_ok());
 }
@@ -44,22 +43,13 @@ fn postgres_url_must_not_carry_a_password_or_parameters() {
         "mysql://rusty_app@db.internal/rusty",
         "postgres://db.internal/rusty",
     ] {
-        let text = format!("{BASE}[store]\nbackend = \"postgres\"\nurl = \"{url}\"\n");
+        let text = format!("{BASE}[store]\nurl = \"{url}\"\n");
         match parse(&text) {
             Err(Error::Invalid(m)) => assert!(!m.contains("hunter2") && !m.contains(url), "{m}"),
             other => panic!("{url}: {other:?}"),
         }
     }
-    invalid(parse(&format!("{BASE}[store]\nbackend = \"postgres\"\n")));
-}
-
-#[test]
-fn postgres_only_keys_are_refused_with_sqlite() {
-    let sqlite = "database_path = \"/a/d.sqlite\"\nblob_dir = \"/a/b\"\n[store]\n";
-    for k in ["url = \"postgres://u@h/d\"", "pool_size = 8", "sslmode = \"disable\"", "ca_bundle = \"/ca\"", "insecure_allow_unverified_tls = true"] {
-        invalid(parse(&format!("{sqlite}{k}\n")));
-    }
-    assert!(parse(&format!("{sqlite}backend = \"sqlite\"\n")).is_ok());
+    invalid(parse(&format!("{BASE}[store]\n")));
 }
 
 #[test]
@@ -98,7 +88,7 @@ fn explicit_insecure_override_starts_with_a_warning() {
 fn loopback_may_skip_verification_but_disable_is_dev_only() {
     let local = |mode: &str| {
         format!(
-            "{BASE}[store]\nbackend = \"postgres\"\nurl = \"postgres://rusty_app@127.0.0.1/rusty\"\npassword_file = \"/p\"\nsslmode = \"{mode}\"\n"
+            "{BASE}[store]\nurl = \"postgres://rusty_app@127.0.0.1/rusty\"\npassword_file = \"/p\"\nsslmode = \"{mode}\"\n"
         )
     };
     let c = parse(&local("require")).unwrap();
@@ -110,7 +100,7 @@ fn loopback_may_skip_verification_but_disable_is_dev_only() {
 
 #[test]
 fn production_postgres_needs_a_password_file() {
-    let text = format!("{BASE}[store]\nbackend = \"postgres\"\nurl = \"postgres://rusty_app@db.internal/rusty\"\n");
+    let text = format!("{BASE}[store]\nurl = \"postgres://rusty_app@db.internal/rusty\"\n");
     let c = parse(&text).unwrap();
     assert!(matches!(c.check_startup(Profile::Production), Err(Error::Invalid(_))));
 }
@@ -135,16 +125,28 @@ fn debug_output_has_no_secret() {
 }
 
 #[test]
-fn the_dev_profile_can_take_a_store_section_from_a_separate_file() {
+fn the_dev_profile_takes_its_postgres_server_from_a_url() {
     let dev = StartupConfig::dev(std::path::Path::new("/tmp/d"));
-    let text = "[store]\nbackend = \"postgres\"\nurl = \"postgres://rusty_app@127.0.0.1:5432/rusty\"\nsslmode = \"disable\"\n";
-    let c = dev.clone().with_store_toml(text).unwrap();
-    assert!(c.store.is_postgres() && c.database_path.as_os_str().is_empty());
+    // Loopback is reached without TLS; the password comes from the environment, never from the URL.
+    let c = dev.clone().with_dev_postgres("postgres://rusty_dev@127.0.0.1:5433/devdb", None, None).unwrap();
+    assert_eq!(c.store.url.as_deref(), Some("postgres://rusty_dev@127.0.0.1:5433/devdb"));
+    assert_eq!(c.store.sslmode, SslMode::Disable);
+    assert!(c.store.password_from_dev_env);
     assert!(c.check_startup(Profile::Dev).is_ok());
-    // Only the [store] section is accepted; anything else, or an invalid store, is refused.
-    invalid(dev.clone().with_store_toml("hostname = \"x.test\"\n"));
-    invalid(dev.clone().with_store_toml("[store]\nbackend = \"postgres\"\n"));
-    invalid(dev.clone().with_store_toml("[store]\nurl = \"postgres://u:pw@h/d\"\n"));
-    let sqlite = dev.with_store_toml("[store]\nbackend = \"sqlite\"\n").unwrap();
-    assert_eq!(sqlite.database_path, std::path::Path::new("/tmp/d/meta.sqlite"));
+    // Another host keeps the verified default.
+    let r = dev.clone().with_dev_postgres("postgres://rusty_dev@db.internal/devdb", None, None).unwrap();
+    assert_eq!(r.store.sslmode, SslMode::VerifyFull);
+    // A password in the URL, query parameters and other schemes are refused.
+    for bad in ["postgres://u:pw@127.0.0.1/d", "postgres://u@127.0.0.1/d?sslmode=disable", "mysql://u@h/d", ""] {
+        invalid(dev.clone().with_dev_postgres(bad, None, None));
+    }
+    // Naming a mode that does not verify a remote server is an explicit choice, and says so.
+    let n = dev.clone().with_dev_postgres("postgres://rusty_dev@db.internal/devdb", Some(SslMode::Disable), None).unwrap();
+    assert!(n.store.insecure_allow_unverified_tls && n.check_startup(Profile::Dev).is_ok());
+    let v = dev.clone().with_dev_postgres("postgres://rusty_dev@db.internal/devdb", Some(SslMode::VerifyFull), Some(std::path::PathBuf::from("/ca.pem"))).unwrap();
+    assert!(!v.store.insecure_allow_unverified_tls && v.store.ca_bundle.is_some());
+    // A relative CA path is refused.
+    invalid(dev.clone().with_dev_postgres("postgres://rusty_dev@db.internal/devdb", None, Some(std::path::PathBuf::from("ca.pem"))));
+    // A configuration file cannot switch the environment password on.
+    invalid(parse(&pg("password_from_dev_env = true\n")));
 }

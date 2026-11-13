@@ -6,7 +6,7 @@
 use std::io::Read;
 use std::path::Path;
 
-use rusty_core::config::{parse_pg_url, StartupConfig, StoreBackend};
+use rusty_core::config::{parse_pg_url, Profile, StartupConfig};
 use rusty_core::{Error, Result};
 use rusty_store::{PgPassword, PgLimits, PgSecurity, StoreConfig};
 use rusty_svc::{FileSecretSource, SecretSource};
@@ -22,6 +22,17 @@ fn read_password(source: &dyn SecretSource, path: &Path) -> Result<PgPassword> {
         return Err(Error::Invalid("the database password file is empty".into()));
     }
     Ok(PgPassword::new(pw.to_owned()))
+}
+
+/// The environment variable that holds the database password of the dev profile.
+pub const DEV_PG_PASSWORD_ENV: &str = "RUSTY_DEV_PG_PASSWORD";
+
+fn dev_password() -> Result<Option<PgPassword>> {
+    match std::env::var(DEV_PG_PASSWORD_ENV) {
+        Ok(v) if !v.is_empty() => Ok(Some(PgPassword::new(v))),
+        Ok(_) | Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(_) => Err(Error::Invalid(format!("{DEV_PG_PASSWORD_ENV} is not valid UTF-8"))),
+    }
 }
 
 fn read_ca(path: &Path) -> Result<Vec<u8>> {
@@ -40,10 +51,11 @@ fn read_ca(path: &Path) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-fn security(cfg: &StartupConfig, password_file: Option<&Path>, runtime: bool) -> Result<PgSecurity> {
+fn security(cfg: &StartupConfig, password_file: Option<&Path>, verify_role: bool) -> Result<PgSecurity> {
     let s = &cfg.store;
     let password = match password_file {
         Some(p) => Some(read_password(&FileSecretSource::new(), p)?),
+        None if s.password_from_dev_env => dev_password()?,
         None => None,
     };
     let ca_bundle_pem = match &s.ca_bundle {
@@ -55,7 +67,7 @@ fn security(cfg: &StartupConfig, password_file: Option<&Path>, runtime: bool) ->
         ca_bundle_pem,
         allow_unverified_tls: s.insecure_allow_unverified_tls,
         password,
-        verify_role: runtime,
+        verify_role,
     })
 }
 
@@ -73,28 +85,28 @@ fn pool(cfg: &StartupConfig) -> PgLimits {
     }
 }
 
-/// The store the daemon and `rustyctl` use. `sqlite_url` is the already-validated SQLite URL (only
-/// used by the sqlite backend).
-pub fn store_config(cfg: &StartupConfig, sqlite_url: impl FnOnce() -> Result<String>) -> Result<StoreConfig> {
-    match cfg.store.backend {
-        StoreBackend::Sqlite => Ok(StoreConfig::sqlite(sqlite_url()?)),
-        StoreBackend::Postgres => {
-            let url = cfg.store.url.clone().ok_or_else(|| Error::Invalid("[store] url is required".into()))?;
-            parse_pg_url(&url)?;
-            Ok(StoreConfig::Postgres {
-                url,
-                pool: pool(cfg),
-                security: security(cfg, cfg.store.password_file.as_deref(), true)?,
-            })
-        }
-    }
+/// The store the daemon and `rustyctl` use. Production refuses a runtime role that is a superuser or can create
+/// roles or databases; the dev profile accepts whatever role the developer connects with.
+pub fn store_config(cfg: &StartupConfig, profile: Profile) -> Result<StoreConfig> {
+    let url = cfg.store.url.clone().ok_or_else(|| Error::Invalid("[store] url is required".into()))?;
+    parse_pg_url(&url)?;
+    Ok(StoreConfig::Postgres {
+        url,
+        pool: pool(cfg),
+        security: security(cfg, cfg.store.password_file.as_deref(), profile == Profile::Production)?,
+    })
 }
 
 /// URL and credentials of the migrator role (DDL), for `rustyctl db migrate` / `db status`.
 pub fn migrator_target(cfg: &StartupConfig) -> Result<(String, PgSecurity)> {
     let s = &cfg.store;
-    let user = s.migrator_user.as_deref().ok_or_else(|| Error::Invalid("[store] migrator_user is required for db commands".into()))?;
     let ep = parse_pg_url(s.url.as_deref().unwrap_or_default())?;
+    // The dev profile has one database role: it migrates with the role it runs as (`db migrate --without-roles`).
+    let user = match s.migrator_user.as_deref() {
+        Some(u) => u.to_owned(),
+        None if s.password_from_dev_env => ep.user.clone(),
+        None => return Err(Error::Invalid("[store] migrator_user is required for db commands".into())),
+    };
     let host = if ep.host.contains(':') { format!("[{}]", ep.host) } else { ep.host.clone() };
     let url = format!("postgres://{user}@{host}:{}/{}", ep.port, ep.database);
     Ok((url, security(cfg, s.migrator_password_file.as_deref(), false)?))
@@ -106,7 +118,9 @@ mod tests {
 
     fn cfg(extra: &str) -> StartupConfig {
         StartupConfig::from_toml_str(&format!(
-            "blob_dir = \"/b\"\nhostname = \"m.example.test\"\n[tls]\ncert_file = \"/c\"\nkey_file = \"/k\"\n[store]\nbackend = \"postgres\"\nurl = \"postgres://rusty_app@db.internal:5433/rusty\"\n{extra}"
+            "blob_dir = \"/b\"\nhostname = \"m.example.test\"\n[tls]\ncert_file = \"/c\"\nkey_file = \"/k\"
+[store]
+url = \"postgres://rusty_app@db.internal:5433/rusty\"\n{extra}"
         ))
         .unwrap()
     }
@@ -121,16 +135,9 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_backend_uses_the_given_url() {
-        let c = StartupConfig::dev(Path::new("/tmp/x"));
-        let s = store_config(&c, || Ok("sqlite:///tmp/x/m.sqlite".into())).unwrap();
-        assert!(matches!(s, StoreConfig::Sqlite { .. }));
-    }
-
-    #[test]
     fn a_missing_password_file_is_refused_without_echoing_the_path_contents() {
         let c = cfg("password_file = \"/nonexistent/pw\"\n");
-        assert!(store_config(&c, || Ok(String::new())).is_err());
+        assert!(store_config(&c, Profile::Production).is_err());
     }
 
     #[test]
@@ -140,11 +147,11 @@ mod tests {
         std::fs::write(&pw, "s3cret-pass\n").unwrap();
         std::fs::set_permissions(&pw, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
         let c = cfg(&format!("password_file = \"{}\"\n", pw.display()));
-        let s = store_config(&c, || Ok(String::new())).unwrap();
+        let s = store_config(&c, Profile::Production).unwrap();
         let shown = format!("{s:?}");
         assert!(!shown.contains("s3cret-pass") && !shown.contains("db.internal"), "{shown}");
         // A world-readable password file is refused.
         std::fs::set_permissions(&pw, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
-        assert!(store_config(&c, || Ok(String::new())).is_err());
+        assert!(store_config(&c, Profile::Production).is_err());
     }
 }

@@ -1,4 +1,3 @@
-database_path = "/a/db.sqlite"
 blob_dir = "/a/blobs"
 [tls]
 dev_self_signed = true

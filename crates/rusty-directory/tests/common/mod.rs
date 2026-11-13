@@ -13,7 +13,6 @@ use rusty_store::fixtures::{Fixtures, SqlFailure};
 pub use rusty_store::fixtures::Arg as Bind;
 use rusty_store::{BlobStore, FsBlobStore, Gc, Mailbox, Store, StoreConfig};
 
-#[cfg(feature = "postgres")]
 pub use rusty_store::fixtures::pg_db as pg;
 
 pub struct Backend {
@@ -22,7 +21,6 @@ pub struct Backend {
     pub store: Store,
     pub fx: Fixtures,
     pub tmp: tempfile::TempDir,
-    #[cfg(feature = "postgres")]
     _db: Option<pg::PgTestDb>,
 }
 
@@ -75,10 +73,6 @@ impl Backend {
         self.fx.db_clock().await
     }
 
-    pub fn is_sqlite(&self) -> bool {
-        self.fx.is_sqlite()
-    }
-
     /// The garbage collector over this backend's repository.
     pub fn gc(&self) -> Gc {
         Gc::new(self.store.repos().gc.clone())
@@ -101,34 +95,10 @@ impl Backend {
 
     /// A second, independent database of the same kind.
     pub async fn fresh_like(&self) -> Backend {
-        if self.is_sqlite() {
-            return sqlite_backend().await;
-        }
-        #[cfg(feature = "postgres")]
-        {
-            pg_backend().await.expect("postgres backend")
-        }
-        #[cfg(not(feature = "postgres"))]
-        unreachable!()
+        pg_backend().await.expect("postgres backend")
     }
 }
 
-pub async fn sqlite_backend() -> Backend {
-    let tmp = tempfile::tempdir().unwrap();
-    let url = format!("sqlite://{}", tmp.path().join("meta.sqlite").display());
-    let store = Store::open(StoreConfig::sqlite(url)).await.unwrap();
-    Backend {
-        name: "sqlite",
-        dir: Directory::with_repo(store.repos().directory.clone()),
-        fx: Fixtures::of(&store),
-        store,
-        tmp,
-        #[cfg(feature = "postgres")]
-        _db: None,
-    }
-}
-
-#[cfg(feature = "postgres")]
 pub async fn pg_backend() -> Option<Backend> {
     let url = pg::pg_admin_url()?;
     let db = pg::PgTestDb::create(&url).await;

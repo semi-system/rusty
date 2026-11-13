@@ -1,5 +1,4 @@
 //! The Postgres test guard must leave no database behind, also when the test panics.
-#![cfg(feature = "postgres")]
 
 mod common;
 

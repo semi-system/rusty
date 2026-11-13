@@ -8,8 +8,7 @@
 use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::io::{BufRead, Read, Write};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use rusty_core::config::{Profile, StartupConfig};
@@ -20,7 +19,7 @@ use rusty_directory::Directory;
 use rusty_store::Store;
 
 use crate::cli::{dev_config, DEFAULT_CONFIG_PATH};
-use crate::daemon::{prepare_dev_dirs, sqlite_url};
+use crate::daemon::prepare_dev_dirs;
 
 /// Longest password line read from standard input or the terminal.
 const MAX_PASSWORD_LINE: u64 = 4096;
@@ -96,7 +95,7 @@ impl PasswordReader for TerminalPasswords {
 fn config_for(source: &Source) -> Result<(StartupConfig, bool, String), String> {
     match source {
         Source::Dev { data_dir } => {
-            let cfg = dev_config(data_dir.as_deref())?;
+            let cfg = dev_config(data_dir.as_deref(), true)?;
             Ok((cfg, true, "development profile".to_owned()))
         }
         Source::Config(path) => {
@@ -109,53 +108,12 @@ fn config_for(source: &Source) -> Result<(StartupConfig, bool, String), String> 
     }
 }
 
-/// The safety checks of `rusty d` that apply to the database file, plus two that only an operator tool needs:
-/// it never creates a database unless asked (a typo must not silently make an empty one), and it refuses to
-/// run as a user that does not own the files (running as root would leave root-owned files the service cannot
-/// open). Nothing is created or changed here.
-fn check_database_files(path: &Path, create: bool) -> Result<(), String> {
-    let euid = rustix::process::geteuid().as_raw();
-    match std::fs::symlink_metadata(path) {
-        Ok(m) => {
-            if !m.file_type().is_file() {
-                return Err("the database path is not a regular file (symlinks are refused)".to_owned());
-            }
-            if m.uid() != euid {
-                return Err("the database file belongs to another user; run rustyctl as the service user".to_owned());
-            }
-            if m.permissions().mode() & 0o077 != 0 {
-                return Err("the database file permissions allow other users (must be 0600)".to_owned());
-            }
-            Ok(())
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            if !create {
-                return Err("the database does not exist (a typo in the path? use --create to initialise a new one)".to_owned());
-            }
-            let dir = path.parent().ok_or_else(|| "the database path has no directory".to_owned())?;
-            let m = std::fs::symlink_metadata(dir).map_err(|_| "the database directory does not exist".to_owned())?;
-            if !m.file_type().is_dir() {
-                return Err("the database directory is not a directory".to_owned());
-            }
-            if m.uid() != euid {
-                return Err("the database directory belongs to another user; run rustyctl as the service user".to_owned());
-            }
-            if m.permissions().mode() & 0o022 != 0 {
-                return Err("the database directory is writable by other users".to_owned());
-            }
-            Ok(())
-        }
-        Err(_) => Err("cannot inspect the database file".to_owned()),
-    }
-}
-
-async fn open_directory(cfg: &StartupConfig, dev: bool, create: bool) -> Result<(Store, Directory), String> {
+async fn open_directory(cfg: &StartupConfig, dev: bool) -> Result<(Store, Directory), String> {
     if dev {
         prepare_dev_dirs(cfg).await.map_err(|e| e.to_string())?;
-    } else if !cfg.store.is_postgres() {
-        check_database_files(&cfg.database_path, create)?;
     }
-    let sc = crate::storecfg::store_config(cfg, || sqlite_url(&cfg.database_path)).map_err(|e| e.to_string())?;
+    let profile = if dev { Profile::Dev } else { Profile::Production };
+    let sc = crate::storecfg::store_config(cfg, profile).map_err(|e| e.to_string())?;
     let store = Store::open(sc).await.map_err(|e| format!("cannot open the database: {e}"))?;
     let dir = Directory::with_repo(store.repos().directory.clone());
     Ok((store, dir))
@@ -197,7 +155,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         if matches!(parsed.command, rusty_ctl::Command::DbMigrate { .. } | rusty_ctl::Command::DbStatus) {
             return run_db(prog, &cfg, &parsed).await;
         }
-        let (store, directory) = match open_directory(&cfg, dev, parsed.create).await {
+        let (store, directory) = match open_directory(&cfg, dev).await {
             Ok(x) => x,
             Err(e) => {
                 eprintln!("{prog}: {e}");
@@ -229,7 +187,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
                 e.exit
             }
         };
-        // Closing checkpoints the WAL; a failure here is reported but does not hide the result.
+        // A failure while closing the pool is reported but does not hide the result.
         if let Err(e) = store.close().await {
             eprintln!("{prog}: closing the database failed: {e}");
             return if code == 0 { 1 } else { code };
@@ -245,13 +203,6 @@ async fn run_db(prog: &str, cfg: &StartupConfig, parsed: &rusty_ctl::Parsed) -> 
     let say = |text: String, json: serde_json::Value| {
         println!("{}", if parsed.json { json.to_string() } else { text });
     };
-    if !cfg.store.is_postgres() {
-        say(
-            "sqlite backend: the schema is managed by the daemon itself; nothing to do".to_owned(),
-            serde_json::json!({ "backend": "sqlite", "state": "managed" }),
-        );
-        return 0;
-    }
     let (url, security) = match crate::storecfg::migrator_target(cfg) {
         Ok(x) => x,
         Err(e) => {

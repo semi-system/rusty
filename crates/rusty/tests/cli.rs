@@ -68,6 +68,18 @@ fn spawn(bin: &Path, args: &[&str]) -> Child {
     Command::new(bin).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
 }
 
+/// Like [`spawn`], with the Postgres server of `pg` named in the environment (the dev profile reads it there).
+fn spawn_dev(pg: &PgDev, args: &[&str]) -> Child {
+    Command::new(BIN)
+        .args(args)
+        .env("RUSTY_DEV_PG_URL", &pg.url)
+        .env("RUSTY_DEV_PG_PASSWORD", &pg.password)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
 fn wait_for_port(port: u16, child: &mut Child) {
     let t0 = Instant::now();
     while t0.elapsed() < Duration::from_secs(30) {
@@ -106,21 +118,21 @@ fn wait_exit(child: &mut Child, within: Duration) -> std::process::ExitStatus {
     }
 }
 
-// backend-neutral: process lifecycle of the binary over its default SQLite store
-#[test]
-fn rusty_d_dev_starts_serves_and_exits_zero_on_sigterm() {
+// backend-neutral: process lifecycle of the binary over one Postgres database
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rusty_d_dev_starts_serves_and_exits_zero_on_sigterm() {
     let tmp = private_tmp();
     let data = tmp.path().join("data");
     let off = offset();
-    let mut child = spawn(
-        Path::new(BIN),
+    let pg = pg_dev().await;
+    let mut child = spawn_dev(
+        &pg,
         &["d", "--dev", "--data-dir", data.to_str().unwrap(), "--port-offset", &off.to_string()],
     );
     wait_for_port(2525 + off, &mut child);
 
     // it created its files with the private modes
     assert_eq!(mode_of(&data), 0o700);
-    assert_eq!(mode_of(&data.join("meta.sqlite")), 0o600);
     assert!(data.join("blobs").join(rusty_store::BLOB_ROOT_MARKER).exists());
 
     // an SMTP banner on the dev port, an IMAP banner on the IMAP dev port
@@ -136,19 +148,17 @@ fn rusty_d_dev_starts_serves_and_exits_zero_on_sigterm() {
     line.clear();
     s.read_line(&mut line).unwrap();
     assert!(line.starts_with("421 "), "{line}");
-    // WAL folded away
-    let wal = data.join("meta.sqlite-wal");
-    assert_eq!(std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0), 0);
 }
 
-// backend-neutral: process lifecycle of the binary
-#[test]
-fn sigint_also_ends_with_exit_zero_and_logs_json_when_asked() {
+// backend-neutral: process lifecycle of the binary over one Postgres database
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sigint_also_ends_with_exit_zero_and_logs_json_when_asked() {
     let tmp = private_tmp();
     let data = tmp.path().join("data");
     let off = offset() + 1;
-    let mut child = spawn(
-        Path::new(BIN),
+    let pg = pg_dev().await;
+    let mut child = spawn_dev(
+        &pg,
         &["d", "--dev", "--data-dir", data.to_str().unwrap(), "--port-offset", &off.to_string(), "--log-format", "json"],
     );
     wait_for_port(2525 + off, &mut child);
@@ -242,7 +252,7 @@ fn leaf_via_tls(port: u16) -> Vec<u8> {
     conn.peer_certificates().unwrap()[0].as_ref().to_vec()
 }
 
-// backend-neutral: certificate reload of the production profile; storage is not involved
+// backend-neutral: certificate reload of the production profile over one Postgres database
 #[test]
 fn sighup_reloads_the_certificate_and_a_bad_reload_keeps_the_old_one() {
     use std::os::unix::fs::PermissionsExt;
@@ -252,6 +262,7 @@ fn sighup_reloads_the_certificate_and_a_bad_reload_keeps_the_old_one() {
     std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700)).unwrap();
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     rt.block_on(rusty_store::FsBlobStore::init(data.join("blobs"))).unwrap();
+    let pg = rt.block_on(pg_dev());
 
     let mk = |name: &str| {
         let ck = rcgen::generate_simple_self_signed(vec![name.to_string()]).unwrap();
@@ -275,12 +286,14 @@ fn sighup_reloads_the_certificate_and_a_bad_reload_keeps_the_old_one() {
     std::fs::write(
         &conf,
         format!(
-            "database_path = \"{db}\"\nblob_dir = \"{blobs}\"\nhostname = \"mail.example.test\"\n\
+            "blob_dir = \"{blobs}\"\nhostname = \"mail.example.test\"\n\
              [tls]\ncert_file = \"{cert}\"\nkey_file = \"{key}\"\n\
              [smtp]\nlisten_25 = \"127.0.0.1:{p25}\"\nlisten_587 = \"\"\nlisten_465 = \"\"\n\
              [imap]\nlisten_143 = \"\"\nlisten_993 = \"127.0.0.1:{p993}\"\n\
-             [limits]\nshutdown_grace_secs = 2\n",
-            db = data.join("meta.sqlite").display(),
+             [limits]\nshutdown_grace_secs = 2\n\
+             [store]\nurl = \"{pgurl}\"\npassword_file = \"{pgpw}\"\nsslmode = \"disable\"\ninsecure_allow_unverified_tls = true\n",
+            pgurl = pg.url,
+            pgpw = pg.password_file().display(),
             blobs = data.join("blobs").display(),
             cert = cert.display(),
             key = key.display(),
@@ -335,11 +348,12 @@ fn healthcheck_and_version_arguments() {
     assert!(matches!(parse_args(&os(&["rusty", "-V"])), Ok(Invocation::Version)));
 }
 
-// backend-neutral: process behaviour of the probe over the default SQLite dev store
-#[test]
-fn healthcheck_is_ok_against_a_running_daemon_and_fails_when_nothing_listens() {
+// backend-neutral: process behaviour of the probe against a daemon over one Postgres database
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn healthcheck_is_ok_against_a_running_daemon_and_fails_when_nothing_listens() {
     let tmp = private_tmp();
     let data = tmp.path().join("data");
+    let pg = pg_dev().await;
     let off = offset() + 2;
     let off_s = off.to_string();
     let hc = |off: &str| {
@@ -350,7 +364,7 @@ fn healthcheck_is_ok_against_a_running_daemon_and_fails_when_nothing_listens() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("unhealthy"), "{out:?}");
 
-    let mut child = spawn(Path::new(BIN), &["d", "--dev", "--data-dir", data.to_str().unwrap(), "--port-offset", &off_s]);
+    let mut child = spawn_dev(&pg, &["d", "--dev", "--data-dir", data.to_str().unwrap(), "--port-offset", &off_s]);
     wait_for_port(2525 + off, &mut child);
     wait_for_port(9993 + off, &mut child);
     let out = hc(&off_s);

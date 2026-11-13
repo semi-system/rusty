@@ -54,8 +54,6 @@ pub enum Command {
 pub struct Parsed {
     pub source: Source,
     pub json: bool,
-    /// `--create`: the database may be created if it does not exist (never implicit).
-    pub create: bool,
     pub command: Command,
 }
 
@@ -79,7 +77,7 @@ impl std::error::Error for UsageError {}
 
 pub const DEFAULT_SELECTOR: &str = "rusty";
 
-pub const USAGE: &str = "usage: rustyctl [--config FILE | --dev [--data-dir DIR]] [--json] [--create] <command>\n\
+pub const USAGE: &str = "usage: rustyctl [--config FILE | --dev [--data-dir DIR]] [--json] <command>\n\
 \n\
   domain add <name> | list | disable <name> | enable <name>\n\
   account add <addr> [--password-stdin | --prompt]\n\
@@ -110,7 +108,6 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
     let mut stdin = false;
     let mut selector: Option<String> = None;
     let mut help = false;
-    let mut create = false;
     let mut without_roles = false;
     let mut words: Vec<&str> = Vec::new();
 
@@ -118,7 +115,6 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--json" => json = true,
-            "--create" => create = true,
             "--without-roles" => without_roles = true,
             "--dev" => dev = true,
             "--prompt" => prompt = true,
@@ -153,7 +149,7 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         _ => PasswordSource::None,
     };
 
-    let done = |command| Ok(Parsed { source: source.clone(), json, create, command });
+    let done = |command| Ok(Parsed { source: source.clone(), json, command });
     if help || words.first() == Some(&"help") {
         return done(Command::Help);
     }

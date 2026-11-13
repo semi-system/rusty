@@ -53,7 +53,7 @@ judges() {
   local s=(-p rusty-store --features "$FS" --test mailbox_conformance --test jobs_conformance --test gc_conformance)
   local d=(-p rusty-store -p rusty-directory --features "$F" --test mailbox_conformance --test jobs_conformance --test gc_conformance --test directory_conformance)
   case "$1" in
-    D01*|D03*|D05*|D06*|D07*|D11*|D12*) printf '%s\n' "${d[@]}" -- --skip the_committed_mutation_table_lists_every_dialect_mutation ;;
+    D01*|D03*|D05*|D07*|D11*|D12*) printf '%s\n' "${d[@]}" -- --skip the_committed_mutation_table_lists_every_dialect_mutation ;;
     D09*|R01*) printf '%s\n' "${s[@]}" --test pg_mailbox_concurrency ;;
     R02*|R03*|R04*|R05*|R06*) printf '%s\n' "${s[@]}" --test pg_jobs_gc_concurrency ;;
     R08*) printf '%s\n' "${s[@]}" --test query_shape ;;

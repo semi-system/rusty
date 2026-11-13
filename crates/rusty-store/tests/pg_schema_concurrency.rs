@@ -1,6 +1,5 @@
 //! Two-session tests for invariants that must hold under concurrent writers. SQLite's single
 //! writer made these impossible; on Postgres the schema itself has to serialize them.
-#![cfg(feature = "postgres")]
 
 mod common;
 

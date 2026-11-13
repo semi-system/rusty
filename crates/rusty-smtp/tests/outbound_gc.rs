@@ -42,7 +42,7 @@ async fn an_unreferenced_queued_body_is_collected_after_the_grace_window() {
 // backend-neutral: blob store and GC only, any backend gives the reference-free orphan rule
 #[tokio::test]
 async fn with_the_validated_grace_the_body_survives_the_whole_retry_window() {
-    let cfg = StartupConfig::from_toml_str("database_path = \"/a/db\"\nblob_dir = \"/a/b\"\n").unwrap();
+    let cfg = StartupConfig::from_toml_str("blob_dir = \"/a/b\"\nstore = { url = \"postgres://rusty_app@db.internal/rusty\", password_file = \"/run/secrets/pg\" }\n").unwrap();
     assert!(cfg.gc_grace_seconds >= cfg.outbound.max_age_secs + DAY);
     // Day 5: the last retry and the DSN still find the body (the DSN quotes the original headers).
     assert!(gc_run(cfg.gc_grace_seconds, 5).await);

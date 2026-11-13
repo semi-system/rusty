@@ -1,4 +1,3 @@
-#![cfg(feature = "postgres")]
 //! The per-mailbox in-process write queue and the pool policy (U11, PG8 decisions 1 and 2).
 
 mod common;

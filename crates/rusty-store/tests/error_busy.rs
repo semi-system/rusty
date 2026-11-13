@@ -28,7 +28,6 @@ fn pool_timeout_and_closed_are_busy_other_io_is_storage() {
     assert!(matches!(map_db_error(io), Error::Storage { .. }));
 }
 
-#[cfg(feature = "postgres")]
 mod pg {
     use std::sync::Arc;
     use std::time::Duration;

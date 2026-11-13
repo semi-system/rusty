@@ -6,7 +6,7 @@ use rusty_core::Error;
 use std::net::SocketAddr;
 use std::path::Path;
 
-const BASE: &str = "database_path = \"/a/db.sqlite\"\nblob_dir = \"/a/blobs\"\n";
+const BASE: &str = "blob_dir = \"/a/blobs\"\nstore = { url = \"postgres://rusty_app@db.internal:5432/rusty\", password_file = \"/run/secrets/pg\" }\n";
 
 fn with(extra: &str) -> rusty_core::Result<StartupConfig> {
     StartupConfig::from_toml_str(&format!("{BASE}{extra}\n"))
@@ -145,7 +145,6 @@ fn production_without_cert_and_without_dev_flag_refuses_authenticated_listeners(
 #[test]
 fn dev_profile_uses_high_ports_on_loopback_and_the_dev_cert() {
     let c = StartupConfig::dev(Path::new("/tmp/rusty-dev"));
-    assert_eq!(c.database_path, Path::new("/tmp/rusty-dev/meta.sqlite"));
     assert_eq!(c.blob_dir, Path::new("/tmp/rusty-dev/blobs"));
     assert_eq!(c.smtp.listen_25.addr(), Some(addr("127.0.0.1:2525")));
     assert_eq!(c.smtp.listen_587.addr(), Some(addr("127.0.0.1:5587")));

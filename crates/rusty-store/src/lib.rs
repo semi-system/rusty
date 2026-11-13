@@ -2,38 +2,32 @@
 
 mod blob;
 mod dns;
+mod error_map;
 mod gc;
 mod jobs;
 mod mailbox;
+mod migrate;
+mod pg;
+mod pg_queue;
 mod store;
 pub mod repo;
 #[cfg(feature = "mutation-testing")]
 pub mod mutation;
 #[cfg(feature = "test-fixtures")]
 pub mod fixtures;
-#[cfg(feature = "postgres")]
-mod migrate;
-#[cfg(feature = "postgres")]
-mod pg;
-#[cfg(feature = "postgres")]
-mod pg_queue;
-mod sqlite;
 
 pub use blob::{
     BlobEntry, BlobStore, FsBlobStore, GcLock, HealReport, BLOB_ROOT_MARKER, GC_LOCK_FILE,
     QUARANTINE_SUFFIX,
 };
 pub use gc::{
-    collect_blobs, collect_blobs_at, Gc, purge_capabilities, purge_capabilities_at,
-    purge_capabilities_default, purge_deleted, purge_deliveries, purge_deliveries_at,
-    purge_deliveries_default, GcReport, PurgeReport, CAPABILITY_RETENTION_SECS, DEFAULT_GC_GRACE,
+    Gc, GcReport, PurgeReport, CAPABILITY_RETENTION_SECS, DEFAULT_GC_GRACE,
     DELIVERY_RETENTION_SECS, GC_BATCH, MAX_GC_ERRORS, MIN_GC_GRACE, PURGE_BATCH,
 };
-#[cfg(feature = "test-knobs")]
-pub use gc::collect_blobs_with_db_clock;
 pub use dns::{
     DnsStore, OwnershipToken, TokenVerifier, DNS_EVENTS_PER_DOMAIN, MAX_DNS_EVENT_PAGE, MAX_RECORDS_PER_DOMAIN,
 };
+pub use error_map::map_db_error;
 pub use jobs::{
     ClaimedJob, JobQueue, DEFAULT_JOB_ATTEMPTS, JOB_RETENTION_SECS, MAX_CLAIM_KINDS,
     MAX_JOB_ATTEMPTS, MAX_JOB_KIND_BYTES, MAX_JOB_PAYLOAD_BYTES, MAX_LAST_ERROR_BYTES,
@@ -47,17 +41,12 @@ pub use mailbox::{
     MAX_FOLDER_NAME_BYTES, MAX_KEYWORDS_PER_MESSAGE, MAX_KEYWORD_BYTES, MAX_PAGE,
     MAX_SUPPLIED_TIME,
 };
-#[cfg(feature = "postgres")]
 pub use migrate::{
     embedded_versions, migrate_postgres, schema_status, MigrationReport, SchemaState, SchemaStatus, APP_ROLE,
     MIGRATOR_ROLE, RO_ROLE,
 };
-#[cfg(feature = "postgres")]
 pub use pg::{PgPassword, PgLimits, PgSecurity, PgStore};
-#[cfg(feature = "postgres")]
 pub use pg_queue::{MailboxPermit, MailboxQueue, STRIPES};
 pub use jobs::BatchSpec;
 pub use repo::{FlagUpdate, FolderCounts, FolderInfo, JobFence, MessageDetail, OwnerLimits, PurgeBatch, RawRef};
 pub use store::{Repos, Store, StoreConfig};
-pub use sqlite::{map_db_error, SqliteStore, DEFAULT_BUSY_TIMEOUT};
-

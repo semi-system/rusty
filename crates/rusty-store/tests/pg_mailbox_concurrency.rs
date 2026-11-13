@@ -1,6 +1,5 @@
 //! PG2 spike: Postgres-only behaviour that SQLite cannot have (deadlocks between mailboxes,
 //! retry classification). Requires `RUSTY_TEST_PG_URL` (loud SKIPPED notice otherwise).
-#![cfg(feature = "postgres")]
 
 mod common;
 

@@ -520,10 +520,6 @@ async fn running_job(b: &Backend, epoch: i64) -> i64 {
 
 async fn job_state(b: &Backend, id: i64) -> String {
     let sql = "SELECT state FROM jobs WHERE id = ";
-    if let Some(s) = &b.sqlite {
-        return sqlx::query_scalar(&format!("{sql}{id}")).fetch_one(s.pool()).await.unwrap();
-    }
-    #[cfg(feature = "postgres")]
     if let Some((p, _)) = &b.pg {
         return sqlx::query_scalar(&format!("{sql}{id}")).fetch_one(p.pool()).await.unwrap();
     }
@@ -1043,7 +1039,7 @@ async fn caller_supplied_dates_are_verbatim_and_bounded() {
             .await
             .unwrap();
         // No `at`: the database clock.
-        let db_now = scalar(&b, if b.sqlite.is_some() { "SELECT unixepoch()" } else { "SELECT rs_now()" }).await;
+        let db_now = scalar(&b, "SELECT rs_now()").await;
         let m = mb.append(INBOX, raw("now", None), Flags::default()).await.unwrap();
         let d = mb.get_message(m.id).await.unwrap().summary.internal_date;
         assert!((d - db_now).abs() <= 2, "{n}: {d} vs {db_now}");

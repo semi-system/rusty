@@ -57,7 +57,7 @@ async fn an_exhausted_pool_gives_451_not_a_hang() {
         let (alice, _) = b.seed().await;
         let s = start(&b, Opts::default()).await;
         // SQLite has no pool to exhaust (its writer lock is the test above).
-        let Some(hold) = b.fx.hold_pool(2).await else { return };
+        let hold = b.fx.hold_pool(2).await;
         let (r, took) = send(s.addr).await;
         assert!(r.starts_with("451 4.3.0"), "{r}");
         assert!(took < Duration::from_secs(5), "{took:?}");

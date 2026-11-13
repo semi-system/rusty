@@ -64,42 +64,24 @@ async fn only_hash_is_stored() {
         .unwrap();
     let t = cap.expose_secret().to_string();
     let t_ascii_hex: String = t.bytes().map(|b| format!("{b:02x}")).collect();
-    let tables = if b.is_sqlite() {
-        b.strings(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-            &[],
-        )
-        .await
-    } else {
-        b.strings(
+    let tables = b.strings(
             "SELECT table_name::text FROM information_schema.tables \
              WHERE table_schema = 'public' AND table_type = 'BASE TABLE'",
             &[],
         )
-        .await
-    };
+        .await;
     assert!(tables.iter().any(|n| n == "capabilities"));
     let mut scanned = 0;
     for table in &tables {
-        let cols = if b.is_sqlite() {
-            b.strings(&format!("SELECT name FROM pragma_table_info('{table}')"), &[])
-                .await
-        } else {
-            b.strings(
+        let cols = b.strings(
                 "SELECT column_name::text FROM information_schema.columns \
                  WHERE table_schema = 'public' AND table_name = ?1",
                 &[Bind::S(table)],
             )
-            .await
-        };
+            .await;
         for col in cols {
             scanned += 1;
-            let sql = if b.is_sqlite() {
-                format!(
-                    "SELECT count(*) FROM \"{table}\" WHERE instr(CAST(\"{col}\" AS TEXT), ?1) > 0 \
-                     OR instr(lower(hex(\"{col}\")), ?1) > 0 OR instr(lower(hex(\"{col}\")), ?2) > 0"
-                )
-            } else {
+            let sql = {
                 // bytea::text is '\x' + lowercase hex, so the text and hex forms are both covered.
                 format!(
                     "SELECT count(*) FROM \"{table}\" WHERE position(?1 in \"{col}\"::text) > 0 \

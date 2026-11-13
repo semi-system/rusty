@@ -36,12 +36,11 @@ async fn a_locked_or_exhausted_database_gives_no_unavailable_not_a_hang() {
         assert!(took < Duration::from_secs(5), "{}: {took:?}", b.name);
         drop(lock);
 
-        if let Some(hold) = fx.hold_pool(2).await {
-            let (r, took) = append(&mut c, "a2", "pool").await;
-            assert!(r.starts_with("a2 NO [UNAVAILABLE]"), "{r}");
-            assert!(took < Duration::from_secs(5), "{took:?}");
-            drop(hold);
-        }
+        let hold = fx.hold_pool(2).await;
+        let (r, took) = append(&mut c, "a2", "pool").await;
+        assert!(r.starts_with("a2 NO [UNAVAILABLE]"), "{r}");
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        drop(hold);
         let (r, _) = append(&mut c, "a3", "free").await;
         assert!(r.starts_with("a3 OK"), "{}: {r}", b.name);
     })

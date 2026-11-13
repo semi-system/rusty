@@ -10,7 +10,6 @@ use rusty_directory::Directory;
 use rusty_store::fixtures::Fixtures;
 use rusty_store::{Store, StoreConfig};
 
-#[cfg(feature = "postgres")]
 use rusty_store::fixtures::pg_db as pg;
 
 pub struct Backend {
@@ -19,7 +18,6 @@ pub struct Backend {
     pub store: Store,
     pub fx: Fixtures,
     pub tmp: tempfile::TempDir,
-    #[cfg(feature = "postgres")]
     _db: Option<pg::PgTestDb>,
 }
 
@@ -73,22 +71,6 @@ impl Backend {
     }
 }
 
-pub async fn sqlite_backend() -> Backend {
-    let tmp = tempfile::tempdir().unwrap();
-    let url = format!("sqlite://{}", tmp.path().join("meta.sqlite").display());
-    let store = Store::open(StoreConfig::sqlite(url)).await.unwrap();
-    Backend {
-        name: "sqlite",
-        dir: Directory::with_repo(store.repos().directory.clone()),
-        fx: Fixtures::of(&store),
-        store,
-        tmp,
-        #[cfg(feature = "postgres")]
-        _db: None,
-    }
-}
-
-#[cfg(feature = "postgres")]
 pub async fn pg_backend() -> Option<Backend> {
     let url = pg::pg_admin_url()?;
     let db = pg::PgTestDb::create(&url).await;

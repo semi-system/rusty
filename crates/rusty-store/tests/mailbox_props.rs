@@ -217,7 +217,6 @@ fn pg_cases() -> u32 {
         .unwrap_or(64)
 }
 
-#[cfg(feature = "postgres")]
 mod pg {
     use super::*;
     use common::backends::{acct, pg_backend};

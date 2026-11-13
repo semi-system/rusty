@@ -353,27 +353,18 @@ async fn create_account_rolls_back_on_failure() {
     d.create_account("alice", dom, None, None).await.unwrap();
     assert!(d.create_account("alice", dom, None, None).await.is_err());
     // Fail on the LAST folder insert, after account, mailbox and 4 folders were inserted.
-    if b.is_sqlite() {
-        b.run(
-            "CREATE TRIGGER t BEFORE INSERT ON folders WHEN NEW.role='spam' \
-             BEGIN SELECT RAISE(ABORT,'boom'); END;",
-            &[],
-        )
-        .await;
-    } else {
-        b.run(
-            "CREATE FUNCTION t_fn() RETURNS trigger LANGUAGE plpgsql AS \
-             $$ BEGIN RAISE EXCEPTION 'boom'; END $$",
-            &[],
-        )
-        .await;
-        b.run(
-            "CREATE TRIGGER t BEFORE INSERT ON folders FOR EACH ROW WHEN (NEW.role = 'spam') \
-             EXECUTE FUNCTION t_fn()",
-            &[],
-        )
-        .await;
-    }
+    b.run(
+        "CREATE FUNCTION t_fn() RETURNS trigger LANGUAGE plpgsql AS \
+         $$ BEGIN RAISE EXCEPTION 'boom'; END $$",
+        &[],
+    )
+    .await;
+    b.run(
+        "CREATE TRIGGER t BEFORE INSERT ON folders FOR EACH ROW WHEN (NEW.role = 'spam') \
+         EXECUTE FUNCTION t_fn()",
+        &[],
+    )
+    .await;
     assert!(d.create_account("bob", dom, None, None).await.is_err());
     assert_eq!(count(&b, "accounts").await, 1);
     assert_eq!(count(&b, "mailboxes").await, 1);
@@ -383,11 +374,7 @@ async fn create_account_rolls_back_on_failure() {
         Err(Error::NotFound(_))
     ));
     // Positive control.
-    if b.is_sqlite() {
-        b.run("DROP TRIGGER t", &[]).await;
-    } else {
-        b.run("DROP TRIGGER t ON folders", &[]).await;
-    }
+    b.run("DROP TRIGGER t ON folders", &[]).await;
     d.create_account("bob", dom, None, None).await.unwrap();
     assert_eq!(count(&b, "accounts").await, 2);
     assert_eq!(count(&b, "folders").await, 10);

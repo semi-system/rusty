@@ -1,2 +1,4 @@
-database_path = "/a/db.sqlite"
 blob_dir = "/a/blobs"
+[store]
+url = "postgres://rusty_app@db.internal:5432/rusty"
+password_file = "/run/secrets/pg"

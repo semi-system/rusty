@@ -432,28 +432,9 @@ async fn never_deletes_referenced_blob_even_if_zero_since_is_old() {
         let p = blob_path(&root(&e), &h);
         set_mtime(&p, SystemTime::now() - 30 * DAY);
 
-        // corrupt: referenced, refcount > 0, but zero_since is ancient.
-        // KNOWN_DIFFS D1: Postgres refuses this row (CHECK blobs_zero_since_consistent), pinned by
-        // `known_diffs::postgres_refuses_zero_since_on_a_referenced_blob`; SQLite accepts it, so the
-        // SQLite side proves GC does not trust zero_since alone.
+        // A referenced blob with an ancient zero_since cannot exist: the CHECK `blobs_zero_since_consistent`
+        // refuses the row (pinned by the catalog snapshot and pg_schema_cases).
         let far = SystemTime::now() + 365 * DAY;
-        if e.is_sqlite() {
-            exec(
-                &e,
-                &format!(
-                    "UPDATE blobs SET zero_since = 0 WHERE hash={}",
-                    hash_lit(&e.b, h.as_str())
-                ),
-            )
-            .await;
-            let r =
-                e.b.gc()
-                    .collect_blobs_at(e.blobs.as_ref(), Duration::ZERO, far)
-                    .await
-                    .unwrap();
-            assert_eq!(counts(&r), (0, 0, 0));
-            assert!(r.errors.is_empty(), "{:?}", r.errors);
-        }
 
         // worse: refcount forced to 0 while a message still references it -> the FK refuses
         exec(

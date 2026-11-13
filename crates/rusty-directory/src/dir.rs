@@ -2,12 +2,10 @@ use std::fmt;
 use std::sync::Arc;
 
 use rusty_core::{AccountId, DomainId, Error, ListId, MailboxId, PlanId, Result};
-use rusty_store::repo::sqlite::SqliteRepo;
 use rusty_store::repo::{
     AccountInfo, AccountStatus, AliasInfo, DirectoryRepo, DomainInfo, DomainStatus, ListMember, NewAccount,
     Resolution, GLOBAL_PLAN,
 };
-use rusty_store::SqliteStore;
 
 use crate::auth::hash_password;
 use crate::config::ensure_object;
@@ -150,14 +148,7 @@ pub fn display_domain(punycode: &str) -> String {
 }
 
 impl Directory {
-    /// A directory over the SQLite backend.
-    pub fn new(store: SqliteStore) -> Directory {
-        Directory {
-            repo: Arc::new(SqliteRepo::new(store)),
-        }
-    }
-
-    /// A directory over any backend's repository (`Store::open(..)?.repos().directory`).
+    /// A directory over a repository (`Store::open(..)?.repos().directory`).
     pub fn with_repo(repo: Arc<dyn DirectoryRepo>) -> Directory {
         Directory { repo }
     }

@@ -3,17 +3,21 @@
 #   - `rusty --version` runs; the image runs as a numeric non-root user; there is no shell;
 #   - the binary is statically linked; a HEALTHCHECK is configured; OCI labels are present;
 #   - a production start without a config exits 1 (fail closed) on a read-only root filesystem;
-#   - with `dev` (an image built with --build-arg DEV_CERT=1): the daemon runs with --read-only,
-#     all capabilities dropped, and `rusty healthcheck` inside the container reports healthy.
+#   - with `dev` (an image built with --build-arg DEV_CERT=1): next to a throw-away Postgres (image pinned in
+#     deploy/images.lock, on a private Docker network) the schema is built with `rusty ctl --dev db migrate`, then
+#     the daemon runs with --read-only, all capabilities dropped, and `rusty healthcheck` inside the container
+#     reports healthy.
 # Needs Docker on the host; prints the image size at the end.
 set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE="${1:?usage: check-image.sh IMAGE [dev]}"
 MODE="${2:-prod}"
 NAME="rusty-check-$$"
 TMPD="$(mktemp -d)"
 cleanup() {
-  docker rm -f "$NAME" >/dev/null 2>&1 || true
+  docker rm -f "$NAME" "$NAME-pg" >/dev/null 2>&1 || true
   docker volume rm -f "$NAME-data" >/dev/null 2>&1 || true
+  docker network rm "$NAME-net" >/dev/null 2>&1 || true
   rm -rf "$TMPD"
 }
 trap cleanup EXIT
@@ -59,9 +63,29 @@ docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges "$IM
 ok "production start without a config fails closed (exit 1) on a read-only root"
 
 if [ "$MODE" = dev ]; then
+  PGIMG="$(awk '$1 == "postgres:18" { print $2 }' "$ROOT/deploy/images.lock")"
+  [ -n "$PGIMG" ] || die "no postgres image in deploy/images.lock"
+  PGPW="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+  docker network create "$NAME-net" >/dev/null
+  docker run -d --name "$NAME-pg" --network "$NAME-net" --network-alias pg -e POSTGRES_USER=rusty -e POSTGRES_DB=rusty \
+    -e POSTGRES_PASSWORD="$PGPW" "$PGIMG" -c fsync=off >/dev/null
+  pgup=0
+  for _ in $(seq 1 60); do
+    if docker exec "$NAME-pg" pg_isready -h 127.0.0.1 -U rusty -d rusty >/dev/null 2>&1; then pgup=1; break; fi
+    sleep 1
+  done
+  [ "$pgup" = 1 ] || { docker logs "$NAME-pg" >&2; die "the test Postgres never became ready"; }
+  sleep 2
+  ok "throw-away Postgres is up"
+  # The dev profile names its database in the environment; the private link has no TLS (explicit, warned at start).
+  DEVENV=(-e RUSTY_DEV_PG_URL=postgres://rusty@pg:5432/rusty -e RUSTY_DEV_PG_PASSWORD="$PGPW" -e RUSTY_DEV_PG_SSLMODE=disable)
   docker volume create "$NAME-data" >/dev/null
-  docker run -d --name "$NAME" --read-only --cap-drop ALL --security-opt no-new-privileges \
-    -v "$NAME-data:/var/lib/rusty" "$IMAGE" d --dev --data-dir /var/lib/rusty/dev --bind 0.0.0.0 >/dev/null
+  docker run --rm --network "$NAME-net" --read-only --cap-drop ALL --security-opt no-new-privileges \
+    -v "$NAME-data:/var/lib/rusty" "${DEVENV[@]}" "$IMAGE" ctl --dev --data-dir /var/lib/rusty/dev db migrate --without-roles >/dev/null \
+    || die "rusty ctl db migrate failed"
+  ok "schema built with rusty ctl --dev db migrate"
+  docker run -d --name "$NAME" --network "$NAME-net" --read-only --cap-drop ALL --security-opt no-new-privileges \
+    -v "$NAME-data:/var/lib/rusty" "${DEVENV[@]}" "$IMAGE" d --dev --data-dir /var/lib/rusty/dev --bind 0.0.0.0 >/dev/null
   up=0
   for _ in $(seq 1 60); do
     if docker exec "$NAME" /usr/local/bin/rusty healthcheck --dev --data-dir /var/lib/rusty/dev >/dev/null 2>&1; then up=1; break; fi

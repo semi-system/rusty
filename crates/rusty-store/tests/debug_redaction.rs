@@ -3,7 +3,6 @@
 use rusty_store::repo::{AuthRow, NewAccount};
 use rusty_core::DomainId;
 
-#[cfg(feature = "postgres")]
 // backend-neutral: pure unit test of Debug output, no database
 #[test]
 fn postgres_store_config_debug_has_no_password() {

@@ -3,9 +3,7 @@
 //! Postgres connection policy.
 //!
 //! Rules (fail closed, error texts never echo values):
-//! * `backend = "sqlite"` (default) uses the top-level `database_path`; every Postgres-only key is
-//!   refused so a half-converted file cannot be misread.
-//! * `backend = "postgres"` needs `url` WITHOUT a password and without query parameters
+//! * `url` is required WITHOUT a password and without query parameters
 //!   (`postgres://rusty_app@db.internal:5432/rusty`); the password comes from `password_file`
 //!   (a 0600 file read through the `SecretSource`). TLS is configured by `sslmode` and
 //!   `ca_bundle`, never by URL parameters.
@@ -21,14 +19,6 @@ use serde::Deserialize;
 
 use crate::config::Profile;
 use crate::{Error, Result};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum StoreBackend {
-    #[default]
-    Sqlite,
-    Postgres,
-}
 
 /// TLS mode of the database connection (the libpq names).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
@@ -53,8 +43,6 @@ const MAX_TIMEOUT_MS: u64 = 3_600_000;
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StoreSection {
-    #[serde(default)]
-    pub backend: StoreBackend,
     /// `postgres://user@host:port/database`: no password, no query parameters.
     pub url: Option<String>,
     /// File holding the password of the runtime role (0600, read through the `SecretSource`).
@@ -86,6 +74,10 @@ pub struct StoreSection {
     /// Explicit, loud opt-out of certificate verification towards a non-loopback host.
     #[serde(default)]
     pub insecure_allow_unverified_tls: bool,
+    /// Dev profile only: read the password from the environment variable `RUSTY_DEV_PG_PASSWORD` (the daemon
+    /// and `rustyctl` do that in `storecfg`). Never deserialized, so a configuration file cannot turn it on.
+    #[serde(skip)]
+    pub password_from_dev_env: bool,
 }
 
 fn d_pool() -> u32 {
@@ -107,7 +99,6 @@ fn d_idle_tx() -> u64 {
 impl Default for StoreSection {
     fn default() -> Self {
         StoreSection {
-            backend: StoreBackend::Sqlite,
             url: None,
             password_file: None,
             migrator_user: None,
@@ -120,6 +111,7 @@ impl Default for StoreSection {
             sslmode: SslMode::default(),
             ca_bundle: None,
             insecure_allow_unverified_tls: false,
+            password_from_dev_env: false,
         }
     }
 }
@@ -206,16 +198,9 @@ pub fn is_loopback_host(host: &str) -> bool {
 }
 
 impl StoreSection {
-    pub fn is_postgres(&self) -> bool {
-        self.backend == StoreBackend::Postgres
-    }
-
-    /// The endpoint of a Postgres store (`None` for SQLite).
+    /// The endpoint of the database (`None` when `url` is not set).
     pub fn endpoint(&self) -> Option<Result<PgEndpoint>> {
-        match (self.backend, &self.url) {
-            (StoreBackend::Postgres, Some(u)) => Some(parse_pg_url(u)),
-            _ => None,
-        }
+        self.url.as_deref().map(parse_pg_url)
     }
 
     pub fn acquire_timeout(&self) -> Duration {
@@ -233,31 +218,7 @@ impl StoreSection {
 
     /// File-level checks, independent of the profile.
     pub(crate) fn validate(&self) -> Result<()> {
-        match self.backend {
-            StoreBackend::Sqlite => {
-                let pg_only = self.url.is_some()
-                    || self.password_file.is_some()
-                    || self.migrator_user.is_some()
-                    || self.migrator_password_file.is_some()
-                    || self.ca_bundle.is_some()
-                    || self.insecure_allow_unverified_tls
-                    || self.sslmode != SslMode::default()
-                    || self.pool_size != d_pool()
-                    || self.acquire_timeout_ms != d_acquire()
-                    || self.lock_timeout_ms != d_lock()
-                    || self.statement_timeout_ms != d_statement()
-                    || self.idle_in_transaction_timeout_ms != d_idle_tx();
-                if pg_only {
-                    return Err(invalid("[store] keys other than backend apply to backend = \"postgres\" only"));
-                }
-                Ok(())
-            }
-            StoreBackend::Postgres => self.validate_postgres(),
-        }
-    }
-
-    fn validate_postgres(&self) -> Result<()> {
-        let url = self.url.as_deref().ok_or_else(|| invalid("[store] url is required for backend = \"postgres\""))?;
+        let url = self.url.as_deref().ok_or_else(|| invalid("[store] url is required"))?;
         parse_pg_url(url)?;
         for (p, what) in [
             (&self.password_file, "password_file"),
@@ -307,9 +268,6 @@ impl StoreSection {
     /// Start-up rules that need the profile and the number of running services. Returns the
     /// warning to log, if any (an explicit insecure override).
     pub fn check_startup(&self, profile: Profile, services: usize) -> Result<Option<&'static str>> {
-        if self.backend != StoreBackend::Postgres {
-            return Ok(None);
-        }
         let ep = parse_pg_url(self.url.as_deref().unwrap_or_default())?;
         if self.pool_size < Self::pool_floor(services) {
             return Err(invalid("[store] pool_size is below the floor for the enabled services (services + 4)"));

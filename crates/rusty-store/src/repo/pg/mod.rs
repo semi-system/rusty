@@ -220,5 +220,5 @@ async fn lock_blobs(
     }
     // A GC that keeps deleting the row between insert and lock is transient contention, not a
     // storage fault: Busy is retryable by the caller.
-    Err(crate::sqlite::busy("blob row contention").into())
+    Err(crate::error_map::busy("blob row contention").into())
 }

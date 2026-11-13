@@ -77,9 +77,8 @@ use std::sync::Arc;
 
 use crate::gc::PURGE_BATCH;
 use crate::repo::jobs::{BatchJob, BatchRequest, ClaimRequest, NewJob, OwnerLimits};
-use crate::repo::{JobFence, JobRepo, sqlite::SqliteRepo};
+use crate::repo::{JobFence, JobRepo};
 use crate::mailbox::check_supplied_time;
-use crate::SqliteStore;
 
 /// Largest serialized job payload, in bytes.
 pub const MAX_JOB_PAYLOAD_BYTES: usize = 65536;
@@ -275,12 +274,7 @@ fn serialize_payload(payload: &Value) -> Result<String> {
 }
 
 impl JobQueue {
-    /// A queue over a SQLite store.
-    pub fn new(store: SqliteStore) -> JobQueue {
-        Self::with_repo(Arc::new(SqliteRepo::new(store)))
-    }
-
-    /// A queue over any backend's [`JobRepo`].
+    /// A queue over a [`JobRepo`] (`Store::repos().jobs`).
     pub fn with_repo(repo: Arc<dyn JobRepo>) -> JobQueue {
         JobQueue {
             repo,
@@ -289,21 +283,7 @@ impl JobQueue {
         }
     }
 
-    /// A queue with smaller pending-job caps (for tests; production uses [`new`](Self::new)).
-    #[doc(hidden)]
-    pub fn with_limits(
-        store: SqliteStore,
-        max_pending_per_domain: u32,
-        max_pending_no_domain: u32,
-    ) -> JobQueue {
-        Self::with_repo_and_limits(
-            Arc::new(SqliteRepo::new(store)),
-            max_pending_per_domain,
-            max_pending_no_domain,
-        )
-    }
-
-    /// [`with_limits`](Self::with_limits) over any backend's repository.
+    /// A queue with smaller pending-job caps (for tests; production uses [`with_repo`](Self::with_repo)).
     #[doc(hidden)]
     pub fn with_repo_and_limits(
         repo: Arc<dyn JobRepo>,
