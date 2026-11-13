@@ -504,32 +504,6 @@ async fn concurrent_reader_never_sees_a_seq_hole() {
     .await;
 }
 
-// ------------------------------------------------------------------ dialect tripwire
-
-/// The shared statements are written with `$N` placeholders. That is only safe because
-/// sqlx-sqlite binds `$N` by NUMBER (plain SQLite would number `$2 - $1` by first appearance
-/// and swap the values). If a sqlx upgrade changes this, the shared SQL must go back to `?N`
-/// for SQLite (and be rewritten for Postgres).
-// backend-neutral: unit test of the SQLite placeholder syntax used by the fixtures
-#[tokio::test]
-async fn sqlite_dollar_placeholders_follow_their_number() {
-    let store = common::mem().await;
-    let v: i64 = sqlx::query_scalar("SELECT $2 - $1")
-        .bind(10i64)
-        .bind(3i64)
-        .fetch_one(store.pool())
-        .await
-        .unwrap();
-    assert_eq!(v, -7, "$1 = 10, $2 = 3, as on Postgres");
-    let v: i64 = sqlx::query_scalar("SELECT $1 * 10 + $2 + $1")
-        .bind(2i64)
-        .bind(5i64)
-        .fetch_one(store.pool())
-        .await
-        .unwrap();
-    assert_eq!(v, 27);
-}
-
 // ------------------------------------------------------------------ job fence
 
 /// A `running` job leased for an hour at epoch `epoch`.

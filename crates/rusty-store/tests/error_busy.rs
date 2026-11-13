@@ -19,38 +19,7 @@ fn assert_fixed_busy(e: &Error) {
     assert!(std::error::Error::source(e).is_none(), "Busy carries no source");
 }
 
-// backend-neutral: error mapping per backend: the sqlite_ tests cover SQLite, the pg module covers Postgres, the rest are pure unit tests
-#[tokio::test]
-async fn sqlite_busy_after_busy_timeout_is_busy() {
-    use std::time::{Duration, Instant};
-    let dir = tempfile::tempdir().unwrap();
-    let url = format!("sqlite://{}", dir.path().join("busy.sqlite").display());
-    let store = rusty_store::SqliteStore::open_with_busy_timeout(&url, Duration::from_millis(150))
-        .await
-        .unwrap();
-    // One writer holds the database write lock; a second `begin_write` waits busy_timeout.
-    let held = store.begin_write().await.unwrap();
-    let started = Instant::now();
-    let err = store.begin_write().await.unwrap_err();
-    assert!(started.elapsed() >= Duration::from_millis(100), "{:?}", started.elapsed());
-    assert_fixed_busy(&err);
-    drop(held);
-    // The lock is free again: no lasting damage.
-    store.begin_write().await.unwrap().rollback().await.unwrap();
-}
-
-// backend-neutral: error mapping per backend: the sqlite_ tests cover SQLite, the pg module covers Postgres, the rest are pure unit tests
-#[tokio::test]
-async fn sqlite_other_errors_stay_storage() {
-    let store = common::mem().await;
-    let err = sqlx::query("SELECT x FROM no_such_table")
-        .execute(store.pool())
-        .await
-        .unwrap_err();
-    assert!(matches!(map_db_error(err), Error::Storage { .. }));
-}
-
-// backend-neutral: error mapping per backend: the sqlite_ tests cover SQLite, the pg module covers Postgres, the rest are pure unit tests
+// backend-neutral: error mapping per backend: the pg module covers Postgres, the rest are pure unit tests
 #[test]
 fn pool_timeout_and_closed_are_busy_other_io_is_storage() {
     assert_fixed_busy(&map_db_error(sqlx::Error::PoolTimedOut));
@@ -102,7 +71,7 @@ mod pg {
         tx
     }
 
-    // backend-neutral: error mapping per backend: the sqlite_ tests cover SQLite, the pg module covers Postgres, the rest are pure unit tests
+    // backend-neutral: error mapping per backend: the pg module covers Postgres, the rest are pure unit tests
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn lock_timeout_on_held_mailbox_lock_is_busy() {
         let Some(admin) = pg_admin_url() else { return };
@@ -132,7 +101,7 @@ mod pg {
     /// D6 (transaction pooling): `lock_timeout` is transaction-local. Inside the write
     /// transaction it has the configured value; once the transaction ended, the same (only)
     /// pooled connection reports the server default, so nothing leaks to the next borrower.
-    // backend-neutral: error mapping per backend: the sqlite_ tests cover SQLite, the pg module covers Postgres, the rest are pure unit tests
+    // backend-neutral: error mapping per backend: the pg module covers Postgres, the rest are pure unit tests
     #[tokio::test]
     async fn lock_timeout_is_transaction_local() {
         let Some(admin) = pg_admin_url() else { return };
@@ -170,7 +139,7 @@ mod pg {
         db.cleanup().await;
     }
 
-    // backend-neutral: error mapping per backend: the sqlite_ tests cover SQLite, the pg module covers Postgres, the rest are pure unit tests
+    // backend-neutral: error mapping per backend: the pg module covers Postgres, the rest are pure unit tests
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn statement_timeout_is_busy() {
         let Some(admin) = pg_admin_url() else { return };
@@ -195,7 +164,7 @@ mod pg {
         db.cleanup().await;
     }
 
-    // backend-neutral: error mapping per backend: the sqlite_ tests cover SQLite, the pg module covers Postgres, the rest are pure unit tests
+    // backend-neutral: error mapping per backend: the pg module covers Postgres, the rest are pure unit tests
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn pool_exhausted_is_busy_with_fixed_message() {
         let Some(admin) = pg_admin_url() else { return };
@@ -231,7 +200,7 @@ mod pg {
         db.cleanup().await;
     }
 
-    // backend-neutral: error mapping per backend: the sqlite_ tests cover SQLite, the pg module covers Postgres, the rest are pure unit tests
+    // backend-neutral: error mapping per backend: the pg module covers Postgres, the rest are pure unit tests
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn closed_pool_is_busy() {
         let Some(admin) = pg_admin_url() else { return };
@@ -243,7 +212,7 @@ mod pg {
         db.cleanup().await;
     }
 
-    // backend-neutral: error mapping per backend: the sqlite_ tests cover SQLite, the pg module covers Postgres, the rest are pure unit tests
+    // backend-neutral: error mapping per backend: the pg module covers Postgres, the rest are pure unit tests
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn five_forced_deadlocks_end_in_busy_and_count_exhausted() {
         use std::sync::atomic::Ordering::Relaxed;
@@ -296,7 +265,7 @@ mod pg {
         .unwrap_err()
     }
 
-    // backend-neutral: error mapping per backend: the sqlite_ tests cover SQLite, the pg module covers Postgres, the rest are pure unit tests
+    // backend-neutral: error mapping per backend: the pg module covers Postgres, the rest are pure unit tests
     #[tokio::test]
     async fn sqlstates_map_by_table_and_unknown_codes_are_storage() {
         let Some(admin) = pg_admin_url() else { return };
@@ -316,7 +285,7 @@ mod pg {
         db.cleanup().await;
     }
 
-    // backend-neutral: error mapping per backend: the sqlite_ tests cover SQLite, the pg module covers Postgres, the rest are pure unit tests
+    // backend-neutral: error mapping per backend: the pg module covers Postgres, the rest are pure unit tests
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn connection_reset_mid_transaction_is_not_retried() {
         use std::sync::atomic::Ordering::Relaxed;
@@ -376,7 +345,7 @@ mod pg {
     /// 22001 are `Invalid`, never `Storage`; 25006 (a write on a read-only server, as after a
     /// failover to a standby) is `Busy`: the statement did not happen and a retry reaches the new
     /// primary, which is what `Busy` promises.
-    // backend-neutral: error mapping per backend: the sqlite_ tests cover SQLite, the pg module covers Postgres, the rest are pure unit tests
+    // backend-neutral: error mapping per backend: the pg module covers Postgres, the rest are pure unit tests
     #[tokio::test]
     async fn unstorable_values_and_a_read_only_server_map_by_sqlstate() {
         let Some(admin) = pg_admin_url() else { return };

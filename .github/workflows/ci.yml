@@ -295,8 +295,23 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    services:
+      postgres:
+        # Same digest as deploy/images.lock (checked by scripts/check-docker-pins.sh).
+        image: postgres@sha256:3a4264520e121176619f54ff867d12774bc81e95e7b84db58d63bccdb6144b81
+        env:
+          POSTGRES_USER: rusty
+          # Throw-away service container on the runner's private network: not a secret.
+          POSTGRES_PASSWORD: ci-throwaway-not-a-secret
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U rusty -d postgres"
+          --health-interval 2s --health-timeout 3s --health-retries 30
     env:
       CC_x86_64_unknown_linux_musl: musl-gcc
+      RUSTY_TEST_PG_URL: postgres://rusty:ci-throwaway-not-a-secret@127.0.0.1:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

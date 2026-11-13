@@ -832,7 +832,7 @@ async fn threads_of(e: &Env) -> Vec<(i64, i64)> {
 }
 
 async fn deliver_equivalence(deleted: Vec<bool>, batches: Vec<Vec<DItem>>) {
-    for_each_env_pair_sampled(4, |a, b| {
+    for_each_env_pair(|a, b| {
         deliver_equivalence_on(a, b, deleted.clone(), batches.clone())
     })
     .await;

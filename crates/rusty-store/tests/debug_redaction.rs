@@ -18,13 +18,6 @@ fn postgres_store_config_debug_has_no_password() {
 
 // backend-neutral: pure unit test of Debug output, no database
 #[test]
-fn sqlite_store_config_debug_is_still_useful() {
-    let cfg = rusty_store::StoreConfig::sqlite("sqlite::memory:");
-    assert!(format!("{cfg:?}").contains("sqlite::memory:"));
-}
-
-// backend-neutral: pure unit test of Debug output, no database
-#[test]
 fn password_hashes_are_not_printed() {
     let phc = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2hoYXNo";
     let row = AuthRow { status: "active".into(), password_hash: Some(phc.into()) };

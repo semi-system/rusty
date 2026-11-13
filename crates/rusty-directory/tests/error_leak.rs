@@ -13,7 +13,7 @@ use bytes::Bytes;
 use rusty_core::{BlobHash, Error, FolderId, FolderRole, MessageId};
 use common::for_each_backend;
 use rusty_directory::{normalize_address, parse_address};
-use rusty_store::SqliteStore;
+use rusty_store::{Store, StoreConfig};
 
 const SECRET: &str = "hunter2-S3CR3T-T0KEN";
 
@@ -83,15 +83,15 @@ fn address_parsers_do_not_echo() {
     assert!(rejected >= 12, "only {rejected} rejections");
 }
 
-// backend-neutral: SQLite-only: SqliteStore::open URL handling; the Postgres connect path is covered by pg_guard.rs
+// backend-neutral: opens no database: every URL here is refused or unreachable (port 1)
 #[tokio::test]
-async fn store_open_does_not_echo_url_or_path() {
+async fn store_open_does_not_echo_url_or_credentials() {
     for url in [
         format!("bogus://{SECRET}"),
-        format!("sqlite:///nonexistent-{SECRET}/dir/meta.sqlite?mode=ro"),
-        format!("sqlite://{SECRET}?unknown_option={SECRET}"),
+        format!("postgres://{SECRET}:{SECRET}@127.0.0.1:1/{SECRET}"),
+        format!("postgres://{SECRET}@[::1/{SECRET}"),
     ] {
-        check_err("SqliteStore::open", SqliteStore::open(&url).await);
+        check_err("Store::open", Store::open(StoreConfig::postgres(url)).await);
     }
 }
 

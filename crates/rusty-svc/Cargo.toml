@@ -28,6 +28,7 @@ rustix = { workspace = true, features = ["process"] }
 rcgen = { workspace = true, features = ["pem"], optional = true }
 
 [dev-dependencies]
+rusty-store = { path = "../rusty-store", features = ["test-fixtures"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
 rcgen = { workspace = true, features = ["pem"] }

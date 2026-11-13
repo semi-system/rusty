@@ -85,7 +85,11 @@ fn bad_require_pg_is_rejected_even_when_the_url_is_set() {
     }
     assert!(admin_url_from(url.clone(), Some("1")).is_some());
     assert!(admin_url_from(url, None).is_some());
-    assert!(admin_url_from(None, None).is_none());
-    assert!(admin_url_from(Some(String::new()), Some("0")).is_none());
-    assert!(std::panic::catch_unwind(|| admin_url_from(None, Some("1"))).is_err());
+    // Postgres is mandatory: a missing or empty URL fails the test, whatever RUSTY_REQUIRE_PG says.
+    for (u, require) in [(None, None), (None, Some("0")), (None, Some("1")), (Some(String::new()), Some("0"))] {
+        assert!(
+            std::panic::catch_unwind(|| admin_url_from(u.clone(), require)).is_err(),
+            "{u:?} / {require:?} must fail, not skip"
+        );
+    }
 }

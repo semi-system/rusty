@@ -399,7 +399,7 @@ impl Env {
     }
 }
 
-/// Run `f` once per available backend (SQLite always; Postgres when `RUSTY_TEST_PG_URL` is set).
+/// Run `f` once per backend: Postgres, the only one (`RUSTY_TEST_PG_URL` is mandatory).
 #[allow(clippy::await_holding_lock)] // the probe lock is deliberately held while an environment is built
 pub async fn for_each_env<F, Fut>(f: F)
 where
@@ -456,45 +456,9 @@ where
     for first in backends::backends().await {
         let name = first.name;
         eprintln!("-- backend {name} (pair)");
-        let second = if name == "sqlite" {
-            backends::sqlite_backend().await
-        } else {
-            #[cfg(feature = "postgres")]
-            {
-                backends::pg_backend().await.expect("postgres backend")
-            }
-            #[cfg(not(feature = "postgres"))]
-            {
-                unreachable!()
-            }
-        };
+        let second = backends::pg_backend().await.expect("postgres backend");
         f(Env::new(first).await, Env::new(second).await).await;
     }
-}
-
-/// Like [`for_each_env_pair`], but the Postgres leg runs for one case in `pg_one_in` (database
-/// creation dominates a case; SQLite keeps every case). The counter is process-wide.
-pub async fn for_each_env_pair_sampled<F, Fut>(pg_one_in: usize, f: F)
-where
-    F: Fn(Env, Env) -> Fut,
-    Fut: std::future::Future<Output = ()>,
-{
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static CASES: AtomicUsize = AtomicUsize::new(0);
-    let n = CASES.fetch_add(1, Ordering::Relaxed);
-    f(
-        Env::new(backends::sqlite_backend().await).await,
-        Env::new(backends::sqlite_backend().await).await,
-    )
-    .await;
-    #[cfg(feature = "postgres")]
-    if n.is_multiple_of(pg_one_in) {
-        if let (Some(a), Some(b)) = (backends::pg_backend().await, backends::pg_backend().await) {
-            eprintln!("-- backend postgres (pair, sampled 1 in {pg_one_in})");
-            f(Env::new(a).await, Env::new(b).await).await;
-        }
-    }
-    let _ = (n, pg_one_in);
 }
 
 impl Env {
