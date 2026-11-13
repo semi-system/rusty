@@ -7,9 +7,9 @@ use std::sync::Arc;
 use rusty_core::PlanId;
 use rusty_core::{AccountId, DomainId, Error, FolderId};
 use rusty_store::repo::sqlite::SqliteRepo;
-use rusty_store::repo::{DirectoryRepo, GcRepo, JobRepo, MailboxRepo, NewAccount, Resolution};
+use rusty_store::repo::{DirectoryRepo, DnsRepo, GcRepo, JobRepo, MailboxRepo, NewAccount, Resolution};
 use rusty_store::{BlobStore, SqliteStore};
-use rusty_store::{Gc, JobQueue, Mailbox};
+use rusty_store::{DnsStore, Gc, JobQueue, Mailbox};
 
 #[cfg(feature = "postgres")]
 use super::pg::{pg_admin_url, PgTestDb};
@@ -26,6 +26,7 @@ pub struct Backend {
     pub drepo: Arc<dyn DirectoryRepo>,
     pub mrepo: Arc<dyn MailboxRepo>,
     pub jrepo: Arc<dyn JobRepo>,
+    pub nrepo: Arc<dyn DnsRepo>,
     pub grepo: Arc<dyn GcRepo>,
     pub blobs: Arc<dyn BlobStore>,
     pub sqlite: Option<SqliteStore>,
@@ -60,6 +61,7 @@ async fn sqlite_backend_over(store: SqliteStore, tmp: tempfile::TempDir) -> Back
         drepo: repo.clone(),
         mrepo: repo.clone(),
         jrepo: repo.clone(),
+        nrepo: repo.clone(),
         grepo: repo,
         blobs: blob_dir(&tmp).await,
         sqlite: Some(store),
@@ -85,6 +87,7 @@ pub async fn pg_backend() -> Option<Backend> {
         drepo: arc.clone(),
         mrepo: arc.clone(),
         jrepo: arc.clone(),
+        nrepo: arc.clone(),
         grepo: arc,
         blobs: blob_dir(&tmp).await,
         sqlite: None,
@@ -545,6 +548,11 @@ impl Backend {
     /// A job queue with smaller pending-job caps.
     pub fn jobs_with_limits(&self, per_domain: u32, no_domain: u32) -> JobQueue {
         JobQueue::with_repo_and_limits(self.jrepo.clone(), per_domain, no_domain)
+    }
+
+    /// The DNS validation store over this backend's repository.
+    pub fn dns(&self) -> DnsStore {
+        DnsStore::with_repo(self.nrepo.clone())
     }
 
     /// The garbage collector over this backend's repository.

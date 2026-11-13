@@ -18,6 +18,7 @@
 
 mod directory;
 mod gc;
+mod dns;
 pub(crate) mod jobs;
 mod mailbox;
 #[cfg(feature = "postgres")]
@@ -26,6 +27,7 @@ pub mod pg;
 #[allow(clippy::needless_borrow)]
 pub mod sqlite;
 
+pub use dns::{DnsConfig, DnsConfigRow, DnsEventRow, DnsRepo};
 pub use gc::{GcRepo, PurgeBatch};
 pub use jobs::{ClaimRequest, JobRepo, NewJob};
 pub use directory::{
