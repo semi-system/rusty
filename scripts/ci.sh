@@ -95,64 +95,53 @@ stage "docker and workflow pins" bash scripts/check-docker-pins.sh
 stage "workflows-lint self-test" bash scripts/tests/workflows-lint.sh
 stage "actionlint and shellcheck" bash scripts/ci-workflows-lint.sh
 stage "clippy"       cargo clippy --workspace --all-targets -- -D warnings
-stage "test (glibc)" cargo test --workspace
-# The dev quickstart works from a clean checkout: build, start on spare ports, banner, SIGTERM, exit 0.
-stage "dev quickstart smoke" bash deploy/dev/quickstart.sh --smoke
-
-postgres_tests() {
+# Postgres is the only backend, so every test stage needs a server. One throw-away container
+# (scripts/pg-up.sh) serves the whole run; a fresh run id gives concurrent runs their own container and
+# URL file, and on_exit removes exactly this run's container, even if a stage dies half-way.
+pg_start() {
   if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
-    PG_SKIPPED=1
-    echo "WARNING: Docker is unavailable; PostgreSQL smoke tests were not run." >&2
-    return 0
+    echo "Docker is required: the tests run on a throw-away PostgreSQL (scripts/pg-up.sh)." >&2
+    return 1
   fi
-
-  # A fresh run id per CI run: concurrent runs get their own container and URL file. on_exit
-  # removes exactly this run's container, even if this stage dies half-way.
   RUSTY_PG_RUN_ID="ci$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
   export RUSTY_PG_RUN_ID
   PG_RUN_ID="$RUSTY_PG_RUN_ID"
-  local url_file="$HOME/.rusty-pg-test-url.$RUSTY_PG_RUN_ID" url rc=0
+  local url_file="$HOME/.rusty-pg-test-url.$RUSTY_PG_RUN_ID" url
   bash scripts/pg-up.sh || return 1
   if ! IFS= read -r url < "$url_file" || [ -z "$url" ]; then
     echo "PostgreSQL URL file is missing or empty" >&2
     return 1
   fi
-  RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
-    cargo test -p rusty-store --features postgres --test pg_smoke || rc=$?
+  export RUSTY_TEST_PG_URL="$url"
+}
+stage "postgres test server" pg_start
+
+stage "test (glibc)" cargo test --workspace
+# The dev quickstart works from a clean checkout: build, start on spare ports, banner, SIGTERM, exit 0.
+stage "dev quickstart smoke" bash deploy/dev/quickstart.sh --smoke
+
+# The plain suites already ran in "test (glibc)" against the server above. What is left needs a special
+# setup: the smoke test, the suites again as the unprivileged runtime role rusty_app (a database initialised
+# with deploy/db/roles.sql and migrated by rusty_migrator, what production runs), the mutation hook's table
+# and probes (the full mutation run is scripts/pg-mutate.sh, not a CI stage), and clippy with the mutation feature.
+postgres_tests() {
+  local rc=0
+  cargo test -p rusty-store --test pg_smoke || rc=$?
   if [ "$rc" -eq 0 ]; then
-    # The whole store suite, every test binary (nothing is selected by name, so a new test file
-    # is picked up without editing this script): the parametrised suites run each test on SQLite
-    # and Postgres, the pg_* suites are Postgres-only.
-    RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
-      cargo test -p rusty-store --features postgres || rc=$?
-  fi
-  if [ "$rc" -eq 0 ]; then
-    RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
-      cargo test -p rusty-directory -p rusty-imap -p rusty-smtp -p rusty-ctl --features postgres || rc=$?
-  fi
-  # The whole conformance suites again as the unprivileged runtime role rusty_app, on a database initialised
-  # with deploy/db/roles.sql and migrated by rusty_migrator (what production runs).
-  if [ "$rc" -eq 0 ]; then
-    RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 RUSTY_TEST_PG_ROLES=1 \
-      cargo test -p rusty-store --features postgres --test mailbox_conformance --test jobs_conformance \
+    RUSTY_TEST_PG_ROLES=1 \
+      cargo test -p rusty-store --test mailbox_conformance --test jobs_conformance \
         --test gc_conformance --test imap_ops_conformance --test input_validation_conformance --test race_conformance \
-        --test mailbox --test jobs --test gc --test deliveries --test batch --test mailbox_paging --test known_diffs || rc=$?
+        --test mailbox --test jobs --test gc --test deliveries --test batch --test mailbox_paging || rc=$?
   fi
   if [ "$rc" -eq 0 ]; then
-    RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 RUSTY_TEST_PG_ROLES=1 \
-      cargo test -p rusty-directory -p rusty-imap -p rusty-smtp -p rusty-ctl --features postgres || rc=$?
-  fi
-  # The mutation hook's table and probes (the full mutation run is scripts/pg-mutate.sh, not a CI stage).
-  if [ "$rc" -eq 0 ]; then
-    RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
-      cargo test -p rusty-store --features postgres,mutation-testing --test pg_dialect_mutations || rc=$?
+    RUSTY_TEST_PG_ROLES=1 cargo test -p rusty-directory -p rusty-imap -p rusty-smtp -p rusty-ctl || rc=$?
   fi
   if [ "$rc" -eq 0 ]; then
-    RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
-      cargo clippy -p rusty-store -p rusty-directory -p rusty-imap -p rusty-smtp -p rusty-ctl --features postgres --all-targets -- -D warnings || rc=$?
+    cargo test -p rusty-store --features mutation-testing --test pg_dialect_mutations || rc=$?
   fi
-  bash scripts/pg-down.sh >/dev/null 2>&1 || true
-  PG_RUN_ID=""
+  if [ "$rc" -eq 0 ]; then
+    cargo clippy -p rusty-store -p rusty-directory -p rusty-imap -p rusty-smtp -p rusty-ctl --all-targets -- -D warnings || rc=$?
+  fi
   return "$rc"
 }
 stage "postgres" postgres_tests

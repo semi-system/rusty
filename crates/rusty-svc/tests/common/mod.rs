@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 //! Shared helpers of the rusty-svc tests: fixture certificates, secret files with a given
-//! mode, a rustls client, a SQLite-backed `Context`.
+//! mode, a rustls client, a Postgres-backed `Context`.
 
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
@@ -144,24 +144,26 @@ pub async fn tls_connect_trusting_der(addr: SocketAddr, name: &str, der: &[u8]) 
 }
 
 use rusty_core::config::StartupConfig;
+use rusty_store::fixtures::pg_db::{pg_admin_url, PgTestDb};
 use rusty_store::{BlobStore, FsBlobStore, Store, StoreConfig};
 
-/// A SQLite store plus blob store in a temp dir (the composition-root way: `Store::open`).
+/// A store on a fresh Postgres database plus a blob store in a temp dir (the composition-root way: `Store::open`).
 pub struct Parts {
     pub store: Store,
     pub blobs: Arc<dyn BlobStore>,
     pub dir: tempfile::TempDir,
+    _db: PgTestDb,
 }
 
 pub async fn parts() -> Parts {
     let dir = tempfile::tempdir().unwrap();
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let store = Store::open(StoreConfig::sqlite(format!("sqlite://{}", dir.path().join("meta.sqlite").display())))
-        .await
-        .unwrap();
+    let admin = pg_admin_url().expect("a Postgres test server (RUSTY_TEST_PG_URL)");
+    let db = PgTestDb::create(&admin).await;
+    let store = Store::open(StoreConfig::postgres(db.url())).await.unwrap();
     FsBlobStore::init(dir.path().join("blobs")).await.unwrap();
     let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::open(dir.path().join("blobs")).await.unwrap());
-    Parts { store, blobs, dir }
+    Parts { store, blobs, dir, _db: db }
 }
 
 /// Dev configuration under the parts' directory with every listener on an ephemeral port.

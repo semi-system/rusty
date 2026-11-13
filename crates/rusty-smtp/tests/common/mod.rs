@@ -73,13 +73,7 @@ pub async fn pg_backend() -> Option<Backend> {
 }
 
 pub async fn backends() -> Vec<Backend> {
-    #[allow(unused_mut)]
-    let mut v = vec![sqlite_backend().await];
-    #[cfg(feature = "postgres")]
-    if let Some(b) = pg_backend().await {
-        v.push(b);
-    }
-    v
+    vec![pg_backend().await.expect("a Postgres test server (RUSTY_TEST_PG_URL)")]
 }
 
 pub async fn for_each_backend<F, Fut>(f: F)
@@ -372,22 +366,10 @@ pub async fn make_context(b: &Backend) -> (Context, Arc<dyn BlobStore>) {
     (ctx, blobs)
 }
 
-/// Every backend with short waits (300 ms) and a two-connection pool, for the saturation tests.
+/// Postgres with short waits (300 ms) and a two-connection pool, for the saturation tests.
 pub async fn backends_short_waits() -> Vec<Backend> {
     let ms = Duration::from_millis(300);
-    let tmp = tempfile::tempdir().unwrap();
-    let url = format!("sqlite://{}", tmp.path().join("meta.sqlite").display());
-    let store = Store::open(StoreConfig::Sqlite { url, busy_timeout: ms }).await.unwrap();
-    #[allow(unused_mut)]
-    let mut v = vec![Backend {
-        name: "sqlite",
-        dir: Directory::with_repo(store.repos().directory.clone()),
-        fx: Fixtures::of(&store),
-        store,
-        tmp,
-        #[cfg(feature = "postgres")]
-        _db: None,
-    }];
+    let mut v: Vec<Backend> = vec![];
     #[cfg(feature = "postgres")]
     if let Some(url) = pg::pg_admin_url() {
         let db = pg::PgTestDb::create(&url).await;
