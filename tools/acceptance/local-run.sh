@@ -70,8 +70,11 @@ rusty_as() {
       -e RUSTY_DEV_PG_URL="$url" -e RUSTY_DEV_PG_PASSWORD="$pw" -e RUSTY_DEV_PG_SSLMODE=verify-full \
       -e RUSTY_DEV_PG_CA_BUNDLE=/run/pg-secrets/ca.pem "$IMAGE" "$@"
   else
-    RUSTY_DEV_PG_URL="$url" RUSTY_DEV_PG_PASSWORD="$pw" RUSTY_DEV_PG_SSLMODE=verify-full \
-      RUSTY_DEV_PG_CA_BUNDLE="$WORK/secrets/ca.pem" "$BIN" "$@"
+    # RUSTY_EXEC=1 (set only on a backgrounded call) replaces the subshell with the binary, so that `$!` is the
+    # daemon itself and kill -KILL reaches it.
+    local run=(env RUSTY_DEV_PG_URL="$url" RUSTY_DEV_PG_PASSWORD="$pw" RUSTY_DEV_PG_SSLMODE=verify-full
+      RUSTY_DEV_PG_CA_BUNDLE="$WORK/secrets/ca.pem" "$BIN" "$@")
+    if [ -n "${RUSTY_EXEC:-}" ]; then exec "${run[@]}"; else "${run[@]}"; fi
   fi
 }
 RC() { DOCKER_I=-i rusty_as rusty_app "$APP_PW" ctl --dev --data-dir "$DATADIR" "$@"; }
@@ -86,7 +89,7 @@ start_daemon() {
       "$IMAGE" d --dev --data-dir "$DATADIR" >/dev/null || exit 1
     docker logs -f "$CNAME" >"$LOG" 2>&1 &
   else
-    rusty_as rusty_app "$APP_PW" d --dev --data-dir "$DATADIR" --bind "$BIND" >>"$LOG" 2>&1 &
+    RUSTY_EXEC=1 rusty_as rusty_app "$APP_PW" d --dev --data-dir "$DATADIR" --bind "$BIND" >>"$LOG" 2>&1 &
   fi
   PID=$!
   local up=0 _
@@ -132,7 +135,7 @@ umask 022
 chmod 755 "$WORK/secrets"; chmod 644 "$WORK/secrets/ca.pem"
 
 echo "== postgres: the daemon refuses an un-migrated database"
-rusty_as rusty_app "$APP_PW" d --dev --data-dir "$DATADIR" --bind "$BIND" >"$LOG" 2>&1 &
+RUSTY_EXEC=1 rusty_as rusty_app "$APP_PW" d --dev --data-dir "$DATADIR" --bind "$BIND" >"$LOG" 2>&1 &
 PID=$!
 for _ in $(seq 1 50); do kill -0 "$PID" 2>/dev/null || break; sleep 0.2; done
 if kill -0 "$PID" 2>/dev/null; then fail "the daemon started on an un-migrated database"; fi
