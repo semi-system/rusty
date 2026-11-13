@@ -6,6 +6,9 @@
 # /srv/rusty/logs/<name>-<timestamp>-<mode>.log and records the exit code in <log>.rc.
 # Exit 75 = a lock is held by someone else.
 set -uo pipefail
+# CI parity with the GitHub runners and WSL (umask 022). Ubuntu's default 002 makes bare temp dirs group-writable,
+# which the blob store (correctly) refuses; tests must not depend on the umask, but keep the runner predictable.
+umask 022
 
 mode="${1:-}"; name="${2:-}"; ts="${3:-}"
 [ "$#" -ge 3 ] || { echo "usage: remote-runner.sh <cargo|ci> <name> <ts> [args]" >&2; exit 2; }
@@ -42,6 +45,8 @@ rm -f "$log.rc"
 # shellcheck source=/dev/null
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 export CARGO_TARGET_DIR="$target"
+# Keep the (small) build server disk usable: no incremental dirs, line-table debuginfo only.
+export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=line-tables-only
 if [ "$mode" = cargo ] && [ -z "${RUSTY_PG_RUN_ID:-}" ]; then
   # same charset rule as scripts/pg-lib.sh; one stable id per worktree for manual cargo runs
   RUSTY_PG_RUN_ID="wt$(printf '%s' "$name" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9' x | cut -c1-20)"

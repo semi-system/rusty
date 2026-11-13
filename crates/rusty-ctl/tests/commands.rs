@@ -275,19 +275,6 @@ async fn check_lists_dns_hints_for_active_domains_only() {
     .await;
 }
 
-#[tokio::test]
-async fn dkim_generate_is_reported_as_not_available_yet() {
-    for_each_backend(|b| async move {
-        let e = b
-            .run(Command::DkimGenerate { domain: "example.com".into(), selector: "rusty".into() }, &[])
-            .await
-            .unwrap_err();
-        assert_eq!(e.exit, 1);
-        assert!(e.message.contains("not available yet"), "{}", e.message);
-    })
-    .await;
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_command_waits_for_a_busy_writer_instead_of_failing() {
     for_each_backend(|b| async move {
@@ -302,6 +289,66 @@ async fn a_command_waits_for_a_busy_writer_instead_of_failing() {
         r.unwrap();
         assert!(started.elapsed() >= Duration::from_millis(300), "did not wait: {:?}", started.elapsed());
         assert_eq!(b.count("domains").await, 1);
+    })
+    .await;
+}
+
+// ---- dkim generate / import (U5) ----
+
+#[tokio::test]
+async fn dkim_generate_writes_a_private_ed25519_key_and_prints_the_dns_record() {
+    use std::os::unix::fs::PermissionsExt;
+    for_each_backend(|b| async move {
+        b.run(Command::DomainAdd { name: "example.org".into() }, &[]).await.unwrap();
+        let keys = tempfile::tempdir().unwrap();
+        let cmd = Command::DkimGenerate { domain: "example.org".into(), selector: "rusty".into() };
+        // Without a configured key directory there is nowhere safe to write.
+        assert!(b.run(cmd.clone(), &[]).await.is_err(), "{}", b.name);
+        let out = b.run_with_dkim(cmd.clone(), keys.path()).await.unwrap();
+        let file = keys.path().join("example.org.rusty-ed25519.pem");
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600, "{}", b.name);
+        assert!(out.text.contains("rusty-ed25519._domainkey.example.org") && out.text.contains("v=DKIM1; k=ed25519; p="), "{}", out.text);
+        // The operator is told how to add the RSA key that large receivers need.
+        assert!(out.text.contains("dkim import"), "{}", out.text);
+        assert_eq!(out.json["algorithm"], "ed25519");
+        assert!(!out.text.contains("PRIVATE KEY") && !out.json.to_string().contains("PRIVATE"), "the private key is never printed");
+        // A second run never overwrites a key (that would break every published signature).
+        assert!(b.run_with_dkim(cmd, keys.path()).await.is_err(), "{}", b.name);
+        // An unknown domain gets no key.
+        let unknown = Command::DkimGenerate { domain: "nope.test".into(), selector: "rusty".into() };
+        assert!(b.run_with_dkim(unknown, keys.path()).await.is_err());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn dkim_import_keeps_an_operator_rsa_key_and_refuses_weak_or_foreign_files() {
+    use std::os::unix::fs::PermissionsExt;
+    let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../rusty-smtp/tests/data");
+    let spki = std::fs::read_to_string(data.join("dkim-rsa2048.spki.b64")).unwrap();
+    for_each_backend(|b| {
+        let data = data.clone();
+        let spki = spki.clone();
+        async move {
+            b.run(Command::DomainAdd { name: "example.org".into() }, &[]).await.unwrap();
+            let keys = tempfile::tempdir().unwrap();
+            let import = |file: &str| Command::DkimImport { domain: "example.org".into(), selector: "rusty".into(), key_file: data.join(file) };
+            // Weak, encrypted, foreign or missing files are refused and nothing is written.
+            for bad in ["dkim-rsa1024.pem", "dkim-rsa2048-encrypted.pem", "dkim-p256.pem", "no-such-file.pem", "."] {
+                assert!(b.run_with_dkim(import(bad), keys.path()).await.is_err(), "{bad}");
+            }
+            assert_eq!(std::fs::read_dir(keys.path()).unwrap().count(), 0);
+            let out = b.run_with_dkim(import("dkim-rsa2048.pem"), keys.path()).await.unwrap();
+            let file = keys.path().join("example.org.rusty.pem");
+            assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600, "{}", b.name);
+            assert!(out.text.contains(&format!("rusty._domainkey.example.org. IN TXT \"v=DKIM1; k=rsa; p={}\"", spki.trim())), "{}", out.text);
+            assert_eq!(out.json["algorithm"], "rsa");
+            assert!(!out.text.contains("PRIVATE KEY") && !out.json.to_string().contains("PRIVATE"), "the private key is never printed");
+            // Never overwritten; an unknown domain gets nothing.
+            assert!(b.run_with_dkim(import("dkim-rsa2048.pem"), keys.path()).await.is_err());
+            let unknown = Command::DkimImport { domain: "nope.test".into(), selector: "rusty".into(), key_file: data.join("dkim-rsa2048.pem") };
+            assert!(b.run_with_dkim(unknown, keys.path()).await.is_err());
+        }
     })
     .await;
 }

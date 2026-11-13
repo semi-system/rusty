@@ -54,6 +54,8 @@ pub struct CtlEnv<'a> {
     pub hostname: Option<&'a str>,
     /// One line describing the configuration that was read (`check` prints it).
     pub config_note: &'a str,
+    /// `[outbound] dkim_dir`: where `dkim generate` writes keys (none: the command refuses).
+    pub dkim_dir: Option<&'a std::path::Path>,
 }
 
 /// What a command produced.
@@ -381,12 +383,95 @@ pub async fn execute(command: &Command, env: &mut CtlEnv<'_>) -> Result<Outcome,
             Ok(Outcome::new(format!("alias {} removed", alias.trim()), json!({ "alias": alias.trim(), "removed": true })))
         }
 
-        Command::DkimGenerate { .. } => Err(CtlError::runtime(
-            "dkim generate: not available yet (it arrives with the outbound queue)",
-        )),
+        Command::DkimGenerate { domain, selector } => dkim_generate(env, domain, selector).await,
+
+        Command::DkimImport { domain, selector, key_file } => dkim_import(env, domain, selector, key_file).await,
 
         Command::Check => check(env).await,
+        Command::DbMigrate { .. } | Command::DbStatus => {
+            Err(CtlError::runtime("db commands are run by the composition root, not against the directory"))
+        }
     }
+}
+
+/// The existing domain and the configured key directory (created 0700 if missing) for a DKIM command.
+async fn dkim_target<'e>(env: &CtlEnv<'e>, domain: &str) -> Result<(DomainInfo, &'e std::path::Path), CtlError> {
+    let dom = env.directory.find_domain(domain).await.map_err(|e| map_error(&e, "domain"))?.ok_or_else(|| CtlError::runtime("no such domain; add it first with `domain add`"))?;
+    let dir = env.dkim_dir.ok_or_else(|| CtlError::runtime("set [outbound] dkim_dir in the configuration: that is where DKIM keys are kept"))?;
+    match std::fs::symlink_metadata(dir) {
+        Ok(m) if m.is_dir() => {}
+        Ok(_) => return Err(CtlError::runtime("dkim_dir is not a directory")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new().mode(0o700).create(dir).map_err(|_| CtlError::runtime("cannot create dkim_dir"))?;
+        }
+        Err(_) => return Err(CtlError::runtime("cannot inspect dkim_dir")),
+    }
+    Ok((dom, dir))
+}
+
+/// The text and JSON for a key that was written: where it is and the TXT record to publish. Never the private key.
+fn dkim_outcome(dom: &DomainInfo, key: &rusty_smtp::dkim::GeneratedKey, note: &str) -> Outcome {
+    use rusty_smtp::dkim::DkimAlgo;
+    let name = format!("{}._domainkey.{}", key.selector, dom.name);
+    let algorithm = match key.algo {
+        DkimAlgo::Rsa => "rsa",
+        DkimAlgo::Ed25519 => "ed25519",
+    };
+    let mut text = format!("key written to {} (mode 0600)\nPublish this TXT record:\n{name}. IN TXT \"{}\"", key.key_file.display(), key.txt_value());
+    if !note.is_empty() {
+        text.push('\n');
+        text.push_str(note);
+    }
+    Outcome::new(
+        text,
+        json!({ "domain": dom.name, "algorithm": algorithm, "selector": key.selector, "record_name": name, "record_value": key.txt_value(), "key_file": key.key_file.display().to_string() }),
+    )
+}
+
+/// `dkim generate`: an ed25519 key for an existing domain, written 0600 into the configured key directory, and
+/// the DNS record to publish. Never overwrites, never prints the private key. RSA keys are imported instead
+/// (see `rusty_smtp::dkim::generate_key` for why Rusty does not make them).
+async fn dkim_generate(env: &mut CtlEnv<'_>, domain: &str, selector: &str) -> Result<Outcome, CtlError> {
+    let (dom, dir) = dkim_target(env, domain).await?;
+    let key = rusty_smtp::dkim::generate_key(dir, &dom.name, selector).map_err(|e| map_error(&e, "dkim key"))?;
+    let rsa_name = format!("{}.{selector}.pem", dom.name);
+    let note = if dir.join(&rsa_name).exists() {
+        String::new()
+    } else {
+        format!(
+            "Note: some large receivers verify only RSA signatures. Add an RSA key as well:\n  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out dkim-rsa.pem\n  rustyctl dkim import {} dkim-rsa.pem --selector {selector}   (then delete dkim-rsa.pem)",
+            dom.name
+        )
+    };
+    Ok(dkim_outcome(&dom, &key, &note))
+}
+
+/// The largest key file `dkim import` reads.
+const MAX_KEY_FILE: u64 = 64 * 1024;
+
+/// `dkim import`: an operator-made private key (RSA 2048-4096 bits or ed25519, unencrypted PEM) for an existing
+/// domain, checked, written 0600 under the name the signer uses, and the DNS record to publish. The source
+/// file is only read; the operator deletes it.
+async fn dkim_import(env: &mut CtlEnv<'_>, domain: &str, selector: &str, key_file: &std::path::Path) -> Result<Outcome, CtlError> {
+    use std::io::Read;
+    let (dom, dir) = dkim_target(env, domain).await?;
+    // A regular file only (checked before opening, so a FIFO or device never blocks or streams forever).
+    let regular = |m: std::io::Result<std::fs::Metadata>| m.is_ok_and(|m| m.is_file());
+    if !regular(std::fs::metadata(key_file)) {
+        return Err(CtlError::runtime("the key file is not a readable regular file"));
+    }
+    let f = std::fs::File::open(key_file).map_err(|_| CtlError::runtime("cannot open the key file"))?;
+    if !regular(f.metadata()) {
+        return Err(CtlError::runtime("the key file is not a readable regular file"));
+    }
+    let mut pem = Vec::new();
+    f.take(MAX_KEY_FILE + 1).read_to_end(&mut pem).map_err(|_| CtlError::runtime("cannot read the key file"))?;
+    if pem.len() as u64 > MAX_KEY_FILE {
+        return Err(CtlError::runtime("the key file is too large to be one private key"));
+    }
+    let key = rusty_smtp::dkim::import_key(dir, &dom.name, selector, &pem).map_err(|e| map_error(&e, "dkim key"))?;
+    Ok(dkim_outcome(&dom, &key, "The source key file is no longer needed by Rusty; delete it or keep it offline."))
 }
 
 /// `check`: the configuration that was read and the DNS records each active domain needs.

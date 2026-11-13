@@ -1,4 +1,4 @@
-# Rusty - Tài liệu thiết kế và kế hoạch
+# Rusty Mail Server - Tài liệu thiết kế và kế hoạch
 
 Mục lục của mọi spec (thiết kế) và plan (kế hoạch) trong `docs/superpowers/`. Cập nhật lần cuối: 2026-11-08.
 
@@ -43,3 +43,12 @@ Mục lục của mọi spec (thiết kế) và plan (kế hoạch) trong `docs/
 - Kế hoạch backend Postgres (P-13) và thiết kế trait theo phương thức cho `Mailbox`/`Directory`.
 - Kế hoạch `certd`, KMS wrapper, `store` service, `tlsd` (dự phòng), SMTP relay, IMAP, nhận/gửi thư, MTA đầy đủ.
 - Sửa các spec ghi "cần sửa" ở bảng trên sau khi người dùng duyệt hướng.
+
+## Quy trình, CI và vận hành
+| Tài liệu | Nội dung |
+|---|---|
+| [git-workflow.md](git-workflow.md) | Quy trình git: trunk-based, nhánh `type/short-name`, Conventional Commits, PR vào `main` (squash), check bắt buộc `ci-ok`, CODEOWNERS, phát hành, hotfix, nâng pin, kiểm tra trước khi push, thiết lập GitHub một lần (import ruleset) |
+| [ci.md](ci.md) | Thiết kế CI GitHub Actions: job `changes` và `ci-ok`, cache, tách job, ước lượng thời gian (nêu rõ phần đo và phần ước lượng), đối chiếu với `scripts/ci.sh` |
+| [docker.md](docker.md) | Image container, workflow `docker.yml`/`release.yml`, quy tắc an toàn cho workflow |
+| [buildserver.md](buildserver.md) | Máy chủ build từ xa (Ubuntu VM) |
+| [local-run.md](local-run.md) | Chạy thử cục bộ |

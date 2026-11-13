@@ -12,7 +12,11 @@ pub mod mutation;
 #[cfg(feature = "test-fixtures")]
 pub mod fixtures;
 #[cfg(feature = "postgres")]
+mod migrate;
+#[cfg(feature = "postgres")]
 mod pg;
+#[cfg(feature = "postgres")]
+mod pg_queue;
 mod sqlite;
 
 pub use blob::{
@@ -44,8 +48,16 @@ pub use mailbox::{
     MAX_SUPPLIED_TIME,
 };
 #[cfg(feature = "postgres")]
-pub use pg::{PgPoolConfig, PgStore};
-pub use repo::{FlagUpdate, FolderCounts, FolderInfo, JobFence, MessageDetail, PurgeBatch, RawRef};
+pub use migrate::{
+    embedded_versions, migrate_postgres, schema_status, MigrationReport, SchemaState, SchemaStatus, APP_ROLE,
+    MIGRATOR_ROLE, RO_ROLE,
+};
+#[cfg(feature = "postgres")]
+pub use pg::{PgPassword, PgLimits, PgSecurity, PgStore};
+#[cfg(feature = "postgres")]
+pub use pg_queue::{MailboxPermit, MailboxQueue, STRIPES};
+pub use jobs::BatchSpec;
+pub use repo::{FlagUpdate, FolderCounts, FolderInfo, JobFence, MessageDetail, OwnerLimits, PurgeBatch, RawRef};
 pub use store::{Repos, Store, StoreConfig};
 pub use sqlite::{map_db_error, SqliteStore, DEFAULT_BUSY_TIMEOUT};
 

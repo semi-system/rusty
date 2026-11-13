@@ -1,0 +1,21 @@
+# Dependabot keeps every pin current via reviewed PRs: GitHub Actions (SHA pins, including
+# abxst/actions), Dockerfile base images (digest pins), Cargo. Nothing auto-merges.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: docker
+    directory: /deploy/docker
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10

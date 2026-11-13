@@ -90,6 +90,20 @@ fn dkim_and_check() {
         cmd(&["dkim", "generate", "example.com", "--selector", "s1"]),
         Command::DkimGenerate { domain: "example.com".into(), selector: "s1".into() }
     );
+    assert_eq!(
+        cmd(&["dkim", "import", "example.com", "/root/dkim.pem"]),
+        Command::DkimImport { domain: "example.com".into(), selector: "rusty".into(), key_file: "/root/dkim.pem".into() }
+    );
+    assert_eq!(
+        cmd(&["dkim", "import", "example.com", "k.pem", "--selector", "s2"]),
+        Command::DkimImport { domain: "example.com".into(), selector: "s2".into(), key_file: "k.pem".into() }
+    );
+    // generate makes ed25519 keys only; the old switch is gone rather than silently ignored.
+    assert!(p(&["dkim", "generate", "example.com", "--ed25519"]).is_err());
+    assert!(p(&["dkim", "import", "example.com"]).is_err(), "import needs a key file");
+    assert!(p(&["dkim", "import", "example.com", "k.pem", "--selector", "-x"]).is_err());
+    assert!(p(&["dkim", "import", "example.com", "k.pem", "--prompt"]).is_err());
+    assert!(p(&["domain", "list", "--selector", "s"]).is_err(), "--selector only applies to dkim");
     assert_eq!(cmd(&["check"]), Command::Check);
 }
 
@@ -167,4 +181,24 @@ fn create_is_an_explicit_flag() {
     assert!(!p(&["domain", "list"]).unwrap().create);
     assert!(p(&["--create", "domain", "list"]).unwrap().create);
     assert!(p(&["domain", "add", "a.test", "--create"]).unwrap().create);
+}
+
+// backend-neutral: argument parsing only, no database
+#[test]
+fn db_commands() {
+    assert_eq!(cmd(&["db", "migrate"]), Command::DbMigrate { require_roles: true });
+    assert_eq!(cmd(&["db", "migrate", "--without-roles"]), Command::DbMigrate { require_roles: false });
+    assert_eq!(cmd(&["--config", "/etc/rusty.toml", "db", "status"]), Command::DbStatus);
+    // Options of other commands do not apply, and the db commands take no arguments.
+    for bad in [
+        &["db"][..],
+        &["db", "migrate", "extra"],
+        &["db", "status", "--without-roles"],
+        &["db", "migrate", "--prompt"],
+        &["db", "migrate", "--selector", "x"],
+        &["db", "drop"],
+        &["domain", "list", "--without-roles"],
+    ] {
+        assert!(p(bad).is_err(), "{bad:?}");
+    }
 }

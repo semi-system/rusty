@@ -2,7 +2,7 @@
 # Script test: scripts/check-mutation-hook.sh static passes on a clean tree and fails when anything
 # but rusty-store's own [features] definition mentions the mutation-testing feature.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 GATE="$PWD/scripts/check-mutation-hook.sh"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 mk() { rm -rf "$tmp/t"; mkdir -p "$tmp/t/crates/app/src" "$tmp/t/crates/rusty-store/src" "$tmp/t/deploy" "$tmp/t/tools/x"

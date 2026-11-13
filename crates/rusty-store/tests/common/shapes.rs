@@ -192,6 +192,11 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
     other!("JobRepo", "enqueue (no domain)", true,
         Some(("pg_advisory_xact_lock", "unixepoch()")), None,
         j.enqueue(&nj_none));
+    let batch = [rusty_store::repo::BatchJob { kind: "shapeb", domain: Some(dom), payload: "{}", dedupe_key: None, units: 1, bytes: 1, max_attempts: 5 }];
+    let breq = rusty_store::repo::BatchRequest { jobs: &batch, owner: None, domain_cap: 10_000, no_domain_cap: 10_000, now: None };
+    other!("JobRepo", "enqueue_batch (domain)", true,
+        Some(("FROM domains WHERE id = $1 FOR NO KEY UPDATE", "unixepoch()")), None,
+        j.enqueue_batch(&breq));
     let kinds = ["shape"];
     let creq = |worker| rusty_store::repo::ClaimRequest { worker, kinds: &kinds, lease_secs: 30, now: None };
     let (c1, c2, c3, c4) = (creq("w"), creq("w2"), creq("w3"), creq("w4"));
@@ -210,6 +215,10 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
     other!("JobRepo", "fail", true, Some(("UPDATE jobs SET", "UPDATE jobs SET")), None,
         j.fail(claimed.id, claimed.epoch, "x", 0, None));
     let again = j.claim(&c4).await.unwrap().unwrap();
+    other!("JobRepo", "reschedule", true, Some(("UPDATE jobs SET", "UPDATE jobs SET")), None,
+        j.reschedule(again.id, again.epoch, "{}", "x", 0, None));
+    let c5 = creq("w5");
+    let again = j.claim(&c5).await.unwrap().unwrap();
     other!("JobRepo", "complete", true, Some(("UPDATE jobs SET", "UPDATE jobs SET")), None,
         j.complete(again.id, again.epoch, None));
     other!("JobRepo", "purge_finished_batch", true,

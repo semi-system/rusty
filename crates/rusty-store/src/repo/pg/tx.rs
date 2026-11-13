@@ -103,6 +103,8 @@ pub struct Knobs {
     /// Keep the transaction open this long after the work and before COMMIT (two-session
     /// interleavings without sleeps in the statements).
     pub pause_before_commit_ms: u32,
+    /// Do not wait in the in-process per-mailbox queue (two writers of one mailbox race for the row lock).
+    pub bypass_mailbox_queue: bool,
     /// Omit the mailbox row lock (exercises the second line of defence: triggers, FKs, counters).
     pub skip_mailbox_lock: bool,
     /// `lock_blobs` deletes the blob rows it has just inserted, every round (a GC that always wins
@@ -126,6 +128,21 @@ impl PgRepo {
         &self,
     ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, Error> {
         self.store.begin_write().await
+    }
+
+    /// Take this mailbox's turn in the in-process write queue (see `pg_queue.rs`); `None` for operations
+    /// that lock no mailbox. The test knob `bypass_mailbox_queue` skips it so a test can race two
+    /// writers of one mailbox on purpose.
+    pub(super) async fn take_turn(
+        &self,
+        mb: Option<MailboxId>,
+    ) -> Result<Option<crate::MailboxPermit>, Error> {
+        let Some(mb) = mb else { return Ok(None) };
+        #[cfg(feature = "test-knobs")]
+        if self.knobs.bypass_mailbox_queue || self.knobs.skip_mailbox_lock {
+            return Ok(None);
+        }
+        self.store.mailbox_turn(mb).await.map(Some)
     }
 
     /// Lock the mailbox row FIRST (`SELECT .. FOR UPDATE`). `NotFound` if it does not exist.
@@ -232,12 +249,16 @@ impl PgRepo {
 /// `'static`"). Inlining the loop keeps every borrow in one future.
 macro_rules! tx_retry {
     ($self:expr, $lock:expr, |$c:ident| $body:block) => {{
+        let lock_id: Option<rusty_core::MailboxId> = $lock;
+        // The per-mailbox turn comes BEFORE the connection: a hot mailbox's writers wait here, not
+        // in the pool (pg_queue.rs). Held across every retry of this operation.
+        let _turn = $self.take_turn(lock_id).await?;
         let mut attempt = 0u32;
         loop {
             let mut tx = $self.begin_tx().await?;
             let res: $crate::repo::pg::tx::TxResult<_> = async {
                 let $c: &mut sqlx::PgConnection = &mut *tx;
-                let lock: Option<rusty_core::MailboxId> = $lock;
+                let lock: Option<rusty_core::MailboxId> = lock_id;
                 if let Some(mb) = lock {
                     #[cfg(feature = "test-knobs")]
                     let skip = $self.knobs.skip_mailbox_lock;

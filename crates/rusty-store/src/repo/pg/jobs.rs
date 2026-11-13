@@ -9,7 +9,7 @@ use super::tx::tx_retry;
 use super::PgRepo;
 use crate::jobs::{parse_payload, ClaimedJob, MAX_SETTLED_PER_CLAIM};
 use crate::map_db_error;
-use crate::repo::jobs::{exhausted_reason, require_one, sql, ClaimRequest, NewJob};
+use crate::repo::jobs::{exhausted_reason, require_one, sql, BatchRequest, ClaimRequest, NewJob};
 use crate::repo::{render_pg as r, JobFence, JobRepo};
 
 /// Class of the transaction-scoped advisory lock that serialises `enqueue` for jobs without a
@@ -188,6 +188,140 @@ impl JobRepo for PgRepo {
         Ok(JobId(id))
     }
 
+    async fn enqueue_batch(&self, req: &BatchRequest<'_>) -> Result<Vec<JobId>> {
+        let ids = tx_retry!(self, None, |c| {
+            {
+                // Serialise per scope, always in the same order (domains by id, then the owner), so two
+                // batches cannot deadlock and the checks below are not raced.
+                let mut domains: Vec<Option<i64>> = req.jobs.iter().map(|j| j.domain.map(|d: DomainId| d.0)).collect();
+                domains.sort_unstable();
+                domains.dedup();
+                for d in &domains {
+                    match d {
+                        Some(d) => {
+                            sqlx::query_scalar::<_, i64>(&crate::repo::pg_lit("SELECT id FROM domains WHERE id = $1 FOR NO KEY UPDATE"))
+                                .bind(*d)
+                                .fetch_optional(&mut *c)
+                                .await?;
+                        }
+                        None => {
+                            sqlx::query(&crate::repo::pg_lit("SELECT pg_advisory_xact_lock($1, $2)"))
+                                .bind(NO_DOMAIN_LOCK_CLASS)
+                                .bind(NO_DOMAIN_LOCK_KEY)
+                                .execute(&mut *c)
+                                .await?;
+                        }
+                    }
+                }
+                if let Some((owner, _)) = req.owner {
+                    sqlx::query_scalar::<_, i64>(&crate::repo::pg_lit("SELECT id FROM accounts WHERE id = $1 FOR NO KEY UPDATE"))
+                        .bind(owner)
+                        .fetch_optional(&mut *c)
+                        .await?;
+                }
+                let now: i64 = match req.now {
+                    Some(n) => n,
+                    None => sqlx::query_scalar(&r("SELECT {NOW}")).fetch_one(&mut *c).await?,
+                };
+                let mut known: Vec<Option<i64>> = Vec::with_capacity(req.jobs.len());
+                for j in req.jobs {
+                    let existing = match j.dedupe_key {
+                        Some(k) => {
+                            sqlx::query_scalar::<_, i64>(&crate::repo::pg_lit("SELECT id FROM jobs WHERE dedupe_key = $1"))
+                                .bind(k)
+                                .fetch_optional(&mut *c)
+                                .await?
+                        }
+                        None => None,
+                    };
+                    known.push(existing);
+                }
+                let new: Vec<&crate::repo::jobs::BatchJob<'_>> =
+                    req.jobs.iter().zip(&known).filter(|(_, i)| i.is_none()).map(|(j, _)| j).collect();
+                let mut scopes: Vec<(Option<i64>, i64)> = Vec::new();
+                for j in &new {
+                    let d = j.domain.map(|d: DomainId| d.0);
+                    match scopes.iter_mut().find(|(k, _)| *k == d) {
+                        Some((_, n)) => *n += 1,
+                        None => scopes.push((d, 1)),
+                    }
+                }
+                for (d, add) in scopes {
+                    let pending: i64 = match d {
+                        Some(d) => {
+                            sqlx::query_scalar(&crate::repo::pg_lit("SELECT count(*) FROM jobs WHERE domain_id = $1 AND state IN ('queued', 'running')"))
+                                .bind(d)
+                                .fetch_one(&mut *c)
+                                .await?
+                        }
+                        None => {
+                            sqlx::query_scalar(&crate::repo::pg_lit("SELECT count(*) FROM jobs WHERE domain_id IS NULL AND state IN ('queued', 'running')"))
+                                .fetch_one(&mut *c)
+                                .await?
+                        }
+                    };
+                    let cap = match d {
+                        Some(_) => req.domain_cap.min(crate::jobs::MAX_PENDING_JOBS_PER_DOMAIN),
+                        None => req.no_domain_cap.min(crate::jobs::MAX_PENDING_JOBS_GLOBAL_NO_DOMAIN),
+                    };
+                    if pending + add > i64::from(cap) {
+                        return Err(Error::Quota("job queue full".into()).into());
+                    }
+                }
+                if let (Some((owner, lim)), false) = (req.owner, new.is_empty()) {
+                    let pending: i64 = sqlx::query_scalar(&crate::repo::pg_lit("SELECT count(*) FROM jobs WHERE owner_id = $1 AND state IN ('queued', 'running')"))
+                        .bind(owner)
+                        .fetch_one(&mut *c)
+                        .await?;
+                    let (jobs, units, bytes): (i64, i64, i64) = sqlx::query_as(&crate::repo::pg_lit(
+                        "SELECT count(*), COALESCE(sum(units), 0)::bigint, COALESCE(sum(bytes), 0)::bigint FROM jobs WHERE owner_id = $1 AND created_at > $2",
+                    ))
+                    .bind(owner)
+                    .bind(now.saturating_sub(lim.window_secs))
+                    .fetch_one(&mut *c)
+                    .await?;
+                    let add_units: i64 = new.iter().map(|j| i64::from(j.units)).sum();
+                    let add_bytes: i64 = new.iter().map(|j| i64::try_from(j.bytes).unwrap_or(i64::MAX)).fold(0i64, i64::saturating_add);
+                    let n = i64::try_from(new.len()).unwrap_or(i64::MAX);
+                    if pending + n > i64::from(lim.max_pending)
+                        || jobs + n > i64::from(lim.max_jobs)
+                        || units.saturating_add(add_units) > i64::try_from(lim.max_units).unwrap_or(i64::MAX)
+                        || bytes.saturating_add(add_bytes) > i64::try_from(lim.max_bytes).unwrap_or(i64::MAX)
+                    {
+                        return Err(Error::Quota("submission limit reached".into()).into());
+                    }
+                }
+                let owner = req.owner.map(|(o, _)| o);
+                let mut out: Vec<i64> = Vec::with_capacity(known.len());
+                for (j, k) in req.jobs.iter().zip(known) {
+                    if let Some(id) = k {
+                        out.push(id);
+                        continue;
+                    }
+                    let id: i64 = sqlx::query_scalar(&crate::repo::pg_lit(
+                        "INSERT INTO jobs (kind, domain_id, state, payload, attempts, max_attempts, run_after, epoch, created_at, updated_at, \
+                                           dedupe_key, owner_id, units, bytes) \
+                         VALUES ($1, $2, 'queued', $3, 0, $4, $5, 0, $5, $5, $6, $7, $8, $9) RETURNING id",
+                    ))
+                    .bind(j.kind)
+                    .bind(j.domain.map(|d: DomainId| d.0))
+                    .bind(j.payload)
+                    .bind(i64::from(j.max_attempts))
+                    .bind(now)
+                    .bind(j.dedupe_key)
+                    .bind(owner)
+                    .bind(i64::from(j.units))
+                    .bind(i64::try_from(j.bytes).unwrap_or(i64::MAX))
+                    .fetch_one(&mut *c)
+                    .await?;
+                    out.push(id);
+                }
+                Ok(out)
+            }
+        })?;
+        Ok(ids.into_iter().map(JobId).collect())
+    }
+
     async fn claim(&self, req: &ClaimRequest<'_>) -> Result<Option<ClaimedJob>> {
         let kinds: Vec<&str> = req.kinds.to_vec();
         let claimed = tx_retry!(self, None, |c| {
@@ -231,6 +365,7 @@ impl JobRepo for PgRepo {
                                 payload,
                                 epoch: row.try_get("epoch")?,
                                 attempts,
+                                created_at: row.try_get("created_at")?,
                             }));
                         }
                         None => {
@@ -287,6 +422,32 @@ impl JobRepo for PgRepo {
                 Ok(sqlx::query(&r(sql::FAIL))
                     .bind(id.0)
                     .bind(epoch)
+                    .bind(error)
+                    .bind(retry_secs)
+                    .bind(now)
+                    .execute(&mut *c)
+                    .await?
+                    .rows_affected())
+            }
+        })?;
+        require_one(n)
+    }
+
+    async fn reschedule(
+        &self,
+        id: JobId,
+        epoch: i64,
+        payload: &str,
+        error: &str,
+        retry_secs: i64,
+        now: Option<i64>,
+    ) -> Result<()> {
+        let n = tx_retry!(self, None, |c| {
+            {
+                Ok(sqlx::query(&r(sql::RESCHEDULE))
+                    .bind(id.0)
+                    .bind(epoch)
+                    .bind(payload)
                     .bind(error)
                     .bind(retry_secs)
                     .bind(now)

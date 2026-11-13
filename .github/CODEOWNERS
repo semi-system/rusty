@@ -1,0 +1,10 @@
+# Review is required from the owners below (enable "Require review from Code Owners" in the
+# branch protection of main). The team name is the one place the organisation appears by name,
+# because CODEOWNERS has no variables: change it together with a repository rename.
+*                       @semi-system/maintainers
+/.github/               @semi-system/maintainers
+/deploy/                @semi-system/maintainers
+/scripts/               @semi-system/maintainers
+/Cargo.lock             @semi-system/maintainers
+/deny.toml              @semi-system/maintainers
+/SECURITY.md            @semi-system/maintainers

@@ -5,11 +5,12 @@
 use proptest::prelude::*;
 use rusty_ctl::{parse_args, Command, PasswordSource};
 
-const SEEDS: [&str; 6] = [
+const SEEDS: [&str; 7] = [
     include_str!("../../../fuzz/seeds/fuzz_ctl_args/domain_add"),
     include_str!("../../../fuzz/seeds/fuzz_ctl_args/account_add"),
     include_str!("../../../fuzz/seeds/fuzz_ctl_args/dev_json"),
     include_str!("../../../fuzz/seeds/fuzz_ctl_args/dkim"),
+    include_str!("../../../fuzz/seeds/fuzz_ctl_args/dkim_import"),
     include_str!("../../../fuzz/seeds/fuzz_ctl_args/password_argv"),
     include_str!("../../../fuzz/seeds/fuzz_ctl_args/alias_add"),
 ];
@@ -21,7 +22,7 @@ fn check(text: &str) {
     };
     match p.command {
         Command::AccountSetPassword { password, .. } => assert_ne!(password, PasswordSource::None),
-        Command::DkimGenerate { selector, .. } => {
+        Command::DkimGenerate { selector, .. } | Command::DkimImport { selector, .. } => {
             assert!((1..=63).contains(&selector.len()));
             assert!(selector.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.'));
         }

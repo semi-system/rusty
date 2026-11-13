@@ -29,7 +29,7 @@ pub mod sqlite;
 
 pub use dns::{DnsConfig, DnsConfigRow, DnsEventRow, DnsRepo};
 pub use gc::{GcRepo, PurgeBatch};
-pub use jobs::{ClaimRequest, JobRepo, NewJob};
+pub use jobs::{BatchJob, BatchRequest, ClaimRequest, JobRepo, NewJob, OwnerLimits};
 pub use directory::{
     AccountInfo, AccountStatus, AliasInfo, AuthRow, CapabilityGrant, ConfigLayers, ConfigTarget,
     DirectoryRepo, DomainInfo, DomainStatus, ListMember, NewAccount, Resolution, GLOBAL_PLAN,

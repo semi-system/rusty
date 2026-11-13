@@ -1,5 +1,5 @@
-# Security
-Rusty is a security-first Rust rewrite of the Zimbra mail stack. This file says what the
+# Security (Rusty Mail Server)
+Rusty Mail Server is a security-first Rust rewrite of the Zimbra mail stack. This file says what the
 code defends against today, what it does not, and how to check it.
 
 ## Threat model (current state)

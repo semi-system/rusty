@@ -65,7 +65,7 @@ pub async fn pg_backend() -> Option<Backend> {
     Some(Backend {
         name: "postgres",
         dir: Directory::with_repo(store.repos().directory.clone()),
-        fx: Fixtures::of(&store),
+        fx: Fixtures::admin_of(&db, &store).await,
         store,
         tmp: tempfile::tempdir().unwrap(),
         _db: Some(db),
@@ -141,11 +141,13 @@ pub struct Opts {
     pub implicit_tls: bool,
     pub per_hour: u32,
     pub auth_failures_max: u32,
+    pub remote_enabled: bool,
+    pub submit_limits: Option<rusty_smtp::outbound_queue::SubmitLimits>,
 }
 
 impl Default for Opts {
     fn default() -> Opts {
-        Opts { options: InboundOptions::default(), max_message_bytes: 1 << 20, max_recipients: 100, tls: false, submission: false, implicit_tls: false, per_hour: 200, auth_failures_max: 10 }
+        Opts { options: InboundOptions::default(), max_message_bytes: 1 << 20, max_recipients: 100, tls: false, submission: false, implicit_tls: false, per_hour: 200, auth_failures_max: 10, remote_enabled: true, submit_limits: None }
     }
 }
 
@@ -187,8 +189,9 @@ pub async fn start(b: &Backend, opts: Opts) -> Server {
     let ctx = Context::new(b.store.repos(), blobs.clone(), Arc::new(cfg), tls).await.unwrap();
     let handler: Arc<dyn SessionHandler> = if opts.submission {
         let deps = SubmissionDeps {
-            outbound: Arc::new(JobOutbound::new(ctx.jobs.clone(), ctx.directory.clone())),
+            outbound: Arc::new(JobOutbound::new(ctx.jobs.clone(), ctx.directory.clone()).with_limits(opts.submit_limits.unwrap_or_default())),
             limiter: Arc::new(MemorySubmissionLimiter::new(opts.per_hour, Arc::new(SystemClock::new()))),
+            remote_enabled: opts.remote_enabled,
         };
         Arc::new(InboundHandler::submission(&ctx, opts.options, deps))
     } else {
@@ -351,5 +354,73 @@ impl Client {
         let e = c.cmd("EHLO client.example.org").await;
         assert!(e.contains("AUTH PLAIN LOGIN"), "{e}");
         c
+    }
+}
+
+pub mod fake_mta;
+
+/// A `Context` over the backend (no listener), with a blob store in the backend's temp dir.
+pub async fn make_context(b: &Backend) -> (Context, Arc<dyn BlobStore>) {
+    let blobs_root = b.tmp.path().join("blobs");
+    if !blobs_root.exists() {
+        FsBlobStore::init(&blobs_root).await.unwrap();
+    }
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::open(&blobs_root).await.unwrap());
+    let mut cfg = StartupConfig::dev(b.tmp.path());
+    cfg.hostname = Some(HOST.into());
+    let ctx = Context::new(b.store.repos(), blobs.clone(), Arc::new(cfg), TlsProvider::unavailable().unwrap()).await.unwrap();
+    (ctx, blobs)
+}
+
+/// Every backend with short waits (300 ms) and a two-connection pool, for the saturation tests.
+pub async fn backends_short_waits() -> Vec<Backend> {
+    let ms = Duration::from_millis(300);
+    let tmp = tempfile::tempdir().unwrap();
+    let url = format!("sqlite://{}", tmp.path().join("meta.sqlite").display());
+    let store = Store::open(StoreConfig::Sqlite { url, busy_timeout: ms }).await.unwrap();
+    #[allow(unused_mut)]
+    let mut v = vec![Backend {
+        name: "sqlite",
+        dir: Directory::with_repo(store.repos().directory.clone()),
+        fx: Fixtures::of(&store),
+        store,
+        tmp,
+        #[cfg(feature = "postgres")]
+        _db: None,
+    }];
+    #[cfg(feature = "postgres")]
+    if let Some(url) = pg::pg_admin_url() {
+        let db = pg::PgTestDb::create(&url).await;
+        // A statement waiting on a lock is cut at the role/database timeout (the role-level setting of production).
+        db.set_database_setting("statement_timeout", "300ms").await;
+        let limits = rusty_store::PgLimits {
+            max_connections: 2,
+            acquire_timeout: ms,
+            lock_timeout: ms,
+            queue_timeout: ms,
+            ..rusty_store::PgLimits::default()
+        };
+        let cfg = StoreConfig::Postgres { url: db.url().to_owned(), pool: limits, security: rusty_store::PgSecurity::default() };
+        let store = Store::open(cfg).await.unwrap();
+        v.push(Backend {
+            name: "postgres",
+            dir: Directory::with_repo(store.repos().directory.clone()),
+            fx: Fixtures::admin_of(&db, &store).await,
+            store,
+            tmp: tempfile::tempdir().unwrap(),
+            _db: Some(db),
+        });
+    }
+    v
+}
+
+pub async fn for_each_backend_short_waits<F, Fut>(f: F)
+where
+    F: Fn(Backend) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    for b in backends_short_waits().await {
+        eprintln!("-- backend {}", b.name);
+        f(b).await;
     }
 }

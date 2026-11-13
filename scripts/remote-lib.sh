@@ -175,6 +175,9 @@ rl_sync() {
         rm -rf "$stage"; mkdir -p "$stage"; tar -xf - -C "$stage" --no-same-owner
         rsync -rlpt --delete "$stage/" "$dir/"; rm -rf "$stage"' "$stage" "$dir"
   fi
+  # The synced tree has no .git (and rsync --delete would remove one): many gates use git ls-files / git grep and
+  # actionlint needs a project root, so make the remote copy a throwaway git repo with the synced files indexed.
+  rl_ssh_bash 'set -e; cd "$1"; [ -d .git ] || git init -q; git add -A >/dev/null 2>&1 || true' "$dir"
   echo "remote: synced $name -> $BUILD_USER@$BUILD_HOST:$dir ($mode)" >&2
 }
 

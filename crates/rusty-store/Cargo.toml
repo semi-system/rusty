@@ -8,7 +8,7 @@ publish.workspace = true
 
 [features]
 default = []
-postgres = ["sqlx/postgres"]
+postgres = ["sqlx/postgres", "sqlx/tls-rustls-ring-native-roots"]
 # Test-only fault injection in the Postgres repositories (lock-order, skipped locks, pauses).
 # NEVER enable outside this crate's own [dev-dependencies] (self dev-dependency below);
 # scripts/check-raw-db.sh and scripts/check-test-knobs.sh enforce that.
@@ -27,7 +27,7 @@ async-trait.workspace = true
 bytes.workspace = true
 sqlx.workspace = true
 # spawn and spawn_blocking; "time" for the Postgres retry backoff sleep.
-tokio = { workspace = true, features = ["rt", "time"] }
+tokio = { workspace = true, features = ["rt", "time", "sync"] }
 rustix.workspace = true
 rand_core.workspace = true
 serde_json.workspace = true

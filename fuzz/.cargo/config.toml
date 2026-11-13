@@ -1,0 +1,4 @@
+# Same patched mail-auth as the workspace (see ../vendor/mail-auth/PATCHES.md). Kept here, not in
+# Cargo.toml, so the wrapped-libs gate still sees mail-auth declared only by rusty-smtp.
+[patch.crates-io]
+mail-auth = { path = "../vendor/mail-auth" }

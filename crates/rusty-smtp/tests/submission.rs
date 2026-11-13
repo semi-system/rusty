@@ -388,3 +388,169 @@ async fn the_throttle_follows_the_account_not_the_spelling_or_the_alias() {
     })
     .await;
 }
+
+// ---------------------------------------------------------------- U5 review fixes (I2-I5, minors)
+
+use rusty_smtp::outbound_queue::SubmitLimits;
+
+const REMOTE: &[u8] = b"From: Alice <alice@example.net>\r\nTo: x@remote.test\r\nSubject: hi\r\n\r\nbody";
+
+#[tokio::test]
+async fn a_retried_submission_queues_the_remote_message_once() {
+    for_each_backend(|b| async move {
+        world(&b).await;
+        let s = start(&b, opts()).await;
+        // The same message twice (a client retrying after a 451): one job per destination, not two.
+        for _ in 0..2 {
+            let mut c = authed(s.addr, &s.cert_der).await;
+            let r = c.mail("alice@example.net", &["x@remote.test", "y@other-remote.test"], REMOTE).await;
+            assert!(r.starts_with("250"), "{r}");
+        }
+        assert_eq!(b.fx.scalar("SELECT count(*) FROM jobs WHERE kind = 'outbound.send'", &[]).await, 2, "{}", b.name);
+        // A different message is a different submission.
+        let mut c = authed(s.addr, &s.cert_der).await;
+        let other = b"From: Alice <alice@example.net>\r\nTo: x@remote.test\r\nSubject: second\r\n\r\nbody";
+        assert!(c.mail("alice@example.net", &["x@remote.test"], other).await.starts_with("250"));
+        assert_eq!(b.fx.scalar("SELECT count(*) FROM jobs WHERE kind = 'outbound.send'", &[]).await, 3, "{}", b.name);
+        s.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_full_queue_or_budget_is_a_temporary_failure_and_one_user_cannot_starve_another() {
+    for_each_backend(|b| async move {
+        let (_alice, _bob, _) = world(&b).await;
+        let dom = b.dir.find_domain("example.net").await.unwrap().unwrap().id;
+        b.dir.create_account("carol", dom, Some("pw-carol-1234"), None).await.unwrap();
+        let mut o = opts();
+        o.submit_limits = Some(SubmitLimits { max_pending: 1, window_secs: 3600, max_jobs: 100, max_recipients: 100, max_bytes: 1 << 30 });
+        let s = start(&b, o).await;
+        let mut c = authed(s.addr, &s.cert_der).await;
+        assert!(c.mail("alice@example.net", &["x@remote.test"], REMOTE).await.starts_with("250"));
+        let second = b"From: Alice <alice@example.net>\r\nTo: x@remote.test\r\nSubject: two\r\n\r\nbody";
+        let r = c.mail("alice@example.net", &["x@remote.test"], second).await;
+        assert!(r.starts_with("451"), "queue full is temporary, never a permanent 552: {r}");
+        // Carol has her own share of the tenant's queue.
+        let mut c2 = Client::secure_hello(s.addr, &s.cert_der).await;
+        assert!(c2.cmd(&format!("AUTH PLAIN {}", plain("carol@example.net", "pw-carol-1234"))).await.starts_with("235"));
+        let from_carol = b"From: carol@example.net\r\nTo: x@remote.test\r\nSubject: c\r\n\r\nbody";
+        assert!(c2.mail("carol@example.net", &["x@remote.test"], from_carol).await.starts_with("250"));
+        s.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_submission_budget_counts_recipients_and_bytes_and_survives_a_restart() {
+    for_each_backend(|b| async move {
+        world(&b).await;
+        let limits = SubmitLimits { max_pending: 100, window_secs: 3600, max_jobs: 100, max_recipients: 2, max_bytes: 1 << 30 };
+        let mut o = opts();
+        o.submit_limits = Some(limits);
+        let s = start(&b, o).await;
+        let mut c = authed(s.addr, &s.cert_der).await;
+        assert!(c.mail("alice@example.net", &["a@remote.test", "b@remote.test"], REMOTE).await.starts_with("250"));
+        s.stop().await;
+        // A new process (new in-memory state) still knows the budget: it lives in the queue's rows.
+        let mut o = opts();
+        o.submit_limits = Some(limits);
+        let s = start(&b, o).await;
+        let mut c = authed(s.addr, &s.cert_der).await;
+        let more = b"From: Alice <alice@example.net>\r\nTo: c@remote.test\r\nSubject: more\r\n\r\nbody";
+        let r = c.mail("alice@example.net", &["c@remote.test"], more).await;
+        assert!(r.starts_with("451"), "recipient budget used up: {r}");
+        s.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn remote_recipients_are_refused_while_the_worker_is_disabled() {
+    for_each_backend(|b| async move {
+        world(&b).await;
+        let mut o = opts();
+        o.remote_enabled = false;
+        let s = start(&b, o).await;
+        let mut c = authed(s.addr, &s.cert_der).await;
+        assert!(c.cmd("MAIL FROM:<alice@example.net>").await.starts_with("250"));
+        let r = c.cmd("RCPT TO:<x@remote.test>").await;
+        assert!(r.starts_with("451 4.3.2"), "mail is never accepted into a queue nobody drains: {r}");
+        // Local delivery is unaffected.
+        assert!(c.cmd("RCPT TO:<bob@example.net>").await.starts_with("250"));
+        assert_eq!(b.count("jobs").await, 0);
+        s.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_hosted_but_disabled_domain_is_not_queued_as_remote_and_lists_with_external_members_are_refused() {
+    for_each_backend(|b| async move {
+        let (_alice, _bob, _eve) = world(&b).await;
+        let other = b.dir.find_domain("other.test").await.unwrap().unwrap().id;
+        b.dir.set_domain_status(other, rusty_store::repo::DomainStatus::Disabled).await.unwrap();
+        let s = start(&b, opts()).await;
+        let mut c = authed(s.addr, &s.cert_der).await;
+        assert!(c.cmd("MAIL FROM:<alice@example.net>").await.starts_with("250"));
+        let r = c.cmd("RCPT TO:<eve@other.test>").await;
+        assert!(r.starts_with("550 5.1.2"), "a disabled hosted domain is not remote: {r}");
+        // A list with an external member: refused, not silently reduced to its local members.
+        let (alice, _) = (b.dir.find_account("alice@example.net").await.unwrap().unwrap().id, ());
+        let dom = b.dir.find_domain("example.net").await.unwrap().unwrap().id;
+        let list = b.dir.create_list("team", dom).await.unwrap();
+        b.dir.add_list_member(list, Some(alice), None).await.unwrap();
+        b.dir.add_list_member(list, None, Some("far@away.example")).await.unwrap();
+        let r = c.cmd("RCPT TO:<team@example.net>").await;
+        assert!(r.starts_with("550 5.7.2"), "{r}");
+        assert_eq!(b.count("jobs").await, 0);
+        s.stop().await;
+    })
+    .await;
+}
+
+// backend-neutral: pure functions over bytes, no database
+#[tokio::test]
+async fn the_atomic_memory_limiter_does_not_overshoot_under_parallel_attempts() {
+    use rusty_smtp::limits::{MemorySubmissionLimiter, SubmissionLimiter};
+    use rusty_svc::SystemClock;
+    let lim = Arc::new(MemorySubmissionLimiter::new(5, Arc::new(SystemClock::new())));
+    let mut tasks = Vec::new();
+    for _ in 0..50 {
+        let l = lim.clone();
+        tasks.push(tokio::spawn(async move { l.try_record(AccountId(1)) }));
+    }
+    let mut ok = 0;
+    for t in tasks {
+        if t.await.unwrap() {
+            ok += 1;
+        }
+    }
+    assert_eq!(ok, 5, "exactly the budget passes, however many connections race");
+}
+
+#[tokio::test]
+async fn a_retry_after_a_failed_queue_step_converges_without_duplicates() {
+    for_each_backend(|b| async move {
+        let (_alice, bob, _) = world(&b).await;
+        let mut o = opts();
+        o.submit_limits = Some(SubmitLimits { max_pending: 1, window_secs: 3600, max_jobs: 100, max_recipients: 100, max_bytes: 1 << 30 });
+        let s = start(&b, o).await;
+        let mut c = authed(s.addr, &s.cert_der).await;
+        assert!(c.mail("alice@example.net", &["x@remote.test"], REMOTE).await.starts_with("250")); // fills the queue
+        let mixed = b"From: Alice <alice@example.net>\r\nTo: bob@example.net, y@remote.test\r\nSubject: mixed\r\n\r\nbody";
+        let r = c.mail("alice@example.net", &["bob@example.net", "y@remote.test"], mixed).await;
+        assert!(r.starts_with("451"), "the queue step failed: temporary for the client: {r}");
+        s.stop().await;
+        // The client retries the same message later, against a server whose queue has room.
+        let s = start(&b, opts()).await;
+        let mut c = authed(s.addr, &s.cert_der).await;
+        let r = c.mail("alice@example.net", &["bob@example.net", "y@remote.test"], mixed).await;
+        assert!(r.starts_with("250"), "{r}");
+        let copies = b.inbox(bob, &s.blobs).await.iter().filter(|m| contains(m, b"Subject: mixed")).count();
+        assert_eq!(copies, 1, "{}: the local copy was stored once across both attempts", b.name);
+        assert_eq!(b.fx.scalar("SELECT count(*) FROM jobs WHERE kind = 'outbound.send'", &[]).await, 2, "{}", b.name);
+        s.stop().await;
+    })
+    .await;
+}

@@ -6,13 +6,13 @@ use std::time::Duration;
 
 use common::pg::{pg_admin_url, PgTestDb, PG_SKIP_NOTICE};
 use rusty_core::Error;
-use rusty_store::{PgPoolConfig, PgStore};
+use rusty_store::{PgLimits, PgStore};
 use url::Url;
 
 // backend-neutral: Postgres server facts (version, pool bounds, session timeouts, credential sanitising); SQLite has no equivalent
 #[test]
 fn pool_defaults_are_stable() {
-    let config = PgPoolConfig::default();
+    let config = PgLimits::default();
     assert_eq!(config.max_connections, 4);
     assert_eq!(config.acquire_timeout, Duration::from_secs(5));
     assert_eq!(config.statement_timeout, Duration::from_secs(30));
@@ -65,18 +65,20 @@ async fn isolated_databases_do_not_see_each_other() {
 
 // backend-neutral: Postgres server facts (version, pool bounds, session timeouts, credential sanitising); SQLite has no equivalent
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn pool_is_bounded_and_session_timeouts_are_applied() {
+async fn pool_is_bounded_and_role_level_timeouts_apply() {
     let Some(admin_url) = pg_admin_url() else {
         return;
     };
     let db = PgTestDb::create(&admin_url).await;
-    let config = PgPoolConfig {
+    let config = PgLimits {
         max_connections: 2,
         acquire_timeout: Duration::from_secs(2),
-        statement_timeout: Duration::from_millis(100),
-        idle_in_transaction_timeout: Duration::from_millis(150),
-        ..PgPoolConfig::default()
+        ..PgLimits::default()
     };
+    // Timeouts belong to the role (here: the database, the harness stand-in for ALTER ROLE .. SET); the
+    // connection code only verifies them and never issues SET (PgBouncer-ready).
+    db.set_database_setting("statement_timeout", "100ms").await;
+    db.set_database_setting("idle_in_transaction_session_timeout", "150ms").await;
     let store = PgStore::connect_with_config(db.url(), config)
         .await
         .unwrap();

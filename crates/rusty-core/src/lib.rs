@@ -4,6 +4,7 @@ pub mod config;
 pub mod dns;
 pub mod dns_state;
 mod config_sections;
+mod config_store;
 mod error;
 mod ids;
 pub mod proto;

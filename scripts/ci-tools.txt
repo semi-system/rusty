@@ -1,0 +1,7 @@
+# Cargo tools the CI workflows install (scripts/ci-tool.sh). One "crate version" per line; the
+# workflow cache key hashes this file, so a bump rebuilds the tools once and nothing else.
+# Versions are those verified on the build server. Bump deliberately (cargo-deny needs a matching
+# deny.toml schema; cargo-audit reads the advisory database at run time, not at install time).
+cargo-deny 0.20.0
+cargo-audit 0.22.0
+cargo-fuzz 0.13.1

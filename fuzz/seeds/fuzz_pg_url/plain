@@ -1,0 +1,1 @@
+postgres://rusty_app@db.internal:5432/rusty

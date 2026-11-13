@@ -869,6 +869,9 @@ mod tests {
     #[tokio::test]
     async fn existing_content_put_syncs_shard_directories() {
         let d = tempfile::tempdir().unwrap();
+        // `open` refuses a group/other-writable root, and a pre-existing temp dir takes its mode from
+        // the umask (0775 under umask 002): make the mode explicit so the test does not depend on it.
+        fs::set_permissions(d.path(), fs::Permissions::from_mode(0o700)).unwrap();
         FsBlobStore::init(d.path()).await.unwrap();
         let s = FsBlobStore::open(d.path()).await.unwrap();
         let data = Bytes::from_static(b"already here");

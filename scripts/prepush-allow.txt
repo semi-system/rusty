@@ -1,0 +1,37 @@
+# Explicit exceptions for scripts/prepush-check.sh: "<kind> <path>". A path ending in / is ONE
+# explicit directory; there are no wildcards. Kinds: privkey secret password workpath file.
+# Every entry has its reason above it. Adding an entry is a reviewed change (CODEOWNERS: /scripts/).
+
+# Fuzz seeds for the PEM parser: deliberately malformed or encrypted keys and public certificates.
+privkey fuzz/seeds/fuzz_pem/
+file fuzz/seeds/fuzz_pem/
+# DKIM test keys (RFC 8463 vectors and throw-away generated keys) used by the signer tests.
+privkey crates/rusty-smtp/tests/data/
+file crates/rusty-smtp/tests/data/
+# Test strings that exercise "this is not a usable private key" handling, not key material.
+privkey crates/rusty-svc/tests/tls.rs
+privkey crates/rusty-core/tests/dns.rs
+# DKIM signer tests assert that generated key files start with the PEM header (a prefix check, no key body).
+privkey crates/rusty-smtp/tests/dkim.rs
+# Vendored mail-auth (see vendor/mail-auth/PATCHES.md): inline PEM constants (PKCS#1 and PKCS#8) used only by its
+# `#[cfg(test)] mod tests` to parse keys; the directory is excluded from the workspace and nothing here ships.
+privkey vendor/mail-auth/src/crypto/aws_lc.rs
+# Linux paths of the build server (/home/<build user>/..., "bad path" probes), not a workstation.
+workpath deploy/buildserver/setup-ubuntu.sh
+workpath docs/buildserver.md
+workpath scripts/tests/remote-lib.sh
+# Placeholder in the example file (YOUR_NAME), documents the Windows form of the key path.
+workpath .rusty-remote.env.example
+# The checker and its self-test contain the patterns they search for.
+workpath scripts/prepush-check.sh
+workpath scripts/tests/prepush-check.sh
+privkey scripts/prepush-check.sh
+privkey scripts/tests/prepush-check.sh
+secret scripts/tests/prepush-check.sh
+password scripts/prepush-check.sh
+password scripts/tests/prepush-check.sh
+# This page documents the patterns the checker searches for.
+workpath docs/git-workflow.md
+password docs/git-workflow.md
+# The allowlist itself names the example path above.
+workpath scripts/prepush-allow.txt
