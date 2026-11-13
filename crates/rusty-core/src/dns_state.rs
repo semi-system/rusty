@@ -358,7 +358,7 @@ mod tests {
         #[test]
         fn failures_below_threshold_never_alert(k in 0u32..5, n in 5u32..9) {
             let mut seq = vec![Ok];
-            seq.extend(std::iter::repeat(Missing).take(k as usize));
+            seq.extend(std::iter::repeat_n(Missing, k as usize));
             let steps = run(&seq, n);
             prop_assert!(steps.iter().all(|s| s.alert == AlertChange::None));
         }
