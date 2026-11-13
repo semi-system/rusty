@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 : "${RUSTY_TEST_PG_URL:?set RUSTY_TEST_PG_URL}"
 export RUSTY_REQUIRE_PG=1
-cargo test -p rusty-store --features postgres
-cargo test -p rusty-directory -p rusty-imap --features postgres
-cargo test -p rusty-store --features postgres,mutation-testing --test pg_dialect_mutations
-cargo clippy -p rusty-store -p rusty-directory -p rusty-imap --features postgres --all-targets -- -D warnings
+cargo test -p rusty-store
+cargo test -p rusty-directory -p rusty-imap
+cargo test -p rusty-store --features mutation-testing --test pg_dialect_mutations
+cargo clippy -p rusty-store -p rusty-directory -p rusty-imap --all-targets -- -D warnings

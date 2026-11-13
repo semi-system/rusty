@@ -99,8 +99,8 @@ symbols_check() {
       fi
     done
   fi
-  ctl="$(probe_binary postgres m "$target")" || return 1
-  prod="$(probe_binary postgres "" "$target")" || { rm -f "$ctl"; return 1; }
+  ctl="$(probe_binary "" m "$target")" || return 1
+  prod="$(probe_binary "" "" "$target")" || { rm -f "$ctl"; return 1; }
   binary_has_marker "$ctl" "$MARKER" || { echo "marker is not in a binary built with the feature (gate blind)" >&2; fail=1; }
   if binary_has_marker "$prod" "$MARKER"; then
     echo "marker is present in a production-profile binary" >&2

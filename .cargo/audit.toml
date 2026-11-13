@@ -1,6 +1,11 @@
 [advisories]
-# RUSTSEC-2023-0071 (rsa, Marvin timing attack): rsa reaches Cargo.lock because `sqlx` lists
-# `sqlx-mysql` as an optional dependency (sqlx-mysql -> rsa). We build sqlx with the postgres
-# feature only, so rsa is never compiled or linked. Verified: `cargo tree -i rsa --target all -e all`
-# prints nothing. Re-check on every sqlx upgrade.
-ignore = ["RUSTSEC-2023-0071"]
+# cargo-audit reads Cargo.lock, which also lists the packages that are only OPTIONAL dependencies of sqlx's macro
+# crate (`sqlx::migrate!` needs the `macros` feature): sqlx-sqlite -> libsqlite3-sys, and sqlx-mysql -> rsa. We build
+# sqlx with the postgres feature only, so none of them is compiled or linked. Verified:
+#   cargo tree -i libsqlite3-sys --target all -e all    prints nothing
+#   cargo tree -i rsa --target all -e all               prints nothing
+# (`cargo deny`, which follows the real dependency graph, reports neither.) Re-check on every sqlx upgrade; drop
+# both entries when a sqlx release no longer lists them in the lock, and no later than 2027-02-01.
+# RUSTSEC-2023-0071: rsa, Marvin timing attack.
+# RUSTSEC-2026-0459: bundled SQLite < 3.54.0, crafted -wal file (the SQLite backend itself is gone).
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0459"]
