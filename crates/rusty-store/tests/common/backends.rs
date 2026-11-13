@@ -113,13 +113,7 @@ pub async fn pg_backend() -> Option<Backend> {
 }
 
 pub async fn backends() -> Vec<Backend> {
-    #[allow(unused_mut)]
-    let mut v = vec![sqlite_backend().await];
-    #[cfg(feature = "postgres")]
-    if let Some(b) = pg_backend().await {
-        v.push(b);
-    }
-    v
+    vec![pg_backend().await.expect("a Postgres test server (RUSTY_TEST_PG_URL)")]
 }
 
 pub async fn for_each_backend<F, Fut>(f: F)

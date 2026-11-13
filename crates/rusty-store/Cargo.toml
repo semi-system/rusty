@@ -7,7 +7,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
-default = []
+default = ["postgres"]
 postgres = ["sqlx/postgres", "sqlx/tls-rustls-ring-native-roots"]
 # Test-only fault injection in the Postgres repositories (lock-order, skipped locks, pauses).
 # NEVER enable outside this crate's own [dev-dependencies] (self dev-dependency below);

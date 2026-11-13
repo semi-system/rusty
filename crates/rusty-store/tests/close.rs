@@ -1,5 +1,4 @@
-//! `close()`: a graceful shutdown ends the pool and, on SQLite, folds the write-ahead log into
-//! the database file so that a copy of the one file is complete (backup and restart rely on it).
+//! `close()`: a graceful shutdown ends the pool; later use fails closed and closing twice is harmless.
 
 mod common;
 
@@ -9,16 +8,13 @@ use rusty_core::Error;
 use rusty_core::Flags;
 
 async fn close(b: &Backend) -> rusty_core::Result<()> {
-    #[cfg(feature = "postgres")]
-    if let Some((store, _)) = &b.pg {
-        store.close().await;
-        return Ok(());
-    }
-    b.sqlite.as_ref().expect("a backend is SQLite or Postgres").close().await
+    let (store, _) = b.pg.as_ref().expect("the backend is Postgres");
+    store.close().await;
+    Ok(())
 }
 
 #[tokio::test]
-async fn close_ends_the_pool_and_checkpoints_the_wal() {
+async fn close_ends_the_pool() {
     for_each_backend(|b| async move {
         let (_dom, _acc, mb) = acct(&b, "closer").await;
         for i in 0..20 {
@@ -33,11 +29,6 @@ async fn close_ends_the_pool_and_checkpoints_the_wal() {
         }
         // Closing twice is harmless.
         close(&b).await.unwrap();
-        if b.name == "sqlite" {
-            let wal = b._tmp.path().join("meta.sqlite-wal");
-            let len = std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0);
-            assert_eq!(len, 0, "WAL not checkpointed on close");
-        }
     })
     .await;
 }

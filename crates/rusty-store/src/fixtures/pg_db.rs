@@ -79,19 +79,18 @@ pub fn pg_admin_url() -> Option<String> {
     )
 }
 
-/// Pure core of [`pg_admin_url`]. `RUSTY_REQUIRE_PG` is parsed first (a bad value panics), whether
-/// or not a URL is present.
+/// Pure core of [`pg_admin_url`]. Postgres is the only backend, so a missing URL is a failure, never a
+/// skip (`scripts/pg-up.sh` starts a throw-away server and writes its URL). `RUSTY_REQUIRE_PG` is still
+/// parsed first (a bad value panics) for scripts that set it; it no longer changes the outcome. The
+/// return type stays `Option` only so the many `let Some(url) = pg_admin_url() else { return }` call
+/// sites keep compiling; the `None` arm cannot be reached.
 pub fn admin_url_from(url: Option<String>, require: Option<&str>) -> Option<String> {
-    let required = parse_require_pg(require);
+    let _ = parse_require_pg(require);
     match url {
         Some(value) if !value.is_empty() => Some(value),
-        _ if required => {
-            panic!("RUSTY_REQUIRE_PG is set but RUSTY_TEST_PG_URL is missing")
-        }
-        _ => {
-            eprintln!("{PG_SKIP_NOTICE}");
-            None
-        }
+        _ => panic!(
+            "RUSTY_TEST_PG_URL is not set: the tests need a Postgres server (bash scripts/pg-up.sh starts one)"
+        ),
     }
 }
 

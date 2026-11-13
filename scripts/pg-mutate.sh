@@ -46,7 +46,7 @@ FULL_SCHEMA=(-p rusty-store --features "$FS" --test pg_schema_cases --test pg_sc
   --test pg_schema_concurrency --test pg_plans --test mailbox_conformance --test jobs_conformance --test gc_conformance
   --test pg_mailbox_concurrency)
 QUICK_SCHEMA=(-p rusty-store --features "$FS" --test pg_schema_cases --test pg_schema_constraints)
-ORACLE=(-p rusty-store --features "$FS" --test pg_schema_parity pg_schema_matches_sqlite_structure)
+ORACLE=(-p rusty-store --features "$FS" --test pg_schema_parity pg_catalog_matches_snapshot)
 
 # judges <id>: the cheap, plausible judging set of a dialect mutation (cargo args)
 judges() {

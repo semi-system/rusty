@@ -1055,22 +1055,6 @@ async fn poll_n_then_drop<F: std::future::Future>(fut: F, n: usize) -> bool {
     false
 }
 
-/// Regression: in sqlx 0.8.6, dropping `pool.begin_with(..)` right after SQLite acknowledged
-/// the BEGIN (deterministically: after its 3rd poll) left the pooled connection inside an
-/// open transaction forever, holding the write lock. `begin_write` must not.
-// backend-neutral: SQLite-only: regression for a sqlx 0.8.6 SQLite BEGIN cancellation bug; the Postgres cancellation tests are in pg_mailbox_concurrency.rs
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn cancelled_begin_write_does_not_leak_transaction() {
-    let store = mem().await; // one connection: a leak would poison every later write
-    for n in 1..=12usize {
-        let _ = poll_n_then_drop(store.begin_write(), n).await;
-        let tx = tokio::time::timeout(Duration::from_secs(10), store.begin_write()).await;
-        let tx = tx.unwrap_or_else(|_| panic!("n={n}: begin timed out"));
-        let tx = tx.unwrap_or_else(|err| panic!("n={n}: {err:?}"));
-        tx.commit().await.unwrap();
-    }
-}
-
 /// Drop appends at every await point (pool acquire, blob write, BEGIN, each statement,
 /// COMMIT) and with short timeouts; afterwards a normal append must succeed and whatever
 /// committed must be gapless.
@@ -1105,27 +1089,6 @@ async fn cancel_appends_then_check(e: &Env) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-// backend-neutral: SQLite-only, the single in-memory connection is the point of the test
 async fn cancelled_append_does_not_hold_write_lock() {
-    cancel_appends_then_check(&Env::sqlite_mem().await).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn cancelled_append_does_not_hold_write_lock_file_store() {
     for_each_env(|e| async move { cancel_appends_then_check(&e).await }).await;
-}
-
-#[tokio::test]
-// backend-neutral: SQLite-only, SqliteStore::begin_write on the single in-memory connection
-async fn write_transactions_commit_and_roll_back() {
-    let e = Env::sqlite_mem().await;
-    let store = e.b.sqlite.clone().unwrap();
-    let tx = store.begin_write().await.unwrap();
-    tx.rollback().await.unwrap();
-    let tx = store.begin_write().await.unwrap();
-    tx.commit().await.unwrap();
-    // the single in-memory connection is free again
-    e.mb.append(INBOX, raw("x", None), Flags::empty())
-        .await
-        .unwrap();
 }
