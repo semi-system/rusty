@@ -202,7 +202,6 @@ fn control_characters_cannot_hide_a_boundary_line_in_the_copied_headers() {
     assert_eq!(hdrs, b"Subject: a\r\nX: y\r\n", "{:?}", String::from_utf8_lossy(&hdrs));
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn the_bounce_id_is_stable_per_job_and_failure_set() {
     let a = dsn::delivery_id("7", &[failure("a@r.test"), failure("b@r.test")]);
