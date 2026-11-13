@@ -56,7 +56,6 @@ fn check_err<T>(what: &str, r: Result<T, Error>) {
     assert!(check(what, r), "{what}: hostile input accepted");
 }
 
-// backend-neutral: pure parser test, no database
 #[test]
 fn core_parsers_do_not_echo() {
     for s in hostile() {
@@ -65,7 +64,6 @@ fn core_parsers_do_not_echo() {
     }
 }
 
-// backend-neutral: pure parser test, no database
 #[test]
 fn address_parsers_do_not_echo() {
     let mut rejected = 0;
@@ -83,7 +81,6 @@ fn address_parsers_do_not_echo() {
     assert!(rejected >= 12, "only {rejected} rejections");
 }
 
-// backend-neutral: opens no database: every URL here is refused or unreachable (port 1)
 #[tokio::test]
 async fn store_open_does_not_echo_url_or_credentials() {
     for url in [

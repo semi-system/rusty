@@ -1,12 +1,11 @@
 //! Garbage collection: hard-delete expunged messages, then remove unreferenced blobs (spec §5).
 //!
-//! [`Gc`] is a facade over [`GcRepo`](crate::repo::GcRepo) (SQLite and Postgres). The free
-//! functions below are the SQLite entry points kept for existing callers.
+//! [`Gc`] is a facade over [`GcRepo`](crate::repo::GcRepo) (Postgres).
 //!
 //! Safety argument for `collect_blobs`:
 //! - A `blobs` row is deleted only inside a transaction that re-checks `refcount = 0` and the
 //!   age of `zero_since` after taking the row lock (Postgres: `lock_existing_blobs`, ascending
-//!   hash order; SQLite: the global write lock); `messages.blob_hash` is an `ON DELETE
+//!   hash order); `messages.blob_hash` is an `ON DELETE
 //!   RESTRICT` foreign key, so even a corrupted refcount cannot drop a referenced row.
 //! - A blob file is deleted only after its row is gone (or when it never had one), only AFTER
 //!   the row deletion committed, and only if its mtime is older than the grace window.
@@ -52,22 +51,22 @@ use crate::blob::unix_secs;
 use crate::repo::GcRepo;
 use crate::BlobStore;
 
-/// Messages hard-deleted per transaction by [`purge_deleted`].
+/// Messages hard-deleted per transaction by [`Gc::purge_deleted`].
 pub const PURGE_BATCH: i64 = 1000;
-/// `blobs` rows examined (and deleted) per transaction by [`collect_blobs`].
+/// `blobs` rows examined (and deleted) per transaction by [`Gc::collect_blobs`].
 pub const GC_BATCH: i64 = 1000;
 /// At most this many messages are kept in [`GcReport::errors`].
 pub const MAX_GC_ERRORS: usize = 1000;
 /// A conservative grace window for production use.
 pub const DEFAULT_GC_GRACE: Duration = Duration::from_secs(24 * 3600);
-/// The shortest grace window [`collect_blobs`] accepts.
+/// The shortest grace window [`Gc::collect_blobs`] accepts.
 pub const MIN_GC_GRACE: Duration = Duration::from_secs(3600);
 /// How long a delivery id is remembered by default.
 pub const DELIVERY_RETENTION_SECS: i64 = 7 * 86400;
 /// How long a dead (expired or revoked) capability row is kept by default.
 pub const CAPABILITY_RETENTION_SECS: i64 = 86400;
 
-/// Outcome of one [`collect_blobs`] run.
+/// Outcome of one [`Gc::collect_blobs`] run.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GcReport {
     /// `blobs` rows deleted.
@@ -119,7 +118,7 @@ fn describe(e: &Error) -> String {
             out.push_str(&format!(": {}", io.kind()));
         } else if let Some(sqlx::Error::Database(db)) = s.downcast_ref::<sqlx::Error>() {
             if let Some(code) = db.code() {
-                // Postgres SQLSTATEs are five characters; SQLite result codes are not classed.
+                // SQLSTATEs are five characters.
                 if code.len() == 5 && code.bytes().all(|b| b.is_ascii_alphanumeric()) {
                     out.push_str(&format!(" (SQLSTATE class {})", &code[..2]));
                 }
@@ -154,7 +153,7 @@ impl Gc {
         Ok(self.purge_deleted_report(older_than).await?.purged)
     }
 
-    /// [`purge_deleted`](Self::purge_deleted) that also reports the mailboxes it had to skip
+    /// [`Gc::purge_deleted`](Self::purge_deleted) that also reports the mailboxes it had to skip
     /// because their lock timed out (`Busy`): one busy mailbox neither stops the run nor hides
     /// the others; run again later for the skipped ones.
     pub async fn purge_deleted_report(&self, older_than: i64) -> Result<PurgeReport> {
@@ -259,7 +258,7 @@ impl Gc {
     }
 
     /// Remove unreferenced blobs as seen at time `now`, with any `grace` (for tests; production
-    /// code calls [`collect_blobs`](Self::collect_blobs)). Under the GC lock (`Conflict` if
+    /// code calls [`Gc::collect_blobs`](Self::collect_blobs)). Under the GC lock (`Conflict` if
     /// another GC holds it):
     /// 0. heal quarantine files left by an interrupted run;
     /// 1. rows with `refcount = 0` and `zero_since < now - grace` (seconds): the rows are
@@ -286,7 +285,7 @@ impl Gc {
     }
 
     /// The shared body: rows are judged by `row_cutoff_secs` (database clock), files by
-    /// `cutoff` (see [`collect_blobs`](Self::collect_blobs)).
+    /// `cutoff` (see [`Gc::collect_blobs`](Self::collect_blobs)).
     async fn run(
         &self,
         blobs: &dyn BlobStore,

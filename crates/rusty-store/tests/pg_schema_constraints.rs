@@ -78,7 +78,6 @@ async fn seed(pool: &PgPool) -> Seed {
     }
 }
 
-// backend-neutral: Postgres catalog, trigger and SQLSTATE behaviour (Postgres is the only backend)
 #[tokio::test]
 async fn pg_bytea_blob_hash_round_trips_without_changing_public_hex_type() {
     let Some((db, store)) = database().await else {
@@ -105,7 +104,6 @@ async fn bad(pool: &PgPool, sql: &str) -> sqlx::Error {
     sqlx::query(sql).execute(pool).await.unwrap_err()
 }
 
-// backend-neutral: Postgres catalog, trigger and SQLSTATE behaviour (Postgres is the only backend)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pg_address_uniqueness_is_concurrency_safe() {
     let Some((db, store)) = database().await else {
@@ -142,7 +140,6 @@ async fn pg_address_uniqueness_is_concurrency_safe() {
     db.cleanup().await;
 }
 
-// backend-neutral: Postgres catalog, trigger and SQLSTATE behaviour (Postgres is the only backend)
 #[tokio::test]
 async fn pg_error_mapping_uses_sqlstate_not_message_text() {
     let Some((db, store)) = database().await else {
@@ -178,7 +175,6 @@ async fn pg_error_mapping_uses_sqlstate_not_message_text() {
     db.cleanup().await;
 }
 
-// backend-neutral: Postgres catalog, trigger and SQLSTATE behaviour (Postgres is the only backend)
 #[tokio::test]
 async fn pg_dropping_address_trigger_demonstrates_negative_test_sensitivity() {
     let Some((db, store)) = database().await else {
@@ -207,7 +203,6 @@ async fn pg_dropping_address_trigger_demonstrates_negative_test_sensitivity() {
 
 // The production error mapping (`map_db_error`) classifies Postgres errors by SQLSTATE only and
 // answers with fixed texts.
-// backend-neutral: Postgres catalog, trigger and SQLSTATE behaviour (Postgres is the only backend)
 #[tokio::test]
 async fn pg_map_db_error_classifies_constraint_violations_by_sqlstate() {
     let Some((db, store)) = database().await else {
@@ -262,7 +257,6 @@ async fn pg_map_db_error_classifies_constraint_violations_by_sqlstate() {
     db.cleanup().await;
 }
 
-// backend-neutral: Postgres catalog, trigger and SQLSTATE behaviour (Postgres is the only backend)
 #[tokio::test]
 async fn pg_map_db_error_messages_do_not_leak_server_text() {
     let Some((db, store)) = database().await else {
@@ -293,7 +287,6 @@ async fn pg_map_db_error_messages_do_not_leak_server_text() {
 
 /// TRUNCATE of an owner table clears that kind's registry rows (mutations
 /// `accounts_addr_truncate` / `aliases_addr_truncate` / `lists_addr_truncate` dropped).
-// backend-neutral: Postgres catalog, trigger and SQLSTATE behaviour (Postgres is the only backend)
 #[tokio::test]
 async fn truncating_an_owner_table_clears_that_kinds_registry_rows() {
     let Some((db, store)) = database().await else {
@@ -352,7 +345,6 @@ async fn without_trigger(pool: &PgPool, table: &str, trigger: &str) {
         .unwrap();
 }
 
-// backend-neutral: Postgres catalog, trigger and SQLSTATE behaviour (Postgres is the only backend)
 #[tokio::test]
 async fn owner_table_unique_keys_hold_when_the_registry_triggers_are_off() {
     let Some((db, store)) = database().await else {
@@ -406,7 +398,6 @@ async fn owner_table_unique_keys_hold_when_the_registry_triggers_are_off() {
     db.cleanup().await;
 }
 
-// backend-neutral: Postgres catalog, trigger and SQLSTATE behaviour (Postgres is the only backend)
 #[tokio::test]
 async fn alias_and_list_domain_foreign_keys_hold_when_the_registry_triggers_are_off() {
     let Some((db, store)) = database().await else {
@@ -435,7 +426,6 @@ async fn alias_and_list_domain_foreign_keys_hold_when_the_registry_triggers_are_
     db.cleanup().await;
 }
 
-// backend-neutral: Postgres catalog, trigger and SQLSTATE behaviour (Postgres is the only backend)
 #[tokio::test]
 async fn registry_table_constraints_hold_when_its_guard_trigger_is_off() {
     let Some((db, store)) = database().await else {

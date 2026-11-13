@@ -110,7 +110,6 @@ async fn read_all(s: &mut TcpStream) -> String {
     out
 }
 
-// backend-neutral: no database involved, socket loop only
 #[tokio::test]
 async fn shutdown_closes_the_listener_and_drains_an_idle_session_within_the_deadline() {
     let h = Arc::new(Drainer { seen_tls: Mutex::new(vec![]) });
@@ -132,7 +131,6 @@ async fn shutdown_closes_the_listener_and_drains_an_idle_session_within_the_dead
     assert_eq!(r.events.count("Closed"), 1);
 }
 
-// backend-neutral: no database involved, socket loop only
 #[tokio::test]
 async fn a_session_that_ignores_shutdown_is_cut_at_the_deadline() {
     let r = start(spec(10, 10), Arc::new(DirectTcp), Arc::new(Stuck), Duration::from_millis(300)).await;
@@ -145,7 +143,6 @@ async fn a_session_that_ignores_shutdown_is_cut_at_the_deadline() {
     assert_eq!(read_all(&mut c).await, "", "the stuck session's socket is closed");
 }
 
-// backend-neutral: no database involved, socket loop only
 #[tokio::test]
 async fn a_panicking_session_drops_only_itself() {
     let r = start(spec(10, 10), Arc::new(DirectTcp), Arc::new(Panicky(Mutex::new(0))), Duration::from_secs(2)).await;
@@ -158,7 +155,6 @@ async fn a_panicking_session_drops_only_itself() {
     r.join.await.unwrap().unwrap();
 }
 
-// backend-neutral: no database involved, socket loop only
 #[tokio::test]
 async fn connection_limits_total_and_per_ip() {
     let h = Arc::new(Drainer { seen_tls: Mutex::new(vec![]) });
@@ -198,7 +194,6 @@ async fn connection_limits_total_and_per_ip() {
     r.join.await.unwrap().unwrap();
 }
 
-// backend-neutral: no database involved, socket loop only
 #[tokio::test]
 async fn implicit_tls_accepter_hands_the_session_a_tls_stream_and_peer_info() {
     let d = tempfile::tempdir().unwrap();
@@ -220,7 +215,6 @@ async fn implicit_tls_accepter_hands_the_session_a_tls_stream_and_peer_info() {
     r.join.await.unwrap().unwrap();
 }
 
-// backend-neutral: no database involved, socket loop only
 #[tokio::test]
 async fn a_client_that_never_finishes_the_tls_handshake_is_dropped() {
     let d = tempfile::tempdir().unwrap();
@@ -243,7 +237,6 @@ async fn a_client_that_never_finishes_the_tls_handshake_is_dropped() {
     r.join.await.unwrap().unwrap();
 }
 
-// backend-neutral: no database involved, socket loop only
 #[tokio::test]
 async fn binding_a_busy_port_is_an_error() {
     let l = BoundListener::bind(spec(1, 1)).await.unwrap();

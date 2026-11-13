@@ -1,9 +1,30 @@
 # Running Rusty locally (development profile)
 
-> **DEV ONLY. Do not put real mail in this.** `rusty d --dev` keeps everything in a SQLite file
-> and a blob directory under a data dir, uses a self-signed certificate kept in the data dir, and binds
-> high ports. The production backend will be Postgres (not wired yet) and production runs with
-> `--config`. Treat the dev data dir as disposable.
+> **DEV ONLY. Do not put real mail in this.** `rusty d --dev` keeps the mail metadata in a PostgreSQL
+> database you name in the environment, the message bodies in a blob directory under a data dir, uses a
+> self-signed certificate kept in the data dir, and binds high ports. Production runs with `--config`. Treat
+> the dev data dir and the dev database as disposable.
+
+## The dev database
+
+PostgreSQL is the only backend, so the dev profile needs a server. Name it in the environment:
+
+| Variable | Meaning |
+|---|---|
+| `RUSTY_DEV_PG_URL` | `postgres://user@host:5432/database` (required; no password and no query parameters in the URL) |
+| `RUSTY_DEV_PG_PASSWORD` | the password of that user (optional; never logged) |
+| `RUSTY_DEV_PG_SSLMODE` | `disable`, `require`, `verify-ca` or `verify-full` (default: `disable` on loopback, `verify-full` elsewhere; a mode that does not verify a remote server is accepted here and warned about at every start) |
+| `RUSTY_DEV_PG_CA_BUNDLE` | absolute path of the CA bundle that signs the server certificate |
+
+The dev profile accepts any database role. Build the schema once, as a role that may create tables:
+
+```sh
+export RUSTY_DEV_PG_URL=postgres://rusty@127.0.0.1:5432/rusty RUSTY_DEV_PG_PASSWORD=...
+$R ctl --dev --data-dir $D db migrate --without-roles     # idempotent; `db status` shows whether it is current
+```
+
+`bash scripts/pg-up.sh` starts a throw-away Postgres 18 container for this (its URL, with the password inside,
+is in `~/.rusty-pg-test-url.dev`).
 
 ## What works and what does not
 
@@ -19,7 +40,7 @@ Does **not** work yet:
   sender. Without a domain whose SPF/DKIM/DMARC records point at this machine, receivers will reject or
   junk the mail anyway. Set `[outbound] enabled = false` to make submission refuse remote recipients
   (`451 4.3.2`) instead of queueing them.
-- **Postgres / Valkey.** Production storage wiring (U11) is not done; the dev profile uses SQLite.
+- **Valkey.** Not used yet.
 - **DNS page / `rustyctl check` records for a real domain.** There is no admin UI; the domain
   `example.test` used below is fictional and has no DNS.
 - **No real Internet mail.** There is no MX, no PTR, no public certificate. Do not point
@@ -50,6 +71,7 @@ bash scripts/wsl-cargo.sh build --release --target x86_64-unknown-linux-musl -p 
 # in WSL (the binary is ~/rusty-target/x86_64-unknown-linux-musl/release/rusty)
 R=~/rusty-target/x86_64-unknown-linux-musl/release/rusty
 D=$HOME/rusty-dev          # must not be group/world accessible; created 0700 if missing
+$R ctl --dev --data-dir $D db migrate --without-roles   # once (see "The dev database" above)
 $R d --dev --data-dir $D --bind 127.0.0.1 &      # leave running; Ctrl+C / kill -TERM stops it
 
 $R ctl --dev --data-dir $D domain add example.test
@@ -66,9 +88,11 @@ Automated version of all of this, with assertions and teardown (uses a throwaway
 bash tools/acceptance/local-run.sh          # inside WSL; add KEEP=1 to keep the data dir and log
 ```
 
-It sends a mail to alice through 2525, reads it over IMAPS 9993 (LOGIN, LIST, SELECT, FETCH,
-STORE, EXPUNGE), sends alice -> bob through 5587 with STARTTLS + AUTH PLAIN, and checks bob
-receives it. It needs only `bash`, `openssl`, `base64` and `timeout`.
+It starts a throw-away Postgres 18 container (TLS with a generated CA, `deploy/db/roles.sql`), builds the schema as
+the migrator role, runs the daemon as the unprivileged runtime role, sends a mail to alice through 2525, reads it over
+IMAPS 9993 (LOGIN, LIST, SELECT, FETCH, STORE, EXPUNGE), sends alice -> bob through 5587 with STARTTLS + AUTH PLAIN,
+checks bob receives it, and kills the daemon with SIGKILL in the middle of a burst of deliveries (no message lost, none
+duplicated). It needs `bash`, `openssl`, `base64`, `timeout` and Docker.
 
 ## Reaching the ports from Windows
 

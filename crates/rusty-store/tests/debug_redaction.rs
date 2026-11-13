@@ -3,7 +3,6 @@
 use rusty_store::repo::{AuthRow, NewAccount};
 use rusty_core::DomainId;
 
-// backend-neutral: pure unit test of Debug output, no database
 #[test]
 fn postgres_store_config_debug_has_no_password() {
     use rusty_store::StoreConfig;
@@ -15,7 +14,6 @@ fn postgres_store_config_debug_has_no_password() {
     }
 }
 
-// backend-neutral: pure unit test of Debug output, no database
 #[test]
 fn password_hashes_are_not_printed() {
     let phc = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2hoYXNo";

@@ -16,7 +16,6 @@ fn encode(data: &[u8]) -> String {
     out
 }
 
-// backend-neutral: pure codec, no database
 #[test]
 fn known_vectors_rfc4648() {
     for (plain, enc) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg=="), ("fooba", "Zm9vYmE="), ("foobar", "Zm9vYmFy")] {
@@ -24,7 +23,6 @@ fn known_vectors_rfc4648() {
     }
 }
 
-// backend-neutral: pure codec, no database
 #[test]
 fn strictness() {
     for bad in ["Zg", "Zg=", "Zm9", "Z===", "Zg==Zg==", "Zm=v", "Zm9v ", " Zm9v", "Zm9v\n", "Zm9!", "Zm9v====", "Zh==", "Zm9=", "=Zm9", "Zm9v-_"] {
@@ -35,7 +33,6 @@ fn strictness() {
     assert!(decode_base64(&encode(&[1u8; 10]), 10).is_ok());
 }
 
-// backend-neutral: pure codec, no database
 #[test]
 fn plain_messages() {
     let c = parse_plain(b"\0alice\0secret").unwrap();
@@ -51,7 +48,6 @@ fn plain_messages() {
     assert!(!dbg.contains("secret") && !dbg.contains("alice"), "{dbg}");
 }
 
-// backend-neutral: pure codec, no database
 #[test]
 fn login_values() {
     assert_eq!(parse_login_value("YWxpY2U=", 100).unwrap(), "alice");
@@ -61,13 +57,11 @@ fn login_values() {
 }
 
 proptest! {
-    // backend-neutral: encode/decode round trip and no panic on arbitrary text
     #[test]
     fn round_trip(data in proptest::collection::vec(any::<u8>(), 0..300)) {
         prop_assert_eq!(decode_base64(&encode(&data), 1000).unwrap(), data);
     }
 
-    // backend-neutral: arbitrary text never panics
     #[test]
     fn arbitrary_text_never_panics(s in "\\PC{0,200}") {
         let _ = decode_base64(&s, 64);

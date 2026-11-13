@@ -1,7 +1,7 @@
 //! A saturated or locked database never hangs a session: the delivery is answered `451 4.3.0`
 //! within a bound, nothing is stored, and the very same message is accepted once the database is
-//! free again (no loss, no duplicate). On every backend: SQLite's writer lock, Postgres' table
-//! lock and, on Postgres, a pool with no connection left.
+//! free again (no loss, no duplicate). Postgres' table lock and a pool with no
+//! connection left.
 
 mod common;
 
@@ -56,7 +56,6 @@ async fn an_exhausted_pool_gives_451_not_a_hang() {
     for_each_backend_short_waits(|b| async move {
         let (alice, _) = b.seed().await;
         let s = start(&b, Opts::default()).await;
-        // SQLite has no pool to exhaust (its writer lock is the test above).
         let hold = b.fx.hold_pool(2).await;
         let (r, took) = send(s.addr).await;
         assert!(r.starts_with("451 4.3.0"), "{r}");

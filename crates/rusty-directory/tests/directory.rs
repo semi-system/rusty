@@ -330,7 +330,6 @@ async fn domain_idna_invalid_is_invalid() {
     .await;
 }
 
-// backend-neutral: pure unit test, no database
 #[test]
 fn display_domain_roundtrip() {
     assert_eq!(

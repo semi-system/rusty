@@ -70,7 +70,6 @@ async fn serve(sock: UdpSocket) {
     }
 }
 
-// backend-neutral: resolver and dialer over loopback sockets, no database
 #[tokio::test]
 async fn the_nameserver_key_steers_mx_and_address_lookups() {
     let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -92,7 +91,6 @@ async fn the_nameserver_key_steers_mx_and_address_lookups() {
     server.abort();
 }
 
-// backend-neutral: resolver and dialer over loopback sockets, no database
 #[tokio::test]
 async fn a_dead_nameserver_is_a_temporary_dns_failure_not_a_verdict() {
     let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -104,7 +102,6 @@ async fn a_dead_nameserver_is_a_temporary_dns_failure_not_a_verdict() {
     assert!(r.is_err(), "an unreachable resolver must defer the mail, never bounce it: {r:?}");
 }
 
-// backend-neutral: resolver and dialer over loopback sockets, no database
 #[tokio::test]
 async fn the_dialer_binds_the_configured_source_address() {
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();

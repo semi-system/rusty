@@ -32,7 +32,7 @@ body:
     id: component
     attributes:
       label: Component
-      options: [SMTP, IMAP, rustyctl, storage (SQLite), storage (Postgres), TLS, DNS records, container image, CI or build, documentation, other]
+      options: [SMTP, IMAP, rustyctl, storage (Postgres), TLS, DNS records, container image, CI or build, documentation, other]
     validations:
       required: true
   - type: textarea

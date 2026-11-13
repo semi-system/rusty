@@ -68,7 +68,6 @@ fn worker(mta: std::net::SocketAddr) -> OutboundWorker {
 }
 
 /// The worker process: runs until it is killed. Only does anything when the parent set the variables.
-// backend-neutral: a worker process over a shared Postgres database; in-process takeover is covered by outbound_worker
 #[tokio::test]
 async fn child_worker() {
     let (Ok(dir), Ok(addr), Ok(url)) =
@@ -80,7 +79,6 @@ async fn child_worker() {
     let _ = Box::new(worker(addr.parse().unwrap())).run(ctx, CancellationToken::new()).await;
 }
 
-// backend-neutral: a worker process over a shared Postgres database; in-process takeover is covered by outbound_worker
 #[tokio::test]
 async fn a_worker_process_killed_mid_delivery_loses_nothing_and_the_job_is_delivered_by_the_next_one() {
     let dir = tempfile::tempdir().unwrap();

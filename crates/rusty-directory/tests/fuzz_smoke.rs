@@ -49,13 +49,11 @@ fn spicy_char() -> impl Strategy<Value = char> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(20000))]
 
-    // backend-neutral: pure parser fuzz stand-in, no database
     #[test]
     fn arbitrary_strings_do_not_panic(s in proptest::collection::vec(spicy_char(), 0..40)) {
         check(&s.into_iter().collect::<String>());
     }
 
-    // backend-neutral: pure parser fuzz stand-in, no database
     #[test]
     fn address_shaped_strings(l in proptest::collection::vec(spicy_char(), 0..20),
                               d in "[a-z0-9.-]{1,20}") {

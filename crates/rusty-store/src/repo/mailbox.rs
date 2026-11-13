@@ -13,7 +13,7 @@
 //! # Locking rule (enforced by tests)
 //!
 //! Every write method starts with the mailbox row lock (Postgres `SELECT .. FROM mailboxes WHERE
-//! id = $1 FOR UPDATE`, SQLite `BEGIN IMMEDIATE` then the same row read). There is NO exemption:
+//! id = $1 FOR UPDATE`). There is NO exemption:
 //! every write method of this trait is mailbox scoped. `query_shape_pg.rs` records the statements
 //! of each write method and asserts that the first data statement after `BEGIN` is the lock
 //! (`set_config('lock_timeout', .., true)` is transaction-local configuration and precedes it).
@@ -335,7 +335,7 @@ pub trait MailboxRepo: Send + Sync {
 // ---------------------------------------------------------------- shared SQL
 
 /// Statement text shared by the backends. Written once with numbered `$N` placeholders (valid
-/// on Postgres natively and on SQLite through sqlx) and `{NOW}` for the database clock;
+/// on Postgres natively) and `{NOW}` for the database clock;
 /// `render_*` produce the dialect. Only static text is ever rendered: caller data is always
 /// bound.
 pub mod sql_text {
@@ -506,7 +506,7 @@ pub(crate) fn check_distinct_ids(ids: &[i64]) -> Result<()> {
     }
 }
 
-/// `Invalid` for a negative purge limit (Postgres rejects it, SQLite used to read it as unlimited).
+/// `Invalid` for a negative purge limit (Postgres would reject it).
 pub(crate) fn check_purge_limit(limit: i64) -> Result<()> {
     if limit < 0 {
         return Err(Error::Invalid("purge limit must not be negative".into()));
