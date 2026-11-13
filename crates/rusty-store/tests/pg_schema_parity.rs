@@ -231,6 +231,28 @@ fn normalize_default(d: &str) -> String {
     d.trim().trim_matches('(').trim_matches(')').to_owned()
 }
 
+/// CHECK constraints in a `CREATE TABLE` text: the keyword `CHECK` followed by `(`, not a substring of an
+/// identifier (a column named `last_checked_at` is not a constraint).
+fn count_check_keywords(sql: &str) -> usize {
+    let up = sql.to_uppercase();
+    let bytes = up.as_bytes();
+    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    up.match_indices("CHECK")
+        .filter(|(i, _)| {
+            let standalone = *i == 0 || !ident(bytes[*i - 1]);
+            standalone && up[*i + "CHECK".len()..].trim_start().starts_with('(')
+        })
+        .count()
+}
+
+// backend-neutral: unit test of the CHECK counter used by the parity test, no database
+#[test]
+fn check_keyword_counter_ignores_identifiers() {
+    assert_eq!(count_check_keywords("a INT CHECK (a > 0), b INT CHECK(b > 0), last_checked_at INTEGER"), 2);
+    assert_eq!(count_check_keywords("CREATE TABLE t (x TEXT, checked INTEGER, c2 TEXT CHECK  (c2 <> ''))"), 1);
+    assert_eq!(count_check_keywords("no constraints here"), 0);
+}
+
 fn class_of_pg(t: &str) -> &'static str {
     match t {
         "bigint" => "INTEGER",
@@ -281,7 +303,7 @@ async fn sqlite_description(s: &SqlitePool) -> BTreeSet<String> {
             .fetch_one(s)
             .await
             .unwrap();
-        let checks = sql.to_uppercase().matches("CHECK").count();
+        let checks = count_check_keywords(&sql);
         out.insert(format!("CHECKS {t} {checks}"));
     }
     for t in &tables {

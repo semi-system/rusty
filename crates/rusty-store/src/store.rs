@@ -8,7 +8,7 @@ use std::time::Duration;
 use rusty_core::{Error, Result};
 
 use crate::repo::sqlite::SqliteRepo;
-use crate::repo::{DirectoryRepo, GcRepo, JobRepo, MailboxRepo};
+use crate::repo::{DirectoryRepo, DnsRepo, GcRepo, JobRepo, MailboxRepo};
 use crate::{SqliteStore, DEFAULT_BUSY_TIMEOUT};
 
 /// Which backend to open and how.
@@ -74,6 +74,7 @@ pub struct Repos {
     pub mailbox: Arc<dyn MailboxRepo>,
     pub jobs: Arc<dyn JobRepo>,
     pub gc: Arc<dyn GcRepo>,
+    pub dns: Arc<dyn DnsRepo>,
 }
 
 /// An opened store: the repositories plus the backend handle that not-yet-converted facades
@@ -102,7 +103,8 @@ impl Store {
                         directory: repo.clone(),
                         mailbox: repo.clone(),
                         jobs: repo.clone(),
-                        gc: repo,
+                        gc: repo.clone(),
+                        dns: repo,
                     },
                     sqlite: Some(store),
                     #[cfg(feature = "postgres")]
@@ -118,7 +120,8 @@ impl Store {
                         directory: repo.clone(),
                         mailbox: repo.clone(),
                         jobs: repo.clone(),
-                        gc: repo,
+                        gc: repo.clone(),
+                        dns: repo,
                     },
                     sqlite: None,
                     pg: Some(store),

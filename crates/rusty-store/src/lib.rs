@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod blob;
+mod dns;
 mod gc;
 mod jobs;
 mod mailbox;
@@ -30,6 +31,9 @@ pub use gc::{
 };
 #[cfg(feature = "test-knobs")]
 pub use gc::collect_blobs_with_db_clock;
+pub use dns::{
+    DnsStore, OwnershipToken, TokenVerifier, DNS_EVENTS_PER_DOMAIN, MAX_DNS_EVENT_PAGE, MAX_RECORDS_PER_DOMAIN,
+};
 pub use jobs::{
     ClaimedJob, JobQueue, DEFAULT_JOB_ATTEMPTS, JOB_RETENTION_SECS, MAX_CLAIM_KINDS,
     MAX_JOB_ATTEMPTS, MAX_JOB_KIND_BYTES, MAX_JOB_PAYLOAD_BYTES, MAX_LAST_ERROR_BYTES,

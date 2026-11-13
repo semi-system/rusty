@@ -163,3 +163,59 @@ fn example_file_documents_the_new_sections() {
         assert!(text.contains(key), "rusty.example.toml does not mention {key}");
     }
 }
+
+// ---------------------------------------------------------------- [dns_check] (U10 part 1b)
+
+#[test]
+fn dns_check_is_off_by_default_with_conservative_values() {
+    let c = StartupConfig::from_toml_str(BASE).unwrap();
+    assert!(!c.dns_check.enabled);
+    assert_eq!(c.dns_check.interval_secs, 86_400);
+    assert_eq!(c.dns_check.jitter_secs, 3_600);
+    assert_eq!(c.dns_check.alert_after_failures, 3);
+    assert_eq!(c.dns_check.nameserver, None);
+    assert_eq!(c.dns_check.second_nameserver, None);
+}
+
+#[test]
+fn dns_check_accepts_valid_values() {
+    let c = with(
+        "[dns_check]\nenabled = true\ninterval_secs = 43200\njitter_secs = 600\nalert_after_failures = 5\n\
+         nameserver = \"9.9.9.9\"\nsecond_nameserver = \"[2606:4700:4700::1111]:53\"",
+    )
+    .unwrap();
+    assert!(c.dns_check.enabled);
+    assert_eq!(c.dns_check.interval_secs, 43_200);
+    assert_eq!(c.dns_check.nameserver.map(|n| n.addr()), Some(addr("9.9.9.9:53")), "the port defaults to 53");
+    assert_eq!(c.dns_check.second_nameserver.map(|n| n.addr()), Some(addr("[2606:4700:4700::1111]:53")));
+}
+
+#[test]
+fn dns_check_rejects_bad_values_without_echoing_them() {
+    for bad in [
+        "interval_secs = 59",
+        "interval_secs = 2592001",
+        "jitter_secs = 100000",
+        "interval_secs = 3600\njitter_secs = 3601",
+        "alert_after_failures = 0",
+        "alert_after_failures = 101",
+        "nameserver = \"not-an-address\"",
+        "nameserver = \"dns.example.com\"",
+        "nameserver = \"\"",
+        "nameserver = \"1.1.1.1:0\"",
+        "enabled = \"yes\"",
+        "unknown_key = 1",
+    ] {
+        let r = with(&format!("[dns_check]\n{bad}"));
+        match r {
+            Err(Error::Invalid(m)) => assert!(!m.contains("not-an-address") && !m.contains("dns.example.com"), "{m}"),
+            other => panic!("{bad}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn dns_check_two_nameservers_must_differ() {
+    invalid(with("[dns_check]\nnameserver = \"9.9.9.9\"\nsecond_nameserver = \"9.9.9.9\""));
+    invalid(with("[dns_check]\nsecond_nameserver = \"9.9.9.9\""));
+}

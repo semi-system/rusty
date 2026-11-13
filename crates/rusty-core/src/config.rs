@@ -16,8 +16,8 @@ pub use crate::config_store::{
     POOL_HEADROOM,
 };
 pub use crate::config_sections::{
-    valid_hostname, ImapConfig, LimitsConfig, Listen, LogFormat, OutboundConfig, RelayConfig, RelayTls, SmtpConfig, TlsConfig,
-    TlsPolicy,
+    valid_hostname, DnsCheckConfig, ImapConfig, LimitsConfig, Listen, LogFormat, Nameserver, OutboundConfig, RelayConfig,
+    RelayTls, SmtpConfig, TlsConfig, TlsPolicy, DNS_CHECK_JOB_KIND,
 };
 
 /// Largest configuration file accepted by [`StartupConfig::load`].
@@ -77,6 +77,9 @@ pub struct StartupConfig {
     pub outbound: OutboundConfig,
     #[serde(default)]
     pub limits: LimitsConfig,
+    /// `[dns_check]`: periodic DNS re-validation (off by default).
+    #[serde(default)]
+    pub dns_check: DnsCheckConfig,
     #[serde(default)]
     pub store: StoreSection,
 }
@@ -177,6 +180,7 @@ impl StartupConfig {
         self.tls.validate()?;
         self.smtp.validate(self.max_message_bytes)?;
         self.imap.validate()?;
+        self.dns_check.validate()?;
         self.outbound.validate()?;
         // Queued message bodies carry no database reference (see crates/rusty-smtp/tests/outbound_gc.rs):
         // the blob GC must not be allowed to collect one before the queue gives up on it.
@@ -282,6 +286,7 @@ impl StartupConfig {
             },
             outbound: OutboundConfig::default(),
             limits: LimitsConfig::default(),
+            dns_check: DnsCheckConfig::default(),
             store: StoreSection::default(),
         }
     }

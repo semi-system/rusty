@@ -5,6 +5,7 @@
 //! Counters are taken with one `UPDATE .. RETURNING` each.
 
 mod directory;
+mod dns;
 mod gc;
 mod jobs;
 mod mailbox;

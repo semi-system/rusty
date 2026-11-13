@@ -2,6 +2,7 @@
 //! `mailbox.rs`). Transaction helper, retry loop and test knobs: `tx.rs`.
 
 mod directory;
+mod dns;
 mod gc;
 mod jobs;
 mod mailbox;

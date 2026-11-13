@@ -68,6 +68,14 @@ blob_dir = "/var/lib/rusty/blobs"
 # auth_concurrent_max = 16   # authentication attempts running at once, process-wide
 # inflight_message_mib = 1024  # memory all SMTP sessions together may hold for messages in flight (16..=1048576)
 
+# [dns_check]              # periodic DNS re-validation (needs the daemon wiring; off by default)
+# enabled = false
+# interval_secs = 86400      # per domain, 3600..=2592000
+# jitter_secs = 3600         # stable per-domain offset inside this window
+# alert_after_failures = 3   # failures in a row of a record that was ok before an alert is raised
+# nameserver = "9.9.9.9"     # optional: IP or IP:port; default is the system resolver
+# second_nameserver = "1.1.1.1"  # optional second resolver for the pending-vs-mismatch comparison
+
 # ---- outbound mail (U5) ----
 # The worker that delivers mail submitted by your users to other servers. Safe defaults; every key optional.
 # [outbound]

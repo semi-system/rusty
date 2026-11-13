@@ -570,3 +570,102 @@ pub fn valid_hostname(h: &str) -> bool {
                 && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
         })
 }
+
+/// A resolver address: `IP` (port 53) or `IP:port` / `[v6]:port`. A host NAME is refused on
+/// purpose: resolving the resolver would need a resolver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Nameserver(SocketAddr);
+
+impl Nameserver {
+    pub fn addr(&self) -> SocketAddr {
+        self.0
+    }
+}
+
+
+impl<'de> Deserialize<'de> for Nameserver {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Nameserver, D::Error> {
+        let s = String::deserialize(d)?;
+        let parsed = s
+            .parse::<SocketAddr>()
+            .ok()
+            .or_else(|| s.parse::<IpAddr>().ok().map(|ip| SocketAddr::new(ip, 53)))
+            .filter(|a| a.port() != 0)
+            .ok_or_else(|| serde::de::Error::custom("nameserver must be an IP address, optionally with a port"))?;
+        Ok(Nameserver(parsed))
+    }
+}
+
+/// `[dns_check]` (U10 part 1b): the periodic `dns.check` job that re-validates every active
+/// domain's DNS records and records status changes. Off by default. The seam for the daemon
+/// wiring: job kind [`DNS_CHECK_JOB_KIND`], this section, and `rusty_dnscheck::run_dns_check`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DnsCheckConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Time between two checks of one domain.
+    #[serde(default = "d_dns_interval")]
+    pub interval_secs: u64,
+    /// Each domain's check time is spread over this many seconds after the interval (a stable
+    /// per-domain offset), so domains are not all queried in the same minute.
+    #[serde(default = "d_dns_jitter")]
+    pub jitter_secs: u64,
+    /// Consecutive failures of a record that was `ok` before an alert is raised.
+    #[serde(default = "d_dns_alert_after")]
+    pub alert_after_failures: u32,
+    /// Resolver to use instead of the system one (`IP` or `IP:port`).
+    #[serde(default)]
+    pub nameserver: Option<Nameserver>,
+    /// Second, independent resolver for the two-resolver comparison (propagation lag shows as
+    /// `pending`, not `mismatch`). Needs `nameserver`; without it the comparison is skipped and
+    /// the report says so.
+    #[serde(default)]
+    pub second_nameserver: Option<Nameserver>,
+}
+
+/// The job kind of the periodic check (see [`DnsCheckConfig`]).
+pub const DNS_CHECK_JOB_KIND: &str = "dns.check";
+
+fn d_dns_interval() -> u64 {
+    86_400
+}
+fn d_dns_jitter() -> u64 {
+    3_600
+}
+fn d_dns_alert_after() -> u32 {
+    3
+}
+
+impl Default for DnsCheckConfig {
+    fn default() -> Self {
+        DnsCheckConfig {
+            enabled: false,
+            interval_secs: d_dns_interval(),
+            jitter_secs: d_dns_jitter(),
+            alert_after_failures: d_dns_alert_after(),
+            nameserver: None,
+            second_nameserver: None,
+        }
+    }
+}
+
+impl DnsCheckConfig {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if !(3_600..=2_592_000).contains(&self.interval_secs) {
+            // Not below an hour: the job queries other people's name servers.
+            return Err(bad("dns_check.interval_secs must be 3600..=2592000"));
+        }
+        if self.jitter_secs > self.interval_secs {
+            return Err(bad("dns_check.jitter_secs must not exceed interval_secs"));
+        }
+        if !(1..=100).contains(&self.alert_after_failures) {
+            return Err(bad("dns_check.alert_after_failures must be 1..=100"));
+        }
+        match (self.nameserver, self.second_nameserver) {
+            (None, Some(_)) => Err(bad("dns_check.second_nameserver needs dns_check.nameserver")),
+            (Some(a), Some(b)) if a == b => Err(bad("dns_check.nameserver and second_nameserver must differ")),
+            _ => Ok(()),
+        }
+    }
+}
