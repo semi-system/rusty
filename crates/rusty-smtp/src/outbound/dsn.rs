@@ -59,10 +59,16 @@ pub fn header_section(original: &[u8], max: usize) -> Vec<u8> {
         if line.is_empty() {
             break; // the blank line ends the header section
         }
-        if line.starts_with(b"--") || line.contains(&0) {
+        if line.contains(&0) {
             continue;
         }
         let cleaned: Vec<u8> = line.iter().copied().filter(|&b| b == b'\t' || !b.is_ascii_control()).collect();
+        // Judge what is copied, not the raw line: removing a control character from `\x01--x` leaves a
+        // line that starts with `--`, and a line made only of control characters would become a blank line
+        // that ends the copied header section early.
+        if cleaned.is_empty() || cleaned.starts_with(b"--") {
+            continue;
+        }
         if out.len() + cleaned.len() + 2 > max {
             break;
         }
