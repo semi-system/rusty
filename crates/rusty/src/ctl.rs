@@ -210,6 +210,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
             passwords: &mut passwords,
             hostname: cfg.hostname.as_deref(),
             config_note: &note,
+            dkim_dir: cfg.outbound.dkim_dir.as_deref(),
         };
         let code = match execute(&parsed.command, &mut env).await {
             Ok(outcome) => {

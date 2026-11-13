@@ -76,7 +76,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use crate::gc::PURGE_BATCH;
-use crate::repo::jobs::{ClaimRequest, NewJob};
+use crate::repo::jobs::{BatchJob, BatchRequest, ClaimRequest, NewJob, OwnerLimits};
 use crate::repo::{JobFence, JobRepo, sqlite::SqliteRepo};
 use crate::mailbox::check_supplied_time;
 use crate::SqliteStore;
@@ -112,6 +112,26 @@ const MAX_WORKER_BYTES: usize = 128;
 
 const STALE: &str = "stale job epoch";
 
+/// Most jobs in one [`JobQueue::enqueue_batch`].
+pub const MAX_BATCH_JOBS: usize = 256;
+/// Longest dedupe key, in bytes.
+pub const MAX_DEDUPE_KEY_BYTES: usize = 128;
+
+/// One job of an [`JobQueue::enqueue_batch`].
+#[derive(Debug, Clone, Copy)]
+pub struct BatchSpec<'a> {
+    pub kind: &'a str,
+    pub domain: Option<DomainId>,
+    pub payload: &'a Value,
+    /// Idempotency key (unique among all jobs that still exist).
+    pub dedupe_key: Option<&'a str>,
+    /// Recipients this job stands for (the owner's window budget).
+    pub units: u32,
+    /// Message bytes this job stands for (the owner's window budget).
+    pub bytes: u64,
+    pub max_attempts: u32,
+}
+
 /// A job leased to a worker. `epoch` is the fencing token to present on every later call.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClaimedJob {
@@ -122,6 +142,8 @@ pub struct ClaimedJob {
     pub epoch: i64,
     /// Claims so far, including this one.
     pub attempts: u32,
+    /// Database-clock time (unix seconds) the job was first enqueued; stable across retries.
+    pub created_at: i64,
 }
 
 /// The job queue over a [`JobRepo`] (either backend).
@@ -239,6 +261,19 @@ fn sanitize_error(s: &str) -> String {
 }
 
 
+/// Depth first, iteratively (serializing a hostile deeply nested value could overflow the stack),
+/// then the size cap.
+fn serialize_payload(payload: &Value) -> Result<String> {
+    if !depth_ok(payload) {
+        return Err(invalid("job payload nested too deeply"));
+    }
+    let text = serde_json::to_string(payload).map_err(|_| invalid("invalid job payload"))?;
+    if text.len() > MAX_JOB_PAYLOAD_BYTES {
+        return Err(invalid("job payload too large"));
+    }
+    Ok(text)
+}
+
 impl JobQueue {
     /// A queue over a SQLite store.
     pub fn new(store: SqliteStore) -> JobQueue {
@@ -355,15 +390,7 @@ impl JobQueue {
         if !(1..=MAX_JOB_ATTEMPTS).contains(&max_attempts) {
             return Err(invalid("invalid job attempt limit"));
         }
-        // Depth first, iteratively: serializing a hostile deeply nested value could overflow
-        // the stack.
-        if !depth_ok(payload) {
-            return Err(invalid("job payload nested too deeply"));
-        }
-        let text = serde_json::to_string(payload).map_err(|_| invalid("invalid job payload"))?;
-        if text.len() > MAX_JOB_PAYLOAD_BYTES {
-            return Err(invalid("job payload too large"));
-        }
+        let text = serialize_payload(payload)?;
         let cap = match domain {
             Some(_) => self.max_pending_per_domain,
             None => self.max_pending_no_domain,
@@ -376,6 +403,53 @@ impl JobQueue {
                 run_after,
                 max_attempts,
                 cap,
+                now,
+            })
+            .await
+    }
+
+    /// Enqueue several jobs as ONE transaction (all or none) with an idempotency key per job and the
+    /// submitting `owner`'s limits checked in the same transaction (see [`OwnerLimits`]). A job whose
+    /// `dedupe_key` already exists is not created again; its existing id is returned, so a retried
+    /// submission converges on the same jobs. Quota errors are `Quota`.
+    pub async fn enqueue_batch(&self, owner: Option<(i64, OwnerLimits)>, specs: &[BatchSpec<'_>]) -> Result<Vec<JobId>> {
+        self.enqueue_batch_inner(owner, specs, None).await
+    }
+
+    /// [`enqueue_batch`](Self::enqueue_batch) at time `now`.
+    #[doc(hidden)]
+    pub async fn enqueue_batch_at(&self, owner: Option<(i64, OwnerLimits)>, specs: &[BatchSpec<'_>], now: i64) -> Result<Vec<JobId>> {
+        check_supplied_time(now)?;
+        self.enqueue_batch_inner(owner, specs, Some(now)).await
+    }
+
+    async fn enqueue_batch_inner(&self, owner: Option<(i64, OwnerLimits)>, specs: &[BatchSpec<'_>], now: Option<i64>) -> Result<Vec<JobId>> {
+        if specs.is_empty() {
+            return Ok(Vec::new());
+        }
+        if specs.len() > MAX_BATCH_JOBS {
+            return Err(invalid("too many jobs in one batch"));
+        }
+        let texts: Vec<String> = specs.iter().map(|s| serialize_payload(s.payload)).collect::<Result<_>>()?;
+        let mut jobs = Vec::with_capacity(specs.len());
+        for (s, t) in specs.iter().zip(&texts) {
+            if !valid_kind(s.kind) {
+                return Err(invalid("invalid job kind"));
+            }
+            if !(1..=MAX_JOB_ATTEMPTS).contains(&s.max_attempts) {
+                return Err(invalid("invalid job attempt limit"));
+            }
+            if s.dedupe_key.is_some_and(|k| k.is_empty() || k.len() > MAX_DEDUPE_KEY_BYTES || k.chars().any(char::is_control)) {
+                return Err(invalid("invalid job dedupe key"));
+            }
+            jobs.push(BatchJob { kind: s.kind, domain: s.domain, payload: t, dedupe_key: s.dedupe_key, units: s.units, bytes: s.bytes, max_attempts: s.max_attempts });
+        }
+        self.repo
+            .enqueue_batch(&BatchRequest {
+                jobs: &jobs,
+                owner,
+                domain_cap: self.max_pending_per_domain,
+                no_domain_cap: self.max_pending_no_domain,
                 now,
             })
             .await
@@ -521,6 +595,56 @@ impl JobQueue {
         let error = sanitize_error(error);
         let retry = i64::from(retry_after_secs.min(MAX_RETRY_AFTER_SECS));
         self.repo.fail(id, epoch, &error, retry, now).await
+    }
+
+    /// Requeue the claimed job after `retry_after_secs` (clamped like [`fail`](Self::fail)) with a
+    /// replaced payload and the attempt counter reset, so the retry schedule is not bounded by
+    /// `max_attempts` (which then only limits claims that end without a decision, such as crashes).
+    /// Same fencing as [`fail`](Self::fail); the payload obeys the enqueue limits.
+    pub async fn reschedule(
+        &self,
+        id: JobId,
+        epoch: i64,
+        payload: &Value,
+        error: &str,
+        retry_after_secs: u32,
+    ) -> Result<()> {
+        self.reschedule_inner(id, epoch, payload, error, retry_after_secs, None).await
+    }
+
+    /// [`reschedule`](Self::reschedule) at time `now`.
+    #[doc(hidden)]
+    pub async fn reschedule_at(
+        &self,
+        id: JobId,
+        epoch: i64,
+        payload: &Value,
+        error: &str,
+        retry_after_secs: u32,
+        now: i64,
+    ) -> Result<()> {
+        check_supplied_time(now)?;
+        self.reschedule_inner(id, epoch, payload, error, retry_after_secs, Some(now)).await
+    }
+
+    async fn reschedule_inner(
+        &self,
+        id: JobId,
+        epoch: i64,
+        payload: &Value,
+        error: &str,
+        retry_after_secs: u32,
+        now: Option<i64>,
+    ) -> Result<()> {
+        let text = serialize_payload(payload)?;
+        let error = sanitize_error(error);
+        let retry = i64::from(retry_after_secs.min(MAX_RETRY_AFTER_SECS));
+        self.repo.reschedule(id, epoch, &text, &error, retry, now).await
+    }
+
+    /// The database clock in unix seconds: the time every lease and schedule decision uses.
+    pub async fn now(&self) -> Result<i64> {
+        self.repo.db_now().await
     }
 
     /// Check, in its own transaction, that the job is `running` with this `epoch` and an

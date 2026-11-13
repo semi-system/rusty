@@ -31,3 +31,4 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
 rustls.workspace = true
 rcgen = { workspace = true, features = ["pem"] }
+base64.workspace = true

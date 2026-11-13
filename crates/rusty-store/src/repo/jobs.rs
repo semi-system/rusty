@@ -103,6 +103,11 @@ pub trait JobRepo: Send + Sync {
     async fn db_now(&self) -> Result<i64>;
     /// Insert a job; `Quota("job queue full")` at the cap.
     async fn enqueue(&self, job: &NewJob<'_>) -> Result<JobId>;
+    /// Insert all jobs of a batch in ONE transaction, or none. A job whose `dedupe_key` already exists
+    /// is not inserted again and yields the existing id (idempotent retry). Pending caps per domain
+    /// and per owner and the owner's window budgets are checked in the same transaction (`Quota`).
+    /// Ids are returned in the order of the request.
+    async fn enqueue_batch(&self, req: &BatchRequest<'_>) -> Result<Vec<JobId>>;
     /// Lease the oldest eligible job of one of the kinds, or `None`.
     async fn claim(&self, req: &ClaimRequest<'_>) -> Result<Option<ClaimedJob>>;
     /// Extend the lease to `now + lease_secs`; stale unless the caller owns an unexpired lease.
@@ -111,6 +116,18 @@ pub trait JobRepo: Send + Sync {
     async fn complete(&self, id: JobId, epoch: i64, now: Option<i64>) -> Result<()>;
     /// Record a failed attempt (`error` already sanitised): requeue after `retry_secs` or `dead`.
     async fn fail(&self, id: JobId, epoch: i64, error: &str, retry_secs: i64, now: Option<i64>) -> Result<()>;
+    /// Requeue after `retry_secs` with a replaced payload (serialized, validated) and the attempt
+    /// counter reset to zero, without spending the attempt budget; stale as above. For jobs whose
+    /// retry schedule is longer than `max_attempts` (outbound mail).
+    async fn reschedule(
+        &self,
+        id: JobId,
+        epoch: i64,
+        payload: &str,
+        error: &str,
+        retry_secs: i64,
+        now: Option<i64>,
+    ) -> Result<()>;
     /// The caller still owns the job (epoch, `running`, unexpired lease); a read.
     async fn fence_check(&self, fence: JobFence, now: Option<i64>) -> Result<()>;
     /// Delete up to `limit` finished (`done`, `failed`, `dead`) jobs with `updated_at <
@@ -131,13 +148,14 @@ pub(crate) mod sql {
         run_after = CASE WHEN attempts >= max_attempts THEN run_after ELSE COALESCE($5, {NOW}) + $4 END, \
         lease_owner = NULL, lease_expires_at = NULL, last_error = $3, updated_at = COALESCE($5, {NOW}) \
         WHERE id = $1 AND epoch = $2 AND state = 'running' AND lease_expires_at > COALESCE($5, {NOW})";
+    pub const RESCHEDULE: &str = "UPDATE jobs SET state = 'queued', attempts = 0, payload = $3, \n        run_after = COALESCE($6, {NOW}) + $5, lease_owner = NULL, lease_expires_at = NULL, last_error = $4, \n        updated_at = COALESCE($6, {NOW}) \n        WHERE id = $1 AND epoch = $2 AND state = 'running' AND lease_expires_at > COALESCE($6, {NOW})";
     pub const FENCE: &str = "SELECT CAST(1 AS BIGINT) FROM jobs \
         WHERE id = $1 AND epoch = $2 AND state = 'running' AND lease_expires_at > COALESCE($3, {NOW})";
     pub const SETTLE_DEAD: &str = "UPDATE jobs SET state = 'dead', lease_owner = NULL, \
         lease_expires_at = NULL, last_error = $2, updated_at = $3 WHERE id = $1";
     pub const CLAIM_UPDATE: &str = "UPDATE jobs SET state = 'running', attempts = attempts + 1, \
         epoch = epoch + 1, lease_owner = $2, lease_expires_at = $3, updated_at = $4 \
-        WHERE id = $1 RETURNING id, kind, domain_id, payload, epoch, attempts";
+        WHERE id = $1 RETURNING id, kind, domain_id, payload, epoch, attempts, created_at";
 }
 
 /// `Ok` iff exactly one row was affected by a fenced update.
@@ -156,4 +174,43 @@ pub(crate) fn exhausted_reason(state_is_running: bool) -> &'static str {
     } else {
         "no attempts left"
     }
+}
+
+/// Limits of one submitting account (owner), checked inside the enqueue transaction so that a
+/// check-and-record is atomic under parallel connections and survives a restart (the counts come from
+/// the job rows themselves).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwnerLimits {
+    /// Most `queued` + `running` jobs of this owner.
+    pub max_pending: u32,
+    /// The sliding window of the budgets below, in seconds.
+    pub window_secs: i64,
+    /// Most jobs created by the owner inside the window.
+    pub max_jobs: u32,
+    /// Most recipients (`units`) over the window.
+    pub max_units: u64,
+    /// Most message bytes over the window.
+    pub max_bytes: u64,
+}
+
+/// One validated job of a batch.
+#[derive(Debug, Clone, Copy)]
+pub struct BatchJob<'a> {
+    pub kind: &'a str,
+    pub domain: Option<DomainId>,
+    pub payload: &'a str,
+    pub dedupe_key: Option<&'a str>,
+    pub units: u32,
+    pub bytes: u64,
+    pub max_attempts: u32,
+}
+
+/// A validated batch: every job or none. `now: None` = database clock.
+#[derive(Debug, Clone, Copy)]
+pub struct BatchRequest<'a> {
+    pub jobs: &'a [BatchJob<'a>],
+    pub owner: Option<(i64, OwnerLimits)>,
+    pub domain_cap: u32,
+    pub no_domain_cap: u32,
+    pub now: Option<i64>,
 }

@@ -210,45 +210,56 @@ impl TlsProvider {
         Ok(TlsProvider { resolver, config: Arc::new(config), available: true })
     }
 
+    /// [`from_config_in`](Self::from_config_in) without a data directory: the development certificate, if
+    /// asked for, lives in memory only.
+    pub fn from_config(cfg: &TlsConfig, hostname: &str, secrets: Arc<dyn SecretSource>) -> Result<TlsProvider> {
+        Self::from_config_in(cfg, hostname, secrets, None)
+    }
+
     /// From `[tls]`: the configured pair, or the explicit dev certificate; anything else is an
     /// error (listeners that accept authentication must not start in plaintext).
-    pub fn from_config(cfg: &TlsConfig, hostname: &str, secrets: Arc<dyn SecretSource>) -> Result<TlsProvider> {
+    /// `state_dir`: where the development certificate is kept between starts (0600 key; unsafe permissions
+    /// are an error).
+    pub fn from_config_in(cfg: &TlsConfig, hostname: &str, secrets: Arc<dyn SecretSource>, state_dir: Option<&Path>) -> Result<TlsProvider> {
         match (&cfg.cert_file, &cfg.key_file) {
             (Some(c), Some(k)) => {
                 let r = FileCertResolver::load(c, k, secrets)?;
                 TlsProvider::from_resolver(Arc::new(r))
             }
-            (None, None) if cfg.dev_self_signed => Self::dev_self_signed(hostname),
+            (None, None) if cfg.dev_self_signed => Self::dev_self_signed(hostname, state_dir),
             _ => Err(bad("TLS is not configured: set [tls] cert_file and key_file")),
         }
     }
 
     #[cfg(feature = "dev-cert")]
-    fn dev_self_signed(hostname: &str) -> Result<TlsProvider> {
+    fn dev_self_signed(hostname: &str, state_dir: Option<&Path>) -> Result<TlsProvider> {
         let mut names: Vec<String> = vec![hostname.to_owned()];
         for extra in ["localhost", "127.0.0.1", "::1"] {
             if !names.iter().any(|n| n == extra) {
                 names.push(extra.to_owned());
             }
         }
-        let made = rcgen::generate_simple_self_signed(names)
-            .map_err(|e| Error::storage_with("cannot generate the dev certificate", e))?;
-        let chain = vec![made.cert.der().clone()];
-        let key = PrivateKeyDer::try_from(made.signing_key.serialize_der())
-            .map_err(|_| bad("dev key is not usable"))?;
-        let signing = default_provider()
-            .key_provider
-            .load_private_key(key)
-            .map_err(|_| bad("dev key is not usable"))?;
-        tracing::warn!(
-            "DEV ONLY: serving an in-memory self-signed certificate ([tls] dev_self_signed). \
-             Clients must be told to trust it; never use this on the internet."
-        );
-        TlsProvider::from_resolver(Arc::new(StaticCertResolver::new(CertifiedKey::new(chain, signing))))
+        let key = match state_dir {
+            Some(dir) => dev_cert::load_or_create(dir, hostname, &names)?,
+            None => dev_cert::make(hostname, &names)?,
+        };
+        let cert_key = certified_key(key.cert_pem.as_bytes(), key.key_pem.as_bytes())?;
+        match state_dir {
+            Some(dir) => tracing::warn!(
+                dir = %dir.display(),
+                "DEV ONLY: serving a self-signed certificate kept in the data dir ([tls] dev_self_signed). \
+                 Clients must be told to trust it; never use this on the internet."
+            ),
+            None => tracing::warn!(
+                "DEV ONLY: serving an in-memory self-signed certificate ([tls] dev_self_signed). \
+                 Clients must be told to trust it; never use this on the internet."
+            ),
+        }
+        TlsProvider::from_resolver(Arc::new(StaticCertResolver::new(cert_key)))
     }
 
     #[cfg(not(feature = "dev-cert"))]
-    fn dev_self_signed(_hostname: &str) -> Result<TlsProvider> {
+    fn dev_self_signed(_hostname: &str, _state_dir: Option<&Path>) -> Result<TlsProvider> {
         Err(bad("dev_self_signed needs a build with the dev-cert feature"))
     }
 
@@ -258,6 +269,11 @@ impl TlsProvider {
         let mut p = Self::from_resolver(Arc::new(NoCertResolver))?;
         p.available = false;
         Ok(p)
+    }
+
+    /// The leaf certificate currently served (DER), for tests and diagnostics.
+    pub fn leaf_der(&self) -> Option<Vec<u8>> {
+        self.resolver.resolve(None).and_then(|k| k.cert.first().map(|c| c.as_ref().to_vec()))
     }
 
     /// Sessions advertise STARTTLS only when this is true.
@@ -277,5 +293,113 @@ impl TlsProvider {
     /// Re-read the certificate material. On error the previous certificate stays in service.
     pub fn reload(&self) -> Result<()> {
         self.resolver.reload()
+    }
+}
+
+/// The development certificate: made once, kept in the data directory, replaced when the names change or it
+/// is getting old. Only compiled with the `dev-cert` feature.
+#[cfg(feature = "dev-cert")]
+mod dev_cert {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::path::Path;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use rusty_core::{Error, Result};
+
+    use crate::secret::{read_checked, FileSecretSource, SecretSource};
+
+    /// Validity of a new certificate and the age after which a kept one is replaced (a margin before expiry).
+    const VALID_DAYS: u64 = 365;
+    const REPLACE_AFTER: Duration = Duration::from_secs(330 * 86_400);
+    const CERT_FILE: &str = "dev-tls-cert.pem";
+    const KEY_FILE: &str = "dev-tls-key.pem";
+    const NAMES_FILE: &str = "dev-tls-names.txt";
+
+    pub(super) struct Pem {
+        pub cert_pem: String,
+        pub key_pem: String,
+    }
+
+    /// (year, month, day) of a day count since 1970-01-01 (civil-from-days).
+    fn civil(days: i64) -> (i32, u8, u8) {
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z.rem_euclid(146_097);
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let y = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = (doy - (153 * mp + 2) / 5 + 1) as u8;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 } as u8;
+        (if m <= 2 { y + 1 } else { y } as i32, m, d)
+    }
+
+    /// A new certificate and key: subject CN = the host name (`localhost` for an address), the given SANs,
+    /// valid from yesterday for a year.
+    pub(super) fn make(hostname: &str, names: &[String]) -> Result<Pem> {
+        let err = |e: rcgen::Error| Error::storage_with("cannot generate the dev certificate", e);
+        let mut params = rcgen::CertificateParams::new(names.to_vec()).map_err(err)?;
+        let cn = if hostname.parse::<std::net::IpAddr>().is_ok() || hostname.is_empty() { "localhost" } else { hostname };
+        let mut dn = rcgen::DistinguishedName::new();
+        dn.push(rcgen::DnType::CommonName, cn);
+        params.distinguished_name = dn;
+        let today = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() / 86_400)).unwrap_or(0);
+        let (y1, m1, d1) = civil(today - 1);
+        let (y2, m2, d2) = civil(today + i64::try_from(VALID_DAYS).unwrap_or(365));
+        params.not_before = rcgen::date_time_ymd(y1, m1, d1);
+        params.not_after = rcgen::date_time_ymd(y2, m2, d2);
+        let key = rcgen::KeyPair::generate().map_err(err)?;
+        let cert = params.self_signed(&key).map_err(err)?;
+        Ok(Pem { cert_pem: cert.pem(), key_pem: key.serialize_pem() })
+    }
+
+    fn write_new(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+        let tmp = path.with_extension("tmp");
+        let _ = std::fs::remove_file(&tmp);
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            // create_new is O_CREAT | O_EXCL: a file or symlink planted at the name is never followed.
+            .open(&tmp)
+            .map_err(|e| Error::storage_with("cannot write the dev certificate", e))?;
+        f.write_all(bytes).and_then(|()| f.sync_all()).map_err(|e| Error::storage_with("cannot write the dev certificate", e))?;
+        std::fs::rename(&tmp, path).map_err(|e| Error::storage_with("cannot write the dev certificate", e))
+    }
+
+    fn fresh_enough(dir: &Path) -> bool {
+        std::fs::metadata(dir.join(CERT_FILE))
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| SystemTime::now().duration_since(t).ok())
+            .is_some_and(|age| age < REPLACE_AFTER)
+    }
+
+    /// The kept certificate when its files are sound and current; otherwise a new one is made and kept.
+    /// Unsafe permissions on the kept key are an ERROR, never a silent regeneration (fail closed).
+    pub(super) fn load_or_create(dir: &Path, hostname: &str, names: &[String]) -> Result<Pem> {
+        let want = names.join("\n");
+        let have_all = [CERT_FILE, KEY_FILE, NAMES_FILE].iter().all(|f| dir.join(f).exists());
+        if have_all {
+            let kept_names = std::fs::read_to_string(dir.join(NAMES_FILE)).unwrap_or_default();
+            // Read through the checks first: a loosened key file stops the start instead of being replaced.
+            let key = FileSecretSource::new().read(&dir.join(KEY_FILE))?;
+            let cert = read_checked(&dir.join(CERT_FILE), 0o022, 256 * 1024, false, "certificate file must not be writable by group or others")?;
+            if kept_names == want && fresh_enough(dir) {
+                return Ok(Pem {
+                    cert_pem: String::from_utf8(cert).map_err(|_| Error::Invalid("the dev certificate is not UTF-8".into()))?,
+                    key_pem: String::from_utf8(key).map_err(|_| Error::Invalid("the dev key is not UTF-8".into()))?,
+                });
+            }
+        }
+        let pem = make(hostname, names)?;
+        // Key first (0600), then the certificate, then the names marker: a crash in between leaves a set that
+        // is regenerated next time, never a certificate without its key.
+        write_new(&dir.join(KEY_FILE), pem.key_pem.as_bytes(), 0o600)?;
+        write_new(&dir.join(CERT_FILE), pem.cert_pem.as_bytes(), 0o644)?;
+        write_new(&dir.join(NAMES_FILE), want.as_bytes(), 0o644)?;
+        let _ = std::fs::set_permissions(dir.join(KEY_FILE), std::fs::Permissions::from_mode(0o600));
+        Ok(pem)
     }
 }

@@ -15,12 +15,17 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing))]
 
 mod adapter;
+pub mod authres;
 pub mod codec;
+pub mod dkim;
 pub mod filter;
 pub mod fuzzing;
 pub mod inbound;
 pub mod limits;
 pub mod message;
+pub mod outbound;
 pub mod outbound_queue;
 pub mod reply;
+pub mod resolve;
 pub mod session;
+pub mod stack;

@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/*", "tools/*"]
-exclude = ["fuzz", "tools/acceptance"]
+exclude = ["fuzz", "vendor", "tools/acceptance"]
 
 [workspace.package]
 edition = "2021"
@@ -48,3 +48,16 @@ smtp-proto = "=0.2.5"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "json"] }
 # Dev certificate only (rusty-svc feature `dev-cert`); ring backend, never aws-lc.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+# Outbound (U5). mail-auth: DKIM sign/verify, SPF, DMARC, and the hickory DNS resolver. No default
+# features: its default backend is aws-lc-rs (a second crypto stack); `rust-crypto` is pure Rust.
+mail-auth = { version = "=0.15.1", default-features = false, features = ["rust-crypto", "generate", "dns-hickory"] }
+# CA certificates of the host for `verified` outbound TLS when no ca_bundle is configured.
+rustls-native-certs = "0.8"
+base64 = "0.22"
+# DKIM key checks on import (the same ring that signs them inside mail-auth and serves TLS in rustls).
+ring = "0.17"
+
+# mail-auth with its RSA operations moved from the `rsa` crate (RUSTSEC-2023-0071) to `ring`; see
+# vendor/mail-auth/PATCHES.md. Drop when upstream ships a backend free of the advisory.
+[patch.crates-io]
+mail-auth = { path = "vendor/mail-auth" }

@@ -1,0 +1,1 @@
+{"blob":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","envelope_from":"a@example.net","recipients":["b@remote.test"],"destination":"remote.test","sender_domain":"example.net","tries":2}

@@ -214,7 +214,7 @@ fuzz_all() {
     # Use the installed nightly by its exact name (e.g. nightly-2026-11-01-...): plain `+nightly` makes rustup
     # download the latest channel when only a dated nightly is installed.
     nightly_tc="$(rustup toolchain list | awk '/^nightly/{print $1; exit}')"
-    for t in parse_envelope parse_address fuzz_config fuzz_pg_url fuzz_pem fuzz_ctl_args fuzz_smtp_command fuzz_smtp_data fuzz_smtp_path fuzz_smtp_headers fuzz_smtp_auth fuzz_imap_command fuzz_imap_structure fuzz_imap_search_eval fuzz_imap_seqset fuzz_imap_utf7; do
+    for t in parse_envelope parse_address fuzz_config fuzz_pg_url fuzz_pem fuzz_ctl_args fuzz_smtp_command fuzz_smtp_data fuzz_smtp_path fuzz_smtp_headers fuzz_smtp_auth fuzz_smtp_response fuzz_dsn_headers fuzz_queue_payload fuzz_dkim_key fuzz_imap_command fuzz_imap_structure fuzz_imap_search_eval fuzz_imap_seqset fuzz_imap_utf7; do
       mkdir -p "fuzz/corpus/$t"
       # Working corpus first (new finds are written there), committed seeds second.
       (cd fuzz && cargo "+$nightly_tc" fuzz run "$t" "corpus/$t" "seeds/$t" -- "-max_total_time=$FUZZ_SECS" -rss_limit_mb=2048) || return 1

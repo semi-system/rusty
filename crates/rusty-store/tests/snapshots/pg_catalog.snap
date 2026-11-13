@@ -64,6 +64,10 @@ COLUMN jobs.epoch bigint nullable=NO identity=NO/ collation= default=0
 COLUMN jobs.last_error text nullable=YES identity=NO/ collation= default=
 COLUMN jobs.created_at bigint nullable=NO identity=NO/ collation= default=
 COLUMN jobs.updated_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN jobs.dedupe_key text nullable=YES identity=NO/ collation= default=
+COLUMN jobs.owner_id bigint nullable=YES identity=NO/ collation= default=
+COLUMN jobs.units bigint nullable=NO identity=NO/ collation= default=0
+COLUMN jobs.bytes bigint nullable=NO identity=NO/ collation= default=0
 COLUMN keywords.mailbox_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN keywords.message_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN keywords.keyword text nullable=NO identity=NO/ collation=C default=
@@ -196,7 +200,10 @@ CONSTRAINT folders.folders_uid_validity_valid CHECK (uid_validity > 0)
 CONSTRAINT jobs.jobs_attempts_not_null NOT NULL attempts
 CONSTRAINT jobs.jobs_attempts_valid CHECK (attempts >= 0)
 CONSTRAINT jobs.jobs_attempts_within_max CHECK (attempts <= max_attempts)
+CONSTRAINT jobs.jobs_bytes_not_null NOT NULL bytes
+CONSTRAINT jobs.jobs_bytes_valid CHECK (bytes >= 0)
 CONSTRAINT jobs.jobs_created_at_not_null NOT NULL created_at
+CONSTRAINT jobs.jobs_dedupe_key_valid CHECK (dedupe_key IS NULL OR char_length(dedupe_key) >= 1 AND char_length(dedupe_key) <= 128)
 CONSTRAINT jobs.jobs_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE RESTRICT
 CONSTRAINT jobs.jobs_epoch_not_null NOT NULL epoch
 CONSTRAINT jobs.jobs_epoch_valid CHECK (epoch >= 0)
@@ -214,6 +221,8 @@ CONSTRAINT jobs.jobs_pkey PRIMARY KEY (id)
 CONSTRAINT jobs.jobs_run_after_not_null NOT NULL run_after
 CONSTRAINT jobs.jobs_state_not_null NOT NULL state
 CONSTRAINT jobs.jobs_state_valid CHECK (state = ANY (ARRAY['queued'::text, 'running'::text, 'done'::text, 'failed'::text, 'dead'::text]))
+CONSTRAINT jobs.jobs_units_not_null NOT NULL units
+CONSTRAINT jobs.jobs_units_valid CHECK (units >= 0)
 CONSTRAINT jobs.jobs_updated_at_not_null NOT NULL updated_at
 CONSTRAINT keywords.keywords_keyword_not_null NOT NULL keyword
 CONSTRAINT keywords.keywords_mailbox_id_message_id_fkey FOREIGN KEY (mailbox_id, message_id) REFERENCES messages(mailbox_id, id) ON DELETE CASCADE
@@ -296,7 +305,9 @@ INDEX domains.domains_pkey CREATE UNIQUE INDEX domains_pkey ON public.domains US
 INDEX folders.folders_pkey CREATE UNIQUE INDEX folders_pkey ON public.folders USING btree (mailbox_id, id)
 INDEX folders.folders_role CREATE UNIQUE INDEX folders_role ON public.folders USING btree (mailbox_id, role) WHERE (role <> 'custom'::text)
 INDEX folders.folders_sibling_name CREATE UNIQUE INDEX folders_sibling_name ON public.folders USING btree (mailbox_id, COALESCE(parent_id, (0)::bigint), name)
+INDEX jobs.jobs_dedupe_key CREATE UNIQUE INDEX jobs_dedupe_key ON public.jobs USING btree (dedupe_key) WHERE (dedupe_key IS NOT NULL)
 INDEX jobs.jobs_domain_state CREATE INDEX jobs_domain_state ON public.jobs USING btree (domain_id, state)
+INDEX jobs.jobs_owner_created CREATE INDEX jobs_owner_created ON public.jobs USING btree (owner_id, created_at) WHERE (owner_id IS NOT NULL)
 INDEX jobs.jobs_pkey CREATE UNIQUE INDEX jobs_pkey ON public.jobs USING btree (id)
 INDEX jobs.jobs_queued_order CREATE INDEX jobs_queued_order ON public.jobs USING btree (run_after, id) WHERE (state = 'queued'::text)
 INDEX jobs.jobs_running_lease CREATE INDEX jobs_running_lease ON public.jobs USING btree (lease_expires_at) WHERE (state = 'running'::text)

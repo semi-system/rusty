@@ -15,6 +15,7 @@ fn trace<'a>() -> Trace<'a> {
         queue_id: "0123456789ab",
         received_unix: 1_794_139_200, // 2026-11-08 12:00:00 UTC
         authenticated: false,
+        auth_results: None,
     }
 }
 
@@ -206,6 +207,20 @@ fn the_senders_own_return_path_is_replaced_by_ours() {
     assert_eq!(names.iter().filter(|n| *n == "return-path").count(), 1, "{names:?}");
     assert!(text(&out).starts_with("Return-Path: <alice@example.org>\r\n"));
     assert!(!text(&out).contains("forged"));
+}
+
+// backend-neutral: pure header function over bytes
+#[test]
+fn the_outbound_copy_drops_our_internal_headers_and_bcc_but_keeps_the_received_line() {
+    use rusty_smtp::message::outbound_copy;
+    let stored = b"Return-Path: <alice@example.net>\r\nReceived: from [x] by mx.example.net with ESMTPSA id 1;\r\n\tMon, 09 Nov 2026 10:00:00 +0000\r\nAuthentication-Results: mx.example.net; none\r\nReceived-SPF: pass\r\nX-Rusty-Note: internal\r\nFrom: alice@example.net\r\nBcc: secret@hidden.test\r\n\tmore@hidden.test\r\nTo: bob@remote.test\r\nSubject: hi\r\n\r\nBcc: in the body stays\r\nbody\r\n";
+    let out = String::from_utf8(outbound_copy(stored)).unwrap();
+    for gone in ["Return-Path", "Authentication-Results", "Received-SPF", "X-Rusty-Note", "Bcc: secret", "more@hidden.test"] {
+        assert!(!out.contains(gone), "{gone} must not leave the server: {out}");
+    }
+    assert!(out.starts_with("Received: from [x] by mx.example.net with ESMTPSA id 1;\r\n\tMon, 09 Nov 2026"), "{out}");
+    assert!(out.contains("From: alice@example.net\r\n") && out.contains("To: bob@remote.test\r\n"), "{out}");
+    assert!(out.ends_with("\r\nBcc: in the body stays\r\nbody\r\n"), "the body is untouched: {out}");
 }
 
 // backend-neutral: pure header parsing, no store involved

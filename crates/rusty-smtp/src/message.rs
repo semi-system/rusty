@@ -21,6 +21,9 @@ pub struct Trace<'a> {
     pub received_unix: i64,
     /// The sender authenticated (submission): the client address is not written to the trace.
     pub authenticated: bool,
+    /// The `Authentication-Results` value (after the field name) from the inbound SPF/DKIM/DMARC
+    /// checks; `None` writes `<hostname>; none`.
+    pub auth_results: Option<&'a str>,
 }
 
 /// The delivery id of `original` for the recipient account `account` from envelope sender
@@ -81,6 +84,11 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
 /// and it is cut at `max` characters.
 fn sanitize(s: &str, max: usize) -> String {
     s.chars().take(max).map(|c| if c.is_control() || c == '(' || c == ')' { '?' } else { c }).collect()
+}
+
+/// A header value on one line: control characters dropped, length capped (comments and parentheses stay).
+fn one_line(s: &str, max: usize) -> String {
+    s.chars().filter(|c| !c.is_control()).take(max).collect()
 }
 
 fn is_stripped(name: &[u8]) -> bool {
@@ -166,7 +174,10 @@ pub fn prepare_message_with(original: &[u8], trace: &Trace<'_>, extra: &[(String
         )
         .as_bytes(),
     );
-    out.extend_from_slice(format!("Authentication-Results: {}; none\r\n", sanitize(trace.hostname, 255)).as_bytes());
+    match trace.auth_results {
+        Some(v) => out.extend_from_slice(format!("Authentication-Results: {}\r\n", one_line(v, 900)).as_bytes()),
+        None => out.extend_from_slice(format!("Authentication-Results: {}; none\r\n", sanitize(trace.hostname, 255)).as_bytes()),
+    }
     for (name, value) in extra {
         out.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
     }
@@ -277,4 +288,24 @@ pub fn generated_message_id(original: &[u8], hostname: &str) -> String {
     let short: String = hash.as_str().chars().take(24).collect();
     let host: String = hostname.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-').collect();
     format!("<{short}@{host}>")
+}
+
+/// The message as it leaves for a remote server: what we stored for the sender (with our `Return-Path`,
+/// `Authentication-Results` and other internal headers on top, the `Received` line we wrote) minus the
+/// headers that must not cross the boundary: `Return-Path` (the receiver writes its own),
+/// `Authentication-Results`/`Received-SPF`/`X-Rusty-*` (our verdicts, meaningless or misleading
+/// elsewhere) and `Bcc`. The `Received` line stays: it is conventional trace, names no client address
+/// for an authenticated submission, and DKIM covers the headers that matter.
+pub fn outbound_copy(stored: &[u8]) -> Vec<u8> {
+    let norm = normalise_crlf(stored);
+    let (headers, rest): (&[u8], &[u8]) = if norm.starts_with(b"\r\n") {
+        (&[], &norm)
+    } else if let Some(p) = norm.windows(4).position(|w| w == b"\r\n\r\n") {
+        norm.split_at(p + 2)
+    } else {
+        (&norm, &[])
+    };
+    let mut out = strip_reserved(headers, true);
+    out.extend_from_slice(rest);
+    out
 }

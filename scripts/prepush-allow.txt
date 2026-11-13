@@ -11,6 +11,11 @@ file crates/rusty-smtp/tests/data/
 # Test strings that exercise "this is not a usable private key" handling, not key material.
 privkey crates/rusty-svc/tests/tls.rs
 privkey crates/rusty-core/tests/dns.rs
+# DKIM signer tests assert that generated key files start with the PEM header (a prefix check, no key body).
+privkey crates/rusty-smtp/tests/dkim.rs
+# Vendored mail-auth (see vendor/mail-auth/PATCHES.md): inline PEM constants (PKCS#1 and PKCS#8) used only by its
+# `#[cfg(test)] mod tests` to parse keys; the directory is excluded from the workspace and nothing here ships.
+privkey vendor/mail-auth/src/crypto/aws_lc.rs
 # Linux paths of the build server (/home/<build user>/..., "bad path" probes), not a workstation.
 workpath deploy/buildserver/setup-ubuntu.sh
 workpath docs/buildserver.md

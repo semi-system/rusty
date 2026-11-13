@@ -21,7 +21,13 @@ use tokio_util::sync::CancellationToken;
 
 use rusty_smtp::inbound::{InboundHandler, InboundOptions, SubmissionDeps};
 use rusty_smtp::limits::{MemoryBudget, MemorySubmissionLimiter};
-use rusty_smtp::outbound_queue::JobOutbound;
+use rusty_smtp::dkim::keyring;
+use rusty_smtp::outbound::dial::TcpDialer;
+use rusty_smtp::outbound::route::ConfigRoute;
+use rusty_smtp::outbound::tls::RustlsUpgrader;
+use rusty_smtp::outbound::worker::{OutboundWorker, Wake, WorkerDeps, WorkerOptions};
+use rusty_smtp::outbound_queue::{JobOutbound, SubmitLimits};
+use rusty_smtp::stack::DnsStack;
 
 
 /// Messages one account may submit per hour (U4 default; becomes a config key with per-tenant limits).
@@ -106,9 +112,13 @@ pub(crate) fn sqlite_url(path: &Path) -> Result<String> {
 pub async fn start(cfg: StartupConfig, profile: Profile, shutdown: CancellationToken) -> Result<Running> {
     cfg.check_startup(profile)?;
     let hostname = cfg.hostname.clone().unwrap_or_else(|| "localhost".to_owned());
+    // Dev profile: the data directory first, because the dev certificate is kept in it.
+    if profile == Profile::Dev {
+        prepare_dev_dirs(&cfg).await?;
+    }
     // TLS first: a bad certificate or key file must not get as far as opening the database.
     let tls = if cfg.tls.has_cert() || cfg.tls.dev_self_signed {
-        TlsProvider::from_config(&cfg.tls, &hostname, Arc::new(FileSecretSource::new()))?
+        TlsProvider::from_config_in(&cfg.tls, &hostname, Arc::new(FileSecretSource::new()), cfg.database_path.parent())?
     } else if cfg.authenticated_listeners() == 0 {
         // check_startup already refused every configuration with an authenticated listener.
         tracing::warn!("no TLS configured: port 25 will not offer STARTTLS");
@@ -116,9 +126,6 @@ pub async fn start(cfg: StartupConfig, profile: Profile, shutdown: CancellationT
     } else {
         return Err(Error::Invalid("TLS is not configured".into()));
     };
-    if profile == Profile::Dev {
-        prepare_dev_dirs(&cfg).await?;
-    }
     for w in cfg.startup_warnings(profile) {
         tracing::warn!("{w}");
     }
@@ -138,6 +145,8 @@ async fn build(
     tls: TlsProvider,
     shutdown: CancellationToken,
 ) -> Result<(Vec<(ListenerKind, SocketAddr)>, JoinHandle<Result<()>>)> {
+    let hostname = cfg.hostname.clone().unwrap_or_else(|| "localhost".to_owned());
+    let hostname = hostname.as_str();
     let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::open(&cfg.blob_dir).await?);
     let cfg = Arc::new(cfg.clone());
     let ctx = Context::new(store.repos(), blobs, cfg.clone(), tls.clone()).await?;
@@ -147,6 +156,11 @@ async fn build(
     let mut services: Vec<Box<dyn Service>> = Vec::new();
     // One memory budget for every SMTP listener of the process.
     let budget = MemoryBudget::new_mib(cfg.limits.inflight_message_mib);
+    // The outbound side: the DNS stack (MX lookups and inbound SPF/DKIM/DMARC), the worker and the wake-up
+    // that lets a fresh submission skip the poll delay. Without it, submission refuses remote recipients.
+    let wake = Wake::default();
+    let dns = if cfg.outbound.enabled { Some(DnsStack::from_config(&cfg.outbound, hostname)?) } else { None };
+    let secrets = Arc::new(FileSecretSource::new());
     for planned in listener_plan(&cfg) {
         let bound = BoundListener::bind(planned.spec).await?;
         addrs.push((planned.kind, bound.local_addr()));
@@ -157,12 +171,20 @@ async fn build(
         };
         let handler: Arc<dyn SessionHandler> = match planned.kind {
             ListenerKind::Smtp25 => {
-                Arc::new(InboundHandler::new(&ctx, InboundOptions { budget: budget.clone(), ..InboundOptions::default() }))
+                Arc::new(InboundHandler::new(
+                    &ctx,
+                    InboundOptions { budget: budget.clone(), auth: dns.as_ref().map(|d| d.checker.clone()), ..InboundOptions::default() },
+                ))
             }
             ListenerKind::Submission587 | ListenerKind::Submissions465 => {
                 let deps = SubmissionDeps {
-                    outbound: Arc::new(JobOutbound::new(ctx.jobs.clone(), ctx.directory.clone())),
+                    outbound: Arc::new(
+                        JobOutbound::new(ctx.jobs.clone(), ctx.directory.clone())
+                            .with_limits(SubmitLimits::from_config(&cfg.outbound))
+                            .with_wake(wake.clone()),
+                    ),
                     limiter: Arc::new(MemorySubmissionLimiter::new(SUBMISSIONS_PER_HOUR, Arc::new(SystemClock::new()))),
+                    remote_enabled: cfg.outbound.enabled,
                 };
                 let options = InboundOptions {
                     max_transactions: SUBMISSION_TRANSACTIONS,
@@ -176,6 +198,16 @@ async fn build(
         services.push(Box::new(ListenerService::new(bound, accept, handler)));
     }
     services.push(Box::new(GcService::new(GC_EVERY)));
+    if let Some(dns) = dns {
+        let deps = WorkerDeps {
+            resolver: dns.resolver.clone(),
+            dialer: Arc::new(TcpDialer),
+            tls: Arc::new(RustlsUpgrader::new(cfg.outbound.ca_bundle.as_deref())?),
+            route: Arc::new(ConfigRoute::from_config(&cfg.outbound, secrets.as_ref())?),
+            signer: keyring(&cfg.outbound, secrets.clone()),
+        };
+        services.push(Box::new(OutboundWorker::new(deps, WorkerOptions::new(cfg.outbound.clone(), hostname)).with_wake(wake)));
+    }
     for (kind, addr) in &addrs {
         tracing::info!(service = kind.name(), %addr, "listening");
     }

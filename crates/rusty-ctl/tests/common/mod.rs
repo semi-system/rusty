@@ -58,7 +58,13 @@ impl Backend {
         hostname: Option<&str>,
     ) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(passwords);
-        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname, config_note: "test" };
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname, config_note: "test", dkim_dir: None };
+        execute(&cmd, &mut env).await
+    }
+
+    pub async fn run_with_dkim(&self, cmd: Command, dkim_dir: &std::path::Path) -> Result<Outcome, CtlError> {
+        let mut pw = FakePasswords::new(&[]);
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: Some(dkim_dir) };
         execute(&cmd, &mut env).await
     }
 

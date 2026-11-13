@@ -20,6 +20,8 @@ use rusty_svc::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
+use crate::authres::{AuthInput, InboundAuthChecker};
+use sha2::{Digest, Sha256};
 use crate::filter::{run_filters, FilterContext, InboundFilter, QuarantineFolder};
 use crate::limits::{MemoryBudget, SubmissionLimiter};
 use crate::message::{
@@ -60,6 +62,8 @@ impl WallClock for SystemWallClock {
 pub struct InboundOptions {
     /// The inbound filter pipeline (empty by default).
     pub filters: Vec<Arc<dyn InboundFilter>>,
+    /// SPF/DKIM/DMARC checks for port 25 (log-only); `None` writes `none` in `Authentication-Results`.
+    pub auth: Option<Arc<dyn InboundAuthChecker>>,
     pub clock: Arc<dyn WallClock>,
     /// Idle limit while waiting for a command.
     pub command_idle: Duration,
@@ -83,6 +87,7 @@ impl Default for InboundOptions {
     fn default() -> InboundOptions {
         InboundOptions {
             filters: Vec::new(),
+            auth: None,
             clock: Arc::new(SystemWallClock),
             command_idle: Duration::from_secs(300),
             data_idle: Duration::from_secs(600),
@@ -103,6 +108,9 @@ impl Default for InboundOptions {
 pub struct SubmissionDeps {
     pub outbound: Arc<dyn OutboundEnqueue>,
     pub limiter: Arc<dyn SubmissionLimiter>,
+    /// The outbound worker runs: remote recipients may be accepted. `false` refuses them with a
+    /// temporary status (mail is never accepted into a queue nobody drains).
+    pub remote_enabled: bool,
 }
 
 pub struct InboundHandler {
@@ -120,7 +128,7 @@ pub struct InboundHandler {
     options: InboundOptions,
 }
 
-fn system_folder(role: &str) -> FolderId {
+pub(crate) fn system_folder(role: &str) -> FolderId {
     let id = SYSTEM_FOLDER_TABLE.iter().find(|(_, _, r)| *r == role).map_or(1, |(id, _, _)| *id);
     FolderId(id)
 }
@@ -236,6 +244,10 @@ impl InboundHandler {
         let ids: Vec<AccountId> = match self.directory.resolve(&normal).await {
             Ok(Resolved::Account(id)) => vec![id],
             Ok(Resolved::List(members)) => {
+                if self.submission.is_some() && members.iter().any(|m| matches!(m, Resolved::External(_))) {
+                    // Dropping the external members silently would answer 250 for mail that never leaves.
+                    return reject(550, "5.7.2", "This distribution list has external members; sending to it is not supported");
+                }
                 // External members need the outbound queue (not built yet); only local ones receive.
                 members.into_iter().filter_map(|m| if let Resolved::Account(id) = m { Some(id) } else { None }).collect()
             }
@@ -247,7 +259,12 @@ impl InboundHandler {
                         None => reject(550, "5.1.1", "No such user here"),
                     },
                     // An authenticated user may send to the world; port 25 is never an open relay.
-                    Ok(_) if self.submission.is_some() => RcptVerdict::AcceptRemote(normal),
+                    // A domain we host but have disabled is not "the world": never queue it to our own MX.
+                    Ok(Some(_)) if self.submission.is_some() => reject(550, "5.1.2", "The recipient domain is not available here"),
+                    Ok(None) if self.submission.as_ref().is_some_and(|d| !d.remote_enabled) => {
+                        reject(451, "4.3.2", "Delivery to other domains is not enabled on this server; try again later")
+                    }
+                    Ok(None) if self.submission.is_some() => RcptVerdict::AcceptRemote(normal),
                     Ok(_) => reject(554, "5.7.1", "Relay access denied"),
                     Err(e) => RcptVerdict::Reject(map_error(&e, ErrorContext::Rcpt)),
                 };
@@ -332,6 +349,21 @@ impl InboundHandler {
             Some(QuarantineFolder::Spam) => system_folder("spam"),
             None => system_folder("inbox"),
         };
+        // Log-only SPF/DKIM/DMARC: the verdicts go into the header and the log, never into a decision.
+        let auth = match &self.options.auth {
+            Some(checker) => {
+                // DNS can be slow or down: bounded, and a timeout is "no result", never a delayed or refused message.
+                let checked = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    checker.check(&AuthInput { peer: t.peer.ip, helo: &t.helo, mail_from: &t.mail_from, message: &t.data }),
+                )
+                .await;
+                let r = checked.unwrap_or_else(|_| crate::authres::AuthResults::none(&self.hostname));
+                tracing::info!(peer = %t.peer.ip, spf = %r.spf, dkim = %r.dkim, dmarc = %r.dmarc, "inbound authentication results");
+                Some(r)
+            }
+            None => None,
+        };
         let queue_id = hex12(&BlobHash::of(&t.data));
         let trace = Trace {
             hostname: &self.hostname,
@@ -342,6 +374,7 @@ impl InboundHandler {
             queue_id: &queue_id,
             received_unix: self.options.clock.now_unix(),
             authenticated: false,
+            auth_results: auth.as_ref().map(|a| a.header_value.as_str()),
         };
         let stored = Bytes::from(prepare_message_with(&t.data, &trace, &outcome.tags));
         let mut seen = HashSet::new();
@@ -450,6 +483,7 @@ impl InboundHandler {
             queue_id: &queue_id,
             received_unix: now,
             authenticated: true,
+            auth_results: None,
         };
         let mut extra = Vec::new();
         if !has_header(&t.data, "message-id") {
@@ -459,9 +493,38 @@ impl InboundHandler {
             extra.push(("Date".to_owned(), rfc5322_date(now)));
         }
         let stored = Bytes::from(prepare_message_with(&t.data, &trace, &extra));
+        // The sending budget: counted atomically BEFORE any effect (parallel connections cannot all
+        // pass a separate check), restart-safe for remote mail through the queue's own accounting.
+        if !deps.limiter.try_record(identity.account) {
+            return Reply::new(451, "4.7.1", "Sending limit reached, try again later");
+        }
+        let mut seen = HashSet::new();
+        let accounts: Vec<AccountId> =
+            t.recipients.iter().flat_map(|r| r.accounts.iter().copied()).filter(|a| seen.insert(*a)).collect();
+        // Effects in an order that converges under a client retry: the local copies first (each
+        // idempotent by its delivery id), the remote jobs last, in ONE transaction under a key derived
+        // from the submission. A failure before the queue step creates no remote job; a failure at it
+        // leaves local copies that the retry finds again by id. Either way the retry ends with every
+        // recipient served once. (A single database transaction over both is not possible: mailbox and
+        // job repositories are separate seams.)
         let mut results: Vec<Result<(), Error>> = Vec::new();
-        if !t.remote_recipients.is_empty() {
+        for a in &accounts {
+            results.push(self.deliver_one(*a, &t.mail_from, &t.data, stored.clone(), system_folder("inbox")).await);
+        }
+        if results.iter().all(Result::is_ok) && !t.remote_recipients.is_empty() {
             let sender_domain = identity.address.rsplit_once('@').map(|(_, d)| d.to_owned()).unwrap_or_default();
+            let mut remote = t.remote_recipients.clone();
+            remote.sort();
+            let key = {
+                let mut h = Sha256::new();
+                h.update(identity.account.0.to_be_bytes());
+                h.update(t.mail_from.as_bytes());
+                h.update(b"\0");
+                h.update(remote.join(",").as_bytes());
+                h.update(b"\0");
+                h.update(BlobHash::of(&t.data).as_str().as_bytes());
+                hex::encode(h.finalize())
+            };
             results.push(match self.blobs.put(stored.clone()).await {
                 Ok(blob) => {
                     deps.outbound
@@ -470,22 +533,16 @@ impl InboundHandler {
                             envelope_from: t.mail_from.clone(),
                             recipients: t.remote_recipients.clone(),
                             sender_domain,
+                            account: identity.account.0,
+                            submission_key: key,
+                            bytes: t.data.len() as u64,
                         })
                         .await
                 }
                 Err(e) => Err(e),
             });
         }
-        let mut seen = HashSet::new();
-        let accounts: Vec<AccountId> =
-            t.recipients.iter().flat_map(|r| r.accounts.iter().copied()).filter(|a| seen.insert(*a)).collect();
-        for a in &accounts {
-            results.push(self.deliver_one(*a, &t.mail_from, &t.data, stored.clone(), system_folder("inbox")).await);
-        }
         let reply = delivery_reply(results);
-        if reply.is_positive() {
-            deps.limiter.record(identity.account);
-        }
         tracing::info!(
             peer = %t.peer.ip,
             queue_id = %queue_id,

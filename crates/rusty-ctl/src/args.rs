@@ -41,6 +41,7 @@ pub enum Command {
     AliasList { domain: Option<String> },
     AliasRemove { alias: String },
     DkimGenerate { domain: String, selector: String },
+    DkimImport { domain: String, selector: String, key_file: PathBuf },
     Check,
     /// `db migrate`: apply pending Postgres migrations with the migrator role (never the daemon).
     DbMigrate { require_roles: bool },
@@ -86,7 +87,11 @@ pub const USAGE: &str = "usage: rustyctl [--config FILE | --dev [--data-dir DIR]
   account set-password <addr> (--password-stdin | --prompt)\n\
   account disable <addr> | enable <addr>\n\
   alias add <alias-addr> <account-addr> | list [domain] | remove <alias-addr>\n\
-  dkim generate <domain> [--selector S]      (arrives with the outbound queue)\n\
+  dkim generate <domain> [--selector S]      create an ed25519 DKIM key (0600) and print its DNS record\n\
+  dkim import <domain> <key.pem> [--selector S]\n\
+                                             keep an RSA (2048-4096 bit) or ed25519 private key (0600)\n\
+                                             and print its DNS record; make an RSA key with\n\
+                                             openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048\n\
   check                                      configuration summary and DNS records to publish\n\
 \n\
 Passwords are read from standard input or the terminal, never from the command line.";
@@ -173,9 +178,16 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
     };
     let plain = || -> Result<(), UsageError> {
         no_password()?;
-        no_selector()
-        ?;
-        no_without_roles()    };
+        no_selector()?;
+        no_without_roles()
+    };
+    let dkim_selector = || -> Result<String, UsageError> {
+        match selector.as_deref() {
+            None => Ok(DEFAULT_SELECTOR.to_owned()),
+            Some(s) if valid_selector(s) => Ok(s.to_owned()),
+            Some(_) => Err(err("--selector must be a DNS label (letters, digits, - and .)")),
+        }
+    };
 
     match words.as_slice() {
         ["domain", "add", name] => {
@@ -239,14 +251,13 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         }
         ["dkim", "generate", domain] => {
             no_password()?;
-            done(Command::DkimGenerate {
-                domain: (*domain).to_owned(),
-                selector: match selector.as_deref() {
-                    None => DEFAULT_SELECTOR.to_owned(),
-                    Some(s) if valid_selector(s) => s.to_owned(),
-                    Some(_) => return Err(err("--selector must be a DNS label (letters, digits, - and .)")),
-                },
-            })
+            no_without_roles()?;
+            done(Command::DkimGenerate { domain: (*domain).to_owned(), selector: dkim_selector()? })
+        }
+        ["dkim", "import", domain, key_file] => {
+            no_password()?;
+            no_without_roles()?;
+            done(Command::DkimImport { domain: (*domain).to_owned(), selector: dkim_selector()?, key_file: PathBuf::from(key_file) })
         }
         ["db", "migrate"] => {
             no_password()?;

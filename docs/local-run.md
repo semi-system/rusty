@@ -1,21 +1,24 @@
 # Running Rusty locally (development profile)
 
 > **DEV ONLY. Do not put real mail in this.** `rusty d --dev` keeps everything in a SQLite file
-> and a blob directory under a data dir, uses an in-memory self-signed certificate, and binds
+> and a blob directory under a data dir, uses a self-signed certificate kept in the data dir, and binds
 > high ports. The production backend will be Postgres (not wired yet) and production runs with
 > `--config`. Treat the dev data dir as disposable.
 
 ## What works and what does not
 
 Works: SMTP inbound (port 25 equivalent), submission with STARTTLS and implicit TLS, IMAP with
-STARTTLS and implicit TLS, `rustyctl` (domains, accounts, aliases), local delivery between local
-accounts.
+STARTTLS and implicit TLS, `rustyctl` (domains, accounts, aliases, DKIM keys), local delivery between local
+accounts, the outbound queue (direct MX delivery with retries and bounces, DKIM signing when keys are
+configured).
 
 Does **not** work yet:
 
-- **Remote delivery.** The outbound queue (U5) is not merged. Mail to an address outside your
-  local domains is not delivered anywhere. Nothing reaches the Internet, and nothing is signed
-  with DKIM (`rustyctl dkim generate` is a stub).
+- **Remote delivery from a dev machine.** The queue worker delivers to the recipient's MX on port 25,
+  which most home and office networks block; it retries for up to 5 days and then bounces to the
+  sender. Without a domain whose SPF/DKIM/DMARC records point at this machine, receivers will reject or
+  junk the mail anyway. Set `[outbound] enabled = false` to make submission refuse remote recipients
+  (`451 4.3.2`) instead of queueing them.
 - **Postgres / Valkey.** Production storage wiring (U11) is not done; the dev profile uses SQLite.
 - **DNS page / `rustyctl check` records for a real domain.** There is no admin UI; the domain
   `example.test` used below is fictional and has no DNS.
@@ -103,16 +106,18 @@ Use these values. The hostname is `localhost` because the dev certificate is iss
 
 (Alternatives: IMAP `1143` with STARTTLS; SMTP `4465` with SSL/TLS.)
 
-The first connection fails certificate verification because the certificate is self-signed and
-regenerated at every start. In Thunderbird, when the "Security Exception" / "Add Security
-Exception" dialog appears, choose **Confirm Security Exception**. You will have to do this again
-after every restart of `rusty d --dev` (new certificate each time) - once for IMAP and once for
-SMTP. You may also add exceptions in advance under Settings > Privacy & Security > Certificates >
+The first connection fails certificate verification because the certificate is self-signed. It is
+made once and kept in the data dir (`dev-tls-cert.pem`, key `dev-tls-key.pem` mode 0600; subject the
+configured hostname or `localhost`, valid for one year, replaced automatically about a month before it
+expires or when the names change). In Thunderbird, when the "Security Exception" / "Add Security
+Exception" dialog appears, choose **Confirm Security Exception** - once for IMAP and once for SMTP;
+the exception stays valid across restarts of `rusty d --dev` with the same data dir. If the key file
+is made readable by others, the start fails instead of silently replacing it. You may also add exceptions in advance under Settings > Privacy & Security > Certificates >
 Manage Certificates > Servers.
 
 Mail you send from alice to `bob@example.test` is delivered locally. A recipient outside the
-configured domains is accepted by the submission server ("250 queued", Thunderbird shows it as sent) but nothing leaves
-this machine (outbound is not implemented).
+configured domains is queued ("250", Thunderbird shows it as sent) and the outbound worker tries to
+deliver it (see above); with `[outbound] enabled = false` it is refused with `451 4.3.2`.
 
 ## Stopping and cleaning up
 

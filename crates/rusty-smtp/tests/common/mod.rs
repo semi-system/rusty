@@ -141,11 +141,13 @@ pub struct Opts {
     pub implicit_tls: bool,
     pub per_hour: u32,
     pub auth_failures_max: u32,
+    pub remote_enabled: bool,
+    pub submit_limits: Option<rusty_smtp::outbound_queue::SubmitLimits>,
 }
 
 impl Default for Opts {
     fn default() -> Opts {
-        Opts { options: InboundOptions::default(), max_message_bytes: 1 << 20, max_recipients: 100, tls: false, submission: false, implicit_tls: false, per_hour: 200, auth_failures_max: 10 }
+        Opts { options: InboundOptions::default(), max_message_bytes: 1 << 20, max_recipients: 100, tls: false, submission: false, implicit_tls: false, per_hour: 200, auth_failures_max: 10, remote_enabled: true, submit_limits: None }
     }
 }
 
@@ -187,8 +189,9 @@ pub async fn start(b: &Backend, opts: Opts) -> Server {
     let ctx = Context::new(b.store.repos(), blobs.clone(), Arc::new(cfg), tls).await.unwrap();
     let handler: Arc<dyn SessionHandler> = if opts.submission {
         let deps = SubmissionDeps {
-            outbound: Arc::new(JobOutbound::new(ctx.jobs.clone(), ctx.directory.clone())),
+            outbound: Arc::new(JobOutbound::new(ctx.jobs.clone(), ctx.directory.clone()).with_limits(opts.submit_limits.unwrap_or_default())),
             limiter: Arc::new(MemorySubmissionLimiter::new(opts.per_hour, Arc::new(SystemClock::new()))),
+            remote_enabled: opts.remote_enabled,
         };
         Arc::new(InboundHandler::submission(&ctx, opts.options, deps))
     } else {
@@ -352,6 +355,21 @@ impl Client {
         assert!(e.contains("AUTH PLAIN LOGIN"), "{e}");
         c
     }
+}
+
+pub mod fake_mta;
+
+/// A `Context` over the backend (no listener), with a blob store in the backend's temp dir.
+pub async fn make_context(b: &Backend) -> (Context, Arc<dyn BlobStore>) {
+    let blobs_root = b.tmp.path().join("blobs");
+    if !blobs_root.exists() {
+        FsBlobStore::init(&blobs_root).await.unwrap();
+    }
+    let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::open(&blobs_root).await.unwrap());
+    let mut cfg = StartupConfig::dev(b.tmp.path());
+    cfg.hostname = Some(HOST.into());
+    let ctx = Context::new(b.store.repos(), blobs.clone(), Arc::new(cfg), TlsProvider::unavailable().unwrap()).await.unwrap();
+    (ctx, blobs)
 }
 
 /// Every backend with short waits (300 ms) and a two-connection pool, for the saturation tests.

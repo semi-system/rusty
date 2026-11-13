@@ -14,7 +14,7 @@ fuzz_target!(|data: &[u8]| {
     };
     match p.command {
         Command::AccountSetPassword { password, .. } => assert_ne!(password, PasswordSource::None),
-        Command::DkimGenerate { selector, .. } => {
+        Command::DkimGenerate { selector, .. } | Command::DkimImport { selector, .. } => {
             assert!((1..=63).contains(&selector.len()));
             assert!(selector.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.'));
         }

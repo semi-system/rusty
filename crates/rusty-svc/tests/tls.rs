@@ -295,3 +295,109 @@ async fn an_unavailable_provider_says_so_and_never_completes_a_handshake() {
     let ck = certified_key(cert.as_bytes(), key.as_bytes()).unwrap();
     assert!(TlsProvider::from_resolver(Arc::new(rusty_svc::StaticCertResolver::new(ck))).unwrap().is_available());
 }
+
+// ---- the kept development certificate ----
+
+#[cfg(feature = "dev-cert")]
+mod dev_cert_kept {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    fn dev_cfg() -> TlsConfig {
+        TlsConfig { cert_file: None, key_file: None, dev_self_signed: true }
+    }
+
+    fn open(dir: &std::path::Path, host: &str) -> rusty_core::Result<TlsProvider> {
+        TlsProvider::from_config_in(&dev_cfg(), host, secrets(), Some(dir))
+    }
+
+    /// (not_before, not_after) years and the day-of-year-free dates of the first two UTCTime values in a
+    /// certificate DER (validity is the first pair of times).
+    fn validity(der: &[u8]) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i + 15 <= der.len() && out.len() < 2 {
+            if der[i] == 0x17 && der[i + 1] == 0x0d && der[i + 14] == b'Z' {
+                out.push(String::from_utf8_lossy(&der[i + 2..i + 14]).into_owned());
+                i += 15;
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+
+    fn contains(hay: &[u8], needle: &[u8]) -> bool {
+        hay.windows(needle.len()).any(|w| w == needle)
+    }
+
+    // backend-neutral: files and certificates only
+    #[test]
+    fn the_certificate_has_a_cn_the_sans_and_about_one_year_of_validity() {
+        let dir = tempfile::tempdir().unwrap();
+        let der = open(dir.path(), "mail.dev.test").unwrap().leaf_der().unwrap();
+        // CN = the host name (OID 2.5.4.3 followed by the string), and the SAN names are present.
+        let cn_at = der.windows(3).position(|w| w == [0x55, 0x04, 0x03]).expect("a subject CN");
+        assert!(contains(&der[cn_at..cn_at + 30], b"mail.dev.test"), "CN is the configured host name");
+        assert!(contains(&der, b"localhost"));
+        let v = validity(&der);
+        assert_eq!(v.len(), 2, "validity is UTCTime (before 2050)");
+        let year = |s: &str| 2000 + s[..2].parse::<i32>().unwrap();
+        let (from, to) = (year(&v[0]), year(&v[1]));
+        let now_year = 1970 + i32::try_from(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() / 31_556_952).unwrap();
+        assert!((now_year - 1..=now_year).contains(&from), "valid from about now, not 1975: {v:?}");
+        assert!((now_year..=now_year + 1).contains(&to), "valid for about a year, not until 4096: {v:?}");
+    }
+
+    // backend-neutral: files and certificates only
+    #[test]
+    fn an_address_as_hostname_gets_localhost_as_cn() {
+        let dir = tempfile::tempdir().unwrap();
+        let der = open(dir.path(), "127.0.0.1").unwrap().leaf_der().unwrap();
+        let cn_at = der.windows(3).position(|w| w == [0x55, 0x04, 0x03]).unwrap();
+        assert!(contains(&der[cn_at..cn_at + 20], b"localhost"));
+    }
+
+    // backend-neutral: files and certificates only
+    #[test]
+    fn the_certificate_is_kept_between_starts_with_a_private_key_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = open(dir.path(), "mail.dev.test").unwrap().leaf_der().unwrap();
+        let key = dir.path().join("dev-tls-key.pem");
+        assert_eq!(std::fs::metadata(&key).unwrap().permissions().mode() & 0o777, 0o600);
+        let second = open(dir.path(), "mail.dev.test").unwrap().leaf_der().unwrap();
+        assert_eq!(first, second, "the same certificate is served after a restart");
+        // A different host name is a different certificate.
+        let other = open(dir.path(), "other.dev.test").unwrap().leaf_der().unwrap();
+        assert_ne!(first, other);
+        // The in-memory form (no data dir) stays what it was: a new certificate each time.
+        let a = TlsProvider::from_config(&dev_cfg(), "mail.dev.test", secrets()).unwrap().leaf_der().unwrap();
+        let b = TlsProvider::from_config(&dev_cfg(), "mail.dev.test", secrets()).unwrap().leaf_der().unwrap();
+        assert_ne!(a, b);
+    }
+
+    // backend-neutral: files and certificates only
+    #[test]
+    fn a_loosened_key_file_stops_the_start_instead_of_being_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        open(dir.path(), "mail.dev.test").unwrap();
+        let key = dir.path().join("dev-tls-key.pem");
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(open(dir.path(), "mail.dev.test").is_err(), "fail closed on a group/world-readable key");
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(dir.path().join("dev-tls-cert.pem"), std::fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(open(dir.path(), "mail.dev.test").is_err(), "and on a writable certificate file");
+    }
+
+    // backend-neutral: files and certificates only
+    #[test]
+    fn an_old_certificate_is_replaced_before_it_expires() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = open(dir.path(), "mail.dev.test").unwrap().leaf_der().unwrap();
+        let cert = std::fs::File::options().write(true).open(dir.path().join("dev-tls-cert.pem")).unwrap();
+        cert.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(340 * 86_400)).unwrap();
+        let again = open(dir.path(), "mail.dev.test").unwrap().leaf_der().unwrap();
+        assert_ne!(first, again, "a 340-day-old dev certificate is renewed");
+    }
+}

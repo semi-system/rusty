@@ -18,7 +18,7 @@ blob_dir = "/var/lib/rusty/blobs"
 # max_message_bytes = 52428800
 
 # Seconds an unreferenced blob is kept before GC may delete it. Minimum 3600. Default: 86400.
-# gc_grace_seconds = 86400
+# gc_grace_seconds = 604800   # must be >= [outbound] max_age_secs + 86400 (queued bodies are unreferenced blobs)
 
 # ---- Services (U1) ----------------------------------------------------------------------
 
@@ -67,3 +67,36 @@ blob_dir = "/var/lib/rusty/blobs"
 # auth_window_secs = 300
 # auth_concurrent_max = 16   # authentication attempts running at once, process-wide
 # inflight_message_mib = 1024  # memory all SMTP sessions together may hold for messages in flight (16..=1048576)
+
+# ---- outbound mail (U5) ----
+# The worker that delivers mail submitted by your users to other servers. Safe defaults; every key optional.
+# [outbound]
+# enabled = true                    # false: submission refuses remote recipients (451) instead of queueing them
+# max_age_secs = 432000             # give up and bounce after 5 days (gc_grace_seconds must be at least this + 86400)
+# backoff_secs = [300, 900, 1800, 3600, 7200, 14400]   # retry delays; the last repeats
+# max_concurrent = 20
+# max_concurrent_per_domain = 5
+# default_tls = "opportunistic"     # none | opportunistic (STARTTLS if offered, certificate not checked) | required | verified
+# dkim_dir = "/var/lib/rusty/dkim"  # DKIM keys (0600); unset: no signing. Each key signs when its file exists:
+#                                   #   ed25519: rustyctl dkim generate <domain>
+#                                   #   RSA (needed by receivers that do not verify ed25519): make one with
+#                                   #   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out k.pem
+#                                   #   then rustyctl dkim import <domain> k.pem (Rusty does not generate RSA keys)
+# dkim_selector = "rusty"
+# dkim_ed25519 = true               # false: ignore the ed25519 key file (sign with RSA only)
+# bind_address = "192.0.2.7"        # dedicated sending address
+# nameserver = "10.77.0.10:53"      # DNS server instead of the system resolver (operator setting)
+# ca_bundle = "/etc/rusty/ca.pem"   # CA certificates for `verified` TLS instead of the system store (operator setting)
+# max_pending_per_account = 1000    # fairness inside a tenant: queued jobs one account may hold
+# submit_window_secs = 3600         # budget window per account:
+# submit_max_jobs = 500             #   jobs (one per destination domain),
+# submit_max_recipients = 2000      #   recipients and
+# submit_max_bytes = 2147483648     #   bytes
+# [outbound.tls_policy]             # per destination domain
+# "partner.example" = "verified"
+# [outbound.relay]                  # send everything through a smarthost instead (ISP blocks port 25)
+# host = "smtp.provider.example"
+# port = 587
+# tls = "starttls"                  # starttls | implicit | none (credentials need TLS)
+# username = "mailer"
+# password_file = "/etc/rusty/relay.pw"   # mode 0600, never inline

@@ -86,6 +86,7 @@ pub fn check_headers(data: &[u8]) {
         queue_id: "000000000000",
         received_unix: 0,
         authenticated: false,
+        auth_results: None,
     };
     let out = prepare_message(data, &trace);
     assert!(out.starts_with(b"Return-Path: <a@b.c>\r\nReceived: from "));
@@ -160,5 +161,73 @@ pub fn check_auth(data: &[u8]) {
                 }
             }
         }
+    }
+}
+
+/// The reply parser of the outbound client: arbitrary bytes from a hostile server never panic; the
+/// reported length stays inside the input; a parsed reply honours the limits; and a complete reply
+/// parsed from a prefix equals the one parsed from the whole input (no dependence on chunking).
+pub fn check_reply(data: &[u8]) {
+    use crate::outbound::smtp_reply::{parse_reply, MAX_LINES, MAX_REPLY};
+    if let Ok(Some((reply, used))) = parse_reply(data) {
+            assert!(used <= data.len() && used <= MAX_REPLY + 1);
+            assert!(reply.lines.len() <= MAX_LINES && (100..600).contains(&reply.code));
+            let again = parse_reply(data.get(..used).unwrap_or_default()).ok().flatten();
+            assert_eq!(again, Some((reply, used)), "a reply is self-delimiting");
+    }
+}
+
+/// The header copier of a bounce: never panics, never contains the body, never exceeds the cap, never
+/// holds a line that could pass for a MIME boundary or a control character.
+pub fn check_dsn_headers(data: &[u8]) {
+    use crate::outbound::dsn::{header_section, MAX_HEADERS_BYTES};
+    let out = header_section(data, MAX_HEADERS_BYTES);
+    assert!(out.len() <= MAX_HEADERS_BYTES);
+    assert!(out.is_empty() || out.ends_with(b"\r\n"));
+    for line in out.split(|&b| b == b'\n') {
+        assert!(!line.starts_with(b"--"));
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        assert!(line.iter().all(|&b| b == b'\t' || !b.is_ascii_control()));
+    }
+    if let Some(p) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+        let body = data.get(p + 4..).unwrap_or_default();
+        if body.len() > 8 {
+            assert!(!out.windows(body.len()).any(|w| w == body), "the body must not be copied");
+        }
+    }
+}
+
+/// The queue payload decoder: any JSON value decodes or is refused without a panic, and what decodes
+/// is safe to put on the wire (no CR, LF, angle brackets or spaces in any address) and round-trips.
+pub fn check_queue_payload(data: &[u8]) {
+    use crate::outbound::payload::OutboundPayload;
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(data) else { return };
+    if let Ok(p) = OutboundPayload::decode(&v) {
+        for a in p.recipients.iter().chain(std::iter::once(&p.envelope_from)) {
+            assert!(!a.chars().any(|c| c.is_control() || c.is_whitespace() || c == '<' || c == '>'));
+        }
+        assert_eq!(OutboundPayload::decode(&p.encode()).ok(), Some(p));
+    }
+}
+
+/// A hostile DKIM key record: arbitrary bytes as the `p=` of an RSA and of an Ed25519 key record (the DER
+/// reader that unwraps a SubjectPublicKeyInfo and measures the modulus is code we patched in), and a
+/// signature that must then verify to a verdict without a panic.
+pub fn check_dkim_key_record(data: &[u8]) {
+    use base64::Engine;
+    use crate::authres::AuthInput;
+    use crate::resolve::StaticDns;
+    let p = base64::engine::general_purpose::STANDARD.encode(data);
+    let mut dns = StaticDns::default();
+    dns.txt.insert("s1._domainkey.example.org".into(), format!("v=DKIM1; k=rsa; p={p}"));
+    dns.txt.insert("s2._domainkey.example.org".into(), format!("v=DKIM1; k=ed25519; p={p}"));
+    let Ok(stack) = crate::stack::DnsStack::with_static(dns, "mx.example.net") else { return };
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread().build() else { return };
+    for (alg, sel) in [("rsa-sha256", "s1"), ("ed25519-sha256", "s2")] {
+        let msg = format!(
+            "DKIM-Signature: v=1; a={alg}; c=relaxed/relaxed; d=example.org; s={sel}; h=from; bh=2jUSOH9NhtVGCQWNr9BrIAPreKQjO6Sn7XIkfJVOzv8=; b=AAAA\r\nFrom: a@example.org\r\n\r\nx\r\n"
+        );
+        let r = rt.block_on(stack.checker.check(&AuthInput { peer: [192, 0, 2, 1].into(), helo: "h", mail_from: "a@example.org", message: msg.as_bytes() }));
+        assert!(r.dkim != "pass", "a garbage key must never verify a garbage signature");
     }
 }

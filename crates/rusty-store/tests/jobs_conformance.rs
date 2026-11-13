@@ -504,3 +504,108 @@ async fn a_live_lease_is_not_reclaimed_by_the_database_clock_claim() {
     })
     .await;
 }
+
+/// U5: a long-lived job (an outbound message retried for days) needs a retry that does not spend
+/// the attempt budget, carries an updated payload, and a way to know its age by the database clock.
+#[tokio::test]
+async fn reschedule_resets_attempts_replaces_payload_and_is_fenced() {
+    for_each_backend(|b| async move {
+        let jq = b.jobs();
+        let n = b.name;
+        let id = jq
+            .enqueue_with_max_attempts_at("r", None, &json!({"tries": 0}), None, 3, 5000)
+            .await
+            .unwrap();
+        let mut epoch = 0;
+        for round in 0..6i64 {
+            let now = 5000 + round * 100;
+            let j = jq.claim_at("w", &["r"], 30, now).await.unwrap().unwrap();
+            assert_eq!(j.created_at, 5000, "{n}: created_at is the enqueue time, stable across retries");
+            assert_eq!(j.attempts, 1, "{n}: attempts restart after a reschedule");
+            assert_eq!(j.payload, json!({"tries": round}), "{n}");
+            assert!(j.epoch > epoch, "{n}: every claim raises the epoch");
+            epoch = j.epoch;
+            jq.reschedule_at(id, j.epoch, &json!({"tries": round + 1}), "try later", 50, now + 1)
+                .await
+                .unwrap();
+            assert_eq!(state(&b, id).await, "queued", "{n}");
+            assert_eq!(col(&b, "run_after", id).await, now + 51, "{n}");
+            assert_eq!(last_error(&b, id).await, "try later", "{n}");
+            // The old epoch is a zombie now.
+            assert!(is_stale(&jq.reschedule_at(id, j.epoch, &json!({}), "x", 1, now + 2).await), "{n}");
+        }
+        // A lapsed lease cannot reschedule either.
+        let j = jq.claim_at("w", &["r"], 30, 9000).await.unwrap().unwrap();
+        assert!(is_stale(&jq.reschedule_at(id, j.epoch, &json!({}), "x", 1, 9031).await), "{n}");
+        // Payload limits still apply.
+        let j = jq.claim_at("w", &["r"], 30, 9100).await.unwrap().unwrap();
+        assert!(jq.reschedule_at(id, j.epoch, &nested(65), "x", 1, 9101).await.is_err(), "{n}");
+    })
+    .await;
+}
+
+// ---------------------------------------------------------------------------- enqueue_batch (U5, review I2/I3/I5)
+
+use rusty_store::{BatchSpec, OwnerLimits};
+
+fn spec<'a>(payload: &'a Value, key: Option<&'a str>, units: u32, bytes: u64) -> BatchSpec<'a> {
+    BatchSpec { kind: "out", domain: None, payload, dedupe_key: key, units, bytes, max_attempts: 20 }
+}
+
+fn limits() -> OwnerLimits {
+    OwnerLimits { max_pending: 100, window_secs: 3600, max_jobs: 100, max_units: 1000, max_bytes: 1 << 30 }
+}
+
+#[tokio::test]
+async fn batch_enqueue_is_one_transaction_and_idempotent_by_key() {
+    for_each_backend(|b| async move {
+        let jq = b.jobs();
+        let n = b.name;
+        let p = json!({"x": 1});
+        let owner = Some((7, limits()));
+        let ids = jq.enqueue_batch_at(owner, &[spec(&p, Some("k1"), 2, 10), spec(&p, Some("k2"), 1, 10)], 1000).await.unwrap();
+        assert_eq!(ids.len(), 2, "{n}");
+        assert_eq!(b.count_jobs().await, 2, "{n}");
+        // The same submission again (a client retry): the same jobs, nothing new.
+        let again = jq.enqueue_batch_at(owner, &[spec(&p, Some("k1"), 2, 10), spec(&p, Some("k2"), 1, 10)], 1001).await.unwrap();
+        assert_eq!(again, ids, "{n}");
+        assert_eq!(b.count_jobs().await, 2, "{n}");
+        // A batch with one new and one known key adds only the new one.
+        let mixed = jq.enqueue_batch_at(owner, &[spec(&p, Some("k2"), 1, 10), spec(&p, Some("k3"), 1, 10)], 1002).await.unwrap();
+        assert_eq!(mixed.first(), ids.get(1), "{n}");
+        assert_eq!(b.count_jobs().await, 3, "{n}");
+        assert!(jq.enqueue_batch_at(owner, &[], 1003).await.unwrap().is_empty(), "{n}");
+        // Keys are bounded.
+        let long = "k".repeat(129);
+        assert!(jq.enqueue_batch_at(owner, &[spec(&p, Some(&long), 1, 1)], 1004).await.is_err(), "{n}");
+        assert_eq!(b.count_jobs().await, 3, "{n}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn batch_enqueue_is_all_or_nothing_and_enforces_owner_caps_and_windows() {
+    for_each_backend(|b| async move {
+        let jq = b.jobs();
+        let n = b.name;
+        let p = json!({});
+        let tight = OwnerLimits { max_pending: 3, ..limits() };
+        jq.enqueue_batch_at(Some((1, tight)), &[spec(&p, Some("a"), 1, 1), spec(&p, Some("b"), 1, 1)], 2000).await.unwrap();
+        // Two more would make 4 pending for this owner: refused as a whole, nothing inserted.
+        let r = jq.enqueue_batch_at(Some((1, tight)), &[spec(&p, Some("c"), 1, 1), spec(&p, Some("d"), 1, 1)], 2001).await;
+        assert!(matches!(r, Err(Error::Quota(_))), "{n}: {r:?}");
+        assert_eq!(b.count_jobs().await, 2, "{n}: all or nothing");
+        // Another owner is unaffected (fairness: one user cannot fill the queue for the others).
+        jq.enqueue_batch_at(Some((2, tight)), &[spec(&p, Some("e"), 1, 1)], 2002).await.unwrap();
+        // Recipient and byte budgets over the window, counted together with what the owner already sent.
+        let w = OwnerLimits { max_units: 5, max_bytes: 100, ..limits() };
+        jq.enqueue_batch_at(Some((3, w)), &[spec(&p, Some("f"), 3, 60)], 3000).await.unwrap();
+        let r = jq.enqueue_batch_at(Some((3, w)), &[spec(&p, Some("g"), 3, 10)], 3001).await;
+        assert!(matches!(r, Err(Error::Quota(_))), "{n}: recipients over the window budget {r:?}");
+        let r = jq.enqueue_batch_at(Some((3, w)), &[spec(&p, Some("h"), 1, 50)], 3002).await;
+        assert!(matches!(r, Err(Error::Quota(_))), "{n}: bytes over the window budget {r:?}");
+        // The window slides: an hour later the budget is free again.
+        jq.enqueue_batch_at(Some((3, w)), &[spec(&p, Some("i"), 3, 60)], 3000 + 3601).await.unwrap();
+    })
+    .await;
+}
