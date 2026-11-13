@@ -1840,6 +1840,7 @@ dependencies = [
  "rusty-core",
  "rusty-mime",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "tokio",
 ]
