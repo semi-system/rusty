@@ -18,7 +18,7 @@
 
 # ---- compile stage ---------------------------------------------------------------------------
 # Rust version = rust-toolchain.toml `channel` (checked by scripts/check-docker-pins.sh).
-FROM --platform=$BUILDPLATFORM rust:1.99.1-alpine3.22@sha256:0fd356c1b3a83a6a6a2a4113ede8166eac6697a663fa822c04f0c202e63fcc01 AS build
+FROM --platform=$BUILDPLATFORM rust:1.99.1-alpine3.22@sha256:9a744dc47d1ac2a7d17fc3cedfc8b4928b1696dfcba3274ab25bfb40988a9ff0 AS build
 
 ARG TARGETARCH
 # zig 0.15.2 (https://ziglang.org/download/index.json), SHA-256 of the official tarballs.
