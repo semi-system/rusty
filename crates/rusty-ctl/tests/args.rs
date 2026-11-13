@@ -11,7 +11,6 @@ fn cmd(args: &[&str]) -> Command {
     p(args).unwrap().command
 }
 
-// backend-neutral: argument parsing only, no database
 #[test]
 fn domain_commands() {
     assert_eq!(cmd(&["domain", "add", "example.com"]), Command::DomainAdd { name: "example.com".into() });
@@ -20,7 +19,6 @@ fn domain_commands() {
     assert_eq!(cmd(&["domain", "enable", "example.com"]), Command::DomainEnable { name: "example.com".into() });
 }
 
-// backend-neutral: argument parsing only, no database
 #[test]
 fn account_commands_and_password_sources() {
     assert_eq!(
@@ -45,14 +43,12 @@ fn account_commands_and_password_sources() {
     assert_eq!(cmd(&["account", "enable", "a@example.com"]), Command::AccountEnable { addr: "a@example.com".into() });
 }
 
-// backend-neutral: argument parsing only, no database
 #[test]
 fn set_password_needs_a_source_and_two_sources_conflict() {
     assert!(p(&["account", "set-password", "a@example.com"]).is_err());
     assert!(p(&["account", "add", "a@example.com", "--prompt", "--password-stdin"]).is_err());
 }
 
-// backend-neutral: argument parsing only, no database
 #[test]
 fn a_password_on_the_command_line_is_refused_and_never_echoed() {
     for args in [
@@ -67,7 +63,6 @@ fn a_password_on_the_command_line_is_refused_and_never_echoed() {
     }
 }
 
-// backend-neutral: argument parsing only, no database
 #[test]
 fn alias_commands() {
     assert_eq!(
@@ -79,7 +74,6 @@ fn alias_commands() {
     assert_eq!(cmd(&["alias", "remove", "info@example.com"]), Command::AliasRemove { alias: "info@example.com".into() });
 }
 
-// backend-neutral: argument parsing only, no database
 #[test]
 fn dkim_and_check() {
     assert_eq!(
@@ -107,7 +101,6 @@ fn dkim_and_check() {
     assert_eq!(cmd(&["check"]), Command::Check);
 }
 
-// backend-neutral: argument parsing only, no database
 #[test]
 fn global_options_anywhere() {
     let a = p(&["--json", "domain", "list"]).unwrap();
@@ -122,7 +115,6 @@ fn global_options_anywhere() {
     assert!(!p(&["domain", "list"]).unwrap().json);
 }
 
-// backend-neutral: argument parsing only, no database
 #[test]
 fn bad_invocations_are_usage_errors_that_do_not_echo_input() {
     for args in [
@@ -147,7 +139,6 @@ fn bad_invocations_are_usage_errors_that_do_not_echo_input() {
     }
 }
 
-// backend-neutral: help is text, no database
 #[test]
 fn help_is_a_command() {
     assert_eq!(cmd(&["help"]), Command::Help);
@@ -156,14 +147,12 @@ fn help_is_a_command() {
 }
 
 proptest::proptest! {
-    // backend-neutral: the parser must never panic on arbitrary argument vectors
     #[test]
     fn parser_never_panics(args in proptest::collection::vec(".{0,20}", 0..8)) {
         let _ = parse_args(&args);
     }
 }
 
-// backend-neutral: argument parsing only, no database
 #[test]
 fn dkim_selectors_are_dns_labels() {
     for ok in ["s1", "rusty", "mail-2026", "a.b", "A1"] {
@@ -175,7 +164,6 @@ fn dkim_selectors_are_dns_labels() {
     }
 }
 
-// backend-neutral: argument parsing only, no database
 #[test]
 fn db_commands() {
     assert_eq!(cmd(&["db", "migrate"]), Command::DbMigrate { require_roles: true });

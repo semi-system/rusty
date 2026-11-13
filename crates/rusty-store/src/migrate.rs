@@ -17,7 +17,7 @@ use sqlx::PgPool;
 
 use crate::pg::{connect_options, PgLimits, PgSecurity};
 
-/// The embedded Postgres migrations (version numbers equal the SQLite twins from 0010 on).
+/// The embedded migrations (`crates/rusty-store/migrations`; the numbers 0002..0009 are never used).
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 /// Privilege matrix applied after the migrations (see the file header).
@@ -76,7 +76,7 @@ fn expected_versions() -> Vec<i64> {
     v
 }
 
-/// Versions of the embedded migrations (for the SQLite/PG numbering check and `db status`).
+/// Versions of the embedded migrations (for `db status`).
 pub fn embedded_versions() -> Vec<i64> {
     expected_versions()
 }

@@ -66,7 +66,6 @@ fn run(format: LogFormat) -> String {
     cap.text()
 }
 
-// backend-neutral: no database involved, logging only
 #[test]
 fn secrets_never_reach_the_log_text() {
     let out = run(LogFormat::Text);
@@ -80,7 +79,6 @@ fn secrets_never_reach_the_log_text() {
     assert!(out.contains("LOGIN"), "{out}");
 }
 
-// backend-neutral: no database involved, logging only
 #[test]
 fn secrets_never_reach_the_log_json() {
     let out = run(LogFormat::Json);
@@ -90,7 +88,6 @@ fn secrets_never_reach_the_log_json() {
     assert!(out.lines().all(|l| l.starts_with('{') && l.ends_with('}')), "not JSON lines: {out}");
 }
 
-// backend-neutral: no database involved, redaction rules only
 #[test]
 fn redaction_rules() {
     assert_eq!(redact_command("EHLO x.example", false), "EHLO x.example");
@@ -111,7 +108,6 @@ fn redaction_rules() {
     assert!(redact_command(&"x".repeat(100_000), false).len() < 1_100);
 }
 
-// backend-neutral: no database involved, redaction rules only
 #[test]
 fn redacted_wrapper_hides_the_value_in_debug_and_display() {
     let r = Redacted::new("hunter2-s3cret");

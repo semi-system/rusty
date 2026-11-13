@@ -127,8 +127,7 @@ impl JobRepo for PgRepo {
     async fn enqueue(&self, job: &NewJob<'_>) -> Result<JobId> {
         let id = tx_retry!(self, None, |c| {
             {
-                // Serialise the count-then-insert per scope (the SQLite single writer does this
-                // implicitly). A missing domain is left to the foreign key (Conflict).
+                // Serialise the count-then-insert per scope (nothing else serialises it). A missing domain is left to the foreign key (Conflict).
                 match job.domain {
                     Some(d) => {
                         sqlx::query_scalar::<_, i64>(

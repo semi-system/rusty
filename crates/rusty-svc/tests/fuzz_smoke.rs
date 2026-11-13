@@ -19,7 +19,6 @@ fn valid_pair() -> (String, String) {
     (ck.cert.pem(), ck.signing_key.serialize_pem())
 }
 
-// backend-neutral: no database involved, PEM parsing only
 #[test]
 fn seeds_pass() {
     for s in ["cert.pem", "two-certs.pem", "bad-key.pem", "encrypted.pem", "cert-then-bad-key.pem"] {
@@ -35,13 +34,11 @@ fn seeds_pass() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(1000))]
 
-    // backend-neutral: no database involved, PEM parsing only
     #[test]
     fn arbitrary_bytes_never_panic(data in proptest::collection::vec(any::<u8>(), 0..600)) {
         check(&data);
     }
 
-    // backend-neutral: no database involved, PEM parsing only
     #[test]
     fn mutated_valid_pem_never_panics(pos in 0usize..2000, byte in any::<u8>(), cut in 0usize..2000) {
         let (c, k) = valid_pair();

@@ -32,10 +32,10 @@
 //!   eligible when re-evaluated. A window held entirely by other claimers continues behind its
 //!   last key (at most 16 rounds), so the result equals `ORDER BY .. LIMIT 1 FOR UPDATE SKIP
 //!   LOCKED` over the whole queue, ordering and exclusivity included. Concurrent claimers skip
-//!   rows another transaction is claiming instead of blocking; the loop settles exhausted or unreadable rows as `dead` exactly as the SQLite
+//!   rows another transaction is claiming instead of blocking; the loop settles exhausted or unreadable rows as `dead` exactly as the claim
 //!   walk does (at most `MAX_SETTLED_PER_CLAIM` per call).
-//! * `enqueue` counts pending jobs and inserts in one transaction. SQLite's single writer makes
-//!   that atomic; on Postgres two concurrent enqueues could both slip under the cap, so the
+//! * `enqueue` counts pending jobs and inserts in one transaction. Two concurrent enqueues
+//!   could both slip under the cap, so the
 //!   transaction first serialises per scope: `SELECT .. FROM domains WHERE id = $1 FOR NO KEY
 //!   UPDATE` for a domain job (does not block foreign-key checks of other tables), and the
 //!   transaction-scoped `pg_advisory_xact_lock` for jobs without a domain. Transaction-scoped,

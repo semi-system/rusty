@@ -18,8 +18,7 @@
 //! # Boundary
 //!
 //! The pure drift rules live in `rusty_core::dns_state`; [`DnsRepo::record_observations`] applies
-//! them inside ONE transaction that first takes the domain row (`FOR NO KEY UPDATE` on Postgres,
-//! the single writer on SQLite), so two concurrent checks of a domain serialise and a change is
+//! them inside ONE transaction that first takes the domain row (`FOR NO KEY UPDATE`), so two concurrent checks of a domain serialise and a change is
 //! recorded exactly once. The clock is the DATABASE clock (`now: None`); `Some(t)` is for the
 //! test twins only.
 //!

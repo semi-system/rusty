@@ -1,5 +1,5 @@
-//! PG2 spike: Postgres-only behaviour that SQLite cannot have (deadlocks between mailboxes,
-//! retry classification). Requires `RUSTY_TEST_PG_URL` (loud SKIPPED notice otherwise).
+//! PG2 spike: Postgres concurrency behaviour (deadlocks between mailboxes,
+//! retry classification). Requires `RUSTY_TEST_PG_URL`.
 
 mod common;
 
@@ -64,7 +64,6 @@ async fn crossed_batches(m1: &Mailbox, m2: &Mailbox, round: usize) {
 
 /// Negative control: with the ordering rule disabled and a pause after the first lock, the
 /// crossed batches deadlock for real; the retry loop turns the 40P01 victim into a success.
-// backend-neutral: forces a Postgres deadlock (40P01) by disabling the lock-order rule with a knob; SQLite writers cannot deadlock
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unordered_blob_locks_deadlock_and_the_retry_loop_recovers() {
     if pg_admin_url().is_none() {
@@ -92,7 +91,6 @@ async fn unordered_blob_locks_deadlock_and_the_retry_loop_recovers() {
 
 /// The real rule: blobs locked in ascending hash order, so the same crossed workload never
 /// deadlocks and never retries. Repeated to make an accidental pass unlikely.
-// backend-neutral: Postgres blob row-lock ordering (deadlock freedom); SQLite has one database-wide writer lock and no row locks
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ordered_blob_locks_never_deadlock() {
     if pg_admin_url().is_none() {
@@ -110,7 +108,6 @@ async fn ordered_blob_locks_never_deadlock() {
 
 /// Many mailboxes storing the SAME three blobs in random-ish orders, concurrently: the hot
 /// shared blobs serialize the transactions at the `blobs` rows but never deadlock.
-// backend-neutral: Postgres blob row-lock ordering under contention (deadlock freedom); SQLite has one database-wide writer lock
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn shared_hot_blobs_across_many_mailboxes_do_not_deadlock() {
     if pg_admin_url().is_none() {
@@ -152,7 +149,6 @@ async fn shared_hot_blobs_across_many_mailboxes_do_not_deadlock() {
 
 /// SQLSTATE classification, from real server errors: a deadlock is 40P01, a lost update under
 /// REPEATABLE READ is 40001; both are retryable; neither leaks text through `map_db_error`.
-// backend-neutral: classifies real Postgres SQLSTATEs (40001, 40P01); SQLite has no equivalent error classes
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retryable_sqlstates_are_classified_from_real_errors() {
     let Some(url) = pg_admin_url() else { return };
@@ -204,7 +200,6 @@ async fn retryable_sqlstates_are_classified_from_real_errors() {
 /// message never ends up pointing at a deleted blob. (The other interleaving, delete committed
 /// between the blob insert and the blob lock, is covered by the bounded loop in `lock_blobs`
 /// and is NOT exercised here: it needs a pause between two statements of one transaction.)
-// backend-neutral: holds an uncommitted Postgres delete; the engine-neutral twin is race_conformance::a_gc_that_deleted_a_blob_row_does_not_lose_a_later_reference_to_the_same_content
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gc_delete_in_flight_does_not_lose_a_new_reference() {
     if pg_admin_url().is_none() {
@@ -336,7 +331,6 @@ async fn parents(m: &Mailbox) -> std::collections::HashMap<i64, Option<i64>> {
 
 /// Two sessions move folders 6 -> under 7 and 7 -> under 6. With the mailbox lock first, the
 /// second session waits, sees the first commit and is `Conflict`; no cycle is ever committed.
-// backend-neutral: Postgres run with a hold-before-commit knob; the engine-neutral twin is race_conformance::folder_moves_never_commit_a_cycle_or_exceed_the_depth_limit
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn folder_swap_race_second_session_sees_the_first_commit() {
     if pg_admin_url().is_none() {
@@ -360,7 +354,6 @@ async fn folder_swap_race_second_session_sees_the_first_commit() {
 /// mailbox lock itself and walks the tree with a fresh statement snapshot) is the second line of
 /// defence and rejects the cycle with RS002 (`Invalid`). Removing the trigger's `FOR UPDATE`
 /// commits the cycle (mutation M-B).
-// backend-neutral: skips the repository mailbox lock (Postgres knob) to prove the trigger is the second line of defence; SQLite has no such split
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn folder_cycle_trigger_is_the_second_line_of_defence() {
     if pg_admin_url().is_none() {
@@ -412,7 +405,6 @@ async fn depth_race(skip_lock: bool) {
     assert_eq!((p[&x.0], p[&y.0]), (Some(end.0), None));
 }
 
-// backend-neutral: Postgres run with a hold-before-commit knob; the engine-neutral twin is race_conformance::folder_moves_never_commit_a_cycle_or_exceed_the_depth_limit
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn depth_boundary_race_is_serialized_by_the_mailbox_lock() {
     if pg_admin_url().is_none() {
@@ -421,7 +413,6 @@ async fn depth_boundary_race_is_serialized_by_the_mailbox_lock() {
     depth_race(false).await;
 }
 
-// backend-neutral: skips the repository mailbox lock (Postgres knob) to prove the trigger is the second line of defence; SQLite has no such split
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn depth_boundary_race_is_rejected_by_the_trigger_without_the_lock() {
     if pg_admin_url().is_none() {
@@ -432,7 +423,6 @@ async fn depth_boundary_race_is_rejected_by_the_trigger_without_the_lock() {
 
 // ---------------------------------------------------------------- delete_folder, move, purge
 
-// backend-neutral: Postgres run with a hold-before-commit knob that forces each order; the engine-neutral twin is race_conformance::delete_folder_versus_append_has_one_winner_and_no_orphan_on_both_backends
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn delete_folder_versus_append_has_one_winner_and_no_orphan() {
     if pg_admin_url().is_none() {
@@ -467,7 +457,6 @@ async fn delete_folder_versus_append_has_one_winner_and_no_orphan() {
     assert_eq!(scalar(&b, "SELECT count(*) FROM blobs WHERE refcount <> 1").await, 0, "no negative or doubled refcount");
 }
 
-// backend-neutral: Postgres run with a hold-before-commit knob; the engine-neutral twin is race_conformance::move_versus_expunge_of_the_same_message_serializes_on_both_backends
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn move_versus_expunge_of_the_same_message_serializes() {
     if pg_admin_url().is_none() {
@@ -502,7 +491,6 @@ async fn move_versus_expunge_of_the_same_message_serializes() {
 /// `purge_deleted` holds the blob lock and has taken the refcount to zero (uncommitted) while a
 /// second mailbox stores the same content: the store waits, then revives the row; the final
 /// refcount is exactly 1 and `zero_since` is cleared (extends the PG2 in-flight GC test).
-// backend-neutral: Postgres run with a hold-before-commit knob; the engine-neutral twin is race_conformance::purge_deleted_versus_append_of_the_same_blob_leaves_exactly_one_reference
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn purge_deleted_versus_append_of_the_same_blob() {
     if pg_admin_url().is_none() {
@@ -542,7 +530,6 @@ fn rotated(docs: &[Bytes; 3], i: usize) -> Vec<Bytes> {
 /// "hold after first blob lock" knob armed, which only has an effect on the (disabled) unordered
 /// path: with the ascending rule in force it is inert. Expect no deadlock, no retry, exact
 /// refcounts. (Mutation M-C / M-D: enable the unordered path.)
-// backend-neutral: Postgres blob row-lock ordering across mailboxes (deadlock freedom); SQLite has one database-wide writer lock and no row locks
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn blob_lock_order_matrix_has_no_deadlock_and_exact_refcounts() {
     if pg_admin_url().is_none() {
@@ -717,7 +704,6 @@ async fn forced_crossing(path: Path) {
     }
 }
 
-// backend-neutral: forces a Postgres deadlock (40P01) with a lock-order knob; SQLite writers cannot deadlock
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn forced_crossed_order_deadlocks_and_retries_delete_folder() {
     if pg_admin_url().is_none() {
@@ -726,7 +712,6 @@ async fn forced_crossed_order_deadlocks_and_retries_delete_folder() {
     forced_crossing(Path::DeleteFolder).await;
 }
 
-// backend-neutral: forces a Postgres deadlock (40P01) with a lock-order knob; SQLite writers cannot deadlock
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn forced_crossed_order_deadlocks_and_retries_purge_deleted() {
     if pg_admin_url().is_none() {
@@ -735,7 +720,6 @@ async fn forced_crossed_order_deadlocks_and_retries_purge_deleted() {
     forced_crossing(Path::PurgeDeleted).await;
 }
 
-// backend-neutral: forces a Postgres deadlock (40P01) with a lock-order knob; SQLite writers cannot deadlock
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn forced_crossed_order_deadlocks_and_retries_deliver_many() {
     if pg_admin_url().is_none() {
@@ -744,7 +728,6 @@ async fn forced_crossed_order_deadlocks_and_retries_deliver_many() {
     forced_crossing(Path::DeliverMany).await;
 }
 
-// backend-neutral: forces a Postgres deadlock (40P01) with a lock-order knob; SQLite writers cannot deadlock
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn forced_crossed_order_deadlocks_and_retries_append_many() {
     if pg_admin_url().is_none() {
@@ -757,7 +740,6 @@ async fn forced_crossed_order_deadlocks_and_retries_append_many() {
 
 /// Five consecutive 40P01 exhaust the loop: `Busy`, `exhausted == 1`, and the attempts left no
 /// partial state (counters and rows untouched).
-// backend-neutral: forces five Postgres deadlocks (40P01) with a lock-order knob; SQLite writers cannot deadlock
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn five_consecutive_deadlocks_are_busy_and_leave_nothing_behind() {
     if pg_admin_url().is_none() {
@@ -805,7 +787,6 @@ async fn five_consecutive_deadlocks_are_busy_and_leave_nothing_behind() {
 
 /// Four injected deadlocks are retried and the fifth attempt succeeds, for the new paths too.
 /// (Mutation M-E: `MAX_ATTEMPTS = 1`.)
-// backend-neutral: forces four Postgres deadlocks (40P01) with a lock-order knob; SQLite writers cannot deadlock
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn four_deadlocks_are_retried_and_the_operation_succeeds() {
     if pg_admin_url().is_none() {
@@ -844,7 +825,6 @@ async fn four_deadlocks_are_retried_and_the_operation_succeeds() {
 
 /// A reader polling during `deliver_many` writers on the real Postgres pool never sees a hole in
 /// the change log, and the per-batch ids stay consecutive (see also the both-backend suite).
-// backend-neutral: Postgres run with a hold knob; the engine-neutral twin is concurrent_batches_stay_consecutive_per_batch
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_deliver_many_batches_are_consecutive() {
     if pg_admin_url().is_none() {
@@ -884,7 +864,6 @@ async fn concurrent_deliver_many_batches_are_consecutive() {
 /// A GC that wins the race against the blob insert on every round exhausts the bounded loop of
 /// `lock_blobs`: that is transient contention (`Busy`, retryable by the caller), not a storage
 /// fault, and the transaction leaves nothing behind.
-// backend-neutral: exhausts the bounded Postgres blob-lock loop with a knob; SQLite has no blob row locks
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn lock_blobs_giving_up_is_busy_and_leaves_nothing_behind() {
     if pg_admin_url().is_none() {
@@ -979,7 +958,6 @@ impl OneConn {
 /// Dropping the operation future while its transaction is open (work done, locks held, COMMIT
 /// not yet sent) commits nothing and returns the connection to the pool clean: the next
 /// operations succeed on the same single connection and see unchanged counters.
-// backend-neutral: drops a Postgres operation mid-transaction (pool connection state); no SQLite connection state is shared between operations
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn dropping_the_future_mid_transaction_commits_nothing() {
     let Some(o) = one_conn().await else { return };
@@ -1070,7 +1048,6 @@ async fn poll_n_then_drop<F: Future>(fut: F, n: usize) -> bool {
 /// Mirror of the SQLite sweeps: drop `begin_write` and appends at every await point and with
 /// short timeouts. Afterwards the single connection is clean, an append works, and whatever
 /// committed is gapless.
-// backend-neutral: cancels Postgres operations mid-transaction (connection state of the pool); no SQLite connection state is shared between operations
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancelled_postgres_operations_leave_a_clean_connection_and_gapless_counters() {
     let Some(o) = one_conn().await else { return };

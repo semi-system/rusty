@@ -30,7 +30,6 @@ fn check(text: &str) {
     }
 }
 
-// backend-neutral: argument parsing only, no database
 #[test]
 fn seeds_pass() {
     for s in SEEDS {
@@ -41,13 +40,11 @@ fn seeds_pass() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(3000))]
 
-    // backend-neutral: argument parsing only, no database
     #[test]
     fn arbitrary_text_never_panics(s in "\\PC{0,200}") {
         check(&s);
     }
 
-    // backend-neutral: argument parsing only, no database
     #[test]
     fn mutated_seed_never_panics(which in 0usize..6, pos in 0usize..200, ch in any::<char>(), cut in 0usize..200) {
         let seed = SEEDS.get(which).copied().unwrap_or("");

@@ -43,7 +43,6 @@ fn repo_sources() -> String {
     joined
 }
 
-// backend-neutral: reads sources, no database
 #[test]
 fn every_mutation_can_bite_ids_are_unique_and_the_marker_exists() {
     let src = repo_sources();
@@ -67,7 +66,6 @@ fn every_mutation_can_bite_ids_are_unique_and_the_marker_exists() {
     assert!(HOOK_MARKER.contains("mutation-hook"));
 }
 
-// backend-neutral: unit test of the hook, no database
 #[test]
 fn the_hook_is_identity_without_a_selected_mutation() {
     if mutation::active_id().is_some() {
@@ -80,7 +78,6 @@ fn the_hook_is_identity_without_a_selected_mutation() {
     assert!(!mutation::flag("no-retry"));
 }
 
-// backend-neutral: runner probe, drives both backends itself
 #[tokio::test]
 async fn the_selected_mutation_changed_at_least_one_statement() {
     let Some(id) = mutation::active_id() else {
@@ -173,7 +170,6 @@ unique
 /// Prints the mutation list for `scripts/pg-mutate.sh`: the dialect/repository table and the
 /// schema mutations derived from the live Postgres catalog (drop every named CHECK / UNIQUE /
 /// FOREIGN KEY constraint, every trigger and every stand-alone index), as `KIND\tid\ttext`.
-// backend-neutral: runner helper (ignored), prints the mutation list
 #[tokio::test]
 #[ignore]
 async fn list_mutations() {
@@ -219,7 +215,6 @@ async fn sqlx_rows(store: &rusty_store::PgStore, sql: &str) -> Vec<(String, Stri
         .collect()
 }
 
-// backend-neutral: reads the committed table, no database
 #[test]
 fn the_committed_mutation_table_lists_every_dialect_mutation() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

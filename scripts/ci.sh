@@ -75,9 +75,6 @@ stage "no test fixtures outside dev-dependencies" bash scripts/check-test-fixtur
 # The SQL mutation hook (scripts/pg-mutate.sh) is enabled by no manifest and absent from release builds.
 stage "mutation-hook gate self-test" bash scripts/tests/mutation-hook-gate.sh
 stage "no mutation hook anywhere" bash scripts/check-mutation-hook.sh static
-# Every behaviour test of the database crates runs on both backends or carries a reasoned marker.
-stage "parametrised gate self-test" bash scripts/tests/parametrised-gate.sh
-stage "every test runs on both backends" bash scripts/check-parametrised.sh
 # Service crates reach storage only through the facades and repository traits (plan section 1b rule 1).
 stage "pg-migration-gap gate self-test" bash scripts/tests/pg-migration-gap.sh
 stage "no filled-in postgres migration gap" bash scripts/check-pg-migration-gap.sh

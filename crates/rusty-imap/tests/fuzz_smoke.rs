@@ -15,7 +15,6 @@ const TARGETS: [Target; 5] = [
     ("fuzz_imap_utf7", fz::utf7_names),
 ];
 
-// backend-neutral: parsers only, no database involved
 #[test]
 fn every_committed_seed_passes_its_target() {
     let mut seen = 0;
@@ -34,13 +33,11 @@ fn every_committed_seed_passes_its_target() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(800))]
 
-    // backend-neutral: parsers only, no database involved
     #[test]
     fn command_framing_never_panics_or_overgrows(data in proptest::collection::vec(any::<u8>(), 0..1500)) {
         fz::command(&data);
     }
 
-    // backend-neutral: parsers only, no database involved
     #[test]
     fn command_framing_on_command_shaped_text(
         parts in proptest::collection::vec(
@@ -61,13 +58,11 @@ proptest! {
         fz::command(&data);
     }
 
-    // backend-neutral: parsers only, no database involved
     #[test]
     fn mime_structure_never_panics_and_decodes(data in proptest::collection::vec(any::<u8>(), 0..1200)) {
         fz::structure(&data);
     }
 
-    // backend-neutral: parsers only, no database involved
     #[test]
     fn mime_structure_of_mime_shaped_text(
         parts in proptest::collection::vec(
@@ -87,7 +82,6 @@ proptest! {
         fz::structure(parts.concat().as_bytes());
     }
 
-    // backend-neutral: parsers only, no database involved
     #[test]
     fn search_evaluation_is_consistent(q in "[ -~]{0,50}", msg in proptest::collection::vec(any::<u8>(), 0..300)) {
         let mut data = q.into_bytes();
@@ -96,7 +90,6 @@ proptest! {
         fz::search(&data);
     }
 
-    // backend-neutral: parsers only, no database involved
     #[test]
     fn search_on_keyword_shaped_queries(
         keys in proptest::collection::vec(
@@ -114,13 +107,11 @@ proptest! {
         fz::search(&data);
     }
 
-    // backend-neutral: parsers only, no database involved
     #[test]
     fn sequence_sets_select_sorted_unique_in_range(s in "[0-9:,*]{0,40}") {
         fz::seqset(s.as_bytes());
     }
 
-    // backend-neutral: parsers only, no database involved
     #[test]
     fn utf7_round_trips(s in "\\PC{0,30}", wire in "[ -~]{0,30}") {
         fz::utf7_names(s.as_bytes());

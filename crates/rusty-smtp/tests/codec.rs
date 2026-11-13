@@ -20,7 +20,6 @@ fn lines(max: usize, chunks: &[&[u8]]) -> Vec<String> {
     out
 }
 
-// backend-neutral: pure codec, no database
 #[test]
 fn lines_are_split_on_crlf_and_bare_lf_across_chunks() {
     assert_eq!(lines(100, &[b"EHLO a\r\nNOOP\r\n"]), ["EHLO a", "NOOP"]);
@@ -30,7 +29,6 @@ fn lines_are_split_on_crlf_and_bare_lf_across_chunks() {
     assert!(lines(100, &[b"EHLO a"]).is_empty());
 }
 
-// backend-neutral: pure codec, no database
 #[test]
 fn an_overlong_line_is_reported_once_and_skipped_to_its_end() {
     let long = vec![b'a'; 50];
@@ -44,7 +42,6 @@ fn an_overlong_line_is_reported_once_and_skipped_to_its_end() {
     assert_eq!(lines(4, &[b"abcde\r\n"]), ["<TOOLONG>"]);
 }
 
-// backend-neutral: pure codec, no database
 #[test]
 fn the_line_buffer_never_exceeds_the_limit() {
     let mut r = LineReader::new(16);
@@ -64,7 +61,6 @@ fn cmd(s: &str) -> Result<Command, ParseError> {
     parse_command(s.as_bytes())
 }
 
-// backend-neutral: pure codec, no database
 #[test]
 fn verbs_are_case_insensitive_and_typed() {
     assert_eq!(cmd("EHLO client.example").unwrap(), Command::Ehlo("client.example".into()));
@@ -80,7 +76,6 @@ fn verbs_are_case_insensitive_and_typed() {
     assert_eq!(cmd("HELP").unwrap(), Command::Help);
 }
 
-// backend-neutral: pure codec, no database
 #[test]
 fn mail_and_rcpt_paths() {
     match cmd("MAIL FROM:<alice@example.org>").unwrap() {
@@ -116,7 +111,6 @@ fn mail_and_rcpt_paths() {
     assert_eq!(cmd("RCPT TO:<ünal@bücher.example>").unwrap(), Command::Rcpt { path: "ünal@bücher.example".into() });
 }
 
-// backend-neutral: pure codec, no database
 #[test]
 fn bad_commands_are_classified() {
     assert_eq!(cmd("FROB").unwrap_err(), ParseError::Unknown);
@@ -134,7 +128,6 @@ fn bad_commands_are_classified() {
     assert!(matches!(cmd("MAIL FROM:<a@b.c> NOSUCH=1").unwrap_err(), ParseError::Unsupported(_) | ParseError::Syntax(_)));
 }
 
-// backend-neutral: pure codec, no database
 #[test]
 fn control_bytes_and_invalid_utf8_are_refused_before_parsing() {
     for bad in [&b"EHLO a\x00b"[..], b"EHLO a\x01", b"MAIL FROM:<a\x00@b.c>", b"EHLO \xff\xfe", b"RCPT TO:<a@b.c>\x7f"] {
@@ -168,7 +161,6 @@ fn complete(end: Option<DataEnd>) -> (Vec<u8>, bool) {
     }
 }
 
-// backend-neutral: pure codec, no database
 #[test]
 fn data_is_unstuffed_and_ends_at_crlf_dot_crlf() {
     let (end, rest) = data(1000, &[b"hello\r\nworld\r\n.\r\nNEXT\r\n"]);
@@ -183,7 +175,6 @@ fn data_is_unstuffed_and_ends_at_crlf_dot_crlf() {
     assert_eq!(d, b".\r\na\r\n..b\r\nx.\r\n");
 }
 
-// backend-neutral: pure codec, no database
 #[test]
 fn data_framing_is_independent_of_chunking() {
     let whole: &[u8] = b"a\r\n..b\r\n\r\n.\r\nrest";
@@ -197,7 +188,6 @@ fn data_framing_is_independent_of_chunking() {
     assert_eq!(complete(data(1000, &bytes).0).0, d_all);
 }
 
-// backend-neutral: pure codec, no database
 #[test]
 fn bare_lf_and_bare_cr_terminators_do_not_end_the_data_smuggling() {
     // The classic smuggling payloads end with a "dot line" that is not CRLF.CRLF; none ends DATA.
@@ -212,7 +202,6 @@ fn bare_lf_and_bare_cr_terminators_do_not_end_the_data_smuggling() {
     assert_eq!(rest, b"QUIT\r\n");
 }
 
-// backend-neutral: pure codec, no database
 #[test]
 fn data_over_the_cap_is_too_large_and_stops_buffering() {
     let mut r = DataReader::new(10);
@@ -225,7 +214,6 @@ fn data_over_the_cap_is_too_large_and_stops_buffering() {
     assert_eq!(data(5, &[b"abcd\r\n.\r\n"]).0, Some(DataEnd::TooLarge));
 }
 
-// backend-neutral: pure codec, no database
 #[test]
 fn nul_bytes_are_flagged() {
     let (d, nul) = complete(data(1000, &[b"a\x00b\r\n.\r\n"]).0);
@@ -234,7 +222,6 @@ fn nul_bytes_are_flagged() {
 }
 
 proptest::proptest! {
-    // backend-neutral: the codecs must never panic nor buffer beyond their caps
     #[test]
     fn arbitrary_bytes_never_panic_or_overrun(
         chunks in proptest::collection::vec(proptest::collection::vec(proptest::prelude::any::<u8>(), 0..200), 0..8)

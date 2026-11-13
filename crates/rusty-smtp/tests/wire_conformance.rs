@@ -84,7 +84,6 @@ const DIALOGUE: &[(&str, &str)] = &[
     ("QUIT\r\n", "221 2.0.0 Bye\r\n"),
 ];
 
-// backend-neutral: byte-level session dialogue, no database
 #[test]
 fn the_reference_dialogue_is_byte_exact() {
     let mut w = Wire::new();
@@ -94,7 +93,6 @@ fn the_reference_dialogue_is_byte_exact() {
     }
 }
 
-// backend-neutral: byte-level session dialogue, no database
 #[test]
 fn the_dialogue_is_the_same_when_sent_in_one_piece_or_byte_by_byte() {
     let all: String = DIALOGUE.iter().map(|(s, _)| *s).collect();
@@ -136,7 +134,6 @@ const CORPUS: &[(&str, &str)] = &[
     ("MAIL FROM:<>", "250 2.1.0"),
 ];
 
-// backend-neutral: byte-level session dialogue, no database
 #[test]
 fn every_corpus_line_gets_its_status_after_a_greeting() {
     for (line, expect) in CORPUS {
@@ -153,7 +150,6 @@ fn every_corpus_line_gets_its_status_after_a_greeting() {
     }
 }
 
-// backend-neutral: byte-level session dialogue, no database
 #[test]
 fn bare_lf_line_endings_are_accepted_for_commands_and_the_transaction_still_works() {
     let mut w = Wire::new();
@@ -163,7 +159,6 @@ fn bare_lf_line_endings_are_accepted_for_commands_and_the_transaction_still_work
 }
 
 proptest! {
-    // backend-neutral: any chunking of the same client bytes yields the same server bytes
     #[test]
     fn chunking_never_changes_the_server_output(cuts in proptest::collection::vec(1usize..40, 1..30)) {
         let all: String = DIALOGUE.iter().map(|(s, _)| *s).collect();
@@ -183,7 +178,6 @@ proptest! {
         prop_assert_eq!(w.take(), expected);
     }
 
-    // backend-neutral: every reply is well-formed whatever the client sends
     #[test]
     fn every_reply_is_well_formed(chunks in proptest::collection::vec(proptest::collection::vec(any::<u8>(), 0..120), 0..8)) {
         let mut w = Wire::new();
@@ -224,7 +218,6 @@ const EDGE: &[(&str, bool, &str)] = &[
     ("RCPT TO:<>", true, "501 5.1.7"),
 ];
 
-// backend-neutral: byte-level session dialogue, no database
 #[test]
 fn address_and_parameter_edge_cases_keep_their_statuses() {
     for (line, mail_first, expect) in EDGE {
@@ -241,7 +234,6 @@ fn address_and_parameter_edge_cases_keep_their_statuses() {
     }
 }
 
-// backend-neutral: byte-level session dialogue, no database
 #[test]
 fn a_bare_postmaster_reaches_the_recipient_check() {
     let mut w = Wire::new();

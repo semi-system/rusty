@@ -1,6 +1,5 @@
-//! PG2 spike conformance: ONE test body per behaviour, run against every available backend
-//! (SQLite always; Postgres when `RUSTY_TEST_PG_URL` is set, otherwise a loud SKIPPED notice
-//! from `pg_admin_url`). The bodies only use the backend-neutral facades, never SQL, except
+//! PG2 spike conformance: ONE test body per behaviour, run on Postgres
+//! (`RUSTY_TEST_PG_URL`; a missing server fails the test, see `pg_admin_url`). The bodies only use the backend-neutral facades, never SQL, except
 //! the few raw fixtures (alias/list rows) that the slice has no write API for.
 
 mod common;

@@ -15,7 +15,6 @@ fn find<'a>(recs: &'a [rusty_core::dns::DnsRecord], t: RecordType, name_prefix: 
     recs.iter().filter(|r| r.rtype == t && r.name.starts_with(name_prefix)).collect()
 }
 
-// backend-neutral: pure function, no database
 #[test]
 fn the_standard_set_for_a_domain() {
     let ips: Vec<IpAddr> = vec!["192.0.2.10".parse().unwrap(), "2001:db8::10".parse().unwrap()];
@@ -39,7 +38,6 @@ fn the_standard_set_for_a_domain() {
     assert_eq!(srv, ["0 1 587 mail.example.com.", "0 1 465 mail.example.com.", "0 1 993 mail.example.com."]);
 }
 
-// backend-neutral: pure function, no database
 #[test]
 fn without_a_dkim_key_a_placeholder_says_how_to_make_one() {
     let recs = records_for_domain(&inputs(&[], None, None)).unwrap();
@@ -49,7 +47,6 @@ fn without_a_dkim_key_a_placeholder_says_how_to_make_one() {
     assert_eq!(d.value, "v=DMARC1; p=none");
 }
 
-// backend-neutral: pure function, no database
 #[test]
 fn reverse_names() {
     assert_eq!(reverse_name("192.0.2.1".parse().unwrap()), "1.2.0.192.in-addr.arpa.");
@@ -59,7 +56,6 @@ fn reverse_names() {
     );
 }
 
-// backend-neutral: pure function, no database
 #[test]
 fn bad_inputs_are_invalid_and_no_private_key_text_can_appear() {
     let mut i = inputs(&[], None, None);
@@ -73,7 +69,6 @@ fn bad_inputs_are_invalid_and_no_private_key_text_can_appear() {
     assert!(records_for_domain(&i).is_err());
 }
 
-// backend-neutral: pure function, no database
 #[test]
 fn long_txt_values_are_split_and_rejoin() {
     let long = "A".repeat(700);
@@ -90,7 +85,6 @@ fn label() -> impl Strategy<Value = String> {
 }
 
 proptest! {
-    // backend-neutral: pure function, no database
     #[test]
     fn every_record_round_trips_through_a_zone_line(
         d1 in label(), d2 in label(), h in label(),
@@ -115,14 +109,12 @@ proptest! {
         }
     }
 
-    // backend-neutral: pure function, no database
     #[test]
     fn the_parser_never_panics(s in "\\PC{0,200}") {
         let _ = parse_zone_line(&s);
     }
 }
 
-// backend-neutral: pure function, no database
 #[test]
 fn trailing_dot_inputs_are_refused_instead_of_producing_double_dot_names() {
     // The generator takes names WITHOUT a trailing dot and adds it itself; a dotted input used to give

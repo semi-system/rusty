@@ -347,7 +347,6 @@ async fn append_stays_non_idempotent() {
     .await;
 }
 
-// backend-neutral: pure unit test of DeliveryId::derive, no database
 #[test]
 fn delivery_id_derive_is_stable_and_field_separated() {
     let h = BlobHash::of(b"content");

@@ -54,7 +54,6 @@ async fn authenticator(pg: &PgDev) -> (Store, LocalAuthenticator) {
     (store, a)
 }
 
-// backend-neutral: process-level test of the binary over one Postgres database
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bootstrap_from_the_shell_creates_a_domain_and_two_accounts_that_can_log_in() {
     let tmp = private_tmp();
@@ -84,7 +83,6 @@ async fn bootstrap_from_the_shell_creates_a_domain_and_two_accounts_that_can_log
     store.close().await.unwrap();
 }
 
-// backend-neutral: process-level test of the binary, no database involved
 #[test]
 fn a_password_in_argv_is_a_usage_error_and_is_not_echoed() {
     let tmp = private_tmp();
@@ -104,7 +102,6 @@ fn a_password_in_argv_is_a_usage_error_and_is_not_echoed() {
     assert!(!data.exists());
 }
 
-// backend-neutral: process-level test of the binary over one Postgres database
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failures_exit_one_and_leave_nothing_behind() {
     let tmp = private_tmp();
@@ -132,7 +129,6 @@ async fn failures_exit_one_and_leave_nothing_behind() {
     assert_eq!((o.code, o.stderr.contains("password: too long")), (Some(1), true), "{}", o.stderr);
 }
 
-// backend-neutral: process-level test of the binary over one Postgres database
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ctl_and_a_running_daemon_write_the_same_database_concurrently() {
     let tmp = private_tmp();
@@ -214,7 +210,6 @@ fn ctl_cfg(cfg: &Path, args: &[&str]) -> Out {
     Out { code: o.status.code(), stdout: String::from_utf8_lossy(&o.stdout).into_owned(), stderr: String::from_utf8_lossy(&o.stderr).into_owned() }
 }
 
-// backend-neutral: process-level test of the binary; every case is refused before a connection is made
 #[test]
 fn production_mode_runs_the_daemons_startup_checks_and_fails_closed() {
     let tmp = private_tmp();
@@ -248,7 +243,6 @@ fn production_mode_runs_the_daemons_startup_checks_and_fails_closed() {
     assert!(o.stderr.contains("sslmode"), "{}", o.stderr);
 }
 
-// backend-neutral: process-level test of the binary; the dev profile needs a named Postgres server
 #[test]
 fn the_dev_profile_without_a_database_says_what_to_set() {
     let tmp = private_tmp();
