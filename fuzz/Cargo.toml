@@ -154,3 +154,10 @@ path = "fuzz_targets/fuzz_dkim_key.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_pg_url"
+path = "fuzz_targets/fuzz_pg_url.rs"
+test = false
+doc = false
+bench = false

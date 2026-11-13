@@ -96,7 +96,7 @@ pub async fn pg_backend() -> Option<Backend> {
     Some(Backend {
         name: "postgres",
         dir: Directory::with_repo(store.repos().directory.clone()),
-        fx: Fixtures::of(&store),
+        fx: Fixtures::admin_of(&db, &store).await,
         store,
         tmp: tempfile::tempdir().unwrap(),
         _db: Some(db),

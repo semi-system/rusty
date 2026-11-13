@@ -6,3 +6,11 @@ rusty-dev-data/
 # remote build server config and pinned host key (per machine)
 .rusty-remote.env
 .rusty-remote.known_hosts
+
+# private keys and credentials must never be committed
+privkey
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+*.ppk

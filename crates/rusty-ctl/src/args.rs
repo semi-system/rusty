@@ -43,6 +43,10 @@ pub enum Command {
     DkimGenerate { domain: String, selector: String },
     DkimImport { domain: String, selector: String, key_file: PathBuf },
     Check,
+    /// `db migrate`: apply pending Postgres migrations with the migrator role (never the daemon).
+    DbMigrate { require_roles: bool },
+    /// `db status`: the schema state of the configured database.
+    DbStatus,
     Help,
 }
 
@@ -107,6 +111,7 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
     let mut selector: Option<String> = None;
     let mut help = false;
     let mut create = false;
+    let mut without_roles = false;
     let mut words: Vec<&str> = Vec::new();
 
     let mut it = args.iter();
@@ -114,6 +119,7 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         match a.as_str() {
             "--json" => json = true,
             "--create" => create = true,
+            "--without-roles" => without_roles = true,
             "--dev" => dev = true,
             "--prompt" => prompt = true,
             "--password-stdin" => stdin = true,
@@ -158,6 +164,12 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         }
         Ok(())
     };
+    let no_without_roles = || -> Result<(), UsageError> {
+        if without_roles {
+            return Err(err("--without-roles applies to db migrate only"));
+        }
+        Ok(())
+    };
     let no_selector = || -> Result<(), UsageError> {
         if selector.is_some() {
             return Err(err("--selector does not apply to this command"));
@@ -166,7 +178,8 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
     };
     let plain = || -> Result<(), UsageError> {
         no_password()?;
-        no_selector()
+        no_selector()?;
+        no_without_roles()
     };
     let dkim_selector = || -> Result<String, UsageError> {
         match selector.as_deref() {
@@ -238,19 +251,32 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         }
         ["dkim", "generate", domain] => {
             no_password()?;
+            no_without_roles()?;
             done(Command::DkimGenerate { domain: (*domain).to_owned(), selector: dkim_selector()? })
         }
         ["dkim", "import", domain, key_file] => {
             no_password()?;
+            no_without_roles()?;
             done(Command::DkimImport { domain: (*domain).to_owned(), selector: dkim_selector()?, key_file: PathBuf::from(key_file) })
+        }
+        ["db", "migrate"] => {
+            no_password()?;
+            no_selector()?;
+            done(Command::DbMigrate { require_roles: !without_roles })
+        }
+        ["db", "status"] => {
+            no_password()?;
+            no_selector()?;
+            no_without_roles()?;
+            done(Command::DbStatus)
         }
         ["check"] => {
             plain()?;
             done(Command::Check)
         }
         [] => Err(err("a command is required")),
-        ["domain" | "account" | "alias" | "dkim"] => Err(err("a subcommand is required")),
-        ["domain" | "account" | "alias" | "dkim", _, ..] | ["check", ..] => {
+        ["domain" | "account" | "alias" | "dkim" | "db"] => Err(err("a subcommand is required")),
+        ["domain" | "account" | "alias" | "dkim" | "db", _, ..] | ["check", ..] => {
             Err(err("unknown subcommand or wrong number of arguments"))
         }
         _ => Err(err("unknown command")),

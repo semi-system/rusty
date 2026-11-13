@@ -11,6 +11,10 @@ use serde::Deserialize;
 
 use crate::{Error, Result};
 
+pub use crate::config_store::{
+    is_loopback_host, parse_pg_url, PgEndpoint, SslMode, StoreBackend, StoreSection, DEFAULT_POOL_SIZE, MAX_POOL_SIZE,
+    POOL_HEADROOM,
+};
 pub use crate::config_sections::{
     valid_hostname, ImapConfig, LimitsConfig, Listen, LogFormat, OutboundConfig, RelayConfig, RelayTls, SmtpConfig, TlsConfig,
     TlsPolicy,
@@ -46,6 +50,7 @@ pub enum LogLevel {
 pub struct StartupConfig {
     /// Absolute path of the SQLite metadata database (created 0600 if missing; its directory
     /// must exist, mode 0700).
+    #[serde(default)]
     pub database_path: PathBuf,
     /// Absolute path of the blob root (mode 0700, initialized with `FsBlobStore::init`;
     /// never created implicitly).
@@ -72,6 +77,8 @@ pub struct StartupConfig {
     pub outbound: OutboundConfig,
     #[serde(default)]
     pub limits: LimitsConfig,
+    #[serde(default)]
+    pub store: StoreSection,
 }
 
 /// Which start-up rules apply (see [`StartupConfig::check_startup`]).
@@ -143,8 +150,15 @@ impl StartupConfig {
     }
 
     fn validate(&mut self) -> Result<()> {
-        if !self.database_path.is_absolute() {
-            return Err(Error::Invalid("database_path must be absolute".into()));
+        self.store.validate()?;
+        match self.store.backend {
+            StoreBackend::Sqlite if !self.database_path.is_absolute() => {
+                return Err(Error::Invalid("database_path must be absolute".into()));
+            }
+            StoreBackend::Postgres if !self.database_path.as_os_str().is_empty() => {
+                return Err(Error::Invalid("database_path applies to the sqlite backend only".into()));
+            }
+            _ => {}
         }
         if !self.blob_dir.is_absolute() {
             return Err(Error::Invalid("blob_dir must be absolute".into()));
@@ -199,7 +213,48 @@ impl StartupConfig {
                     .into(),
             ));
         }
+        self.store.check_startup(profile, self.service_count())?;
         Ok(())
+    }
+
+    /// Services the process runs: every enabled listener, the GC ticker and the outbound worker.
+    pub fn service_count(&self) -> usize {
+        let listeners = [
+            self.smtp.listen_25,
+            self.smtp.listen_587,
+            self.smtp.listen_465,
+            self.imap.listen_143,
+            self.imap.listen_993,
+        ]
+        .iter()
+        .filter(|l| l.addr().is_some())
+        .count();
+        listeners + 2
+    }
+
+    /// Warnings the start-up must log (an explicit insecure database TLS override).
+    pub fn startup_warnings(&self, profile: Profile) -> Vec<&'static str> {
+        match self.store.check_startup(profile, self.service_count()) {
+            Ok(Some(w)) => vec![w],
+            _ => Vec::new(),
+        }
+    }
+
+    /// Dev profile only: replace the `[store]` section with the one in `text` (a TOML document that
+    /// holds nothing but `[store]`). Used by the acceptance script to run the dev server on Postgres.
+    pub fn with_store_toml(mut self, text: &str) -> Result<StartupConfig> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Only {
+            store: StoreSection,
+        }
+        let only: Only = toml::from_str(text).map_err(|_| Error::Invalid("store configuration is not valid".into()))?;
+        self.store = only.store;
+        if self.store.is_postgres() {
+            self.database_path = PathBuf::new();
+        }
+        self.validate()?;
+        Ok(self)
     }
 
     /// The `rusty d --dev` profile: everything under `data_dir`, high ports on loopback and
@@ -227,6 +282,7 @@ impl StartupConfig {
             },
             outbound: OutboundConfig::default(),
             limits: LimitsConfig::default(),
+            store: StoreSection::default(),
         }
     }
 }

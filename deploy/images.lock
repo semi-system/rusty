@@ -4,3 +4,6 @@
 postgres:18  postgres@sha256:3a4264520e121176619f54ff867d12774bc81e95e7b84db58d63bccdb6144b81  2026-11-03  (PG 18.6)
 haproxy:3.4.7-alpine3.24  haproxy@sha256:2caaf8b1a1ef67f3f1ea9b721f2821675d3ba4500fb518e23884fecb93e8dbaa  2026-11-03  (HAProxy 3.4.7 LTS, built 2026-10-14, OpenSSL 3.5.9)
 rust:1.99.1-alpine3.22  rust@sha256:0fd356c1b3a83a6a6a2a4113ede8166eac6697a663fa822c04f0c202e63fcc01  2026-11-03  (fake-backend builder only)
+gcr.io/distroless/static-debian13:nonroot  gcr.io/distroless/static-debian13@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329  2026-11-10  (final stage of deploy/docker/Dockerfile; multi-arch index amd64+arm64, verified with `docker buildx imagetools inspect`)
+rhysd/actionlint:1.7.7  rhysd/actionlint@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9  2026-11-10  (scripts/ci-workflows-lint.sh)
+koalaman/shellcheck:v0.10.0  koalaman/shellcheck@sha256:2097951f02e735b613f4a34de20c40f937a6c8f18ecb170612c88c34517221fb  2026-11-10  (scripts/ci-workflows-lint.sh)

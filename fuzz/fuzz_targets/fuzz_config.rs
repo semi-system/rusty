@@ -1,6 +1,8 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use rusty_core::config::{valid_hostname, Profile, StartupConfig};
+use rusty_core::config::{
+    is_loopback_host, parse_pg_url, valid_hostname, Profile, SslMode, StartupConfig, StoreSection, MAX_POOL_SIZE,
+};
 
 const MAX_RECIPIENTS: u32 = 10_000;
 
@@ -12,7 +14,7 @@ fuzz_target!(|data: &[u8]| {
     let Ok(c) = StartupConfig::from_toml_str(text) else {
         return;
     };
-    assert!(c.database_path.is_absolute() && c.blob_dir.is_absolute());
+    assert!(c.blob_dir.is_absolute());
     assert!((1024..=1024 * 1024 * 1024).contains(&c.max_message_bytes));
     assert!(c.smtp_max_message_bytes() >= 1024 && c.smtp_max_message_bytes() <= c.max_message_bytes);
     assert!(c.gc_grace_seconds >= 3600);
@@ -31,6 +33,26 @@ fuzz_target!(|data: &[u8]| {
     }
     // The start-up rules are total, and fail closed: authenticated listeners without any TLS source
     // never pass.
+    if c.store.is_postgres() {
+        assert!(c.database_path.as_os_str().is_empty());
+        let ep = parse_pg_url(c.store.url.as_deref().unwrap_or_default()).expect("validated url");
+        assert!(!ep.user.is_empty() && !ep.host.is_empty() && ep.port != 0);
+        assert!((1..=MAX_POOL_SIZE).contains(&c.store.pool_size));
+        assert!(c.store.lock_timeout_ms >= 1 && c.store.statement_timeout_ms >= 1);
+        // Never starts with an unverified remote database unless the explicit override is set.
+        if c.check_startup(Profile::Production).is_ok()
+            && !is_loopback_host(&ep.host)
+            && c.store.sslmode != SslMode::VerifyFull
+        {
+            assert!(c.store.insecure_allow_unverified_tls);
+        }
+        if c.check_startup(Profile::Production).is_ok() {
+            assert!(c.store.pool_size >= StoreSection::pool_floor(c.service_count()));
+        }
+    } else {
+        assert!(c.database_path.is_absolute());
+        assert!(c.store.url.is_none() && c.store.password_file.is_none());
+    }
     let prod = c.check_startup(Profile::Production);
     let dev = c.check_startup(Profile::Dev);
     if c.authenticated_listeners() > 0 && !c.tls.has_cert() && !c.tls.dev_self_signed {

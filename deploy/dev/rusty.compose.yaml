@@ -1,19 +1,109 @@
-# Optional: run the development profile in a container (a Rust toolchain image builds and runs it).
-#   docker compose -f deploy/dev/rusty.compose.yaml up
-# The ports are published on 127.0.0.1 only. Dev profile: self-signed certificate, no real
-# mail yet; never expose these ports. The production image and compose file arrive with U9.
+# Optional: run the development profile in containers, on POSTGRES (the production backend):
+#   RUSTY_PG_SUPERUSER_PASSWORD=... RUSTY_PG_APP_PASSWORD=... RUSTY_PG_MIGRATOR_PASSWORD=... \
+#     docker compose -f deploy/dev/rusty.compose.yaml up
+# Order: postgres -> db-init (one-shot: deploy/db/roles.sql + role passwords, idempotent) ->
+# migrate (one-shot: `rusty ctl db migrate` with the MIGRATOR role, idempotent) -> rusty (runtime
+# role rusty_app, DML only; it never migrates and refuses a schema that is not exactly its own).
+#
+# DEV ONLY. The ports are published on 127.0.0.1 only, the certificate is self-signed, and the
+# database link inside this compose network is NOT TLS-verified (`insecure_allow_unverified_tls`,
+# logged as a warning at every start): a production deployment uses verify-full with a CA bundle
+# (docs/postgres-production.md). The production image and compose file arrive with U9.
+name: rusty-dev
+x-store-config: &store-config |
+  [store]
+  backend = "postgres"
+  url = "postgres://rusty_app@postgres:5432/rusty"
+  password_file = "/run/rusty/app.pw"
+  migrator_user = "rusty_migrator"
+  migrator_password_file = "/run/rusty/migrator.pw"
+  sslmode = "disable"
+  insecure_allow_unverified_tls = true
+x-rusty: &rusty
+  image: rust:1.89-bookworm
+  working_dir: /src
+  environment:
+    CARGO_TARGET_DIR: /target
+    RUSTY_DEV_STORE_CONFIG: /run/rusty/store.toml
+    RUSTY_PG_APP_PASSWORD: ${RUSTY_PG_APP_PASSWORD:?set the runtime role password}
+    RUSTY_PG_MIGRATOR_PASSWORD: ${RUSTY_PG_MIGRATOR_PASSWORD:?set the migrator role password}
+  configs:
+    - source: store-config
+      target: /run/rusty/store.toml
+  volumes:
+    - ../..:/src:ro
+    - rusty-target:/target
+    - rusty-data:/data
 services:
-  rusty:
-    image: rust:1.89-bookworm
-    working_dir: /src
-    # exec: the daemon is PID 1 and receives SIGTERM itself (drains, closes the store, exits 0).
-    command: ["sh", "-c", "cargo build -p rusty && exec /target/debug/rusty d --dev --data-dir /data/dev --bind 0.0.0.0"]
+  postgres:
+    # Same digest as deploy/dev/postgres.compose.yaml (deploy/images.lock): PostgreSQL 18.
+    image: postgres@sha256:3a4264520e121176619f54ff867d12774bc81e95e7b84db58d63bccdb6144b81
     environment:
-      CARGO_TARGET_DIR: /target
+      POSTGRES_USER: rusty
+      POSTGRES_DB: rusty
+      POSTGRES_PASSWORD: ${RUSTY_PG_SUPERUSER_PASSWORD:?set the superuser password}
     volumes:
-      - ../..:/src:ro
-      - rusty-target:/target
-      - rusty-data:/data
+      - pgdata:/var/lib/postgresql
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, FOWNER, DAC_OVERRIDE]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U rusty -d rusty"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  db-init:
+    image: postgres@sha256:3a4264520e121176619f54ff867d12774bc81e95e7b84db58d63bccdb6144b81
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+    environment:
+      PGHOST: postgres
+      PGUSER: rusty
+      PGDATABASE: rusty
+      PGPASSWORD: ${RUSTY_PG_SUPERUSER_PASSWORD:?set the superuser password}
+      APP_PW: ${RUSTY_PG_APP_PASSWORD:?set the runtime role password}
+      MIG_PW: ${RUSTY_PG_MIGRATOR_PASSWORD:?set the migrator role password}
+    volumes:
+      - ../db/roles.sql:/roles.sql:ro
+    # roles.sql creates the roles NOLOGIN; this is the explicit step that lets two of them log in.
+    entrypoint:
+      - sh
+      - -ec
+      - |
+        psql -v ON_ERROR_STOP=1 -f /roles.sql
+        psql -v ON_ERROR_STOP=1 -v app="$$APP_PW" -v mig="$$MIG_PW" <<'SQL'
+        ALTER ROLE rusty_app LOGIN PASSWORD :'app';
+        ALTER ROLE rusty_migrator LOGIN PASSWORD :'mig';
+        SQL
+  migrate:
+    <<: *rusty
+    depends_on:
+      db-init: { condition: service_completed_successfully }
+    restart: "no"
+    command:
+      - sh
+      - -ec
+      - |
+        umask 077; mkdir -p /run/rusty
+        printf %s "$$RUSTY_PG_APP_PASSWORD" > /run/rusty/app.pw
+        printf %s "$$RUSTY_PG_MIGRATOR_PASSWORD" > /run/rusty/migrator.pw
+        cargo build -p rusty
+        exec /target/debug/rusty ctl --dev --data-dir /data/dev db migrate
+  rusty:
+    <<: *rusty
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    # exec: the daemon is PID 1 and receives SIGTERM itself (drains, closes the store, exits 0).
+    command:
+      - sh
+      - -ec
+      - |
+        umask 077; mkdir -p /run/rusty
+        printf %s "$$RUSTY_PG_APP_PASSWORD" > /run/rusty/app.pw
+        printf %s "$$RUSTY_PG_MIGRATOR_PASSWORD" > /run/rusty/migrator.pw
+        cargo build -p rusty
+        exec /target/debug/rusty d --dev --data-dir /data/dev --bind 0.0.0.0
     ports:
       - "127.0.0.1:2525:2525"
       - "127.0.0.1:5587:5587"
@@ -22,7 +112,10 @@ services:
       - "127.0.0.1:9993:9993"
     stop_signal: SIGTERM
     stop_grace_period: 40s
-
+configs:
+  store-config:
+    content: *store-config
 volumes:
   rusty-target: {}
   rusty-data: {}
+  pgdata: {}

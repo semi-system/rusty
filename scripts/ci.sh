@@ -58,6 +58,12 @@ rustup target list --installed | grep -qx "$MUSL" || { echo "[FAIL] missing rust
 # (skipped when the hook is set: ci-trap.sh runs ci.sh itself)
 [ -n "${RUSTY_CI_FORCE_FAIL:-}" ] || stage "ci scripts" bash scripts/tests/ci-trap.sh
 stage "remote build helpers self-test" bash scripts/tests/remote-lib.sh
+# CI speed helpers (docs/ci.md): change classification, cache pruning, pinned tool install.
+stage "ci-changes self-test" bash scripts/tests/ci-changes.sh
+stage "ci-cache-prune self-test" bash scripts/tests/ci-cache-prune.sh
+stage "ci-tool self-test" bash scripts/tests/ci-tool.sh
+# Pre-push check (run bash scripts/prepush-check.sh yourself before every git push).
+stage "prepush-check self-test" bash scripts/tests/prepush-check.sh
 
 # Database access belongs to rusty-store (scripts/check-raw-db.sh documents what the text scan
 # covers and what it cannot see). The gate has its own self-test.
@@ -82,6 +88,12 @@ stage "service crates use only facades" bash scripts/check-service-crates.sh
 # The `test-knobs` fault-injection feature of rusty-store is enabled only by its own tests.
 stage "test-knobs gate self-test" bash scripts/tests/test-knobs-gate.sh
 stage "no test knobs outside tests" bash scripts/check-test-knobs.sh static
+# Supply chain: Dockerfile bases and workflow actions are pinned by digest/SHA; workflows and shell
+# scripts are linted in pinned containers (skips with an explicit note when Docker is absent).
+stage "docker-pins gate self-test" bash scripts/tests/docker-pins-gate.sh
+stage "docker and workflow pins" bash scripts/check-docker-pins.sh
+stage "workflows-lint self-test" bash scripts/tests/workflows-lint.sh
+stage "actionlint and shellcheck" bash scripts/ci-workflows-lint.sh
 stage "clippy"       cargo clippy --workspace --all-targets -- -D warnings
 stage "test (glibc)" cargo test --workspace
 # The dev quickstart works from a clean checkout: build, start on spare ports, banner, SIGTERM, exit 0.
@@ -116,7 +128,19 @@ postgres_tests() {
   fi
   if [ "$rc" -eq 0 ]; then
     RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
-      cargo test -p rusty-directory -p rusty-imap --features postgres || rc=$?
+      cargo test -p rusty-directory -p rusty-imap -p rusty-smtp -p rusty-ctl --features postgres || rc=$?
+  fi
+  # The whole conformance suites again as the unprivileged runtime role rusty_app, on a database initialised
+  # with deploy/db/roles.sql and migrated by rusty_migrator (what production runs).
+  if [ "$rc" -eq 0 ]; then
+    RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 RUSTY_TEST_PG_ROLES=1 \
+      cargo test -p rusty-store --features postgres --test mailbox_conformance --test jobs_conformance \
+        --test gc_conformance --test imap_ops_conformance --test input_validation_conformance --test race_conformance \
+        --test mailbox --test jobs --test gc --test deliveries --test batch --test mailbox_paging --test known_diffs || rc=$?
+  fi
+  if [ "$rc" -eq 0 ]; then
+    RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 RUSTY_TEST_PG_ROLES=1 \
+      cargo test -p rusty-directory -p rusty-imap -p rusty-smtp -p rusty-ctl --features postgres || rc=$?
   fi
   # The mutation hook's table and probes (the full mutation run is scripts/pg-mutate.sh, not a CI stage).
   if [ "$rc" -eq 0 ]; then
@@ -125,7 +149,7 @@ postgres_tests() {
   fi
   if [ "$rc" -eq 0 ]; then
     RUSTY_TEST_PG_URL="$url" RUSTY_REQUIRE_PG=1 \
-      cargo clippy -p rusty-store -p rusty-directory -p rusty-imap --features postgres --all-targets -- -D warnings || rc=$?
+      cargo clippy -p rusty-store -p rusty-directory -p rusty-imap -p rusty-smtp -p rusty-ctl --features postgres --all-targets -- -D warnings || rc=$?
   fi
   bash scripts/pg-down.sh >/dev/null 2>&1 || true
   PG_RUN_ID=""
@@ -153,6 +177,19 @@ stage "no test knobs in release" bash scripts/check-test-knobs.sh symbols "$MUSL
 stage "no test fixtures in release" bash scripts/check-test-fixtures.sh symbols "$MUSL"
 stage "no mutation hook in release" bash scripts/check-mutation-hook.sh symbols "$MUSL"
 
+# The same end-to-end scenario on both backends (needs the musl release binary built above; Postgres needs Docker).
+acceptance() {
+  local bin="$TARGET_DIR/$MUSL/release/rusty"
+  RUSTY_BIN="$bin" BACKEND=sqlite bash tools/acceptance/local-run.sh || return 1
+  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+    PG_SKIPPED=1
+    echo "WARNING: Docker is unavailable; the Postgres acceptance run was not done." >&2
+    return 0
+  fi
+  RUSTY_BIN="$bin" BACKEND=postgres bash tools/acceptance/local-run.sh
+}
+stage "acceptance (sqlite, postgres)" acceptance
+
 check_static() {
   local found=0 f
   shopt -s nullglob
@@ -173,11 +210,14 @@ stage "static linking" check_static
 
 fuzz_all() {
   if command -v cargo-fuzz >/dev/null 2>&1 && rustup toolchain list | grep -q "^nightly"; then
-    local t
-    for t in parse_envelope parse_address fuzz_config fuzz_pem fuzz_ctl_args fuzz_smtp_command fuzz_smtp_data fuzz_smtp_path fuzz_smtp_headers fuzz_smtp_auth fuzz_smtp_response fuzz_dsn_headers fuzz_queue_payload fuzz_dkim_key fuzz_imap_command fuzz_imap_structure fuzz_imap_search_eval fuzz_imap_seqset fuzz_imap_utf7; do
+    local t nightly_tc
+    # Use the installed nightly by its exact name (e.g. nightly-2026-11-01-...): plain `+nightly` makes rustup
+    # download the latest channel when only a dated nightly is installed.
+    nightly_tc="$(rustup toolchain list | awk '/^nightly/{print $1; exit}')"
+    for t in parse_envelope parse_address fuzz_config fuzz_pg_url fuzz_pem fuzz_ctl_args fuzz_smtp_command fuzz_smtp_data fuzz_smtp_path fuzz_smtp_headers fuzz_smtp_auth fuzz_smtp_response fuzz_dsn_headers fuzz_queue_payload fuzz_dkim_key fuzz_imap_command fuzz_imap_structure fuzz_imap_search_eval fuzz_imap_seqset fuzz_imap_utf7; do
       mkdir -p "fuzz/corpus/$t"
       # Working corpus first (new finds are written there), committed seeds second.
-      (cd fuzz && cargo +nightly fuzz run "$t" "corpus/$t" "seeds/$t" -- "-max_total_time=$FUZZ_SECS" -rss_limit_mb=2048) || return 1
+      (cd fuzz && cargo "+$nightly_tc" fuzz run "$t" "corpus/$t" "seeds/$t" -- "-max_total_time=$FUZZ_SECS" -rss_limit_mb=2048) || return 1
     done
   else
     FUZZ_DEGRADED=1

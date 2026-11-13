@@ -131,16 +131,36 @@ async fn find_thread_uses_one_query() {
             .await
             .unwrap();
         let refs_s: Vec<&str> = refs.iter().map(String::as_str).collect();
-        let many = reply("x", None, Some("irt@t.test"), &refs_s);
-        let none = raw("y", None);
+        let many = |tag: &str| reply(tag, None, Some("irt@t.test"), &refs_s);
+        let none = |tag: &str| raw(tag, None);
 
-        p.reset();
-        e.mb.append(INBOX, none, Flags::empty()).await.unwrap();
-        let base = p.count();
-        p.reset();
-        e.mb.append(INBOX, many, Flags::empty()).await.unwrap();
+        // A pooled connection that is opened (or reopened) during a measured append adds its session
+        // set-up statements to that single count. Warm the pool up and compare the minimum of several runs.
+        for i in 0..3 {
+            e.mb.append(INBOX, none(&format!("w{i}")), Flags::empty())
+                .await
+                .unwrap();
+        }
+        let mut bases = Vec::new();
+        for i in 0..3 {
+            p.reset();
+            e.mb.append(INBOX, none(&format!("b{i}")), Flags::empty())
+                .await
+                .unwrap();
+            bases.push(p.count());
+        }
+        let base = bases.into_iter().min().unwrap();
+        let mut withs = Vec::new();
+        for i in 0..3 {
+            p.reset();
+            e.mb.append(INBOX, many(&format!("m{i}")), Flags::empty())
+                .await
+                .unwrap();
+            withs.push(p.count());
+        }
+        let with_many = withs.into_iter().min().unwrap();
         assert_eq!(
-            p.count(),
+            with_many,
             base + 1,
             "32 candidates must cost exactly one extra statement"
         );

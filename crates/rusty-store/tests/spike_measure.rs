@@ -207,7 +207,7 @@ async fn head_of_line_blocking_through_the_pool() {
         #[cfg(feature = "postgres")]
         if let Some(db) = &b._db {
             use rusty_store::repo::pg::PgRepo;
-            let cfg = rusty_store::PgPoolConfig {
+            let cfg = rusty_store::PgLimits {
                 max_connections: 16,
                 ..Default::default()
             };

@@ -16,7 +16,7 @@
 PROBE_NAME="rusty-gate-probe"
 
 probe_binary() {
-  local store_features="$1" probe_features="$2" target="${3:-}" repo dir tdir bin feats=""
+  local store_features="$1" probe_features="$2" target="${3:-}" repo dir bin feats=""
   repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   dir="$(mktemp -d)"
   mkdir -p "$dir/src"
