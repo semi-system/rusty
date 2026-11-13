@@ -1,80 +1,83 @@
-# Rusty - status and next steps (2026-11-13)
+# Rusty - status and next steps (refreshed 2026-11-13, after the SQLite removal)
 
 Written so work can continue on another machine. Read this first, then `2026-11-08-usable-mailserver.md`
-(master plan) and `2026-11-10-handoff-remaining-work.md` (work packages W1-W8, working rules).
+(master plan) and `2026-11-10-handoff-remaining-work.md` (work packages W1-W8, working rules; where it differs from
+this file, this file wins).
 The owner writes Vietnamese; answer in Vietnamese.
 
 ## 1. Where things are
 
 - Repo: `https://github.com/semi-system/rusty` (private). Product name "Rusty Mail Server", code name `rusty`.
-- `main` (423024d) holds: foundation, Postgres production backend (U11), SMTP in/submission, IMAP, edge HAProxy,
-  Dockerfile, GitHub Actions (ci, docker, release), DNS record generator.
-- Unmerged branches, both pushed to origin (no PR yet; branch pushes do not trigger CI, only PRs and `main`):
-  - `u-out` (89452fb): U5 outbound worker + DKIM (vendored, patched `mail-auth` using ring, so the `rsa` crate is out of
-    the tree), `rustyctl dkim import|generate`, dev cert persistence, fuzz targets. Needs `git merge origin/main`, then a
-    PR and a full CI run. `.cargo/config.toml` in that worktree is a local untracked file; do not commit it.
-  - `u-dns` (wip commit on top of 211dc77): U10 part 1 ([dns_check] config, drift state machine) plus the **unbuilt,
-    unreviewed** DNS state tables (migrations 0014/0015 on both backends, repo ops, `dns_conformance` test). Build it,
-    fix compile errors, snapshots (`RUSTY_UPDATE_SNAPSHOT=1`, `RUSTY_UPDATE_PG_SNAPSHOT=1`), then PR.
-- Migration numbers: 0013 = U5 enqueue_batch, 0014-0015 = DNS state (u-dns), 0016 = U11 definer triggers (already on
-  main), next free = 0017. PG twins use the same numbers; PG 0002..0009 are forbidden.
+- `main` holds everything: foundation, SMTP inbound and submission, IMAP, the outbound worker with DKIM (U5), the DNS
+  record generator and the DNS state tables with the drift state machine (U10 part 1, store side), edge HAProxy,
+  Dockerfile and the GitHub Actions workflows. There are no unmerged work branches (`u-out`, `u-dns` and the three
+  SQLite-removal branches were all squash-merged; their remote branches may still exist).
+- **PostgreSQL is the only backend.** The SQLite store, its migrations and `database_path` are gone (PRs #10, #11 and the
+  documentation PR that follows them). Migrations live in `crates/rusty-store/migrations`: 0001, then 0010 to 0016
+  (0014/0015 are the DNS state tables). Next free number: **0017**. Numbers 0002..0009 stay forbidden
+  (`scripts/check-pg-migration-gap.sh`): existing databases already applied 0010.
+- Do **not** edit the text of an applied migration, not even a comment: sqlx checksums the file and a changed file
+  makes every migrated database report `mismatch`.
 
-## 2. GitHub Actions state (checked on main)
+## 2. GitHub Actions state
 
-- `docker.yml`: all green. Image `ghcr.io/semi-system/rusty` is published by Actions (not locally), mode no-scan
-  (`DOCKER_PUBLISH_MODE` repo variable; `strict` later). Signed with cosign (keyless) and carries an SBOM attestation.
-  GitHub provenance attestation is skipped while the repo is private (plan limitation); it turns on by itself if the
-  repo becomes public. Package visibility: public (set by the owner).
-- `ci.yml`: glibc tests, Postgres suites, cargo-deny/audit, actionlint were green. The two musl jobs had failed because the
-  runner's Azure apt mirror did not resolve; commits b82ff6f and 423024d point apt at archive.ubuntu.com with retries
-  (`scripts/ci-apt-install.sh`). **Not yet confirmed green**: check the latest `ci` run on main. If musl is still red,
-  stop using apt for `musl-tools` (download the .deb through GitHub, or use zig as the Dockerfile does). Fuzz smoke and
-  the edge suite only run on the nightly schedule; they have never run on GitHub yet.
-- Local reproduction (WSL, SQLite): clippy and `cargo test --workspace` (glibc and musl) pass on main.
+- `ci.yml`: all jobs were green on the last PRs (glibc, musl test and release, Postgres suites, cargo-deny/audit,
+  actionlint/shellcheck, repository gates, three image smoke tests). The `ci-ok` aggregate is the required check
+  (`.github/rulesets/main.json`).
+- Nightly (schedule): `fuzz smoke` passes. The `edge behaviour suite` is red because `scripts/gen-test-certs.sh` uses
+  `openssl x509 -not_before/-not_after` (OpenSSL >= 3.4; the runner has 3.0). The owner chose not to fix it.
+- `docker.yml`: image published by Actions (mode no-scan, `DOCKER_PUBLISH_MODE` repo variable), signed with cosign
+  (keyless) with an SBOM; the dev-cert image smoke test builds a throw-away Postgres on a Docker network and the schema
+  with `rusty ctl --dev db migrate --without-roles`.
+- `cargo audit` reads `Cargo.lock`, where sqlx's macro crate still lists `sqlx-sqlite` and `sqlx-mysql` as optional
+  dependencies, so RUSTSEC-2026-0459 and RUSTSEC-2023-0071 stay in `.cargo/audit.toml` with the reason and an expiry
+  (2027-02-01). `cargo tree -i libsqlite3-sys --target all -e all` prints nothing.
+- Dependabot PRs #1 to #7 are open and stale (opened 2026-11-11). Every cargo bump fails `repository gates` because
+  Dependabot does not update `fuzz/Cargo.lock`. #5 (thiserror 2) and #4/#7 (sha2, toml) compile; #1 (docker `rust`
+  digest) needs the digest added to `deploy/images.lock`; #2 (mail-parser 1.0), #3 (sqlx 0.9) and #6 (argon2 0.6, the
+  password path) have real API breaks. Rule: **whenever a dependency or a feature changes, refresh `fuzz/Cargo.lock`
+  too** (`cd fuzz && cargo metadata --format-version 1`).
 
 ## 3. Decisions in force
 
 - Usable product first; performance and hardening later; never break the architecture model for speed (protocol code
   only through repository traits/facades; third-party protocol libs only inside adapter modules; seams for deferred work).
-- Postgres is production; SQLite is dev/test/reference. Blobs are content-addressed files. Domain = tenant.
-- One image, one multi-call binary (`rusty d|ctl|healthcheck`). Services are separate processes/containers from the
-  same image (supervisor `rustyd` for single-host installs). No per-service images for now; admin web (W2) is the first
-  candidate for its own image.
+- Postgres only. Domain = tenant. The dev profile (`rusty d --dev`, `rustyctl --dev`) names its database in the
+  environment: `RUSTY_DEV_PG_URL` (no password in the URL), `RUSTY_DEV_PG_PASSWORD`, optionally `RUSTY_DEV_PG_SSLMODE`
+  and `RUSTY_DEV_PG_CA_BUNDLE`; the schema is built once with `rustyctl --dev db migrate --without-roles`. The dev profile
+  accepts any database role; production refuses a superuser. Every test needs `RUSTY_TEST_PG_URL` (a missing URL fails).
+- **Blobs will be S3 only** (decided 2026-11-13, not started). The S3 credentials come from environment variables at
+  start-up (plus a `*_FILE` form), never from the database or the admin web; never logged. Open work: change the
+  `BlobStore` trait (no mtime, rename or `.gc.lock` on S3), a GC driven by the database (`blobs.refcount`/`zero_since`
+  and a lease in Postgres), ranged reads for IMAP FETCH, MinIO (or similar) for tests and dev. `FsBlobStore` is proposed to
+  stay as the test/dev implementation of the same trait.
+- Images: today one image and one multi-call binary (`rusty d|ctl|healthcheck`). The owner leans to one image per
+  service; the proposed way is one multi-target Dockerfile, one build stage, one version tag. `rusty d` has no role
+  selection yet (GC always runs, the outbound worker runs when `[outbound] enabled`); a role flag is needed first.
 - DNS records are generated by a pure function (`rusty_core::dns`); expected/observed state is stored (U10, drift job
   `dns.check`). The domain-create flow must show ready-made DNS records (hard requirement).
-- DKIM: vendored patched mail-auth kept; RSA keys are imported by the operator, `generate` makes ed25519.
-- Git identity: author `morningstar-sudo <mornngstr1@gmail.com>`, no Co-Authored-By lines. History was rewritten once
-  (2026-11-10); do not rewrite again unless a new leak appears.
+- DKIM: vendored patched `mail-auth` kept (ring backend, `rsa` crate out of the tree); RSA keys are imported by the
+  operator, `generate` makes ed25519.
+- Git identity: author `morningstar-sudo`, **no Co-Authored-By or tool-attribution lines** (checked by
+  `scripts/prepush-check.sh`). Never rewrite pushed history.
 
 ## 4. Next steps, in order
 
-1. Confirm the latest `ci` run on main is green (see section 2); fix musl if not.
-2. Merge `u-out`: merge origin/main, PR, full CI, merge.
-3. Finish `u-dns`: build, fix, snapshots, PR (DNS validation engine W1 and drift persistence W1b still to write on top).
-4. **Standalone installer** `deploy/standalone/` (the owner's goal: on a fresh server `curl <raw github url> | sudo bash`
-   sets everything up): `install.sh` pinned to a release tag, checksum plus cosign verify, compose with Postgres
-   (pinned digest) and one `rusty` image running several services, secrets 0600, pull by digest, `rustyctl db migrate`,
-   create first domain and admin, print the DNS records; also upgrade, rollback, backup, restore, uninstall.
-   Read `rusty d`'s real CLI/config before writing the compose (roles/flags are not confirmed here).
-5. U9 packaging and backup docs, U8/U8b end-to-end and two-VM procedure (the owner builds the VMs), W2 admin web.
+1. Merge the documentation PR (this refresh), then handle the Dependabot PRs (refresh `fuzz/Cargo.lock`, add the Docker
+   digest to `deploy/images.lock`; leave sqlx 0.9, mail-parser 1.0 and argon2 0.6 as their own tasks).
+2. Design spec for the S3 blob store (trait, DB-driven GC, env credentials, MinIO in tests), then implement.
+3. Role selection in `rusty d` and per-service images (multi-target Dockerfile); then compose/Helm.
+4. W1 DNS validation engine and the `dns.check` job wiring, W2 admin web (it no longer configures S3).
+5. Standalone installer `deploy/standalone/`, U9 packaging and backup/restore, U8/U8b end-to-end and two-VM procedure.
 6. Owner-side GitHub settings still to apply: import `.github/rulesets/*.json`, Actions permissions, team
-   `@semi-system/maintainers`, spot-check the pinned action SHAs, revoke the PAT from the failed local GHCR login.
+   `@semi-system/maintainers`, spot-check the pinned action SHAs.
 
-## 5. Scaling note (swarm / Kubernetes), not started
+## 5. Environment notes
 
-Replicas are the same image run several times. Per service: SMTP and IMAP can run several replicas behind a TCP load
-balancer (PROXY protocol to keep client IPs; IMAP sticky per connection). Open questions, none verified:
-- Outbound queue workers: need an exclusive claim (lease) per message; check the U5 code before running two workers.
-- Blobs are files on a volume: multi-node needs a shared filesystem or an object-store backend behind the blob trait
-  (seam exists, backend not written).
-- Postgres HA (Patroni, CloudNativePG or managed) is infrastructure outside the image.
-- In Kubernetes the kubelet is the supervisor: one role per container, not `rustyd`. Needs Helm/kustomize manifests.
-Record as post-MVP work; do not let it change the single-host installer.
-
-## 6. Environment notes (this machine, may not apply to the next one)
-
-- Builds went through WSL (`scripts/wsl-cargo.sh`, `scripts/wsl-ci.sh`; WSL now on D:) or the remote build server
-  (`scripts/remote-*.sh`, needs the untracked `.rusty-remote.env` and the owner's key; VM was switched off).
-- A cached test binary in the WSL target dir once made `compose-check` tests fail under `--workspace` (stale build,
-  not a code bug); touching the sources forces a rebuild.
+- Builds went through WSL (`scripts/wsl-cargo.sh`, `scripts/wsl-ci.sh`) or the remote build server. The WSL user needs to
+  be in the `docker` group (`sudo usermod -aG docker $USER`, then `wsl --shutdown`) for `scripts/pg-up.sh`. WSL has no
+  `musl-gcc`, so `scripts/ci.sh` stops at its tool check there; GitHub CI is the full gate.
+- `bash scripts/pg-up.sh` starts a throw-away Postgres 18 (URL in `~/.rusty-pg-test-url.dev`), `scripts/pg-down.sh` removes
+  it. `tools/acceptance/local-run.sh` is the end-to-end scenario (needs Docker; passes with the debug binary).
+- `scripts/tests/ci-cache-prune.sh` fails under Git Bash on an NTFS checkout (executable bit); it passes on Linux.
 - `scripts/prepush-check.sh` must pass before any push.

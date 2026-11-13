@@ -23,7 +23,6 @@ fn text(b: &[u8]) -> String {
     String::from_utf8_lossy(b).into_owned()
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn dates_are_rfc5322() {
     assert_eq!(rfc5322_date(0), "Thu, 1 Jan 1970 00:00:00 +0000");
@@ -32,7 +31,6 @@ fn dates_are_rfc5322() {
     assert_eq!(rfc5322_date(-1), "Wed, 31 Dec 1969 23:59:59 +0000");
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn trace_headers_go_on_top_and_the_message_is_kept() {
     let orig = b"From: a@example.org\r\nSubject: hi\r\n\r\nbody line\r\n";
@@ -48,7 +46,6 @@ fn trace_headers_go_on_top_and_the_message_is_kept() {
     assert!(out.ends_with("From: a@example.org\r\nSubject: hi\r\n\r\nbody line\r\n"), "{out}");
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn the_received_header_names_no_recipient_and_marks_tls_and_ipv6() {
     let mut t = trace();
@@ -60,7 +57,6 @@ fn the_received_header_names_no_recipient_and_marks_tls_and_ipv6() {
     assert!(!out.to_lowercase().contains(" for "), "a Received header must not name a recipient: {out}");
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn a_null_sender_gives_an_empty_return_path() {
     let mut t = trace();
@@ -69,7 +65,6 @@ fn a_null_sender_gives_an_empty_return_path() {
     assert!(out.starts_with("Return-Path: <>\r\n"), "{out}");
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn hostile_helo_and_sender_cannot_inject_headers() {
     let mut t = trace();
@@ -84,7 +79,6 @@ fn hostile_helo_and_sender_cannot_inject_headers() {
     }
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn forged_trace_headers_are_stripped_including_folded_lines() {
     let orig = b"Authentication-Results: mx.example.net; dkim=pass\r\n\tsmtp.mailfrom=x\r\n\
@@ -101,7 +95,6 @@ fn forged_trace_headers_are_stripped_including_folded_lines() {
     assert!(out.contains("Subject: kept\r\nFrom: a@example.org\r\n\r\nAuthentication-Results: in the body stays\r\n"), "{out}");
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn bare_lf_is_normalised_to_crlf_and_binary_bytes_are_kept() {
     let orig = b"Subject: a\nFrom: b@c.d\n\nline1\nline2\r\nline3\n\xc3\xa9\xff\n";
@@ -110,7 +103,6 @@ fn bare_lf_is_normalised_to_crlf_and_binary_bytes_are_kept() {
     assert!(out.ends_with(tail), "{:?}", text(&out));
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn headers_only_and_empty_messages() {
     assert!(text(&prepare_message(b"", &trace())).ends_with("Authentication-Results: mx.example.net; none\r\n"));
@@ -121,7 +113,6 @@ fn headers_only_and_empty_messages() {
     assert!(out.contains("\r\n\r\nReceived-SPF: body text\r\n"), "{out}");
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn the_delivery_id_depends_on_sender_recipient_and_original_bytes_only() {
     let a = delivery_id_for("alice@example.org", 7, b"data");
@@ -134,7 +125,6 @@ fn the_delivery_id_depends_on_sender_recipient_and_original_bytes_only() {
 }
 
 proptest::proptest! {
-    // backend-neutral: the header editor must never panic and must keep the body byte-exact
     #[test]
     fn prepare_never_panics_and_keeps_the_body(
         head in "[A-Za-z-]{1,12}: [ -~]{0,20}(\r\n[ \t][ -~]{0,10})?",
@@ -163,7 +153,6 @@ fn field_names(out: &[u8]) -> Vec<String> {
         .collect()
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn a_leading_folded_line_cannot_extend_our_authentication_results() {
     // review probe I1: the first line starts with a blank, so it looked like a continuation of OUR header
@@ -180,7 +169,6 @@ fn a_leading_folded_line_cannot_extend_our_authentication_results() {
     }
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn a_bare_cr_is_a_line_break_so_it_cannot_hide_a_forged_header() {
     // review probe I2
@@ -198,7 +186,6 @@ fn a_bare_cr_is_a_line_break_so_it_cannot_hide_a_forged_header() {
     }
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn the_senders_own_return_path_is_replaced_by_ours() {
     let orig = b"Return-Path: <forged@evil.example>\r\nreturn-path: <forged2@evil.example>\r\nSubject: s\r\n\r\nb\r\n";
@@ -209,7 +196,6 @@ fn the_senders_own_return_path_is_replaced_by_ours() {
     assert!(!text(&out).contains("forged"));
 }
 
-// backend-neutral: pure header function over bytes
 #[test]
 fn the_outbound_copy_drops_our_internal_headers_and_bcc_but_keeps_the_received_line() {
     use rusty_smtp::message::outbound_copy;
@@ -223,7 +209,6 @@ fn the_outbound_copy_drops_our_internal_headers_and_bcc_but_keeps_the_received_l
     assert!(out.ends_with("\r\nBcc: in the body stays\r\nbody\r\n"), "the body is untouched: {out}");
 }
 
-// backend-neutral: pure header parsing, no store involved
 #[test]
 fn a_from_header_with_more_addresses_than_the_mime_layer_keeps_is_refused() {
     // Review U4 I1: rusty_mime stops at 100 addresses, so a trailing address was never looked at.
@@ -241,7 +226,6 @@ fn a_from_header_with_more_addresses_than_the_mime_layer_keeps_is_refused() {
     assert!(from_addresses(raw).is_ok());
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn a_submitting_clients_bcc_header_is_dropped_but_inbound_mail_keeps_it() {
     let raw = b"From: a@example.org\r\nBcc: secret@elsewhere.example,\r\n other@x.example\r\nTo: b@example.org\r\nSubject: s\r\n\r\nbody";

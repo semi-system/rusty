@@ -1,5 +1,5 @@
-//! Directory conformance: ONE body per behaviour, run on SQLite and (with the `postgres`
-//! feature and `RUSTY_TEST_PG_URL`) on Postgres. Error kinds are asserted exactly.
+//! Directory conformance: ONE body per behaviour, run on Postgres
+//! (`RUSTY_TEST_PG_URL`). Error kinds are asserted exactly.
 
 mod common;
 
@@ -775,7 +775,7 @@ async fn errors_never_echo_caller_data() {
 }
 
 /// The count and the insert of `add_list_member` are one transaction under the list row lock
-/// (Postgres `FOR UPDATE`; SQLite `BEGIN IMMEDIATE`). Several adders racing at `cap - 1` must
+/// (Postgres `FOR UPDATE`). Several adders racing at `cap - 1` must
 /// yield exactly one success and `Quota` for the rest, never `cap + 1` members. Repeated over
 /// fresh lists because the race window is narrow without the lock.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

@@ -94,7 +94,6 @@ fn hex_lit(h: &rusty_core::BlobHash) -> String {
 
 // ---------------------------------------------------------------- claim
 
-// backend-neutral: Postgres SKIP LOCKED no-starvation run; the engine-neutral twin is race_conformance::sixteen_claimers_claim_each_job_exactly_once
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn sixteen_claimers_claim_each_job_exactly_once_without_starvation() {
     if pg_admin_url().is_none() {
@@ -129,7 +128,6 @@ async fn sixteen_claimers_claim_each_job_exactly_once_without_starvation() {
     assert_eq!(scalar(&b, "SELECT count(*) FROM jobs WHERE state = 'running' AND epoch = 1 AND attempts = 1").await, 96);
 }
 
-// backend-neutral: Postgres SKIP LOCKED over a row lock held by another session; SQLite has no row locks
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn skip_locked_skips_a_held_job_and_does_not_skip_it_after_the_holder_rolls_back() {
     if pg_admin_url().is_none() {
@@ -159,7 +157,6 @@ async fn skip_locked_skips_a_held_job_and_does_not_skip_it_after_the_holder_roll
     assert_eq!(again.id, j1);
 }
 
-// backend-neutral: Postgres lock_timeout on a held row lock maps to Busy; the SQLite busy_timeout case is error_busy::sqlite_busy_after_busy_timeout_is_busy
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_claim_that_hits_lock_timeout_is_busy_not_storage() {
     if pg_admin_url().is_none() {
@@ -185,7 +182,6 @@ async fn a_claim_that_hits_lock_timeout_is_busy_not_storage() {
 
 /// A zombie heartbeat races the reaper's claim over a lapsed lease: the lapsed lease can never
 /// be revived by the old epoch, whichever statement runs first.
-// backend-neutral: Postgres row-lock race; the engine-neutral twin is race_conformance::claim_heartbeat_and_complete_of_a_lapsed_lease_leave_one_owner
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn claim_versus_heartbeat_versus_reaper_race() {
     if pg_admin_url().is_none() {
@@ -219,7 +215,6 @@ async fn claim_versus_heartbeat_versus_reaper_race() {
 
 // ---------------------------------------------------------------- enqueue cap
 
-// backend-neutral: Postgres run with a pause-before-commit knob; the engine-neutral twin is race_conformance::concurrent_enqueues_at_the_cap_never_exceed_it_on_both_backends
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_enqueues_at_the_cap_never_exceed_it() {
     if pg_admin_url().is_none() {
@@ -255,7 +250,6 @@ async fn concurrent_enqueues_at_the_cap_never_exceed_it() {
 
 // ---------------------------------------------------------------- retry exhaustion
 
-// backend-neutral: forces five Postgres deadlocks (40P01) with a lock-order knob; SQLite writers cannot deadlock
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn five_forced_deadlocks_are_busy_for_claim_and_gc_and_change_nothing() {
     if pg_admin_url().is_none() {
@@ -287,7 +281,6 @@ async fn five_forced_deadlocks_are_busy_for_claim_and_gc_and_change_nothing() {
 
 /// GC deleted the row but has not committed; an append of the same blob arrives, waits for the
 /// delete, then re-creates the row: one winner, no orphan message, refcount exactly 1.
-// backend-neutral: holds an uncommitted Postgres delete; the engine-neutral twin is race_conformance::a_gc_that_deleted_a_blob_row_does_not_lose_a_later_reference_to_the_same_content
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gc_delete_in_flight_while_a_new_reference_arrives() {
     if pg_admin_url().is_none() {
@@ -329,7 +322,6 @@ async fn gc_delete_in_flight_while_a_new_reference_arrives() {
 
 /// An append holds the blob (row inserted, message in flight); the GC batch must wait for it and
 /// then find the blob referenced: nothing deleted, no foreign-key error.
-// backend-neutral: Postgres lock wait on an in-flight append; the engine-neutral outcome is gc_conformance::referenced_blob_is_never_deleted_even_with_a_corrupt_refcount
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gc_batch_waits_for_an_in_flight_reference_and_then_keeps_the_blob() {
     if pg_admin_url().is_none() {
@@ -372,7 +364,6 @@ async fn gc_batch_waits_for_an_in_flight_reference_and_then_keeps_the_blob() {
 /// The interleaving "a delete commits between my blob insert and my lock": the append's INSERT
 /// .. ON CONFLICT DO NOTHING skips the existing row, a GC deletes and commits, the append's lock
 /// finds nothing and the bounded loop re-inserts.
-// backend-neutral: pauses between two statements of one Postgres transaction (knob); the SQLite writer lock makes that window impossible
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gc_delete_commits_between_my_blob_insert_and_my_lock() {
     if pg_admin_url().is_none() {
@@ -432,7 +423,6 @@ async fn gc_versus_purge(gc_knobs: Knobs, purge_knobs: Knobs) -> (Arc<PgRepo>, A
     (gc_repo, purge_repo, deleted.len())
 }
 
-// backend-neutral: forces a Postgres deadlock (40P01) with a lock-order knob; SQLite writers cannot deadlock
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn crossed_lock_order_between_gc_and_purge_deadlocks_and_the_retry_recovers() {
     if pg_admin_url().is_none() {
@@ -450,7 +440,6 @@ async fn crossed_lock_order_between_gc_and_purge_deadlocks_and_the_retry_recover
     assert_eq!(gc.stats().exhausted.load(Ordering::Relaxed) + purge.stats().exhausted.load(Ordering::Relaxed), 0);
 }
 
-// backend-neutral: Postgres blob row-lock ordering of the GC batch (deadlock freedom); SQLite has no row locks
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_gc_batch_orders_its_blob_locks_like_every_other_path() {
     if pg_admin_url().is_none() {
@@ -470,7 +459,6 @@ async fn the_gc_batch_orders_its_blob_locks_like_every_other_path() {
 
 /// A fenced delivery of a worker whose lease lapsed races the reaper's claim: the effect can
 /// never commit under the old epoch once the new epoch exists.
-// backend-neutral: Postgres row-lock race; the engine-neutral twin is race_conformance::a_fenced_delivery_of_a_zombie_never_commits_once_the_job_is_reclaimed
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fenced_delivery_of_a_zombie_races_the_reclaim() {
     if pg_admin_url().is_none() {
@@ -510,7 +498,6 @@ async fn raw_of(b: &Backend, mb: &Mailbox, id: rusty_core::MessageId) -> bytes::
 /// Review PG5 I3: the claim reads candidates in windows of 32 ordered index entries. A claim
 /// whose first window is entirely held by other claimers must continue behind it, exactly as a
 /// single `ORDER BY .. LIMIT 1 FOR UPDATE SKIP LOCKED` over the whole queue would.
-// backend-neutral: Postgres SKIP LOCKED over a window of row-locked jobs; SQLite has no row locks
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn claim_continues_past_a_window_of_locked_jobs() {
     if pg_admin_url().is_none() {
@@ -542,7 +529,6 @@ async fn claim_continues_past_a_window_of_locked_jobs() {
 
 /// Review PG5 M-e: one mailbox whose lock keeps timing out must not stop the purge pass before
 /// the mailboxes behind it are reached; it is skipped and reported.
-// backend-neutral: Postgres per-mailbox lock timeout skips a busy mailbox; SQLite locks the whole database, so no single mailbox can be busy
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn purge_deleted_batch_continues_past_a_busy_mailbox() {
     if pg_admin_url().is_none() {
@@ -584,7 +570,6 @@ async fn purge_deleted_batch_continues_past_a_busy_mailbox() {
 /// lease predicate is evaluated when the statement runs, AFTER the wait, so the fence must be
 /// refused. With `now()` (the start of the transaction, before the wait) the stale worker would
 /// still pass.
-// backend-neutral: waits on a held Postgres mailbox row lock past a lease expiry; the engine-neutral outcome is mailbox_conformance::an_expired_lease_fails_the_fence_and_rolls_everything_back
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lease_that_expires_while_waiting_for_the_mailbox_lock_fails_the_fence() {
     let Some(b) = pg_backend().await else {

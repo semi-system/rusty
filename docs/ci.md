@@ -131,7 +131,7 @@ Bumping the key prefix (`-v1-`) invalidates every cache at once if one is ever p
 |---|---|
 | ci scripts (`tests/ci-trap.sh`, runs `ci.sh` itself) | not in CI (recursive); run it locally |
 | remote build helpers self-test, ci-changes / ci-cache-prune / ci-tool / prepush-check self-tests | `gates` (via `ci-gates.sh static`) |
-| raw-db, fixtures, mutation hook, parametrised, pg-migration-gap, wrapped-libs, service-crates, test-knobs, docker pins (gate + self-test) | `gates` |
+| raw-db, fixtures, mutation hook, pg-migration-gap, wrapped-libs, service-crates, test-knobs, docker pins (gate + self-test) | `gates` |
 | workflows-lint self-test; actionlint and shellcheck | `workflows-lint` |
 | clippy; test (glibc); dev quickstart smoke | `test-glibc` |
 | postgres (store, directory, imap, mutation table, clippy) | `test-postgres` |

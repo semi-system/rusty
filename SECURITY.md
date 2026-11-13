@@ -30,11 +30,12 @@ Errors are fixed short reasons and never echo caller input (`error_leak` test). 
 `source()` chain of a storage error may hold raw backend text and must not reach clients.
 
 No `unsafe` in the project crates: `#![forbid(unsafe_code)]` in every `lib.rs`, and a scan
-rejects `unsafe` in `crates/*/src`. Dependencies do use `unsafe` (SQLite, rustix, tokio).
+rejects `unsafe` in `crates/*/src`. Dependencies do use `unsafe` (sqlx, rustix, tokio).
 
 ## Files and permissions
-- Run as its own account with **umask 077**; data directories are 0700. A missing SQLite
-  database file is created 0600 (journal/WAL files inherit it).
+- Run as its own account with **umask 077**; data directories are 0700. The database is PostgreSQL: the
+  daemon connects as an unprivileged role (never a superuser, enforced at start-up), over verified TLS
+  unless an explicit, logged override is set; the password comes from a 0600 file, never from the URL.
 - The blob root is created only by `FsBlobStore::init` (0700, `.rusty-blobs` marker).
   `open` refuses a missing, unmarked, symlinked or group/world-writable root. Blob files
   are 0600, written via random `O_EXCL|O_NOFOLLOW` temp files, renamed, then fsynced.

@@ -1,5 +1,5 @@
-//! Backend harness for the rustyctl suites: every test body runs against SQLite and, with the
-//! `postgres` feature and `RUSTY_TEST_PG_URL`, against Postgres. Raw access only through
+//! Backend harness for the rustyctl suites: every test body runs against a fresh Postgres
+//! database (`RUSTY_TEST_PG_URL`). Raw access only through
 //! `rusty_store::fixtures` (dev-dependency); no test holds a pool or a driver.
 #![allow(dead_code)]
 

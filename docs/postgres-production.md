@@ -1,15 +1,14 @@
 # Postgres as the production backend
 
-Status: U11. Production (`rusty d --config FILE`) stores everything relational in Postgres. SQLite stays the dev/test
-backend (`rusty d --dev`) and the conformance reference. Message bodies are content-addressed files on a volume
-(`blob_dir`), never database rows.
+Status: Postgres is the only backend, for production (`rusty d --config FILE`), for the dev profile
+(`rusty d --dev`, which names its server in `RUSTY_DEV_PG_URL`, see [local-run.md](local-run.md)) and for the tests. Message
+bodies are content-addressed files on a volume (`blob_dir`), never database rows.
 
 ## 1. Configuration (`[store]`)
 
 ```toml
 [store]
-backend = "postgres"                       # or "sqlite" (then database_path is used)
-url = "postgres://rusty_app@db.internal:5432/rusty"   # NO password, NO query parameters
+url = "postgres://rusty_app@db.internal:5432/rusty"   # required; NO password, NO query parameters
 password_file = "/run/secrets/rusty_pg_password"      # 0600, owned by the service account
 migrator_user = "rusty_migrator"                      # used by `rustyctl db migrate` only
 migrator_password_file = "/run/secrets/rusty_pg_migrator_password"
@@ -114,8 +113,8 @@ as the largest acceptable value, a role with no timeout (0) or a longer one make
   they wait for the row lock. A fixed array of 4096 FIFO semaphores indexed by a hash of the mailbox id (bounded memory
   by construction, nothing to reap; two mailboxes that share a stripe only serialise against each other; a writer
   holds one permit, so no deadlock). Cancel-safe; the wait is bounded by `lock_timeout_ms`, then `Busy`.
-* `Error::Busy` end to end (tests `rusty-smtp/tests/busy_e2e.rs`, `rusty-imap/tests/busy_e2e.rs`, both backends): a
-  locked database and, on Postgres, an exhausted pool answer SMTP `451 4.3.0` / IMAP `NO [UNAVAILABLE]` within a bound,
+* `Error::Busy` end to end (tests `rusty-smtp/tests/busy_e2e.rs`, `rusty-imap/tests/busy_e2e.rs`): a
+  locked database and an exhausted pool answer SMTP `451 4.3.0` / IMAP `NO [UNAVAILABLE]` within a bound,
   nothing is stored, and the same message is accepted once the database is free (idempotent `DeliveryId`).
 
 ## 6. Migrations
@@ -131,22 +130,22 @@ as the largest acceptable value, a role with no timeout (0) or a longer one make
 
 ### Migration numbering (the one table)
 
-SQLite and Postgres migrations share version numbers from `0010` on. Postgres `0001_init` is the consolidated base of
-SQLite `0001..0009`; Postgres numbers `0002..0009` are forbidden (a file there would be applied after an already
-applied `0010` on existing databases). CI (`scripts/check-pg-migration-gap.sh`) fails if a SQLite migration `>= 0010`
-has no Postgres twin of the same number (or the reverse) or if the gap is filled.
+The migrations are in `crates/rusty-store/migrations`. `0001_init` is the consolidated base schema (it replaced the
+numbers `0001..0009` of the former SQLite history, which no longer exists); numbers `0002..0009` are forbidden (a file
+there would be applied after an already applied `0010` on existing databases). CI (`scripts/check-pg-migration-gap.sh`)
+fails if the gap is filled. Applied migrations are frozen once released.
 
-| SQLite | Postgres | Content |
-|---|---|---|
-| 0001 .. 0009 | 0001 | base schema (domains, accounts, mailboxes, folders, messages, change log, blobs, deliveries, jobs, capabilities, list member seq, blob index) |
-| 0010 | 0010 | domain status |
-| 0011 | 0011 | tenant rules |
-| 0012 | 0012 | folder subscribed |
-| 0013 | 0013 | jobs enqueue (U5) |
-| 0014, 0015 | 0014, 0015 | reserved: DNS state tables (U10) |
-| 0016 | 0016 | address registry `SECURITY DEFINER` (Postgres) / empty (SQLite: no roles; keeps the numbers equal) |
+| Number | Content |
+|---|---|
+| 0001 | base schema (domains, accounts, mailboxes, folders, messages, change log, blobs, deliveries, jobs, capabilities, list member seq, blob index) |
+| 0010 | domain status |
+| 0011 | tenant rules |
+| 0012 | folder subscribed |
+| 0013 | jobs enqueue (U5) |
+| 0014, 0015 | DNS state tables (U10) |
+| 0016 | address registry `SECURITY DEFINER` |
 
-New migrations take the next number on both sides. SQLite migrations are frozen once released.
+A new migration takes the next number.
 
 ## 7. Operations
 

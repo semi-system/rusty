@@ -57,7 +57,6 @@ const HEADER_SEEDS: [&[u8]; 3] = [
     include_bytes!("../../../fuzz/seeds/fuzz_smtp_headers/headers_only"),
 ];
 
-// backend-neutral: pure codecs over bytes, no database
 #[test]
 fn seeds_pass() {
     COMMAND_SEEDS.iter().for_each(|s| check_command_stream(s));
@@ -87,7 +86,6 @@ fn mutate(seed: &[u8], pos: usize, byte: u8, cut: usize) -> Vec<u8> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(1500))]
 
-    // backend-neutral: pure codecs over bytes, no database
     #[test]
     fn arbitrary_bytes_never_panic(data in proptest::collection::vec(any::<u8>(), 0..600)) {
         check_command_stream(&data);
@@ -100,13 +98,11 @@ proptest! {
         check_queue_payload(&data);
     }
 
-    // backend-neutral: key-record parsing over bytes, no database
     #[test]
     fn hostile_key_records_never_panic_or_verify(data in proptest::collection::vec(any::<u8>(), 0..400)) {
         check_dkim_key_record(&data);
     }
 
-    // backend-neutral: pure codecs over bytes, no database
     #[test]
     fn mutated_seeds_never_panic(which in 0usize..4, pos in 0usize..300, byte in any::<u8>(), cut in 0usize..300) {
         check_command_stream(&mutate(COMMAND_SEEDS.get(which % 3).copied().unwrap_or_default(), pos, byte, cut));

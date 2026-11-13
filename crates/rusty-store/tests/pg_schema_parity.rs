@@ -123,7 +123,6 @@ fn snapshot_diff_summary(old: &str, new: &str) -> String {
     s
 }
 
-// backend-neutral: unit test of the snapshot diff summary, no database
 #[test]
 fn snapshot_regeneration_prints_a_diff_summary() {
     let s = snapshot_diff_summary("A
@@ -141,7 +140,6 @@ E
 ").contains("(no change)"));
 }
 
-// backend-neutral: compares or snapshots the Postgres catalog  (Postgres is the only backend)
 #[tokio::test]
 async fn pg_catalog_matches_snapshot() {
     let Some(admin_url) = pg_admin_url() else {
@@ -171,7 +169,6 @@ async fn pg_catalog_matches_snapshot() {
 }
 
 
-// backend-neutral: compares or snapshots the Postgres catalog  (Postgres is the only backend)
 #[tokio::test]
 async fn rs_now_uses_the_statement_clock() {
     let Some(admin_url) = pg_admin_url() else {

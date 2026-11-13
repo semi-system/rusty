@@ -19,7 +19,6 @@ fn os(args: &[&str]) -> Vec<OsString> {
     args.iter().map(OsString::from).collect()
 }
 
-// backend-neutral: argument parsing only
 #[test]
 fn multi_call_dispatch_by_argv0_and_subcommand() {
     assert!(matches!(parse_args(&os(&["rusty", "d", "--dev"])), Ok(Invocation::Daemon(_))));
@@ -31,7 +30,6 @@ fn multi_call_dispatch_by_argv0_and_subcommand() {
     assert!(parse_args(&os(&["rusty", "bogus"])).is_err());
 }
 
-// backend-neutral: argument parsing only
 #[test]
 fn daemon_arguments() {
     let d = |a: &[&str]| match parse_args(&os(a)) {
@@ -118,7 +116,6 @@ fn wait_exit(child: &mut Child, within: Duration) -> std::process::ExitStatus {
     }
 }
 
-// backend-neutral: process lifecycle of the binary over one Postgres database
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rusty_d_dev_starts_serves_and_exits_zero_on_sigterm() {
     let tmp = private_tmp();
@@ -150,7 +147,6 @@ async fn rusty_d_dev_starts_serves_and_exits_zero_on_sigterm() {
     assert!(line.starts_with("421 "), "{line}");
 }
 
-// backend-neutral: process lifecycle of the binary over one Postgres database
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sigint_also_ends_with_exit_zero_and_logs_json_when_asked() {
     let tmp = private_tmp();
@@ -171,7 +167,6 @@ async fn sigint_also_ends_with_exit_zero_and_logs_json_when_asked() {
     assert!(err.contains("DEV ONLY"), "the dev certificate must be announced loudly: {err}");
 }
 
-// backend-neutral: process start-up refusal
 #[test]
 fn rusty_d_without_a_config_or_with_a_broken_one_exits_nonzero_without_listening() {
     let tmp = private_tmp();
@@ -189,7 +184,6 @@ fn rusty_d_without_a_config_or_with_a_broken_one_exits_nonzero_without_listening
     assert_eq!(wait_exit(&mut c, Duration::from_secs(10)).code(), Some(2));
 }
 
-// backend-neutral: argv[0] dispatch of the binary
 #[test]
 fn the_multi_call_names_dispatch_by_argv0() {
     let tmp = private_tmp();
@@ -252,7 +246,6 @@ fn leaf_via_tls(port: u16) -> Vec<u8> {
     conn.peer_certificates().unwrap()[0].as_ref().to_vec()
 }
 
-// backend-neutral: certificate reload of the production profile over one Postgres database
 #[test]
 fn sighup_reloads_the_certificate_and_a_bad_reload_keeps_the_old_one() {
     use std::os::unix::fs::PermissionsExt;
@@ -333,7 +326,6 @@ fn sighup_reloads_the_certificate_and_a_bad_reload_keeps_the_old_one() {
     assert!(!err.contains("garbage"), "key material must not be logged");
 }
 
-// backend-neutral: argument parsing only
 #[test]
 fn healthcheck_and_version_arguments() {
     match parse_args(&os(&["rusty", "healthcheck", "--config", "/etc/rusty/rusty.toml"])) {
@@ -348,7 +340,6 @@ fn healthcheck_and_version_arguments() {
     assert!(matches!(parse_args(&os(&["rusty", "-V"])), Ok(Invocation::Version)));
 }
 
-// backend-neutral: process behaviour of the probe against a daemon over one Postgres database
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn healthcheck_is_ok_against_a_running_daemon_and_fails_when_nothing_listens() {
     let tmp = private_tmp();
@@ -378,7 +369,6 @@ async fn healthcheck_is_ok_against_a_running_daemon_and_fails_when_nothing_liste
     assert_eq!(hc(&off_s).status.code(), Some(1));
 }
 
-// backend-neutral: the version line
 #[test]
 fn version_prints_the_package_version() {
     let out = Command::new(BIN).arg("--version").output().unwrap();

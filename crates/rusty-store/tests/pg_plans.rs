@@ -25,7 +25,6 @@ async fn plan_without_seqscan(conn: &mut PgConnection, sql: &str) -> String {
 /// exactly this probe for every `blobs` row GC deletes (`ri_triggers.c`, RESTRICT/NO ACTION
 /// check). Without an index on `messages(blob_hash)` it is a sequential scan of `messages`:
 /// 5.5 s per `GC_BATCH` of 1000 rows at 100k messages, versus 17 ms with the index.
-// backend-neutral: Postgres EXPLAIN plan shapes and index use; SQLite plans are not a contract of this crate
 #[tokio::test]
 async fn gc_delete_foreign_key_probe_uses_the_blob_hash_index() {
     let Some(admin) = pg_admin_url() else { return };
@@ -83,7 +82,6 @@ async fn seed_jobs(conn: &mut PgConnection) {
 /// The statements are the production texts (`claim_statements_for_test`), explained as a
 /// generic plan (parameters unknown, which is the worst case for the planner) and with
 /// concrete values, on 202,000 rows with the planner left alone.
-// backend-neutral: Postgres EXPLAIN plan shapes and index use; SQLite plans are not a contract of this crate
 #[tokio::test]
 async fn claim_probes_use_index_scans_at_scale() {
     let Some(admin) = pg_admin_url() else { return };
@@ -215,7 +213,6 @@ fn production_source() -> String {
     out
 }
 
-// backend-neutral: reads sources only, no database
 #[test]
 fn statement_text_is_production_text() {
     let src = production_source();
@@ -232,7 +229,6 @@ fn statement_text_is_production_text() {
     }
 }
 
-// backend-neutral: Postgres EXPLAIN plan shapes and index use; SQLite plans are not a contract of this crate
 #[tokio::test]
 async fn message_indexes_serve_the_purge_and_the_thread_lookup() {
     let Some(admin) = pg_admin_url() else { return };
@@ -273,7 +269,6 @@ async fn message_indexes_serve_the_purge_and_the_thread_lookup() {
     db.cleanup().await;
 }
 
-// backend-neutral: Postgres EXPLAIN plan shapes and index use; SQLite plans are not a contract of this crate
 #[tokio::test]
 async fn delivery_indexes_serve_the_purge_and_the_cascade() {
     let Some(admin) = pg_admin_url() else { return };
@@ -301,7 +296,6 @@ async fn delivery_indexes_serve_the_purge_and_the_cascade() {
     db.cleanup().await;
 }
 
-// backend-neutral: Postgres EXPLAIN plan shapes and index use; SQLite plans are not a contract of this crate
 #[tokio::test]
 async fn capability_indexes_serve_revoke_purge_and_the_account_cascade() {
     let Some(admin) = pg_admin_url() else { return };
@@ -335,7 +329,6 @@ async fn capability_indexes_serve_revoke_purge_and_the_account_cascade() {
     db.cleanup().await;
 }
 
-// backend-neutral: Postgres EXPLAIN plan shapes and index use; SQLite plans are not a contract of this crate
 #[tokio::test]
 async fn job_domain_index_serves_the_enqueue_cap_count() {
     let Some(admin) = pg_admin_url() else { return };

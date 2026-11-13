@@ -9,7 +9,6 @@ fn rendered(r: &Reply) -> String {
     String::from_utf8(r.render()).unwrap()
 }
 
-// backend-neutral: pure rendering, no database
 #[test]
 fn single_and_multi_line_rendering() {
     assert_eq!(rendered(&Reply::new(250, "2.0.0", "Ok")), "250 2.0.0 Ok\r\n");
@@ -18,7 +17,6 @@ fn single_and_multi_line_rendering() {
     assert_eq!(rendered(&multi), "250-mx.example.net\r\n250-PIPELINING\r\n250 8BITMIME\r\n");
 }
 
-// backend-neutral: pure rendering, no database
 #[test]
 fn text_cannot_break_the_framing() {
     let r = Reply::new(550, "5.1.1", "bad\r\n250 forged");
@@ -27,7 +25,6 @@ fn text_cannot_break_the_framing() {
     assert!(out.starts_with("550 5.1.1 "));
 }
 
-// backend-neutral: pure mapping table, no database
 #[test]
 fn the_mapping_table_for_recipients() {
     let cases: Vec<(Error, u16, &str)> = vec![
@@ -44,7 +41,6 @@ fn the_mapping_table_for_recipients() {
     }
 }
 
-// backend-neutral: pure mapping table, no database
 #[test]
 fn the_mapping_table_for_data() {
     let cases: Vec<(Error, u16, &str)> = vec![
@@ -61,7 +57,6 @@ fn the_mapping_table_for_data() {
     }
 }
 
-// backend-neutral: pure mapping table, no database
 #[test]
 fn error_text_never_leaks_internals() {
     let leaky = Error::storage_with("sqlite: no such table accounts (/var/lib/rusty/meta.sqlite)", std::io::Error::other("secret path"));
@@ -73,7 +68,6 @@ fn error_text_never_leaks_internals() {
     }
 }
 
-// backend-neutral: pure mapping rule, no database
 #[test]
 fn delivery_outcomes_are_all_or_451_unless_every_failure_is_permanent() {
     let ok = || -> Result<(), Error> { Ok(()) };

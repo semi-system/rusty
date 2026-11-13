@@ -1,5 +1,5 @@
-//! Backend harness for the directory suites: every test body runs against SQLite and, when
-//! `RUSTY_TEST_PG_URL` is set and the `postgres` feature is on, against Postgres. Raw SQL goes
+//! Backend harness for the directory suites: every test body runs against a fresh
+//! Postgres database (`RUSTY_TEST_PG_URL`). Raw SQL goes
 //! through `rusty_store::fixtures` (feature `test-fixtures`, dev-dependency only); no test holds
 //! a pool or a database driver.
 #![allow(dead_code)]

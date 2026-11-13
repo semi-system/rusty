@@ -43,7 +43,6 @@ async fn dkim(msg: &[u8]) -> String {
         .dkim
 }
 
-// backend-neutral: pure verification over bytes and a pre-seeded resolver, no database
 #[tokio::test]
 async fn an_openssl_made_rsa_sha256_signature_verifies_and_breaks_on_any_change() {
     assert_eq!(dkim(&signed("rsa-sha256", "test", RSA_SIG, BODY)).await, "pass");
@@ -56,7 +55,6 @@ async fn an_openssl_made_rsa_sha256_signature_verifies_and_breaks_on_any_change(
     assert_ne!(dkim(&signed("rsa-sha256", "test", &wrong_sig, BODY)).await, "pass", "signature change");
 }
 
-// backend-neutral: pure verification over bytes and a pre-seeded resolver, no database
 #[tokio::test]
 async fn an_openssl_made_ed25519_sha256_signature_verifies_and_breaks_on_any_change() {
     assert_eq!(dkim(&signed("ed25519-sha256", "edtest", ED_SIG, BODY)).await, "pass");
@@ -91,7 +89,6 @@ async fn rfc8463(signature: &str, message: &str) -> String {
         .dkim
 }
 
-// backend-neutral: pure verification over bytes and a pre-seeded resolver, no database
 #[tokio::test]
 async fn the_rfc8463_example_signatures_verify_and_break_on_any_change() {
     for sig in [RFC8463_ED_SIG, RFC8463_RSA_SIG] {

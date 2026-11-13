@@ -6,8 +6,8 @@
 
 - [ ] `bash scripts/ci.sh` is green (locally, on the build server or in WSL), or CI is green and the reason a local run was skipped is stated here
 - [ ] Tests were written first and failed for the stated reason before the change; security and concurrency tests were shown to catch a mutation
-- [ ] Every database behaviour test runs on both backends (SQLite and Postgres) or carries a reasoned backend-neutral marker (`scripts/check-parametrised.sh`)
-- [ ] A new SQLite migration has its Postgres twin with the same number and regenerated snapshots; no Postgres number 0002..0009 (`scripts/check-pg-migration-gap.sh`)
+- [ ] Database behaviour is tested on Postgres (the only backend; `RUSTY_TEST_PG_URL`, see the README)
+- [ ] A new migration takes the next number and the catalog snapshot is regenerated (`RUSTY_UPDATE_PG_SNAPSHOT=1`); no number 0002..0009 (`scripts/check-pg-migration-gap.sh`); `fuzz/Cargo.lock` is refreshed when a dependency or feature changes
 - [ ] Authentication is accepted only over TLS; no change widens what an unauthenticated peer can reach
 - [ ] No secrets, passwords, tokens, key material or mail content in logs, `Debug`, errors, fixtures or this PR
 - [ ] Parsers and protocol code keep their limits, never panic on input and fail closed

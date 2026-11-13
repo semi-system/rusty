@@ -1,5 +1,5 @@
 //! Foundation acceptance (spec section 8): 10,000 messages through the whole stack on
-//! file-backed SQLite and Postgres plus the filesystem blob store. Lives here because rusty-store cannot
+//! Postgres plus the filesystem blob store. Lives here because rusty-store cannot
 //! depend on rusty-directory. Run with `-- --nocapture` to see the elapsed time.
 
 use std::collections::{HashMap, HashSet};

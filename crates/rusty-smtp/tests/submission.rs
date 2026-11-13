@@ -509,7 +509,6 @@ async fn a_hosted_but_disabled_domain_is_not_queued_as_remote_and_lists_with_ext
     .await;
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[tokio::test]
 async fn the_atomic_memory_limiter_does_not_overshoot_under_parallel_attempts() {
     use rusty_smtp::limits::{MemorySubmissionLimiter, SubmissionLimiter};

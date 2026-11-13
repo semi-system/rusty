@@ -5,9 +5,9 @@
 //! by a retry), paging limits and result shaping. Every method is one repository call, i.e.
 //! one transaction. See `repo::mailbox` for the repository contract.
 //!
-//! Invariants (enforced by the repositories, tested on both backends):
-//! - Locking rule: every write transaction takes the mailbox row lock FIRST (SQLite `BEGIN
-//!   IMMEDIATE` plus reading the row, Postgres `SELECT .. FOR UPDATE`; a missing row is
+//! Invariants (enforced by the repositories):
+//! - Locking rule: every write transaction takes the mailbox row lock FIRST (`SELECT .. FOR UPDATE`;
+//!   a missing row is
 //!   `NotFound`), then folders, then messages; `blobs` rows are locked in ascending hash order
 //!   in every path that changes a refcount.
 //! - The counters `mailboxes.next_msg_id`, `mailboxes.next_change_seq`,
@@ -787,8 +787,8 @@ impl Mailbox {
     /// Hard-delete the soft-deleted messages of THIS mailbox with `deleted_at < older_than`
     /// (unix seconds), one bounded transaction at a time ([`PURGE_BATCH`] messages), until none
     /// are left. A message that still has a `deliveries` row is kept (see
-    /// [`purge_deleted`](crate::purge_deleted), which does the same for every mailbox of a
-    /// SQLite store). Returns how many were removed.
+    /// [`Gc::purge_deleted`](crate::Gc::purge_deleted), which does the same for every mailbox).
+    /// Returns how many were removed.
     pub async fn purge_deleted(&self, older_than: i64) -> Result<u64> {
         let mut total = 0u64;
         loop {

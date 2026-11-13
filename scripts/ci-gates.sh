@@ -18,8 +18,6 @@ case "${1:-}" in
     bash scripts/check-test-fixtures.sh static
     bash scripts/tests/mutation-hook-gate.sh
     bash scripts/check-mutation-hook.sh static
-    bash scripts/tests/parametrised-gate.sh
-    bash scripts/check-parametrised.sh
     bash scripts/tests/pg-migration-gap.sh
     bash scripts/check-pg-migration-gap.sh
     bash scripts/tests/wrapped-libs-gate.sh

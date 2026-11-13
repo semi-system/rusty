@@ -707,7 +707,6 @@ async fn revoking_an_expired_token_is_false() {
     .await;
 }
 
-// backend-neutral: the held lock is the SQLite writer lock / a Postgres table lock; asserted per backend
 #[tokio::test]
 async fn malformed_revoke_takes_no_write_lock() {
     use std::time::Duration;

@@ -38,7 +38,6 @@ fn yes(q: &str, f: &Facts<'_>, raw: &[u8]) -> bool {
     run(q, f, Some(raw)) == Tri::Yes
 }
 
-// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn flags_keywords_sets_and_sizes_decide_without_content() {
     let seen = facts(Flags::SEEN | Flags::FLAGGED);
@@ -63,7 +62,6 @@ fn flags_keywords_sets_and_sizes_decide_without_content() {
     assert_eq!(run("KEYWORD other", &with_kw, None), Tri::No);
 }
 
-// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn internal_dates_compare_whole_days_in_utc() {
     let f = facts(Flags::empty()); // 2026-10-26 (UTC)
@@ -75,7 +73,6 @@ fn internal_dates_compare_whole_days_in_utc() {
     assert_eq!(run("ON 25-Oct-2026", &f, None), Tri::No);
 }
 
-// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn boolean_logic_is_three_valued() {
     let f = facts(Flags::SEEN);
@@ -97,7 +94,6 @@ fn needs(q: &str) -> bool {
     needs_content(&criteria)
 }
 
-// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn header_keys_match_decoded_values_case_insensitively() {
     let f = facts(Flags::empty());
@@ -118,7 +114,6 @@ fn header_keys_match_decoded_values_case_insensitively() {
     assert!(yes("SENTBEFORE 07-Nov-2026", &f, MSG));
 }
 
-// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn body_and_text_search_decode_the_transfer_encoding() {
     let f = facts(Flags::empty());
@@ -131,7 +126,6 @@ fn body_and_text_search_decode_the_transfer_encoding() {
     assert!(!yes("BODY \"U2VjcmV0\"", &f, B64), "the encoded form is not searched");
 }
 
-// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn hostile_messages_do_not_panic() {
     let f = facts(Flags::empty());
@@ -140,7 +134,6 @@ fn hostile_messages_do_not_panic() {
     }
 }
 
-// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn an_absurd_date_header_year_is_ignored_not_an_overflow() {
     // Found by fuzz_imap_search_eval: a ten-digit year overflowed the day arithmetic.

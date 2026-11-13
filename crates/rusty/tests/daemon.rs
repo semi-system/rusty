@@ -38,7 +38,6 @@ async fn read_line(s: &mut (impl AsyncReadExt + Unpin)) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-// backend-neutral: the composition root over one Postgres database; the start-up rules are not about the schema
 #[tokio::test]
 async fn dev_start_opens_every_listener_creates_the_data_files_and_serves_banners() {
     let tmp = private_tmp();
@@ -64,7 +63,6 @@ async fn dev_start_opens_every_listener_creates_the_data_files_and_serves_banner
     run.wait().await.unwrap();
 }
 
-// backend-neutral: start-up refusal happens before any store is opened
 #[tokio::test]
 async fn production_start_without_hostname_or_tls_is_refused_and_binds_nothing() {
     let tmp = private_tmp();
@@ -91,7 +89,6 @@ async fn production_start_without_hostname_or_tls_is_refused_and_binds_nothing()
     assert!(!data.exists(), "a refused start must not create the data dir");
 }
 
-// backend-neutral: only port 25 is enabled, no store feature under test differs by backend
 #[tokio::test]
 async fn port_25_alone_may_run_without_a_certificate() {
     let tmp = private_tmp();
@@ -116,7 +113,6 @@ async fn port_25_alone_may_run_without_a_certificate() {
     run.wait().await.unwrap();
 }
 
-// backend-neutral: file-system preconditions of the dev profile only
 #[tokio::test]
 async fn dev_profile_refuses_an_existing_data_dir_that_others_can_enter() {
     use std::os::unix::fs::PermissionsExt;
@@ -138,7 +134,6 @@ async fn dev_profile_refuses_an_existing_data_dir_that_others_can_enter() {
     assert!(start(pg.config(&link), Profile::Dev, CancellationToken::new()).await.is_err());
 }
 
-// backend-neutral: listener binding does not involve the store backend
 #[tokio::test]
 async fn a_port_clash_fails_the_start_and_leaves_the_first_instance_running() {
     let tmp = private_tmp();
@@ -155,7 +150,6 @@ async fn a_port_clash_fails_the_start_and_leaves_the_first_instance_running() {
     a.wait().await.unwrap();
 }
 
-// backend-neutral: the shutdown path of the composition root; the pool close itself is covered in rusty-store
 #[tokio::test]
 async fn shutdown_drains_idle_sessions_and_closes_the_listeners() {
     let tmp = private_tmp();
@@ -189,7 +183,6 @@ async fn shutdown_drains_idle_sessions_and_closes_the_listeners() {
     pg.open_store().await.close().await.unwrap();
 }
 
-// backend-neutral: the IMAP service in the daemon answers a command; no account is involved
 #[tokio::test]
 async fn the_imap_listener_serves_real_imap() {
     let tmp = private_tmp();
@@ -208,7 +201,6 @@ async fn the_imap_listener_serves_real_imap() {
     run.wait().await.unwrap();
 }
 
-// backend-neutral: the plan is pure configuration
 #[test]
 fn the_listener_plan_follows_the_configuration() {
     let mut c = StartupConfig::dev(std::path::Path::new("/tmp/x"));
@@ -231,7 +223,6 @@ fn the_listener_plan_follows_the_configuration() {
     assert_eq!(rusty_svc::listener_plan(&c).len(), 3);
 }
 
-// backend-neutral: the helpers only rewrite listener addresses
 #[test]
 fn port_offset_and_bind_rewrite_every_dev_listener() {
     let c = StartupConfig::dev(std::path::Path::new("/tmp/x"));
@@ -315,7 +306,6 @@ async fn seed_alice(pg: &PgDev) {
     store.close().await.unwrap();
 }
 
-// backend-neutral: the dev profile composition root; the refusal is a session rule
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn remote_recipients_are_accepted_only_while_the_outbound_worker_is_enabled() {
     for enabled in [true, false] {
@@ -339,7 +329,6 @@ async fn remote_recipients_are_accepted_only_while_the_outbound_worker_is_enable
     }
 }
 
-// backend-neutral: the dev profile composition root and its data directory
 #[tokio::test]
 async fn the_dev_certificate_is_kept_in_the_data_dir_across_restarts() {
     let tmp = private_tmp();
