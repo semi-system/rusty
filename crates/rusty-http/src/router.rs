@@ -59,11 +59,19 @@ pub(crate) enum Routed {
 #[derive(Default)]
 pub struct Router {
     routes: Vec<Route>,
+    fallback: Option<Arc<dyn Handler>>,
 }
 
 impl Router {
     pub fn new() -> Router {
         Router::default()
+    }
+
+    /// The handler for a `GET` or `HEAD` whose (checked) path matches no route at all: the static files and the
+    /// single-page fallback. A path that does match a route with another method is still `405`, never this.
+    pub fn fallback(mut self, handler: Arc<dyn Handler>) -> Router {
+        self.fallback = Some(handler);
+        self
     }
 
     /// Add a route. `pattern` is `/literal/{param}/...`: no trailing slash, no empty segment. A bad pattern is a
@@ -119,7 +127,10 @@ impl Router {
             }
         }
         if allow.is_empty() {
-            return Routed::NotFound;
+            return match (&self.fallback, lookup) {
+                (Some(h), Method::Get) => Routed::Found { handler: h.clone(), params: Params::default() },
+                _ => Routed::NotFound,
+            };
         }
         if allow.contains(&Method::Get) {
             allow.push(Method::Head);
