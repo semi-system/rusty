@@ -75,6 +75,8 @@ a dedicated Ubuntu build server with `scripts/remote-cargo.sh` / `scripts/ci-run
 - `rusty-smtp`, `rusty-imap`: protocol servers (codec, sans-I/O session, driver; third-party
   parsers only inside an adapter module).
 - `rusty-ctl`: the `rustyctl` command layer.
+- `rusty-http`: the HTTP server for the admin web and the webmail: our own request, response, router and limits over an
+  adapter around the third-party HTTP library, plugged into the same listener loop as the mail services.
 - `rusty`: the composition root and multi-call binary (`rusty d`, `rusty ctl`).
 - `tools/`: acceptance scripts, the edge (HAProxy) behaviour suite and its fake backends,
   and the compose hardening checker.
