@@ -1318,7 +1318,7 @@ dependencies = [
  "hashify",
  "hickory-resolver",
  "idna",
- "mail-parser 1.0.1",
+ "mail-parser",
  "memchr",
  "ml-dsa",
  "rand 0.10.3",
@@ -1330,15 +1330,6 @@ dependencies = [
  "sha2 0.11.1",
  "simdutf8",
  "similar",
-]
-
-[[package]]
-name = "mail-parser"
-version = "0.9.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93c3b9e5d8b17faf573330bbc43b37d6e918c0a3bf8a88e7d0a220ebc84af9fc"
-dependencies = [
- "encoding_rs",
 ]
 
 [[package]]
@@ -2092,7 +2083,7 @@ dependencies = [
 name = "rusty-mime"
 version = "0.1.0"
 dependencies = [
- "mail-parser 0.9.4",
+ "mail-parser",
  "proptest",
  "rusty-core",
 ]
