@@ -71,7 +71,6 @@ fn files_in(dir: &std::path::Path) -> usize {
     std::fs::read_dir(dir).unwrap().count()
 }
 
-// backend-neutral: DKIM key files over bytes, no database
 #[test]
 fn an_imported_rsa_key_is_private_never_overwritten_and_publishes_its_own_public_key() {
     let d = tempfile::tempdir().unwrap();
@@ -101,7 +100,6 @@ fn an_imported_rsa_key_is_private_never_overwritten_and_publishes_its_own_public
     assert_eq!(files_in(d.path()), before);
 }
 
-// backend-neutral: DKIM key files over bytes, no database
 #[test]
 fn weak_unsupported_encrypted_or_garbage_keys_are_refused_and_nothing_is_written() {
     let d = tempfile::tempdir().unwrap();
@@ -122,7 +120,6 @@ fn weak_unsupported_encrypted_or_garbage_keys_are_refused_and_nothing_is_written
     assert_eq!(files_in(d.path()), 0, "a refused key leaves no file behind");
 }
 
-// backend-neutral: DKIM key files over bytes, no database
 #[test]
 fn generated_keys_are_ed25519_private_unique_and_never_overwritten() {
     let d = tempfile::tempdir().unwrap();
@@ -137,7 +134,6 @@ fn generated_keys_are_ed25519_private_unique_and_never_overwritten() {
     assert_ne!(k.public_key_b64, k2.public_key_b64, "two keys are never the same");
 }
 
-// backend-neutral: DKIM key files over bytes, no database
 #[test]
 fn the_rfc8463_example_key_imports_to_its_published_public_key() {
     let d = tempfile::tempdir().unwrap();
@@ -148,7 +144,6 @@ fn the_rfc8463_example_key_imports_to_its_published_public_key() {
     assert_eq!(k.txt_value(), format!("v=DKIM1; k=ed25519; p={ED_RFC8463_PUBLIC}"));
 }
 
-// backend-neutral: DKIM crypto over bytes and a pre-seeded resolver, no database
 #[tokio::test]
 async fn a_signature_verifies_and_is_relaxed_rsa_with_oversigned_headers() {
     let d = tempfile::tempdir().unwrap();
@@ -172,7 +167,6 @@ async fn a_signature_verifies_and_is_relaxed_rsa_with_oversigned_headers() {
     assert!(!r.header_value.contains('\n'));
 }
 
-// backend-neutral: DKIM crypto over bytes and a pre-seeded resolver, no database
 #[tokio::test]
 async fn tampering_with_the_body_or_adding_a_from_header_breaks_the_signature() {
     let d = tempfile::tempdir().unwrap();
@@ -194,7 +188,6 @@ async fn tampering_with_the_body_or_adding_a_from_header_breaks_the_signature() 
     assert_eq!(r.dkim, "fail", "{r:?}");
 }
 
-// backend-neutral: DKIM crypto over bytes and a pre-seeded resolver, no database
 #[tokio::test]
 async fn spf_fails_from_a_foreign_address_and_there_is_no_dkim_without_a_signature() {
     let stack = DnsStack::with_static(dns_with(&[]), "mx.local.test").unwrap();
@@ -203,7 +196,6 @@ async fn spf_fails_from_a_foreign_address_and_there_is_no_dkim_without_a_signatu
     assert_eq!(r.dmarc, "fail");
 }
 
-// backend-neutral: DKIM crypto over bytes and a pre-seeded resolver, no database
 #[tokio::test]
 async fn the_ed25519_second_signature_is_added_and_verifies() {
     let d = tempfile::tempdir().unwrap();
@@ -225,7 +217,6 @@ async fn the_ed25519_second_signature_is_added_and_verifies() {
     assert_eq!(r.dkim, "pass", "{r:?}");
 }
 
-// backend-neutral: DKIM crypto over bytes and a pre-seeded resolver, no database
 #[tokio::test]
 async fn an_ed25519_key_alone_signs_and_verifies() {
     let d = tempfile::tempdir().unwrap();
@@ -238,7 +229,6 @@ async fn an_ed25519_key_alone_signs_and_verifies() {
     assert_eq!(check(&stack, "192.0.2.1", &signed(sig)).await.dkim, "pass");
 }
 
-// backend-neutral: DKIM crypto over bytes and a pre-seeded resolver, no database
 #[test]
 fn no_key_means_no_signature_and_a_loose_key_file_stops_signing() {
     let d = tempfile::tempdir().unwrap();
@@ -251,7 +241,6 @@ fn no_key_means_no_signature_and_a_loose_key_file_stops_signing() {
     assert!(keyring(&OutboundConfig::default(), Arc::new(FileSecretSource::new())).is_none(), "signing is off without dkim_dir");
 }
 
-// backend-neutral: DKIM crypto over bytes and a pre-seeded resolver, no database
 #[test]
 fn the_dns_generator_record_matches_the_generated_key() {
     // The record `rustyctl dkim generate` prints is the one the core generator publishes.
@@ -269,7 +258,6 @@ fn the_dns_generator_record_matches_the_generated_key() {
     assert!(recs.iter().any(|r| r.value == k.txt_value()), "{recs:?}");
 }
 
-// backend-neutral: DKIM crypto over bytes and a pre-seeded resolver, no database
 #[tokio::test]
 async fn a_message_without_a_trailing_blank_is_still_checked() {
     let mut dns = StaticDns::default();

@@ -12,7 +12,6 @@ use rusty_smtp::outbound::smtp_reply::{parse_reply, Class, ReplyError};
 use rusty_smtp::resolve::{plan_for, MxAnswer, MxHost, Plan};
 use serde_json::json;
 
-// backend-neutral: pure functions over bytes and values, no database
 
 #[test]
 fn replies_parse_single_multi_line_and_enhanced_codes() {
@@ -30,7 +29,6 @@ fn replies_parse_single_multi_line_and_enhanced_codes() {
     assert_eq!(parse_reply(b""), Ok(None));
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn hostile_replies_are_refused_before_anything_grows() {
     assert_eq!(parse_reply(b"2x0 hi\r\n"), Err(ReplyError::Malformed));
@@ -50,7 +48,6 @@ fn hostile_replies_are_refused_before_anything_grows() {
     assert!(matches!(parse_reply(&long), Err(ReplyError::TooLong)), "reply total is bounded");
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn classification_follows_the_first_digit_and_never_bounces_for_a_broken_server() {
     let reply = |s: &str| parse_reply(s.as_bytes()).unwrap().unwrap().0;
@@ -63,7 +60,6 @@ fn classification_follows_the_first_digit_and_never_bounces_for_a_broken_server(
     assert!(matches!(classify(&reply("150 odd\r\n")), Outcome::Temporary { .. }));
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn the_backoff_schedule_is_5m_15m_30m_1h_2h_4h_then_every_4h_and_stops_at_the_deadline() {
     let cfg = OutboundConfig::default();
@@ -85,7 +81,6 @@ fn good_payload() -> serde_json::Value {
            "destination": "Remote.Test", "sender_domain": "example.net"})
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn the_payload_round_trips_and_keeps_the_try_counter() {
     let p = OutboundPayload::decode(&good_payload()).unwrap();
@@ -102,7 +97,6 @@ fn the_payload_round_trips_and_keeps_the_try_counter() {
     assert_eq!(OutboundPayload::decode(&null_sender).unwrap().envelope_from, "");
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn a_payload_that_could_inject_smtp_commands_is_refused() {
     for (field, value) in [
@@ -125,7 +119,6 @@ fn a_payload_that_could_inject_smtp_commands_is_refused() {
     assert!(OutboundPayload::decode(&json!({})).is_err());
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn data_is_dot_stuffed_crlf_normalised_and_terminated() {
     assert_eq!(encode_data(b"a\r\n.b\r\n..c\r\n"), b"a\r\n..b\r\n...c\r\n.\r\n");
@@ -135,7 +128,6 @@ fn data_is_dot_stuffed_crlf_normalised_and_terminated() {
     assert_eq!(encode_data(b".\r\n"), b"..\r\n.\r\n");
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn mx_planning_orders_by_preference_rotates_equals_and_honours_null_mx_and_implicit_mx() {
     let hosts = |v: &[(u16, &str)]| MxAnswer::Hosts(v.iter().map(|(p, h)| MxHost { preference: *p, host: (*h).into() }).collect());
@@ -155,7 +147,6 @@ fn mx_planning_orders_by_preference_rotates_equals_and_honours_null_mx_and_impli
     assert_eq!(order(plan_for("d.test", many, 0)).len(), 8, "bounded number of exchangers");
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn addresses_that_can_only_be_this_host_are_never_dialed() {
     for ip in ["127.0.0.1", "0.0.0.0", "169.254.1.1", "224.0.0.1", "255.255.255.255", "::1", "::", "fe80::1", "ff02::1", "::ffff:127.0.0.1"] {
@@ -170,7 +161,6 @@ fn failure(r: &str) -> Failure {
     Failure { recipient: r.into(), status: "5.1.1".into(), diagnostic: "550 5.1.1 <x>: User unknown".into(), remote_mta: Some("mx.remote.test".into()) }
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn the_bounce_is_an_rfc3464_report_with_the_original_headers_only() {
     let original = b"From: alice@example.net\r\nTo: x@remote.test\r\nSubject: secret plan\r\n\r\nTHE BODY MUST NOT BE RETURNED\r\n";
@@ -189,7 +179,6 @@ fn the_bounce_is_an_rfc3464_report_with_the_original_headers_only() {
     assert_eq!(text.as_bytes(), again.as_slice());
 }
 
-// backend-neutral: pure functions over bytes, no database
 #[test]
 fn remote_text_cannot_inject_headers_or_boundaries_into_a_bounce() {
     let mut f = failure("x@remote.test");
@@ -202,7 +191,17 @@ fn remote_text_cannot_inject_headers_or_boundaries_into_a_bounce() {
     assert_eq!(hdrs, b"Subject: a\r\nX: y\r\n", "boundary-looking lines are dropped from the copied headers");
 }
 
-// backend-neutral: pure functions over bytes, no database
+#[test]
+fn control_characters_cannot_hide_a_boundary_line_in_the_copied_headers() {
+    // The boundary check has to look at what is copied, not at the raw line: stripping the control
+    // character from `\x01--x` would otherwise leave a line that starts with `--` (found by the
+    // `arbitrary_bytes_never_panic` property test of the fuzz smoke run). A line that is empty once
+    // cleaned must not become a blank line either, which would end the copied header section early.
+    let original = b"Subject: a\r\n\x01--rusty-dsn-fake\r\n\x7f--also\r\n\x1b\r\nX: y\r\n\r\nbody";
+    let hdrs = dsn::header_section(original, 8192);
+    assert_eq!(hdrs, b"Subject: a\r\nX: y\r\n", "{:?}", String::from_utf8_lossy(&hdrs));
+}
+
 #[test]
 fn the_bounce_id_is_stable_per_job_and_failure_set() {
     let a = dsn::delivery_id("7", &[failure("a@r.test"), failure("b@r.test")]);

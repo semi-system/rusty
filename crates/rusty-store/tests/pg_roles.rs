@@ -42,7 +42,6 @@ async fn runtime_repo(db: &PgTestDb) -> PgRepo {
     PgRepo::new(PgStore::connect(&db.role_url("rusty_app")).await.unwrap())
 }
 
-// backend-neutral: roles and privileges exist only in Postgres; SQLite has no users
 #[tokio::test]
 async fn runtime_role_has_no_ddl_truncate_or_registry_write() {
     let Some(admin) = pg_admin_url() else { return };
@@ -72,7 +71,6 @@ async fn runtime_role_has_no_ddl_truncate_or_registry_write() {
     db.cleanup().await;
 }
 
-// backend-neutral: roles and privileges exist only in Postgres; SQLite has no users
 #[tokio::test]
 async fn runtime_role_still_maintains_the_registry_through_the_definer_triggers() {
     let Some(admin) = pg_admin_url() else { return };
@@ -108,7 +106,6 @@ async fn runtime_role_still_maintains_the_registry_through_the_definer_triggers(
     db.cleanup().await;
 }
 
-// backend-neutral: roles and privileges exist only in Postgres; SQLite has no users
 #[tokio::test]
 async fn address_registry_functions_are_security_definer_with_a_pinned_search_path() {
     let Some(admin) = pg_admin_url() else { return };
@@ -142,7 +139,6 @@ async fn address_registry_functions_are_security_definer_with_a_pinned_search_pa
     db.cleanup().await;
 }
 
-// backend-neutral: roles and privileges exist only in Postgres; SQLite has no users
 #[tokio::test]
 async fn read_only_role_cannot_write_or_read_password_hashes() {
     let Some(admin) = pg_admin_url() else { return };
@@ -167,7 +163,6 @@ async fn read_only_role_cannot_write_or_read_password_hashes() {
     db.cleanup().await;
 }
 
-// backend-neutral: roles and privileges exist only in Postgres; SQLite has no users
 #[tokio::test]
 async fn roles_are_plain_roles_and_the_database_is_closed_to_public() {
     let Some(admin) = pg_admin_url() else { return };
@@ -198,7 +193,6 @@ async fn roles_are_plain_roles_and_the_database_is_closed_to_public() {
     db.cleanup().await;
 }
 
-// backend-neutral: role-level settings and the schema history table exist only in Postgres
 #[tokio::test]
 async fn statement_and_idle_timeouts_are_role_level_not_session_level() {
     let Some(admin) = pg_admin_url() else { return };
@@ -232,7 +226,6 @@ fn invalid_role<T: std::fmt::Debug>(r: rusty_core::Result<T>, needle: &str) {
     }
 }
 
-// backend-neutral: roles and privileges exist only in Postgres; SQLite has no users
 #[tokio::test]
 async fn startup_refuses_a_runtime_role_with_ddl_rights_or_without_timeouts() {
     let Some(admin) = pg_admin_url() else { return };
@@ -288,7 +281,6 @@ async fn startup_refuses_a_runtime_role_with_ddl_rights_or_without_timeouts() {
     db.cleanup().await;
 }
 
-// backend-neutral: the schema history table and the explicit migrator exist only in Postgres
 #[tokio::test]
 async fn connect_never_migrates_and_refuses_an_unmigrated_database() {
     let Some(admin) = pg_admin_url() else { return };
@@ -311,7 +303,6 @@ async fn connect_never_migrates_and_refuses_an_unmigrated_database() {
     db.cleanup().await;
 }
 
-// backend-neutral: the schema history table and the explicit migrator exist only in Postgres
 #[tokio::test]
 async fn connect_refuses_every_schema_version_mismatch_with_a_clear_error() {
     let Some(admin) = pg_admin_url() else { return };
@@ -348,7 +339,6 @@ async fn connect_refuses_every_schema_version_mismatch_with_a_clear_error() {
     db.cleanup().await;
 }
 
-// backend-neutral: the schema history table and the explicit migrator exist only in Postgres
 #[tokio::test]
 async fn connect_refuses_a_database_migrated_by_a_newer_binary_or_with_a_failed_migration() {
     let Some(admin) = pg_admin_url() else { return };
@@ -380,7 +370,6 @@ async fn connect_refuses_a_database_migrated_by_a_newer_binary_or_with_a_failed_
     db.cleanup().await;
 }
 
-// backend-neutral: the explicit migrator and its roles exist only in Postgres
 #[tokio::test]
 async fn migrate_is_explicit_idempotent_and_applies_the_privilege_matrix() {
     let Some(admin) = pg_admin_url() else { return };
@@ -405,7 +394,6 @@ async fn migrate_is_explicit_idempotent_and_applies_the_privilege_matrix() {
     db.cleanup().await;
 }
 
-// backend-neutral: TLS to the database applies to Postgres only
 #[tokio::test]
 async fn tls_policy_refuses_unverified_remote_hosts_without_connecting() {
     // None of these hosts is contacted: the policy runs before any socket is opened.
@@ -435,7 +423,6 @@ async fn tls_policy_refuses_unverified_remote_hosts_without_connecting() {
     assert!(matches!(r, Err(Error::Storage { .. })), "{r:?}");
 }
 
-// backend-neutral: connection-string handling of the Postgres driver; SQLite has no credentials
 #[tokio::test]
 async fn password_comes_from_the_security_struct_and_never_shows_in_errors_or_debug() {
     let Some(admin) = pg_admin_url() else { return };

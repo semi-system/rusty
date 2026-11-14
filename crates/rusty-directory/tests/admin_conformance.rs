@@ -1,7 +1,6 @@
 //! Administration reads and the domain/alias lifecycle operations added for `rustyctl` (U2):
 //! enumeration with keyset paging, exact account lookup, domain enable/disable, alias removal.
-//! One body per behaviour, run on SQLite and (feature `postgres` + `RUSTY_TEST_PG_URL`) on
-//! Postgres.
+//! One body per behaviour, run on Postgres (`RUSTY_TEST_PG_URL`).
 
 mod common;
 

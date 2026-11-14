@@ -63,7 +63,7 @@
 //!
 //! # Backends
 //!
-//! The queue is a facade over [`JobRepo`] (SQLite and Postgres implementations, same semantics;
+//! The queue is a facade over [`JobRepo`] (the Postgres implementation;
 //! see `repo/jobs.rs` for the locking argument). On Postgres a claim takes the candidate with
 //! `FOR UPDATE SKIP LOCKED` and every lease decision uses `statement_timestamp()` of the
 //! deciding statement. A bulk "reap everything" statement without `SKIP LOCKED` would block

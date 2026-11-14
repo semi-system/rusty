@@ -47,7 +47,6 @@ const FWD: &[u8] = b"Subject: Fwd\r\nContent-Type: multipart/mixed; boundary=b\r
 From: x@y.z\r\nSubject: inner\r\nContent-Type: text/plain\r\n\r\ninner body\r\n\
 --b--\r\n";
 
-// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn a_plain_message_has_one_text_part() {
     let m = parse(SIMPLE);
@@ -62,7 +61,6 @@ fn a_plain_message_has_one_text_part() {
     assert_eq!((m.part_count(), m.depth()), (1, 0));
 }
 
-// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn envelope_lists_the_addresses() {
     let m = parse(SIMPLE);
@@ -72,7 +70,6 @@ fn envelope_lists_the_addresses() {
     );
 }
 
-// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn groups_comments_and_odd_addresses_in_the_envelope() {
     let raw = b"From: =?utf-8?q?J=C3=BCrgen?= <j@x.de>\r\nTo: Team: a@x.com, b@y.com;, c@z.com\r\nCc: undisclosed-recipients:;\r\nReply-To: legacy@old.example (Old Name)\r\nSubject: =?utf-8?q?h=C3=A9?=\r\n continued\r\n\r\n";
@@ -88,7 +85,6 @@ fn groups_comments_and_odd_addresses_in_the_envelope() {
     assert!(e.contains(r#""=?utf-8?q?h=C3=A9?= continued""#), "{e}");
 }
 
-// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn nested_multipart_structure_with_an_attachment() {
     let m = parse(MIXED);
@@ -105,7 +101,6 @@ fn nested_multipart_structure_with_an_attachment() {
     assert_eq!(m.depth(), 2);
 }
 
-// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn sections_of_a_nested_multipart() {
     let m = parse(MIXED);
@@ -125,7 +120,6 @@ fn sections_of_a_nested_multipart() {
     assert_eq!(get("1.HEADER"), None);
 }
 
-// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn an_embedded_message_has_its_own_envelope_and_sections() {
     let m = parse(FWD);
@@ -149,7 +143,6 @@ fn an_embedded_message_has_its_own_envelope_and_sections() {
     assert_eq!(get("2.2"), None);
 }
 
-// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn hostile_structures_degrade_to_a_single_text_part() {
     // multipart without a boundary parameter
@@ -173,7 +166,6 @@ fn hostile_structures_degrade_to_a_single_text_part() {
     assert_eq!(parse(e).part_count(), 2);
 }
 
-// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn deep_nesting_is_cut_at_the_depth_limit() {
     let mut raw = Vec::new();
@@ -193,7 +185,6 @@ fn deep_nesting_is_cut_at_the_depth_limit() {
     assert!(start.elapsed().as_secs() < 5);
 }
 
-// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn a_part_bomb_is_capped() {
     let mut raw = b"Content-Type: multipart/mixed; boundary=b\r\n\r\n".to_vec();
@@ -206,7 +197,6 @@ fn a_part_bomb_is_capped() {
     assert!(m.part_count() > 100);
 }
 
-// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn section_partial_boundaries_are_the_callers_slice_of_the_section() {
     // The section is complete; partial slicing is applied by FETCH on the returned bytes.

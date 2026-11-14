@@ -15,7 +15,7 @@
 //! - Locking: single-statement operations need no explicit lock. Read-then-write operations
 //!   lock first: `add_list_member` locks the list row (member count + per-list `seq`),
 //!   `issue_capability`, `revoke_all_capabilities`, `set_status` and `set_password_hash` lock
-//!   the account row (`FOR NO KEY UPDATE` on Postgres, `BEGIN IMMEDIATE` on SQLite), so the
+//!   the account row (`FOR NO KEY UPDATE`), so the
 //!   per-account capability cap and "status change revokes capabilities" cannot interleave.
 
 use async_trait::async_trait;
@@ -446,8 +446,8 @@ pub const MAX_EXTERNAL_MEMBER_BYTES: usize = 64 + 1 + 255;
 pub const MAX_PLAN_NAME_BYTES: usize = 255;
 
 /// Refuse a text value that Postgres cannot store (a NUL byte, SQLSTATE 22021) or cannot index
-/// (a btree row over about 2.7 kB, SQLSTATE 54000) before any statement runs, so both backends
-/// answer identically (`Invalid`) instead of SQLite storing what Postgres refuses with `Storage`.
+/// (a btree row over about 2.7 kB, SQLSTATE 54000) before any statement runs, so the caller
+/// gets `Invalid` instead of `Storage`.
 /// The message is fixed and never echoes the value.
 pub(crate) fn check_text(value: &str, max_bytes: usize) -> Result<()> {
     if value.len() > max_bytes || value.contains('\0') {

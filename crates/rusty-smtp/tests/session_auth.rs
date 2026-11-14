@@ -91,7 +91,6 @@ impl Sim {
 /// base64 of "\0alice@example.net\0pw-alice"
 const PLAIN_OK: &str = "AGFsaWNlQGV4YW1wbGUubmV0AHB3LWFsaWNl";
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn auth_is_not_offered_and_not_accepted_without_tls() {
     let mut sim = Sim::new(false);
@@ -108,7 +107,6 @@ fn auth_is_not_offered_and_not_accepted_without_tls() {
     assert!(sim.verified.is_empty());
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn over_tls_auth_is_advertised_and_starttls_is_not() {
     let mut sim = Sim::new(true);
@@ -117,7 +115,6 @@ fn over_tls_auth_is_advertised_and_starttls_is_not() {
     assert!(!ehlo.contains("STARTTLS"), "{ehlo}");
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn plain_with_initial_response_and_with_a_continuation() {
     let mut sim = Sim::new(true);
@@ -132,7 +129,6 @@ fn plain_with_initial_response_and_with_a_continuation() {
     assert!(sim.send(format!("{PLAIN_OK}\r\n").as_bytes()).starts_with("235 2.7.0"));
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn login_takes_two_prompts_or_an_initial_user() {
     let mut sim = Sim::new(true);
@@ -146,7 +142,6 @@ fn login_takes_two_prompts_or_an_initial_user() {
     assert!(sim.send(b"cHctYWxpY2U=\r\n").starts_with("235"));
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn a_wrong_password_is_535_and_three_failures_close_the_connection() {
     let mut sim = Sim::new(true);
@@ -159,7 +154,6 @@ fn a_wrong_password_is_535_and_three_failures_close_the_connection() {
     assert!(sim.closed);
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn malformed_sasl_data_is_501_and_the_exchange_ends() {
     for (cmd, follow) in [
@@ -186,7 +180,6 @@ fn malformed_sasl_data_is_501_and_the_exchange_ends() {
     }
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn an_authorisation_identity_that_differs_is_refused() {
     // "\0alice@example.net\0pw" with authzid "bob@example.net": base64 of "bob@example.net\0alice@example.net\0pw-alice"
@@ -197,7 +190,6 @@ fn an_authorisation_identity_that_differs_is_refused() {
     assert!(sim.verified.is_empty(), "impersonation is never even attempted");
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn an_oversized_sasl_line_is_a_cleanly_refused_line() {
     let mut sim = Sim::new(true);
@@ -209,7 +201,6 @@ fn an_oversized_sasl_line_is_a_cleanly_refused_line() {
     assert!(sim.verified.is_empty());
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn unknown_mechanisms_and_auth_in_a_transaction() {
     let mut sim = Sim::new(true);
@@ -221,7 +212,6 @@ fn unknown_mechanisms_and_auth_in_a_transaction() {
     assert!(sim.send(b"AUTH PLAIN\r\n").starts_with("503 5.5.1"));
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn mail_needs_authentication_and_the_sender_rule() {
     let mut sim = Sim::new(true);
@@ -234,7 +224,6 @@ fn mail_needs_authentication_and_the_sender_rule() {
     assert!(sim.send(b"MAIL FROM:<ally@example.net>\r\n").starts_with("250 2.1.0"), "an alias of the user is fine");
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn remote_and_local_recipients_travel_in_one_transaction() {
     let mut sim = Sim::new(true);
@@ -254,7 +243,6 @@ fn remote_and_local_recipients_travel_in_one_transaction() {
     assert_eq!(t.identity.as_ref().map(|i| i.account), Some(AccountId(1)));
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn only_remote_recipients_are_enough_for_data() {
     let mut sim = Sim::new(true);
@@ -264,7 +252,6 @@ fn only_remote_recipients_are_enough_for_data() {
     assert!(sim.send(b"DATA\r\n").starts_with("354"));
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn starttls_forgets_the_identity() {
     let mut sim = Sim::new(false);
@@ -278,7 +265,6 @@ fn starttls_forgets_the_identity() {
     assert!(sim.send(b"MAIL FROM:<alice@example.net>\r\n").starts_with("250"));
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn credentials_never_appear_in_debug_output() {
     let mut sim = Sim::new(true);
@@ -289,7 +275,6 @@ fn credentials_never_appear_in_debug_output() {
 }
 
 proptest::proptest! {
-    // backend-neutral: arbitrary bytes after AUTH never panic and never authenticate without a verdict
     #[test]
     fn arbitrary_auth_traffic_never_panics(
         chunks in proptest::collection::vec(proptest::collection::vec(proptest::prelude::any::<u8>(), 0..200), 0..8)

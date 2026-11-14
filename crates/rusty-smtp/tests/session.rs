@@ -94,7 +94,6 @@ fn codes(out: &str) -> Vec<&str> {
     out.lines().map(|l| l.get(..3).unwrap_or("")).collect()
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn greeting_and_ehlo_capabilities() {
     let mut sim = Sim::new();
@@ -109,7 +108,6 @@ fn greeting_and_ehlo_capabilities() {
     assert!(out.ends_with("\r\n") && out.lines().last().unwrap().starts_with("250 "), "{out}");
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn starttls_is_offered_only_when_it_can_work() {
     let mut c = cfg();
@@ -127,14 +125,12 @@ fn starttls_is_offered_only_when_it_can_work() {
     assert_eq!(sim.starttls, 0);
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn helo_gets_a_plain_reply() {
     let mut sim = Sim::new();
     assert_eq!(sim.send(b"HELO client.example.org\r\n"), "250 mx.example.net\r\n");
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn commands_out_of_sequence_are_503() {
     let mut sim = Sim::new();
@@ -148,7 +144,6 @@ fn commands_out_of_sequence_are_503() {
     assert!(sim.checks.is_empty(), "no recipient lookup happened for out-of-sequence commands");
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn a_full_transaction_hands_over_the_exact_envelope_and_bytes() {
     let mut sim = Sim::new();
@@ -172,7 +167,6 @@ fn a_full_transaction_hands_over_the_exact_envelope_and_bytes() {
     assert!(sim.send(b"MAIL FROM:<>\r\n").starts_with("250 2.1.0"));
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn the_null_sender_is_an_empty_string() {
     let mut sim = Sim::new();
@@ -182,7 +176,6 @@ fn the_null_sender_is_an_empty_string() {
     assert_eq!(sim.delivered[0].mail_from, "");
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn pipelined_commands_wait_for_each_asynchronous_answer() {
     let mut s = Session::new(cfg(), peer(false)).0;
@@ -206,7 +199,6 @@ fn pipelined_commands_wait_for_each_asynchronous_answer() {
     assert_eq!(s.phase(), Phase::Command);
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn rejected_recipients_do_not_end_the_transaction() {
     let mut sim = Sim::new();
@@ -219,7 +211,6 @@ fn rejected_recipients_do_not_end_the_transaction() {
     assert!(sim.send(b"DATA\r\n").starts_with("354"));
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn the_recipient_cap_is_452_and_keeps_the_accepted_ones() {
     let mut sim = Sim::new();
@@ -236,7 +227,6 @@ fn the_recipient_cap_is_452_and_keeps_the_accepted_ones() {
     assert_eq!(sim.delivered[0].recipients.len(), 3);
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn a_declared_size_over_the_limit_is_refused_at_mail() {
     let mut sim = Sim::new();
@@ -246,7 +236,6 @@ fn a_declared_size_over_the_limit_is_refused_at_mail() {
     assert!(sim.send(b"MAIL FROM:<a@b.c> SIZE=10000\r\n").starts_with("250"));
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn data_over_the_limit_is_552_and_closes_the_connection() {
     let mut sim = Sim::new();
@@ -260,7 +249,6 @@ fn data_over_the_limit_is_552_and_closes_the_connection() {
     assert!(sim.send(b"NOOP\r\n").is_empty(), "nothing is processed after close");
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn nul_bytes_in_data_are_a_permanent_rejection_and_the_session_goes_on() {
     let mut sim = Sim::new();
@@ -272,7 +260,6 @@ fn nul_bytes_in_data_are_a_permanent_rejection_and_the_session_goes_on() {
     assert!(sim.send(b"MAIL FROM:<a@b.c>\r\n").starts_with("250"), "the transaction was reset");
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn a_failed_delivery_reply_is_passed_through_and_resets_the_transaction() {
     let mut sim = Sim::new();
@@ -284,7 +271,6 @@ fn a_failed_delivery_reply_is_passed_through_and_resets_the_transaction() {
     assert!(sim.send(b"MAIL FROM:<a@b.c>\r\n").starts_with("250"), "the sender retries with a fresh transaction");
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn rset_noop_vrfy_expn_help_quit() {
     let mut sim = Sim::new();
@@ -301,7 +287,6 @@ fn rset_noop_vrfy_expn_help_quit() {
     assert!(sim.send(b"NOOP\r\n").is_empty());
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn auth_and_bdat_are_not_available_on_port_25() {
     let mut sim = Sim::new();
@@ -310,7 +295,6 @@ fn auth_and_bdat_are_not_available_on_port_25() {
     assert!(sim.send(b"BDAT 10 LAST\r\n").starts_with("502 5.5.1"));
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn syntax_errors_unknown_commands_and_long_lines() {
     let mut sim = Sim::new();
@@ -324,7 +308,6 @@ fn syntax_errors_unknown_commands_and_long_lines() {
     assert!(sim.send(b"EHLO a\x00b\r\n").starts_with("501 5.5."));
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn too_many_errors_end_the_session() {
     let mut c = cfg();
@@ -337,7 +320,6 @@ fn too_many_errors_end_the_session() {
     assert!(sim.closed);
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn transaction_and_idle_command_caps() {
     let mut c = cfg();
@@ -361,7 +343,6 @@ fn transaction_and_idle_command_caps() {
     assert!(sim.closed);
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn starttls_resets_the_session_per_rfc_3207() {
     let mut sim = Sim::new();
@@ -380,7 +361,6 @@ fn starttls_resets_the_session_per_rfc_3207() {
     assert!(sim.delivered[0].peer.tls, "the transaction knows it ran inside TLS");
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn bytes_pipelined_after_starttls_close_the_connection() {
     // plaintext injected behind STARTTLS must never be processed after the handshake (CVE-2011-0411 class)
@@ -392,7 +372,6 @@ fn bytes_pipelined_after_starttls_close_the_connection() {
     assert_eq!(sim.starttls, 0, "no handshake is started over a poisoned buffer");
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn shutdown_and_timeout_say_421_and_close() {
     let mut sim = Sim::new();
@@ -405,7 +384,6 @@ fn shutdown_and_timeout_say_421_and_close() {
     assert!(sim.out.contains("421 4.4.2") && sim.closed);
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn no_reply_leaks_more_than_the_status_and_fixed_text() {
     let mut sim = Sim::new();
@@ -419,7 +397,6 @@ fn no_reply_leaks_more_than_the_status_and_fixed_text() {
 }
 
 proptest::proptest! {
-    // backend-neutral: the session must never panic or grow without bound on arbitrary input
     #[test]
     fn arbitrary_input_never_panics(
         chunks in proptest::collection::vec(proptest::collection::vec(proptest::prelude::any::<u8>(), 0..300), 0..10)
@@ -430,7 +407,6 @@ proptest::proptest! {
         }
     }
 
-    // backend-neutral: a plausible-command fuzz walks the real transitions
     #[test]
     fn plausible_command_soup_never_panics(
         cmds in proptest::collection::vec(
@@ -452,7 +428,6 @@ proptest::proptest! {
     }
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn the_advertised_recipient_count_is_really_accepted_with_default_caps() {
     // review I3: RCPT and MAIL used to count against the "commands without a transaction" cap, so with the
@@ -476,7 +451,6 @@ fn the_advertised_recipient_count_is_really_accepted_with_default_caps() {
     assert_eq!(sim.delivered[0].recipients.len(), 100);
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn tls_started_forgets_the_greeting_and_the_open_transaction_exactly() {
     // review: a leaked txn also answered 503 ("Nested MAIL"), so the reset was never really probed
@@ -497,7 +471,6 @@ fn tls_started_forgets_the_greeting_and_the_open_transaction_exactly() {
     assert!(sim.send(b"MAIL FROM:<a@b.c>\r\n").starts_with("250 2.1.0"));
 }
 
-// backend-neutral: pure state machine, no database
 #[test]
 fn a_message_may_reach_only_so_many_distinct_mailboxes() {
     let mut c = cfg();

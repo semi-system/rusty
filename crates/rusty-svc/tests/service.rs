@@ -22,7 +22,6 @@ async fn ctx(p: &Parts) -> Context {
     Context::new(repos, p.blobs.clone(), cfg, tls).await.unwrap()
 }
 
-// backend-neutral: the store only builds the Context; the seams under test are in-memory
 #[tokio::test]
 async fn the_default_seams_are_wired_through_their_traits() {
     let p = parts().await;
@@ -64,7 +63,6 @@ async fn the_default_seams_are_wired_through_their_traits() {
     assert_eq!(c.auth.verify("nobody@ctx.test", "pw").await.unwrap(), None);
 }
 
-// backend-neutral: the store only builds the Context; the seams under test are in-memory
 #[tokio::test]
 async fn seams_can_be_replaced() {
     struct Deny;
@@ -116,7 +114,6 @@ impl Service for Probe {
     }
 }
 
-// backend-neutral: the store only builds the Context; the runner under test never queries it
 #[tokio::test]
 async fn the_runner_stops_everything_when_one_service_fails_or_panics() {
     for outcome in [Outcome::Fail, Outcome::Panic] {
@@ -138,7 +135,6 @@ async fn the_runner_stops_everything_when_one_service_fails_or_panics() {
     }
 }
 
-// backend-neutral: the store only builds the Context; the runner under test never queries it
 #[tokio::test]
 async fn the_runner_returns_ok_after_a_requested_shutdown() {
     let p = parts().await;
@@ -156,7 +152,6 @@ async fn the_runner_returns_ok_after_a_requested_shutdown() {
     assert_eq!(*stopped.lock().unwrap(), vec!["a"]);
 }
 
-// backend-neutral: SQLite store used only to build the Context; GC on both backends is covered by rusty-store
 #[tokio::test]
 async fn the_gc_service_runs_a_pass_through_the_gc_facade_and_stops_on_shutdown() {
     let p = parts().await;

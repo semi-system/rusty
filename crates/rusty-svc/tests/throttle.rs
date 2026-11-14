@@ -28,7 +28,6 @@ fn throttle(clock: Arc<ManualClock>, max: u32, window: u64, concurrent: u32) -> 
     AuthThrottle::new(max, window, concurrent, clock)
 }
 
-// backend-neutral: no database involved, in-memory counters only
 #[test]
 fn blocks_after_n_failures_for_the_same_peer_and_identity_only() {
     let clock = Arc::new(ManualClock::default());
@@ -49,7 +48,6 @@ fn blocks_after_n_failures_for_the_same_peer_and_identity_only() {
     assert_eq!(t.check(ip("192.0.2.2"), "alice@example.org"), Verdict::Allowed);
 }
 
-// backend-neutral: no database involved, in-memory counters only
 #[test]
 fn the_window_expires_and_success_clears() {
     let clock = Arc::new(ManualClock::default());
@@ -66,7 +64,6 @@ fn the_window_expires_and_success_clears() {
     assert_eq!(t.check(a, "x"), Verdict::Allowed, "success resets the count");
 }
 
-// backend-neutral: no database involved, in-memory counters only
 #[test]
 fn concurrent_attempts_are_capped_process_wide() {
     let clock = Arc::new(ManualClock::default());
@@ -78,7 +75,6 @@ fn concurrent_attempts_are_capped_process_wide() {
     assert!(t.try_begin_attempt().is_some(), "a finished attempt frees its slot");
 }
 
-// backend-neutral: no database involved, in-memory counters only
 #[test]
 fn memory_is_bounded_under_an_identity_flood() {
     let clock = Arc::new(ManualClock::default());
@@ -89,7 +85,6 @@ fn memory_is_bounded_under_an_identity_flood() {
     assert!(t.tracked() <= 100_000, "tracked {}", t.tracked());
 }
 
-// backend-neutral: no database involved, in-memory counters only
 #[test]
 fn every_spelling_of_an_identity_shares_one_counter() {
     // Review I1: whitespace, a trailing dot, case and IDN spellings are the same account to the
@@ -123,7 +118,6 @@ fn every_spelling_of_an_identity_shares_one_counter() {
     assert_eq!(t.check(a, "not an address"), Verdict::Allowed);
 }
 
-// backend-neutral: no database involved, in-memory counters only
 #[test]
 fn an_ipv6_peer_is_throttled_by_its_64_bit_prefix() {
     let clock = Arc::new(ManualClock::default());
@@ -135,7 +129,6 @@ fn an_ipv6_peer_is_throttled_by_its_64_bit_prefix() {
     assert_eq!(t.check(ip("2001:db8:1:3::1"), "x@a.test"), Verdict::Allowed, "another /64 is another peer");
 }
 
-// backend-neutral: no database involved, in-memory counters only
 #[test]
 fn a_flood_of_new_keys_cannot_evict_an_active_block() {
     let clock = Arc::new(ManualClock::default());

@@ -13,7 +13,6 @@ async fn hub() -> (MailboxHub, common::Parts) {
     (MailboxHub::new(p.store.repos().mailbox.clone(), p.blobs.clone(), limits), p)
 }
 
-// backend-neutral: the store is only a constructor argument; the notification code under test never queries it
 #[tokio::test]
 async fn notify_wakes_subscribers() {
     let (hub, _parts) = hub().await;
@@ -28,7 +27,6 @@ async fn notify_wakes_subscribers() {
     assert_eq!(*b.borrow(), 3);
 }
 
-// backend-neutral: the store is only a constructor argument; the notification code under test never queries it
 #[tokio::test]
 async fn other_mailboxes_are_not_woken() {
     let (hub, _parts) = hub().await;
@@ -37,7 +35,6 @@ async fn other_mailboxes_are_not_woken() {
     assert!(tokio::time::timeout(Duration::from_millis(100), a.changed()).await.is_err());
 }
 
-// backend-neutral: the store is only a constructor argument; the notification code under test never queries it
 #[tokio::test]
 async fn sequence_numbers_never_go_backwards() {
     let (hub, _parts) = hub().await;
@@ -48,7 +45,6 @@ async fn sequence_numbers_never_go_backwards() {
     assert_eq!(*rx.borrow(), 10);
 }
 
-// backend-neutral: the store is only a constructor argument; the notification code under test never queries it
 #[tokio::test]
 async fn a_slow_subscriber_cannot_block_notifiers() {
     let (hub, _parts) = hub().await;
@@ -77,7 +73,6 @@ async fn a_slow_subscriber_cannot_block_notifiers() {
     }
 }
 
-// backend-neutral: the store is only a constructor argument; the notification code under test never queries it
 #[tokio::test]
 async fn dropped_subscribers_do_not_leak_channels() {
     let (hub, _parts) = hub().await;

@@ -60,7 +60,6 @@ async fn echo_server(provider: TlsProvider) -> SocketAddr {
     addr
 }
 
-// backend-neutral: no database involved, TLS only
 #[tokio::test]
 async fn handshake_uses_the_configured_certificate() {
     let d = tempfile::tempdir().unwrap();
@@ -77,7 +76,6 @@ async fn handshake_uses_the_configured_certificate() {
     assert_eq!(&b, b"ping");
 }
 
-// backend-neutral: no database involved, TLS only
 #[tokio::test]
 async fn reload_gives_new_connections_the_new_certificate_and_old_ones_continue() {
     let d = tempfile::tempdir().unwrap();
@@ -105,7 +103,6 @@ async fn reload_gives_new_connections_the_new_certificate_and_old_ones_continue(
     assert_eq!(&b, b"still", "an established connection continues across a reload");
 }
 
-// backend-neutral: no database involved, TLS only
 #[tokio::test]
 async fn a_failed_reload_keeps_the_old_certificate() {
     let d = tempfile::tempdir().unwrap();
@@ -128,7 +125,6 @@ async fn a_failed_reload_keeps_the_old_certificate() {
     assert_eq!(leaf, der_of(&cert_a));
 }
 
-// backend-neutral: no database involved, file permission checks only
 #[test]
 fn key_file_modes_are_enforced_and_fail_closed() {
     let d = tempfile::tempdir().unwrap();
@@ -153,7 +149,6 @@ fn key_file_modes_are_enforced_and_fail_closed() {
     invalid(TlsProvider::from_config(&tls_cfg(&c_bad, &k), "h.example", secrets()));
 }
 
-// backend-neutral: no database involved, file type checks only
 #[test]
 fn key_file_must_be_a_regular_file_not_a_symlink_directory_or_huge() {
     let d = tempfile::tempdir().unwrap();
@@ -174,7 +169,6 @@ fn key_file_must_be_a_regular_file_not_a_symlink_directory_or_huge() {
     assert!(TlsProvider::from_config(&tls_cfg(&c, &d.path().join("nope.pem")), "h.example", secrets()).is_err());
 }
 
-// backend-neutral: no database involved, key/cert consistency only
 #[test]
 fn a_key_that_does_not_belong_to_the_certificate_is_refused() {
     let d = tempfile::tempdir().unwrap();
@@ -185,14 +179,12 @@ fn a_key_that_does_not_belong_to_the_certificate_is_refused() {
     invalid(TlsProvider::from_config(&tls_cfg(&c, &k), "h.example", secrets()));
 }
 
-// backend-neutral: no database involved, configuration choice only
 #[test]
 fn no_certificate_and_no_dev_flag_is_an_error_not_plaintext() {
     let cfg = TlsConfig::default();
     invalid(TlsProvider::from_config(&cfg, "h.example", secrets()));
 }
 
-// backend-neutral: no database involved, configuration choice only
 #[cfg(feature = "dev-cert")]
 #[tokio::test]
 async fn dev_self_signed_serves_a_certificate_for_the_hostname_and_localhost() {
@@ -209,7 +201,6 @@ async fn dev_self_signed_serves_a_certificate_for_the_hostname_and_localhost() {
     assert_eq!(leaf, leaf3);
 }
 
-// backend-neutral: no database involved, configuration choice only
 #[cfg(not(feature = "dev-cert"))]
 #[test]
 fn dev_self_signed_is_refused_in_a_build_without_the_feature() {
@@ -232,7 +223,6 @@ impl CertResolver for CountingResolver {
     }
 }
 
-// backend-neutral: no database involved, resolver seam only
 #[tokio::test]
 async fn certificates_are_resolved_through_the_sni_resolver_seam() {
     let (cert, key) = make_pems(&["mail.example.test"]);
@@ -250,7 +240,6 @@ async fn certificates_are_resolved_through_the_sni_resolver_seam() {
     assert_eq!(counting.last_sni.lock().unwrap().as_deref(), Some("mail.example.test"));
 }
 
-// backend-neutral: no database involved, parser only
 #[test]
 fn pem_loader_rejects_what_it_cannot_use() {
     let (cert, key) = make_pems(&["mail.example.test"]);
@@ -278,7 +267,6 @@ fn pem_loader_rejects_what_it_cannot_use() {
     assert!(certified_key(&w, b"garbage").is_err());
 }
 
-// backend-neutral: no database involved, TLS only
 #[tokio::test]
 async fn an_unavailable_provider_says_so_and_never_completes_a_handshake() {
     let p = TlsProvider::unavailable().unwrap();
@@ -332,7 +320,6 @@ mod dev_cert_kept {
         hay.windows(needle.len()).any(|w| w == needle)
     }
 
-    // backend-neutral: files and certificates only
     #[test]
     fn the_certificate_has_a_cn_the_sans_and_about_one_year_of_validity() {
         let dir = tempfile::tempdir().unwrap();
@@ -350,7 +337,6 @@ mod dev_cert_kept {
         assert!((now_year..=now_year + 1).contains(&to), "valid for about a year, not until 4096: {v:?}");
     }
 
-    // backend-neutral: files and certificates only
     #[test]
     fn an_address_as_hostname_gets_localhost_as_cn() {
         let dir = tempfile::tempdir().unwrap();
@@ -359,7 +345,6 @@ mod dev_cert_kept {
         assert!(contains(&der[cn_at..cn_at + 20], b"localhost"));
     }
 
-    // backend-neutral: files and certificates only
     #[test]
     fn the_certificate_is_kept_between_starts_with_a_private_key_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -377,7 +362,6 @@ mod dev_cert_kept {
         assert_ne!(a, b);
     }
 
-    // backend-neutral: files and certificates only
     #[test]
     fn a_loosened_key_file_stops_the_start_instead_of_being_replaced() {
         let dir = tempfile::tempdir().unwrap();
@@ -390,7 +374,6 @@ mod dev_cert_kept {
         assert!(open(dir.path(), "mail.dev.test").is_err(), "and on a writable certificate file");
     }
 
-    // backend-neutral: files and certificates only
     #[test]
     fn an_old_certificate_is_replaced_before_it_expires() {
         let dir = tempfile::tempdir().unwrap();

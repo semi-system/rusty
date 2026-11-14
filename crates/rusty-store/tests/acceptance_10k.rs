@@ -1,5 +1,5 @@
 //! Store acceptance (plan PG6): 10,000 messages over 20 mailboxes through `append` and
-//! `deliver_many`, then flags, moves, expunge, purge and blob GC, on SQLite AND Postgres.
+//! `deliver_many`, then flags, moves, expunge, purge and blob GC, on Postgres.
 //! Checks final counts, reference counts, gapless counters and that the blob files equal the rows.
 //! Time is bounded per backend (`RUSTY_ACCEPTANCE_MAX_SECS`, default 180). Run with
 //! `-- --nocapture` to see the elapsed times.

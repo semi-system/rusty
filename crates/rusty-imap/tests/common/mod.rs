@@ -1,6 +1,6 @@
 #![allow(dead_code)]
-//! Harness of the IMAP session suites: a backend (SQLite always, Postgres when `RUSTY_TEST_PG_URL`
-//! is set and the `postgres` feature is on), a `Context` built the composition-root way, and a
+//! Harness of the IMAP session suites: a fresh Postgres database (`RUSTY_TEST_PG_URL`),
+//! a `Context` built the composition-root way, and a
 //! client connection that talks to a real `ImapHandler` over an in-memory pipe.
 
 use std::future::Future;

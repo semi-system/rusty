@@ -20,7 +20,6 @@ async fn account(repo: &PgRepo, tag: &str) -> (AccountId, MailboxId) {
     (acc, repo.mailbox_for_account(acc).await.unwrap())
 }
 
-// backend-neutral: the in-process queue sits in front of the Postgres pool; SQLite has one writer lock and no pool
 #[tokio::test]
 async fn permits_are_exclusive_fifo_and_released_on_drop() {
     let q = MailboxQueue::new(Duration::from_secs(5));
@@ -48,7 +47,6 @@ async fn permits_are_exclusive_fifo_and_released_on_drop() {
     assert_eq!(q.held(), 0);
 }
 
-// backend-neutral: the in-process queue sits in front of the Postgres pool; SQLite has one writer lock and no pool
 #[tokio::test]
 async fn a_cancelled_waiter_leaks_nothing_and_a_deadline_is_busy() {
     let q = Arc::new(MailboxQueue::new(Duration::from_millis(150)));
@@ -74,7 +72,6 @@ async fn a_cancelled_waiter_leaks_nothing_and_a_deadline_is_busy() {
     assert!(started.elapsed() < Duration::from_millis(100));
 }
 
-// backend-neutral: the in-process queue sits in front of the Postgres pool; SQLite has one writer lock and no pool
 #[tokio::test]
 async fn memory_is_bounded_whatever_the_mailbox_ids() {
     let q = MailboxQueue::new(Duration::from_secs(1));
@@ -93,7 +90,6 @@ async fn memory_is_bounded_whatever_the_mailbox_ids() {
     assert!(seen.len() > 400, "only {} distinct stripes for 512 sequential ids", seen.len());
 }
 
-// backend-neutral: the pool and the in-process queue exist only in the Postgres backend
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_hot_mailbox_does_not_starve_a_cold_one_with_a_small_pool() {
     let Some(admin) = pg_admin_url() else { return };
@@ -130,7 +126,6 @@ async fn a_hot_mailbox_does_not_starve_a_cold_one_with_a_small_pool() {
     db.cleanup().await;
 }
 
-// backend-neutral: the pool and the in-process queue exist only in the Postgres backend
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_saturated_pool_and_a_saturated_queue_answer_busy_not_a_hang() {
     let Some(admin) = pg_admin_url() else { return };
@@ -173,7 +168,6 @@ async fn a_saturated_pool_and_a_saturated_queue_answer_busy_not_a_hang() {
     db.cleanup().await;
 }
 
-// backend-neutral: the pool and the in-process queue exist only in the Postgres backend
 #[tokio::test]
 async fn pool_validation_rejects_zero_limits() {
     for cfg in [

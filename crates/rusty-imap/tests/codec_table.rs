@@ -38,7 +38,6 @@ fn name(line: &str) -> Result<String, String> {
     }
 }
 
-// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn commands_of_the_target_clients_decode() {
     let table: &[(&str, &str)] = &[
@@ -105,7 +104,6 @@ fn commands_of_the_target_clients_decode() {
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
-// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn what_the_library_lacks_is_parsed_by_our_own_layer() {
     // The grammar library (1.0.0) fails on all of these (pinned by the evaluation recorded in the
@@ -122,7 +120,6 @@ fn what_the_library_lacks_is_parsed_by_our_own_layer() {
     }
 }
 
-// backend-neutral: pure parser over bytes, no store involved
 #[test]
 fn literals_are_the_framers_business() {
     // A command that still announces literal data is not complete: the adapter refuses it (the

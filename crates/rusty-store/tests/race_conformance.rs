@@ -1,10 +1,10 @@
-//! Races on BOTH backends (review PG6, backend-neutral audit).
+//! Races at the facade level (review PG6).
 //!
 //! The Postgres suites `pg_mailbox_concurrency.rs` and `pg_jobs_gc_concurrency.rs` force exact
-//! interleavings with test knobs on row locks, which only exist on Postgres. The OUTCOME those
-//! tests assert does not depend on the engine: whichever of two racing operations runs first, the
+//! interleavings with test knobs on row locks, which are internals of the repositories. The OUTCOME those
+//! tests assert is what a caller observes: whichever of two racing operations runs first, the
 //! other sees its committed result, and no orphan row, wrong refcount or cycle remains. Here the
-//! same outcomes are asserted on SQLite and Postgres, once for each serial order (deterministic)
+//! same outcomes are asserted once for each serial order (deterministic)
 //! and once with the operations really running at the same time (either serial outcome is fine).
 
 mod common;

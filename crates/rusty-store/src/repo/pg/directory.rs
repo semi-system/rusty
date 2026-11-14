@@ -322,7 +322,7 @@ impl DirectoryRepo for PgRepo {
         tx_retry!(self, None, |c| {
             // Lock the list row first: the count and the per-list `seq` (assigned by the
             // list_members trigger under the same lock) must not interleave. A missing list
-            // is not special-cased: the insert fails on the foreign key like on SQLite.
+            // is not special-cased: the insert fails on the foreign key.
             sqlx::query_scalar::<_, i64>(&crate::repo::pg_lit("SELECT id FROM lists WHERE id = $1 FOR UPDATE"))
                 .bind(list.0)
                 .fetch_optional(&mut *c)
@@ -451,8 +451,7 @@ impl DirectoryRepo for PgRepo {
                 return Err(TxError::Domain(Error::NotFound("account".into())));
             }
             // Keep at most `max_active`: revoke the oldest beyond that. The new row is never a
-            // candidate. Ties on `issued_at` (second granularity) are broken by `token_hash`, the
-            // same order as on SQLite.
+            // candidate. Ties on `issued_at` (second granularity) are broken by `token_hash`.
             sqlx::query(
                 &crate::repo::pg_lit("UPDATE capabilities SET revoked_at = GREATEST($1, issued_at) WHERE token_hash IN (\
                    SELECT token_hash FROM capabilities \

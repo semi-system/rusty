@@ -93,7 +93,6 @@ const BUDGET: &[(&str, usize)] = &[
 /// How far below its ceiling an operation may get before the ceiling counts as stale.
 const SNAPSHOT_TOLERANCE: usize = 3;
 
-// backend-neutral: Postgres statement budget and lock-first order; the SQLite statement shapes are pinned by query_shape.rs
 #[tokio::test]
 async fn statement_counts_stay_within_the_budget() {
     let p = stmts::probe();
@@ -120,7 +119,6 @@ async fn statement_counts_stay_within_the_budget() {
 /// The ceilings follow the code down: an improvement larger than `SNAPSHOT_TOLERANCE` statements
 /// must tighten its ceiling (otherwise a later regression back to the old count would pass).
 /// Smaller improvements need no edit.
-// backend-neutral: Postgres statement budget and lock-first order; the SQLite statement shapes are pinned by query_shape.rs
 #[tokio::test]
 async fn budget_ceilings_are_not_stale() {
     let p = stmts::probe();
@@ -137,7 +135,6 @@ async fn budget_ceilings_are_not_stale() {
 
 /// A batch is O(1) statements, not O(n): the same count for a small and a large batch, for
 /// EVERY batched operation (the oracle that matters most).
-// backend-neutral: Postgres statement budget and lock-first order; the SQLite statement shapes are pinned by query_shape.rs
 #[tokio::test]
 async fn batched_operations_cost_the_same_for_every_batch_size() {
     let p = stmts::probe();
@@ -167,7 +164,6 @@ async fn batched_operations_cost_the_same_for_every_batch_size() {
 
 /// Review risk 6.3.1: a write method that forgets the mailbox lock still passes every counter
 /// test. Guard: the first data statement after BEGIN is the mailbox row lock, for EVERY write.
-// backend-neutral: Postgres statement budget and lock-first order; the SQLite statement shapes are pinned by query_shape.rs
 #[tokio::test]
 async fn every_write_method_takes_the_mailbox_lock_first() {
     let p = stmts::probe();
@@ -183,7 +179,6 @@ async fn every_write_method_takes_the_mailbox_lock_first() {
 /// No session state outside a transaction (PgBouncer transaction pooling, decision D6): no
 /// session-level SET, no temp tables, no advisory locks, no LISTEN, no cursors WITH HOLD, no SQL
 /// PREPARE in anything a repository operation executes.
-// backend-neutral: Postgres statement budget and lock-first order; the SQLite statement shapes are pinned by query_shape.rs
 #[tokio::test]
 async fn repository_statements_use_no_session_state() {
     let p = stmts::probe();

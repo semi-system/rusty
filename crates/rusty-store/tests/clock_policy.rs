@@ -232,7 +232,6 @@ async fn gc_grace_cutoff_comes_from_the_database_clock() {
 
 /// No correctness path may read the Rust wall clock. The allow-list names the files where the
 /// Rust clock is legitimate and says why.
-// backend-neutral: source scan, no database
 #[test]
 fn no_rust_clock_in_correctness_paths() {
     // File modification times are stamped by the operating system, so the blob store compares
