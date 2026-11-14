@@ -24,7 +24,7 @@ mod mailbox;
 #[allow(clippy::needless_borrow)] // statement literals go through the mutation hook (see mutation.rs)
 pub mod pg;
 
-pub use dns::{DnsConfig, DnsConfigRow, DnsEventRow, DnsRepo};
+pub use dns::{DkimKeyRow, DnsConfig, DnsConfigRow, DnsEventRow, DnsRepo};
 pub use gc::{GcRepo, PurgeBatch};
 pub use jobs::{BatchJob, BatchRequest, ClaimRequest, JobRepo, NewJob, OwnerLimits};
 pub use directory::{

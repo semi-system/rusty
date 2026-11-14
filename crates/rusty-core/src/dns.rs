@@ -63,13 +63,41 @@ pub struct DnsRecord {
     pub required: Requirement,
 }
 
-/// The public half of a DKIM key (`p=` of the TXT record).
+/// The kind of a DKIM key: the `k=` tag of its record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DkimKind {
+    Rsa,
+    Ed25519,
+}
+
+impl DkimKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DkimKind::Rsa => "rsa",
+            DkimKind::Ed25519 => "ed25519",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<DkimKind> {
+        match s {
+            "rsa" => Some(DkimKind::Rsa),
+            "ed25519" => Some(DkimKind::Ed25519),
+            _ => None,
+        }
+    }
+}
+
+/// The public half of a DKIM key (`p=` of the TXT record), published at `<selector>._domainkey.<domain>`.
 #[derive(Debug, Clone, Copy)]
 pub struct DkimPublic<'a> {
     pub selector: &'a str,
-    /// Base64 of the SubjectPublicKeyInfo, as published.
+    pub kind: DkimKind,
+    /// Base64 as published in `p=` (RSA: the SubjectPublicKeyInfo; ed25519: the raw 32-byte key).
     pub public_key_b64: &'a str,
 }
+
+/// Most keys one domain publishes (an ed25519 key and an RSA key, with room for a rotation in progress).
+pub const MAX_DKIM_KEYS: usize = 4;
 
 /// What the generator needs. `domain` and `mail_host` are A-label names without a trailing dot.
 #[derive(Debug, Clone, Copy)]
@@ -78,8 +106,8 @@ pub struct DnsInputs<'a> {
     pub mail_host: &'a str,
     /// Addresses mail leaves from (and the mail host resolves to).
     pub outbound_ips: &'a [IpAddr],
-    /// `None`: the key has not been generated yet; a placeholder record says how.
-    pub dkim: Option<DkimPublic<'a>>,
+    /// The domain's keys, one record each; empty: no key has been generated yet and a placeholder record says how.
+    pub dkim: &'a [DkimPublic<'a>],
     /// Address for DMARC aggregate reports (optional).
     pub dmarc_rua: Option<&'a str>,
 }
@@ -133,9 +161,16 @@ pub fn records_for_domain(i: &DnsInputs<'_>) -> Result<Vec<DnsRecord>> {
     if !valid_hostname(i.domain) || !valid_hostname(i.mail_host) || i.domain.ends_with('.') || i.mail_host.ends_with('.') {
         return Err(Error::Invalid("invalid host name".into()));
     }
-    if let Some(k) = &i.dkim {
+    if i.dkim.len() > MAX_DKIM_KEYS {
+        return Err(Error::Invalid("too many DKIM keys".into()));
+    }
+    for (n, k) in i.dkim.iter().enumerate() {
         if !valid_selector(k.selector) || !valid_b64(k.public_key_b64) {
             return Err(Error::Invalid("invalid DKIM key".into()));
+        }
+        // DNS names are case-insensitive: two selectors that differ only in case are one name.
+        if i.dkim.iter().take(n).any(|o| o.selector.eq_ignore_ascii_case(k.selector)) {
+            return Err(Error::Invalid("two DKIM keys share a selector".into()));
         }
     }
     if i.dmarc_rua.is_some_and(|r| !valid_mailbox(r)) {
@@ -180,24 +215,26 @@ pub fn records_for_domain(i: &DnsInputs<'_>) -> Result<Vec<DnsRecord>> {
         purpose: "SPF: which hosts may send mail for the domain",
         required: Requirement::Required,
     });
-    out.push(match &i.dkim {
-        Some(k) => DnsRecord {
+    for k in i.dkim {
+        out.push(DnsRecord {
             name: format!("{}._domainkey.{domain}", k.selector),
             rtype: RecordType::Txt,
-            value: format!("v=DKIM1; k=rsa; p={}", k.public_key_b64),
+            value: format!("v=DKIM1; k={}; p={}", k.kind.as_str(), k.public_key_b64),
             ttl_hint: TTL,
             purpose: "DKIM public key (receivers verify our signatures with it)",
             required: Requirement::Required,
-        },
-        None => DnsRecord {
+        });
+    }
+    if i.dkim.is_empty() {
+        out.push(DnsRecord {
             name: format!("<selector>._domainkey.{domain}"),
             rtype: RecordType::Txt,
             value: "run `rustyctl dkim generate` (ed25519) and/or `rustyctl dkim import` (RSA) to create the key and its record".to_owned(),
             ttl_hint: TTL,
             purpose: "DKIM public key (not generated yet)",
             required: Requirement::Recommended,
-        },
-    });
+        });
+    }
     let mut dmarc = String::from("v=DMARC1; p=none");
     if let Some(rua) = i.dmarc_rua {
         let _ = write!(dmarc, "; rua=mailto:{rua}");

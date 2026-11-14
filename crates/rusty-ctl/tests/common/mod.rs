@@ -8,7 +8,7 @@ use std::future::Future;
 use rusty_ctl::{execute, Command, CtlEnv, CtlError, Outcome, PasswordReader, PasswordSource, Secret};
 use rusty_directory::Directory;
 use rusty_store::fixtures::Fixtures;
-use rusty_store::{Store, StoreConfig};
+use rusty_store::{DnsStore, Store, StoreConfig};
 
 use rusty_store::fixtures::pg_db as pg;
 
@@ -16,6 +16,7 @@ pub struct Backend {
     pub name: &'static str,
     pub dir: Directory,
     pub store: Store,
+    pub dns: DnsStore,
     pub fx: Fixtures,
     pub tmp: tempfile::TempDir,
     _db: Option<pg::PgTestDb>,
@@ -56,13 +57,13 @@ impl Backend {
         hostname: Option<&str>,
     ) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(passwords);
-        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname, config_note: "test", dkim_dir: None };
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname, config_note: "test", dkim_dir: None, dns: &self.dns };
         execute(&cmd, &mut env).await
     }
 
     pub async fn run_with_dkim(&self, cmd: Command, dkim_dir: &std::path::Path) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(&[]);
-        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: Some(dkim_dir) };
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: Some(dkim_dir), dns: &self.dns };
         execute(&cmd, &mut env).await
     }
 
@@ -79,6 +80,7 @@ pub async fn pg_backend() -> Option<Backend> {
         name: "postgres",
         dir: Directory::with_repo(store.repos().directory.clone()),
         fx: Fixtures::admin_of(&db, &store).await,
+        dns: DnsStore::with_repo(store.repos().dns.clone()),
         store,
         tmp: tempfile::tempdir().unwrap(),
         _db: Some(db),

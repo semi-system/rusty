@@ -10,7 +10,7 @@ use sqlx::{PgConnection, Row};
 use super::tx::{tx_retry, TxError, TxResult};
 use super::PgRepo;
 use crate::map_db_error;
-use crate::repo::dns::{plan, sql, validate_observations, DnsConfig, DnsConfigRow, DnsEventRow, DnsRepo, RawEvent, RawState};
+use crate::repo::dns::{plan, sql, validate_observations, DkimKeyRow, DnsConfig, DnsConfigRow, DnsEventRow, DnsRepo, RawEvent, RawState};
 use crate::repo::render_pg as r;
 
 async fn lock_domain(c: &mut PgConnection, d: DomainId) -> TxResult<()> {
@@ -44,6 +44,10 @@ async fn load_states(c: &mut PgConnection, d: DomainId) -> TxResult<Vec<StateRow
         );
     }
     Ok(out)
+}
+
+fn key_row(x: &sqlx::postgres::PgRow) -> std::result::Result<DkimKeyRow, sqlx::Error> {
+    Ok(DkimKeyRow { selector: x.try_get(0)?, algorithm: x.try_get(1)?, public_key_b64: x.try_get(2)?, created_at: x.try_get(3)? })
 }
 
 fn plain(e: TxError) -> Error {
@@ -144,6 +148,43 @@ impl DnsRepo for PgRepo {
                 Ok(())
             }
         })
+    }
+
+    async fn add_dkim_key(
+        &self,
+        domain: DomainId,
+        selector: &str,
+        algorithm: &str,
+        public_key_b64: &str,
+        now: Option<i64>,
+    ) -> Result<(DkimKeyRow, bool)> {
+        tx_retry!(self, None, |c| {
+            {
+                lock_domain(&mut *c, domain).await?;
+                let created = sqlx::query(r(sql::ADD_KEY))
+                    .bind(domain.0)
+                    .bind(selector)
+                    .bind(algorithm)
+                    .bind(public_key_b64)
+                    .bind(now)
+                    .execute(&mut *c)
+                    .await?
+                    .rows_affected()
+                    == 1;
+                let x = sqlx::query(r(sql::GET_KEY)).bind(domain.0).bind(selector).fetch_one(&mut *c).await?;
+                let row = key_row(&x)?;
+                // The first write stands: anything else under this selector is a different key.
+                if row.algorithm != algorithm || row.public_key_b64 != public_key_b64 {
+                    return Err(Error::Conflict("a different DKIM key is already published under this selector".into()).into());
+                }
+                Ok((row, created))
+            }
+        })
+    }
+
+    async fn dkim_keys(&self, domain: DomainId) -> Result<Vec<DkimKeyRow>> {
+        let rows = sqlx::query(r(sql::LIST_KEYS)).bind(domain.0).fetch_all(self.store.pool()).await.map_err(map_db_error)?;
+        rows.iter().map(key_row).collect::<std::result::Result<Vec<_>, _>>().map_err(map_db_error)
     }
 
     async fn states(&self, domain: DomainId) -> Result<Vec<StateRow>> {

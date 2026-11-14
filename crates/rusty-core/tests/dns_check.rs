@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use rusty_core::dns::{records_for_domain, DkimPublic, DnsInputs, DnsRecord, RecordType};
+use rusty_core::dns::{records_for_domain, DkimKind, DkimPublic, DnsInputs, DnsRecord, RecordType};
 use rusty_core::dns_check::{check_records, CheckOptions, DnsFail, DnsSource, MxEntry, RecordCheck, SrvEntry};
 use rusty_core::dns_state::RecordStatus;
 
@@ -27,7 +27,7 @@ fn expected() -> Vec<DnsRecord> {
         domain: DOMAIN,
         mail_host: HOST,
         outbound_ips: &ips,
-        dkim: Some(DkimPublic { selector: "rusty", public_key_b64: &b64 }),
+        dkim: &[DkimPublic { selector: "rusty", kind: DkimKind::Rsa, public_key_b64: &b64 }],
         dmarc_rua: Some("dmarc@example.net"),
     })
     .unwrap()
@@ -386,7 +386,7 @@ async fn dkim_warnings_testing_mode_and_a_short_rsa_key() {
 #[tokio::test]
 async fn a_dkim_record_that_was_not_generated_yet_is_not_looked_up() {
     let ips: Vec<IpAddr> = vec![V4.parse().unwrap()];
-    let no_key = records_for_domain(&DnsInputs { domain: DOMAIN, mail_host: HOST, outbound_ips: &ips, dkim: None, dmarc_rua: None }).unwrap();
+    let no_key = records_for_domain(&DnsInputs { domain: DOMAIN, mail_host: HOST, outbound_ips: &ips, dkim: &[], dmarc_rua: None }).unwrap();
     let z = Zone::default();
     let c = check_records(&z, &no_key, &CheckOptions::default()).await;
     let k = c.iter().find(|c| c.record.name.starts_with("<selector>")).unwrap();

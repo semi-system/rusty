@@ -37,6 +37,11 @@ COLUMN deliveries.delivery_id bytea nullable=NO identity=NO/ collation= default=
 COLUMN deliveries.message_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN deliveries.blob_hash bytea nullable=NO identity=NO/ collation= default=
 COLUMN deliveries.created_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN domain_dkim_keys.domain_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN domain_dkim_keys.selector text nullable=NO identity=NO/ collation=C default=
+COLUMN domain_dkim_keys.algorithm text nullable=NO identity=NO/ collation=C default=
+COLUMN domain_dkim_keys.public_key_b64 text nullable=NO identity=NO/ collation=C default=
+COLUMN domain_dkim_keys.created_at bigint nullable=NO identity=NO/ collation= default=
 COLUMN domain_dns_config.domain_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN domain_dns_config.dkim_selector text nullable=YES identity=NO/ collation=C default=
 COLUMN domain_dns_config.dkim_algorithm text nullable=YES identity=NO/ collation=C default=
@@ -201,6 +206,16 @@ CONSTRAINT deliveries.deliveries_mailbox_id_message_id_fkey FOREIGN KEY (mailbox
 CONSTRAINT deliveries.deliveries_mailbox_id_not_null NOT NULL mailbox_id
 CONSTRAINT deliveries.deliveries_message_id_not_null NOT NULL message_id
 CONSTRAINT deliveries.deliveries_pkey PRIMARY KEY (mailbox_id, delivery_id)
+CONSTRAINT domain_dkim_keys.domain_dkim_keys_algorithm_not_null NOT NULL algorithm
+CONSTRAINT domain_dkim_keys.domain_dkim_keys_algorithm_valid CHECK (algorithm = ANY (ARRAY['rsa'::text, 'ed25519'::text]))
+CONSTRAINT domain_dkim_keys.domain_dkim_keys_created_at_not_null NOT NULL created_at
+CONSTRAINT domain_dkim_keys.domain_dkim_keys_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+CONSTRAINT domain_dkim_keys.domain_dkim_keys_domain_id_not_null NOT NULL domain_id
+CONSTRAINT domain_dkim_keys.domain_dkim_keys_key_valid CHECK (length(public_key_b64) >= 16 AND length(public_key_b64) <= 1024 AND public_key_b64 ~ '^[A-Za-z0-9+/]+={0,2}$'::text)
+CONSTRAINT domain_dkim_keys.domain_dkim_keys_pkey PRIMARY KEY (domain_id, selector)
+CONSTRAINT domain_dkim_keys.domain_dkim_keys_public_key_b64_not_null NOT NULL public_key_b64
+CONSTRAINT domain_dkim_keys.domain_dkim_keys_selector_not_null NOT NULL selector
+CONSTRAINT domain_dkim_keys.domain_dkim_keys_selector_valid CHECK (length(selector) >= 1 AND length(selector) <= 63 AND selector ~ '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$'::text)
 CONSTRAINT domain_dns_config.domain_dns_config_algorithm_valid CHECK (dkim_algorithm IS NULL OR (dkim_algorithm = ANY (ARRAY['rsa'::text, 'ed25519'::text])))
 CONSTRAINT domain_dns_config.domain_dns_config_created_at_not_null NOT NULL created_at
 CONSTRAINT domain_dns_config.domain_dns_config_dmarc_policy_not_null NOT NULL dmarc_policy
@@ -375,6 +390,7 @@ INDEX change_log.change_log_pkey CREATE UNIQUE INDEX change_log_pkey ON public.c
 INDEX deliveries.deliveries_created CREATE INDEX deliveries_created ON public.deliveries USING btree (created_at)
 INDEX deliveries.deliveries_message CREATE INDEX deliveries_message ON public.deliveries USING btree (mailbox_id, message_id)
 INDEX deliveries.deliveries_pkey CREATE UNIQUE INDEX deliveries_pkey ON public.deliveries USING btree (mailbox_id, delivery_id)
+INDEX domain_dkim_keys.domain_dkim_keys_pkey CREATE UNIQUE INDEX domain_dkim_keys_pkey ON public.domain_dkim_keys USING btree (domain_id, selector)
 INDEX domain_dns_config.domain_dns_config_pkey CREATE UNIQUE INDEX domain_dns_config_pkey ON public.domain_dns_config USING btree (domain_id)
 INDEX domain_dns_event.domain_dns_event_by_domain CREATE INDEX domain_dns_event_by_domain ON public.domain_dns_event USING btree (domain_id, id)
 INDEX domain_dns_event.domain_dns_event_pkey CREATE UNIQUE INDEX domain_dns_event_pkey ON public.domain_dns_event USING btree (id)
@@ -421,6 +437,7 @@ TRIGGER aliases.aliases_same_domain_upd CREATE TRIGGER aliases_same_domain_upd B
 TRIGGER blobs.blobs_zero_since_ins CREATE TRIGGER blobs_zero_since_ins BEFORE INSERT ON blobs FOR EACH ROW EXECUTE FUNCTION rs_blobs_zero_since()
 TRIGGER blobs.blobs_zero_since_refcount CREATE TRIGGER blobs_zero_since_refcount BEFORE UPDATE OF refcount ON blobs FOR EACH ROW EXECUTE FUNCTION rs_blobs_zero_since()
 TRIGGER change_log.change_log_notify CREATE TRIGGER change_log_notify AFTER INSERT ON change_log REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION rs_notify_mailboxes()
+TRIGGER domain_dkim_keys.domain_dkim_keys_immutable CREATE TRIGGER domain_dkim_keys_immutable BEFORE UPDATE ON domain_dkim_keys FOR EACH ROW EXECUTE FUNCTION rs_dkim_keys_immutable()
 TRIGGER folders.folders_no_cycle CREATE TRIGGER folders_no_cycle BEFORE UPDATE OF parent_id ON folders FOR EACH ROW EXECUTE FUNCTION rs_folders_no_cycle()
 TRIGGER jobs.jobs_notify CREATE TRIGGER jobs_notify AFTER INSERT ON jobs FOR EACH STATEMENT EXECUTE FUNCTION rs_notify_jobs()
 TRIGGER list_members.list_members_same_domain_ins CREATE TRIGGER list_members_same_domain_ins BEFORE INSERT ON list_members FOR EACH ROW EXECUTE FUNCTION rs_list_member_same_domain()
@@ -549,6 +566,16 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
+$function$
+FUNCTION rs_dkim_keys_immutable
+CREATE OR REPLACE FUNCTION public.rs_dkim_keys_immutable()
+ RETURNS trigger
+ LANGUAGE plpgsql
+ SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+AS $function$
+BEGIN
+  RAISE EXCEPTION 'a published DKIM key never changes: use a new selector' USING ERRCODE = '23514';
+END
 $function$
 FUNCTION rs_folders_no_cycle
 CREATE OR REPLACE FUNCTION public.rs_folders_no_cycle()

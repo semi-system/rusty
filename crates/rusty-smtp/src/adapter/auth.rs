@@ -181,6 +181,45 @@ fn write_key(dir: &std::path::Path, domain: &str, selector: &str, key: Checked) 
     })
 }
 
+
+/// The key file `write_key` would have made for `(domain, selector, algo)`, read back and checked like an imported
+/// key, as what DNS needs. `None` when there is no such file. Only a regular file is read (never a symlink), at most
+/// [`MAX_IMPORT_PEM`] bytes. This is how a second `rustyctl dkim generate` shows the record of the key it will not
+/// replace.
+pub(crate) fn existing(dir: &std::path::Path, domain: &str, selector: &str, algo: DkimAlgo) -> Result<Option<GeneratedKey>> {
+    use base64::Engine;
+    use std::io::Read;
+    let suffix = match algo {
+        DkimAlgo::Rsa => "",
+        DkimAlgo::Ed25519 => "-ed25519",
+    };
+    let path = dir.join(format!("{domain}.{selector}{suffix}.pem"));
+    match std::fs::symlink_metadata(&path) {
+        Ok(m) if m.is_file() => {}
+        Ok(_) => return Err(Error::Invalid("the DKIM key path is not a regular file".into())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(Error::storage_with("cannot inspect the DKIM key file", e)),
+    }
+    let mut pem = Vec::new();
+    std::fs::File::open(&path)
+        .and_then(|f| f.take(MAX_IMPORT_PEM as u64 + 1).read_to_end(&mut pem))
+        .map_err(|e| Error::storage_with("cannot read the DKIM key file", e))?;
+    if pem.len() > MAX_IMPORT_PEM {
+        return Err(bad_key("the file is too large to be one private key"));
+    }
+    let der = PrivateKeyDer::from_pem_slice(&pem).map_err(|_| bad_key("no unencrypted PEM private key found"))?;
+    let key = check_key(der)?;
+    if key.algo != algo {
+        return Err(bad_key("the key file holds a key of another algorithm"));
+    }
+    Ok(Some(GeneratedKey {
+        algo,
+        key_file: path,
+        selector: format!("{selector}{suffix}"),
+        public_key_b64: base64::engine::general_purpose::STANDARD.encode(key.public),
+    }))
+}
+
 /// A new Ed25519 key, checked like an imported one, then written.
 pub(crate) fn generate_ed25519(dir: &std::path::Path, domain: &str, selector: &str) -> Result<GeneratedKey> {
     let pair = DkimKeyPair::generate_ed25519().map_err(lib_err)?;
