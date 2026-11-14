@@ -1,6 +1,8 @@
-# Admin web: design (for approval)
+# Admin web: design (approved 2026-11-14)
 
-Status: **proposal, no code yet.** Owner decisions already taken (2026-11-14): the admin web and the webmail are written in
+Status: **approved, no code yet.** The owner answered the six questions of section 12 on 2026-11-14: Q1 its own binary from
+the first commit, Q2 `hyper` with our own router, Q3 sessions in `Kv`, Q4 no 2FA now, Q5 assets embedded in the binary, Q6 all
+user-facing text in message catalogues with placeholders (section 8). Owner decisions already taken (2026-11-14): the admin web and the webmail are written in
 **Svelte 5** (Solid was the alternative); the webmail is its own service and has its own design document later; the
 platform is on-premises first; mail leaves through an SMTP relay when the operator chooses one (see `docs/relay.md`).
 This document replaces the "server-rendered HTML, no JS framework" line of task U10 in
@@ -60,7 +62,7 @@ shutdown, no OpenSSL, no `aws-lc`, rustls with `ring` like everything else.
 Recommendation: **`hyper` 1.x with `hyper-util` and `http-body-util`**, behind the adapter, plus a router of about 150 lines of our own.
 `axum` would give routing and extractors for free but brings `tower`, `tower-http` and more macros and generics onto the
 network path for a handful of routes; we would keep its types out of the handlers anyway. Writing our own HTTP parser is not
-on the table (a parser is attack surface; `hyper` is the most reviewed one). The decision is open question Q2.
+on the table (a parser is attack surface; `hyper` is the most reviewed one). Decided by the owner (Q2): `hyper` with our own router.
 
 Limits fixed in code and covered by tests: header block 16 KiB, at most 64 headers, request body 64 KiB for the API (nothing in the
 first version uploads files), 10 s to receive the head, 30 s per request, 256 concurrent connections, 32 per source address,
@@ -114,7 +116,7 @@ when they exist, with the in-process fallback. Constant work for unknown and wro
 fixed error for both, as the IMAP and submission logins do.
 
 **2FA (TOTP)**: not in the first version; the session record and the sign-in flow leave a step for a second factor, and the edge
-IP allow-list for the admin host name (already in the container spec) is the interim control. Open question Q4.
+IP allow-list for the admin host name (already in the container spec) is the interim control. Decided by the owner (Q4): not now.
 
 ## 6. Browser-side security
 
@@ -153,6 +155,16 @@ outside.
   fails when a handler's output differs from its file (and regenerates it on request); `vitest` uses the same files as mock
   responses for the components and checks them against the TypeScript types. A change on one side that is not made on the other
   fails a test on one of them.
+* **Every user-facing string lives in a message catalogue** (decision Q6), never in a component. `web/ui/src/i18n/en.ts` is a
+  typed object of keys to messages with `{name}` placeholders (`"domain.created": "Domain {name} was created"`); each further
+  language is a file that must satisfy the **same type**, so a missing or extra key fails `svelte-check` and CI. Components call
+  `t("domain.created", { name })`; plurals use `Intl.PluralRules`, dates and numbers `Intl.DateTimeFormat` / `Intl.NumberFormat`
+  (no hand-written formatting). A lint rule fails the build on a string literal in a template or an `aria-label` that is not a key.
+  The API never sends text meant for people: it sends the fixed error codes of section 4, and the client maps each code to a catalogue
+  key, so the server needs no translation. Languages are separate chunks loaded on demand (and embedded like every asset); the
+  choice comes from a stored preference, then `Accept-Language`, then English; the page's `lang` attribute follows it. Only
+  `en` ships in the first version; the test suite includes a pseudo-locale (every message wrapped and lengthened) that is
+  rendered in the component tests to catch truncated layouts and missing keys.
 * Accessibility and plain behaviour: real forms and buttons, labels, focus handling after a navigation, keyboard use, visible
   focus, contrast (the `design:accessibility-review` checklist, WCAG 2.1 AA) and a "copy" button that has a text fallback.
 
@@ -180,35 +192,35 @@ Written first, each failing for its stated reason before the code exists:
 
 | Step | Content | Depends on |
 |---|---|---|
+| R | **the runtime extraction and role-based configuration of the image design (its steps 2 and 3)**: the start-up code that `rusty d` holds today moves into a `rusty-runtime` library so that `rusty-admin` is its own binary from its first commit (decision Q1); this also unblocks every other service split | the image design |
 | A | W1: the DNS validation engine, `rustyctl domain dns` and `check` | nothing (the generator exists) |
-| B | `rusty-http`: the adapter, limits, headers, router, cookies, with its tests and fuzz targets | decision Q2 |
-| C | `admin_grants`, sessions over `Kv` (Valkey V3), sign-in with throttle, CSRF, the session API | B; Valkey V1 (done) |
+| B | `rusty-http`: the adapter, limits, headers, router, cookies, with its tests and fuzz targets | nothing |
+| C | `admin_grants`, sessions over `Kv` (Valkey V3), sign-in with throttle, CSRF, the session API, the `rusty-admin` binary | R, B; Valkey V1 (done) |
 | D | the domain, account, alias, DKIM, DNS and outbound endpoints with the contract files | A, C |
 | E | `web/`: tooling and CI gates first, then the shell and sign-in, then the pages | contract from D (pages can start on the contract files) |
 | F | packaging: embedded assets, the Dockerfile stage, the compose service and the edge route, the browser test | E |
 
-A, B and E's tooling are independent and can proceed in parallel. Estimate for a usable first version with a single implementer: **about
-5 to 6 weeks**, of which the front end is about half. It is an estimate, not a measurement.
+R, A, B and E's tooling are independent of each other and can proceed in parallel. Estimate for a usable first version with a single
+implementer: **about 6 to 7 weeks** (the extraction R adds about a week to the earlier estimate, and it is work the other service
+splits need anyway), of which the front end is about half. It is an estimate, not a measurement.
 
-## 11. How it runs before the image split exists
+## 11. How it runs
 
-The final shape is its own binary and image (`rusty-admin`). The runtime extraction and per-role configuration of the image
-design (steps 2 and 3 there) are not done, so the binary entry point would have to copy start-up code. Proposal: until those steps land,
-`rusty-admin` is a library with an `AdminService` that the existing composition root starts when `[admin]` is enabled (off by
-default, a separate listener and a separate TLS identity), and it gets its own `main` when the runtime is extracted. The crate
-boundaries above make that move mechanical. This is a **temporary** exception to "no service inside the shared binary"; it is
-open question Q1.
+`rusty-admin` is its own binary and image from its first commit (decision Q1), a thin `main` over `rusty-runtime`, with the
+role-specific configuration (`[admin]`, `[valkey]`, the store section with its own Postgres role) and nothing from the mail
+services. There is no interim "service inside the shared process": step R comes first so that the exception is never made. In
+development it runs as one more container of the compose stack.
 
-## 12. Open questions for the owner
+## 12. The six questions and the owner's answers (2026-11-14)
 
-| # | Question | Recommendation |
+| # | Question | Answer |
 |---|---|---|
-| Q1 | Start the admin as a service inside the existing process until the image split lands, or wait and build it as its own binary from the first commit (about a week later, because the runtime extraction comes first)? | inside the process, temporarily (section 11) |
-| Q2 | HTTP library: `hyper` with our own thin router, or `axum`? | `hyper` + own router (section 3) |
-| Q3 | Sessions in the `Kv` store (Valkey when present, in-memory otherwise), or always in Postgres? | `Kv` (section 5): fewer database writes, and the Valkey fail-closed rule already decided |
-| Q4 | TOTP second factor in the first version, or after it, with the edge IP allow-list as the interim control? | after |
-| Q5 | Embed the front end in the binary, or serve it from a directory of the image/volume? | embed |
-| Q6 | English only for now (as U10 says), with the strings kept in one place for later translation? | yes |
+| Q1 | Start the admin inside the existing process until the image split lands, or as its own binary from the first commit? | **its own binary from the first commit** (so step R comes first) |
+| Q2 | HTTP library: `hyper` with our own thin router, or `axum`? | **`hyper` + own router** |
+| Q3 | Sessions in the `Kv` store (Valkey when present, in-memory otherwise), or always in Postgres? | **`Kv`** |
+| Q4 | TOTP second factor in the first version? | **not now** (the edge IP allow-list is the interim control; the sign-in flow keeps a place for it) |
+| Q5 | Embed the front end in the binary or serve it from a directory? | **embed**: fewer reads and writes, and the interface files cannot be edited on the server |
+| Q6 | English only, or a structure for later translation? | **a modular message-catalogue model with placeholders**, so another language is a new file (section 8); only English ships first |
 
 ## 13. Risks
 
