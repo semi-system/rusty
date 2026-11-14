@@ -16,7 +16,7 @@
 //!   still kept), subject line separators become spaces and bidi overrides are removed, [`MAX_ID_BYTES`] per message id, the last
 //!   [`MAX_REFERENCES`] references.
 
-use mail_parser::{Address, HeaderValue, MessageParser};
+use mail_parser::{AddressList, MessageParser, TextList};
 use rusty_core::text::is_format_or_line_separator;
 use rusty_core::{Error, Result};
 
@@ -130,12 +130,8 @@ fn clean_id(s: &str) -> Option<String> {
     (!bad).then(|| s.to_string())
 }
 
-fn raw_ids<'a>(v: &'a HeaderValue<'_>) -> Box<dyn DoubleEndedIterator<Item = &'a str> + 'a> {
-    match v {
-        HeaderValue::Text(t) => Box::new(std::iter::once(t.as_ref())),
-        HeaderValue::TextList(l) => Box::new(l.iter().map(|s| s.as_ref())),
-        _ => Box::new(std::iter::empty()),
-    }
+fn raw_ids<'a>(v: Option<TextList<'a>>) -> impl DoubleEndedIterator<Item = &'a str> {
+    v.into_iter().flat_map(|l| l.iter())
 }
 
 /// Lowercase bare addresses joined with ", ". Addresses that are empty or contain a control
@@ -144,12 +140,12 @@ fn raw_ids<'a>(v: &'a HeaderValue<'_>) -> Box<dyn DoubleEndedIterator<Item = &'a
 /// addresses are still considered). At most [`MAX_ADDRESSES`] addresses and
 /// [`MAX_ADDRESS_FIELD_BYTES`] bytes are kept, stopping before the first address that would
 /// overflow the remaining room (an address is never cut).
-fn join_addresses(addr: Option<&Address<'_>>) -> String {
+fn join_addresses(addr: Option<AddressList<'_>>) -> String {
     let mut out = String::new();
     let Some(a) = addr else { return out };
     let mut n = 0;
-    for x in a.iter() {
-        let Some(raw) = x.address.as_deref() else {
+    for x in a.mailboxes() {
+        let Some(raw) = x.address() else {
             continue;
         };
         let s = raw.replace(['<', '>'], "").trim().to_lowercase();

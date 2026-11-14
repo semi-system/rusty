@@ -185,3 +185,24 @@ proptest::proptest! {
         }
     }
 }
+
+/// mail-parser 0.9 dropped a last header line that had no line terminator; 1.0 reads it. The
+/// envelope of a message cut off inside its header section is therefore not empty any more.
+#[test]
+fn a_last_header_without_a_line_terminator_is_read() {
+    let e = parse_envelope(b"Subject: only headers").unwrap();
+    assert_eq!(e.subject, "only headers");
+    let e = parse_envelope(b"From: a@example.com\r\nTo: b@example.com").unwrap();
+    assert_eq!(e.from, "a@example.com");
+    assert_eq!(e.to, "b@example.com");
+}
+
+/// Group syntax is flattened to its members, display-name-only entries are skipped.
+#[test]
+fn groups_are_flattened_and_name_only_entries_skipped() {
+    let e = parse_envelope(
+        b"To: team: x@example.com, Y <y@example.com>;, Only Name, z@example.com\r\n\r\n",
+    )
+    .unwrap();
+    assert_eq!(e.to, "x@example.com, y@example.com, z@example.com");
+}
