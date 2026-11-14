@@ -234,7 +234,7 @@ fuzz_all() {
   else
     FUZZ_DEGRADED=1
     echo "WARNING: cargo-fuzz and/or the nightly toolchain are missing; running the proptest fallback only (NOT real fuzzing)." >&2
-    cargo test -p rusty-mime -p rusty-directory -p rusty-core -p rusty-svc -p rusty-ctl -p rusty-smtp -p rusty-imap --test fuzz_smoke
+    cargo test -p rusty-mime -p rusty-directory -p rusty-core -p rusty-svc -p rusty-ctl -p rusty-smtp -p rusty-imap -p rusty-http --test fuzz_smoke
   fi
 }
 

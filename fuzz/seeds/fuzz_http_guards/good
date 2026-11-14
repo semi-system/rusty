@@ -1,0 +1,3 @@
+Origin: https://admin.example.net
+Content-Type: application/json
+X-CSRF-Token: 0123456789abcdef0123456789abcdef

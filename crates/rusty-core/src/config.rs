@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 use crate::{Error, Result};
 
+pub use crate::config_role::{Role, UNUSED_BLOB_DIR};
 pub use crate::config_valkey::ValkeyConfig;
 pub use crate::config_store::{
     is_loopback_host, parse_pg_url, PgEndpoint, SslMode, StoreSection, DEFAULT_POOL_SIZE, MAX_POOL_SIZE,
@@ -50,6 +51,8 @@ pub enum LogLevel {
 /// metadata lives in Postgres (`[store]`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
+// Adding a top-level key: list it in `Role::own` of the services that use it (a key no role lists is refused by every
+// role: default deny), in `SCHEMA_KEYS` and in the matrix of tests/config_roles.rs.
 pub struct StartupConfig {
     /// Absolute path of the blob root (mode 0700, initialized with `FsBlobStore::init`;
     /// never created implicitly).
@@ -126,6 +129,11 @@ impl StartupConfig {
 
     /// Read at most [`MAX_CONFIG_FILE_BYTES`] from `path` and parse it.
     pub fn load(path: &Path) -> Result<StartupConfig> {
+        Self::load_with(path, Self::from_toml_str)
+    }
+
+    /// The bounded read of a configuration file, parsed by `parse`.
+    pub(crate) fn load_with(path: &Path, parse: impl FnOnce(&str) -> Result<StartupConfig>) -> Result<StartupConfig> {
         // O_NONBLOCK so opening a FIFO (or similar) cannot hang the process; the fstat on the
         // opened descriptor (no path race) then rejects anything that is not a regular file.
         let fd = rustix::fs::open(
@@ -152,10 +160,10 @@ impl StartupConfig {
         let buf = read_bounded(file, MAX_CONFIG_FILE_BYTES as usize)?;
         let text = String::from_utf8(buf)
             .map_err(|_| Error::Invalid("configuration file is not UTF-8".into()))?;
-        Self::from_toml_str(&text)
+        parse(&text)
     }
 
-    fn validate(&mut self) -> Result<()> {
+    pub(crate) fn validate(&mut self) -> Result<()> {
         self.store.validate()?;
         if !self.blob_dir.is_absolute() {
             return Err(Error::Invalid("blob_dir must be absolute".into()));

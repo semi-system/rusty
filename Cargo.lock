@@ -2059,6 +2059,7 @@ dependencies = [
  "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
+ "tokio",
  "toml",
 ]
 
@@ -2119,10 +2120,12 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "proptest",
  "rusty-core",
  "rusty-svc",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tokio",
  "tokio-util",
  "tracing",

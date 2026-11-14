@@ -6,10 +6,25 @@ use rusty_core::config::{
 
 const MAX_RECIPIENTS: u32 = 10_000;
 
+/// Role files: an accepted one is a valid configuration, and a role without blobs always has the stand-in directory.
+fn check_roles(text: &str) {
+    use rusty_core::config::{Role, UNUSED_BLOB_DIR};
+    for role in [Role::SmtpIn, Role::Submission, Role::Imap, Role::Outbound, Role::Gc, Role::Admin] {
+        if let Ok(c) = StartupConfig::from_toml_str_for(role, text) {
+            assert!(c.blob_dir.is_absolute());
+            if !role.uses_blobs() {
+                assert_eq!(c.blob_dir, std::path::Path::new(UNUSED_BLOB_DIR));
+            }
+        }
+    }
+}
+
+
 fuzz_target!(|data: &[u8]| {
     let Ok(text) = std::str::from_utf8(data) else {
         return;
     };
+    check_roles(text);
     // Must never panic; an accepted configuration must satisfy every documented bound.
     let Ok(c) = StartupConfig::from_toml_str(text) else {
         return;
