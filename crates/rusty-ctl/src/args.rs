@@ -32,6 +32,10 @@ pub enum Command {
     DomainList,
     DomainDisable { name: String },
     DomainEnable { name: String },
+    /// `seal keygen`: make the unsealing key pair of the outbound service; the private half goes to `file` (0600, never replaced).
+    SealKeygen { file: PathBuf },
+    /// `seal show`: the public half and id of the key in `file`.
+    SealShow { file: PathBuf },
     AccountAdd { addr: String, password: PasswordSource },
     AccountList { domain: Option<String> },
     AccountSetPassword { addr: String, password: PasswordSource },
@@ -93,7 +97,9 @@ pub const USAGE: &str = "usage: rustyctl [--config FILE | --dev [--data-dir DIR]
                                              and print its DNS record; make an RSA key with\n\
                                              openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048\n\
   relay check                                log in to the configured relay (resolve, TLS, AUTH) without sending mail
-  check                                      configuration summary and DNS records to publish\n\
+  seal keygen <file>                         make the key that opens sealed secrets (private half to <file>, 0600), print the public half
+  seal show <file>                           print the public half and the id of the key in <file>
+  check                                     configuration summary and DNS records to publish\n\
 \n\
 Passwords are read from standard input or the terminal, never from the command line.";
 
@@ -269,6 +275,14 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             no_without_roles()?;
             done(Command::DbStatus)
         }
+        ["seal", "keygen", file] => {
+            plain()?;
+            done(Command::SealKeygen { file: PathBuf::from(file) })
+        }
+        ["seal", "show", file] => {
+            plain()?;
+            done(Command::SealShow { file: PathBuf::from(file) })
+        }
         ["relay", "check"] => {
             plain()?;
             done(Command::RelayCheck)
@@ -278,8 +292,8 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             done(Command::Check)
         }
         [] => Err(err("a command is required")),
-        ["domain" | "account" | "alias" | "dkim" | "db" | "relay"] => Err(err("a subcommand is required")),
-        ["domain" | "account" | "alias" | "dkim" | "db" | "relay", _, ..] | ["check", ..] => {
+        ["domain" | "account" | "alias" | "dkim" | "db" | "relay" | "seal"] => Err(err("a subcommand is required")),
+        ["domain" | "account" | "alias" | "dkim" | "db" | "relay" | "seal", _, ..] | ["check", ..] => {
             Err(err("unknown subcommand or wrong number of arguments"))
         }
         _ => Err(err("unknown command")),

@@ -239,3 +239,13 @@ impl Unsealer {
         adapter::open(&key.secret, &enc, &context.info(), id, ciphertext).map_err(|_| cannot_open())
     }
 }
+
+impl UnsealingKey {
+    /// The key from the bytes of its key file (UTF-8 text). The buffer is wiped before this returns, so the secret does not linger
+    /// in the caller's memory.
+    pub fn from_file_bytes(bytes: Vec<u8>) -> Result<UnsealingKey> {
+        let bytes = Zeroizing::new(bytes);
+        let text = std::str::from_utf8(&bytes).map_err(|_| invalid("invalid unsealing key"))?;
+        UnsealingKey::from_text(text)
+    }
+}

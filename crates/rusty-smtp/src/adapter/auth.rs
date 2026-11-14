@@ -284,6 +284,22 @@ impl Loaded {
     }
 }
 
+
+/// A loaded DKIM signer, opaque to everything outside this module: the library's types never leave it.
+pub(crate) struct Signer(Loaded);
+
+/// Load a PEM private key (RSA as PKCS #8 or PKCS #1, or ed25519 as PKCS #8) into a signer for `domain` and `selector`.
+pub(crate) fn load_signer(pem: &[u8], domain: &str, selector: &str, ed25519: bool) -> Result<Signer> {
+    Ok(Signer(if ed25519 { load_ed(pem, domain, selector)? } else { load_rsa(pem, domain, selector)? }))
+}
+
+impl Signer {
+    /// The `DKIM-Signature: ...` header line (CRLF-terminated) for `message`.
+    pub(crate) fn sign(&self, message: &[u8]) -> Result<String> {
+        self.0.sign(message)
+    }
+}
+
 /// Where a key file comes from: the secret source enforces mode 0600 and ownership.
 pub(crate) trait KeyFiles: Send + Sync {
     fn read(&self, path: &std::path::Path) -> Result<Option<Vec<u8>>>;

@@ -11,6 +11,7 @@ rusty-core = { path = "../rusty-core" }
 rusty-directory = { path = "../rusty-directory" }
 rusty-smtp = { path = "../rusty-smtp", default-features = false }
 rusty-store = { path = "../rusty-store" }
+rusty-seal = { path = "../rusty-seal" }
 serde_json.workspace = true
 
 [dev-dependencies]

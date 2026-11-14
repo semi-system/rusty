@@ -69,9 +69,9 @@ impl Role {
             Role::SmtpIn => &["blob_dir", "max_message_bytes", "tls", "smtp"],
             Role::Submission => &["blob_dir", "max_message_bytes", "tls", "smtp", "outbound", "valkey"],
             Role::Imap => &["blob_dir", "max_message_bytes", "tls", "imap", "valkey"],
-            Role::Outbound => &["blob_dir", "outbound"],
+            Role::Outbound => &["blob_dir", "outbound", "unsealing"],
             Role::Gc => &["blob_dir", "gc_grace_seconds", "dns_check"],
-            Role::Admin => &["tls", "valkey"],
+            Role::Admin => &["tls", "valkey", "sealing"],
         }
     }
 
@@ -82,9 +82,9 @@ impl Role {
 
 /// Every top-level key of the schema. Only these are named in a refusal: a key that is not one of them is
 /// reported as unknown, so nothing the operator typed (or pasted by mistake) is echoed.
-const SCHEMA_KEYS: [&str; 14] = [
+const SCHEMA_KEYS: [&str; 16] = [
     "blob_dir", "log_level", "log_format", "hostname", "max_message_bytes", "gc_grace_seconds", "store", "tls", "smtp", "imap", "outbound",
-    "limits", "dns_check", "valkey",
+    "limits", "dns_check", "valkey", "sealing", "unsealing",
 ];
 
 fn shown(key: &str) -> &'static str {
