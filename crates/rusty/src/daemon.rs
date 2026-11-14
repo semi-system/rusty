@@ -202,7 +202,7 @@ async fn build(
             resolver: dns.resolver.clone(),
             dialer: Arc::new(TcpDialer),
             tls: Arc::new(RustlsUpgrader::new(cfg.outbound.ca_bundle.as_deref())?),
-            route: Arc::new(ConfigRoute::from_config(&cfg.outbound, secrets.as_ref())?),
+            route: route_of(&cfg, store, &ctx, secrets.as_ref())?,
             signer: signer_of(&cfg, store, &ctx, secrets.as_ref())?,
         };
         services.push(Box::new(OutboundWorker::new(deps, WorkerOptions::new(cfg.outbound.clone(), hostname)).with_wake(wake)));
@@ -214,6 +214,31 @@ async fn build(
     Ok((addrs, task))
 }
 
+/// The private keys named by `[unsealing]` (none when the section is absent: this service opens no sealed secret).
+fn unsealer_of(cfg: &StartupConfig, secrets: &dyn rusty_svc::SecretSource) -> Result<Option<rusty_seal::Unsealer>> {
+    let Some(u) = &cfg.unsealing else { return Ok(None) };
+    let mut keys = Vec::new();
+    for path in &u.key_files {
+        keys.push(rusty_seal::UnsealingKey::from_file_bytes(secrets.read(path)?)?);
+    }
+    Ok(Some(rusty_seal::Unsealer::new(keys)?))
+}
+
+/// The worker's route: the platform's (`[outbound.relay]` or direct) alone, or, when `[unsealing]` is set, the relay a domain's tenant entered in the
+/// web with the platform's as the fallback. Without an unsealing key a tenant relay could not be used (its password cannot be opened), so it is not offered.
+fn route_of(cfg: &StartupConfig, store: &Store, ctx: &Context, secrets: &dyn rusty_svc::SecretSource) -> Result<Arc<dyn rusty_smtp::outbound::route::OutboundRoute>> {
+    let platform: Arc<dyn rusty_smtp::outbound::route::OutboundRoute> = Arc::new(ConfigRoute::from_config(&cfg.outbound, secrets)?);
+    let Some(unsealer) = unsealer_of(cfg, secrets)? else { return Ok(platform) };
+    let repos = store.repos();
+    Ok(Arc::new(rusty_smtp::outbound::domain_route::DomainRoute::new(
+        ctx.directory.clone(),
+        rusty_store::RelayStore::with_repo(repos.relay.clone()),
+        rusty_store::SealedReader::with_repo(repos.sealed.clone()),
+        unsealer,
+        platform,
+    )))
+}
+
 /// The worker's DKIM signer: the sealed keys of the database when `[unsealing]` names this service's private key files, the key files of
 /// `[outbound] dkim_dir` for domains that have no sealed key; none when neither is configured (mail goes unsigned).
 fn signer_of(
@@ -223,22 +248,15 @@ fn signer_of(
     secrets: &dyn rusty_svc::SecretSource,
 ) -> Result<Option<Arc<dyn rusty_smtp::dkim::MessageSigner>>> {
     let files = keyring(&cfg.outbound, Arc::new(FileSecretSource::new()));
-    let sealed = match &cfg.unsealing {
-        None => None,
-        Some(u) => {
-            let mut keys = Vec::new();
-            for path in &u.key_files {
-                keys.push(rusty_seal::UnsealingKey::from_file_bytes(secrets.read(path)?)?);
-            }
-            let repos = store.repos();
-            Some(Arc::new(rusty_smtp::dkim::SealedKeyring::new(
-                ctx.directory.clone(),
-                rusty_store::DnsStore::with_repo(repos.dns.clone()),
-                rusty_store::SealedReader::with_repo(repos.sealed.clone()),
-                rusty_seal::Unsealer::new(keys)?,
-            )))
-        }
-    };
+    let sealed = unsealer_of(cfg, secrets)?.map(|unsealer| {
+        let repos = store.repos();
+        Arc::new(rusty_smtp::dkim::SealedKeyring::new(
+            ctx.directory.clone(),
+            rusty_store::DnsStore::with_repo(repos.dns.clone()),
+            rusty_store::SealedReader::with_repo(repos.sealed.clone()),
+            unsealer,
+        ))
+    });
     Ok((sealed.is_some() || files.is_some()).then(|| rusty_smtp::dkim::chain(sealed, files)))
 }
 

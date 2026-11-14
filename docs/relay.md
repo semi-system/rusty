@@ -84,10 +84,10 @@ The tests run against loopback fake relays with real TLS (rustls) for STARTTLS, 
 names, broken handshakes, `PLAIN` and `LOGIN`. They have **not** been run against a real provider (SES, SendGrid, Mailgun):
 try `relay check` with your account before relying on it.
 
-## Per-domain relays: the rules and the storage (first part)
+## Per-domain relays: the rules, the storage and the outbound route
 
 A tenant administrator will be able to enter the relay of **its own domain** in the web admin (design section 14.4). This change adds the rules and the
-storage; the outbound service does not use them yet, and nothing in the web or `rustyctl` writes them yet.
+storage and the outbound service side; nothing in the web or `rustyctl` writes a relay yet (a row and a sealed password can only be made by tests for now).
 
 * `rusty_core::relay_policy`: what a tenant may choose. The port is one of 25, 465, 587, 2525; the host is a DNS name of two or more labels (no
   `localhost`, `.local`, `.internal`, numeric last label) or a **public** IP literal; a login is refused over `tls = none`; implicit TLS only on 465.
@@ -97,3 +97,10 @@ storage; the outbound service does not use them yet, and nothing in the web or `
 * Table `domain_relays` (migration 0020): host, port, TLS mode, user name, SPF include and the fixed category of the last connection check. The table
   repeats the port, TLS and login rules. The **password is not in it**: it is a sealed secret (`docs/sealed-secrets.md`, purpose `relay-password`).
 * `RelayStore` validates, stores, replaces (a replaced relay forgets its last check) and removes; a relay goes with its domain.
+* `DomainRoute` (outbound service, when `[unsealing]` is set): mail sent **from** a domain that has a row in `domain_relays` leaves through that relay;
+  every other domain uses the platform route (`[outbound.relay]` or direct). Relays are read from the database and kept 60 seconds. The password is opened
+  from `sealed_secrets` (purpose `relay-password`, context bound to the domain). A relay with a user name whose password is missing or cannot be opened is
+  an **error**: the worker defers the mail and never connects without credentials. TLS is verified, as for any relay with a login.
+* **SSRF at every connection**: a tenant's relay is marked `public_only`; each attempt resolves the name again and the worker connects only to addresses
+  for which `is_public_address` holds. A name that now points inside (10.x, 127.x, 169.254.169.254, CGNAT, ULA, ...) makes the attempt fail and the mail wait;
+  no connection is made. The platform relay of the operator is not subject to this (it is the operator's own choice).

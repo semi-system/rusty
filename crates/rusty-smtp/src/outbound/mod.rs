@@ -6,6 +6,7 @@
 
 pub mod client;
 pub mod dial;
+pub mod domain_route;
 pub mod dsn;
 pub mod payload;
 pub mod policy;

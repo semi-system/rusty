@@ -418,9 +418,19 @@ impl Inner {
                     }
                 }
             };
-            let addrs: Vec<_> = addrs.into_iter().filter(|a| !direct || !forbidden_address(*a)).take(MAX_ADDRS_PER_HOST).collect();
+            // A relay a tenant chose is reached at public addresses only, judged on what the name resolves to NOW (every attempt).
+            let public_only = relay.as_ref().is_some_and(|r| r.public_only);
+            let addrs: Vec<_> = addrs
+                .into_iter()
+                .filter(|a| if public_only { rusty_core::relay_policy::is_public_address(*a) } else { !direct || !forbidden_address(*a) })
+                .take(MAX_ADDRS_PER_HOST)
+                .collect();
             if addrs.is_empty() {
-                last_temp = Some(format!("{} has no usable address", target.host));
+                last_temp = Some(if public_only {
+                    format!("{} has no public address (a relay must be reachable on the public internet)", target.host)
+                } else {
+                    format!("{} has no usable address", target.host)
+                });
                 continue;
             }
             let (policy, implicit, dial_port) = match &relay {

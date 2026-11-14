@@ -31,6 +31,8 @@ pub struct RelaySpec {
     pub port: u16,
     pub tls: RelayTls,
     pub credentials: Option<Credentials>,
+    /// Set for a relay a tenant chose: the worker connects only to public addresses, checked at every connection.
+    pub public_only: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,7 +64,7 @@ impl ConfigRoute {
                     (Some(u), Some(p)) => Some(Credentials { username: u.clone(), password: read_password(secrets, p)? }),
                     _ => None,
                 };
-                Route::Relay(RelaySpec { host: r.host.clone(), port: r.port, tls: r.tls, credentials })
+                Route::Relay(RelaySpec { host: r.host.clone(), port: r.port, tls: r.tls, credentials, public_only: false })
             }
         };
         Ok(ConfigRoute { route })

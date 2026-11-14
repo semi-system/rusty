@@ -1019,3 +1019,172 @@ async fn a_job_queued_by_another_process_wakes_a_sleeping_worker_through_the_cha
     })
     .await;
 }
+
+// ------------------------------------------------------------------------------------------------ per-domain relay (tenant)
+
+mod tenant {
+    use super::*;
+    use rusty_core::relay_policy::validate_tenant_relay;
+    use rusty_seal::{generate, Context as SealContext, SealingKey, Unsealer, UnsealingKey};
+    use rusty_smtp::outbound::domain_route::{DomainRoute, RELAY_PASSWORD_PURPOSE};
+    use rusty_smtp::outbound::route::OutboundRoute;
+    use rusty_store::{RelayStore, SealedReader, SealedWriter};
+
+    /// Enter the relay of `example.net` the way the admin web will: the row, and the password sealed to `pk` (`None`: no password stored).
+    async fn enter(r: &Rig, host: &str, port: u16, tls: RelayTls, user: Option<&str>, password: Option<&str>, pk: &SealingKey) {
+        let repos = r.b.store.repos();
+        let dom = r.b.dir.find_domain("example.net").await.unwrap().unwrap();
+        let relay = validate_tenant_relay(host, port, tls, user).unwrap();
+        RelayStore::with_repo(repos.relay.clone()).set(dom.id, &relay, None).await.unwrap();
+        if let Some(p) = password {
+            let sealed = pk.seal(&SealContext::new("domain", dom.id.0, RELAY_PASSWORD_PURPOSE).unwrap(), p.as_bytes()).unwrap();
+            SealedWriter::with_repo(repos.sealed.clone()).put("domain", dom.id.0, RELAY_PASSWORD_PURPOSE, &pk.id().to_hex(), &sealed).await.unwrap();
+        }
+    }
+
+    fn route_with(r: &Rig, keys: Vec<UnsealingKey>, fallback: Arc<dyn OutboundRoute>) -> Arc<dyn OutboundRoute> {
+        let repos = r.b.store.repos();
+        Arc::new(
+            DomainRoute::new(r.b.dir.clone(), RelayStore::with_repo(repos.relay.clone()), SealedReader::with_repo(repos.sealed.clone()), Unsealer::new(keys).unwrap(), fallback)
+                .with_ttl(Duration::ZERO),
+        )
+    }
+
+    fn base_cfg(dir: &tempfile::TempDir, pki: &TestPki) -> OutboundConfig {
+        let mut cfg = fast_cfg();
+        cfg.ca_bundle = Some(write_bundle(dir, &pki.ca_pem));
+        cfg.backoff_secs = vec![3600];
+        cfg
+    }
+
+    fn direct(cfg: &OutboundConfig) -> Arc<dyn OutboundRoute> {
+        Arc::new(ConfigRoute::from_config(cfg, &FileSecretSource::new()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_tenant_relay_gets_the_mail_with_the_sealed_password_over_verified_tls() {
+        for_each_backend(|b| async move {
+            let pki = TestPki::new("relay.tenant-mail.net");
+            let dir = tempfile::tempdir().unwrap();
+            let sel = pki.server.clone();
+            let relay = FakeMta::start(move |_| Script { tls: Some(sel.clone()), require_auth: Some(("tenant".into(), "tenant-pw".into())), ..Script::default() }).await;
+            let dialer = MapDialer::new(&[("203.0.114.50", relay.addr)]);
+            let mut dns = StaticDns::default();
+            dns.addrs.insert("relay.tenant-mail.net".into(), vec!["203.0.114.50".parse().unwrap()]);
+            let cfg = base_cfg(&dir, &pki);
+            let mut r = rig(b, dialer, dns, cfg.clone()).await;
+            let (sk, pk) = generate();
+            enter(&r, "relay.tenant-mail.net", 587, RelayTls::Starttls, Some("tenant"), Some("tenant-pw"), &pk).await;
+            r.deps.route = route_with(&r, vec![sk], direct(&cfg));
+            r.start();
+            r.submit("alice@example.net", &["bob@anywhere.test"], MSG).await;
+            r.wait_done(1).await;
+            let got = relay.messages();
+            assert_eq!(got.len(), 1);
+            assert!(got[0].tls);
+            assert_eq!(got[0].auth.as_deref(), Some("|tenant|tenant-pw"));
+            r.stop().await;
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_tenant_relay_that_resolves_to_an_inside_address_is_never_connected_to() {
+        for inside in ["10.0.0.5", "127.0.0.1", "169.254.169.254", "192.168.1.9", "100.64.0.7", "::1", "fd00::5"] {
+            for_each_backend(move |b| async move {
+                let pki = TestPki::new("relay.tenant-mail.net");
+                let dir = tempfile::tempdir().unwrap();
+                let sel = pki.server.clone();
+                let relay = FakeMta::start(move |_| Script { tls: Some(sel.clone()), ..Script::default() }).await;
+                let dialer = MapDialer::new(&[(inside, relay.addr)]);
+                let mut dns = StaticDns::default();
+                dns.addrs.insert("relay.tenant-mail.net".into(), vec![inside.parse().unwrap()]);
+                let cfg = base_cfg(&dir, &pki);
+                let mut r = rig(b, dialer, dns, cfg.clone()).await;
+                let (sk, pk) = generate();
+                enter(&r, "relay.tenant-mail.net", 587, RelayTls::Starttls, None, None, &pk).await;
+                r.deps.route = route_with(&r, vec![sk], direct(&cfg));
+                r.start();
+                r.submit("alice@example.net", &["bob@anywhere.test"], MSG).await;
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                assert_eq!(relay.connection_count(), 0, "{inside}: the outbound service must not connect there");
+                assert_eq!((r.jobs("done").await, r.jobs("queued").await), (0, 1), "{inside}: the mail waits");
+                r.stop().await;
+            })
+            .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_relay_with_a_login_but_no_password_is_deferred_never_tried_without_credentials() {
+        for_each_backend(|b| async move {
+            let pki = TestPki::new("relay.tenant-mail.net");
+            let dir = tempfile::tempdir().unwrap();
+            let sel = pki.server.clone();
+            let relay = FakeMta::start(move |_| Script { tls: Some(sel.clone()), ..Script::default() }).await;
+            let dialer = MapDialer::new(&[("203.0.114.50", relay.addr)]);
+            let mut dns = StaticDns::default();
+            dns.addrs.insert("relay.tenant-mail.net".into(), vec!["203.0.114.50".parse().unwrap()]);
+            let cfg = base_cfg(&dir, &pki);
+            let mut r = rig(b, dialer, dns, cfg.clone()).await;
+            let (sk, pk) = generate();
+            enter(&r, "relay.tenant-mail.net", 587, RelayTls::Starttls, Some("tenant"), None, &pk).await;
+            r.deps.route = route_with(&r, vec![sk], direct(&cfg));
+            r.start();
+            r.submit("alice@example.net", &["bob@anywhere.test"], MSG).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            assert_eq!((relay.connection_count(), r.jobs("done").await, r.jobs("queued").await), (0, 0, 1));
+            r.stop().await;
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_password_this_service_cannot_open_defers_the_mail_without_connecting() {
+        for_each_backend(|b| async move {
+            let pki = TestPki::new("relay.tenant-mail.net");
+            let dir = tempfile::tempdir().unwrap();
+            let sel = pki.server.clone();
+            let relay = FakeMta::start(move |_| Script { tls: Some(sel.clone()), ..Script::default() }).await;
+            let dialer = MapDialer::new(&[("203.0.114.50", relay.addr)]);
+            let mut dns = StaticDns::default();
+            dns.addrs.insert("relay.tenant-mail.net".into(), vec!["203.0.114.50".parse().unwrap()]);
+            let cfg = base_cfg(&dir, &pki);
+            let mut r = rig(b, dialer, dns, cfg.clone()).await;
+            let (_sk, pk) = generate();
+            let (stranger, _) = generate();
+            enter(&r, "relay.tenant-mail.net", 587, RelayTls::Starttls, Some("tenant"), Some("tenant-pw"), &pk).await;
+            r.deps.route = route_with(&r, vec![stranger], direct(&cfg));
+            r.start();
+            r.submit("alice@example.net", &["bob@anywhere.test"], MSG).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            assert_eq!((relay.connection_count(), r.jobs("done").await, r.jobs("queued").await), (0, 0, 1));
+            r.stop().await;
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_domain_without_its_own_relay_uses_the_platform_route() {
+        for_each_backend(|b| async move {
+            let pki = TestPki::new("relay.fake.test");
+            let dir = tempfile::tempdir().unwrap();
+            let sel = pki.server.clone();
+            let relay = FakeMta::start(move |_| Script { tls: Some(sel.clone()), require_auth: Some(("mailer".into(), "s3cret".into())), ..Script::default() }).await;
+            let dialer = MapDialer::new(&[("192.0.2.50", relay.addr)]);
+            let mut dns = StaticDns::default();
+            dns.addrs.insert("relay.fake.test".into(), vec!["192.0.2.50".parse().unwrap()]);
+            let cfg = relay_cfg(&dir, &pki, RelayTls::Starttls);
+            let mut r = rig(b, dialer, dns, cfg.clone()).await;
+            let (sk, _pk) = generate();
+            // Nothing entered for example.net: the platform relay (the operator's own choice, trusted) carries the mail.
+            r.deps.route = route_with(&r, vec![sk], direct(&cfg));
+            r.start();
+            r.submit("alice@example.net", &["bob@anywhere.test"], MSG).await;
+            r.wait_done(1).await;
+            assert_eq!(relay.messages()[0].auth.as_deref(), Some("|mailer|s3cret"));
+            r.stop().await;
+        })
+        .await;
+    }
+}
