@@ -18,6 +18,7 @@ pub struct Backend {
     pub dir: Directory,
     pub store: Store,
     pub dns: DnsStore,
+    pub sealed: rusty_store::SealedWriter,
     pub fx: Fixtures,
     pub tmp: tempfile::TempDir,
     _db: Option<pg::PgTestDb>,
@@ -58,28 +59,35 @@ impl Backend {
         hostname: Option<&str>,
     ) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(passwords);
-        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname, config_note: "test", dkim_dir: None, dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None };
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname, config_note: "test", dkim_dir: None, dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing: None, sealed: Some(&self.sealed) };
         execute(&cmd, &mut env).await
     }
 
     pub async fn run_with_dkim(&self, cmd: Command, dkim_dir: &std::path::Path) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(&[]);
-        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: Some(dkim_dir), dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None };
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: Some(dkim_dir), dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing: None, sealed: Some(&self.sealed) };
         execute(&cmd, &mut env).await
     }
 
     /// `domain dns` with the outbound facts of a configuration.
     pub async fn run_dns(&self, cmd: Command, outbound: OutboundFacts<'_>) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(&[]);
-        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound, live_dns: None };
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound, live_dns: None, sealing: None, sealed: Some(&self.sealed) };
         execute(&cmd, &mut env).await
     }
 
     /// `domain check` against `src` (a zone in memory) with the outbound facts of a configuration.
     pub async fn check_with<S: DnsSource>(&self, src: &S, outbound: OutboundFacts<'_>, domain: &str) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(&[]);
-        let env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound, live_dns: None };
+        let env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound, live_dns: None, sealing: None, sealed: Some(&self.sealed) };
         check_domain(&env, src, domain).await
+    }
+
+    /// A command with the sealing key of a configuration (`[sealing] public_key`) and no key directory: sealed mode needs no files.
+    pub async fn run_sealed(&self, cmd: Command, sealing: Option<&rusty_seal::SealingKey>) -> Result<Outcome, CtlError> {
+        let mut pw = FakePasswords::new(&[]);
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing, sealed: Some(&self.sealed) };
+        execute(&cmd, &mut env).await
     }
 
     pub async fn count(&self, table: &str) -> i64 {
@@ -96,6 +104,7 @@ pub async fn pg_backend() -> Option<Backend> {
         dir: Directory::with_repo(store.repos().directory.clone()),
         fx: Fixtures::admin_of(&db, &store).await,
         dns: DnsStore::with_repo(store.repos().dns.clone()),
+        sealed: rusty_store::SealedWriter::with_repo(store.repos().sealed.clone()),
         store,
         tmp: tempfile::tempdir().unwrap(),
         _db: Some(db),

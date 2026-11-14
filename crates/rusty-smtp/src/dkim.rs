@@ -86,6 +86,42 @@ pub fn sealed_purpose(selector: &str) -> String {
     format!("dkim-{}", hex::encode(Sha256::digest(selector.to_ascii_lowercase().as_bytes()).get(..12).unwrap_or_default()))
 }
 
+
+/// A DKIM key made to be stored sealed: the private key exists only inside this call and in the sealed blob.
+pub struct SealedKey {
+    /// The selector the record is published under (`<selector>-ed25519`).
+    pub selector: String,
+    /// Base64 of the public key (`p=`).
+    pub public_key_b64: String,
+    /// The id of the sealing key the blob was sealed to.
+    pub key_id: String,
+    /// `sealed_secrets.purpose`: [`sealed_purpose`] of the selector.
+    pub purpose: String,
+    /// The sealed private key (PEM), bound to `("domain", domain_id, purpose)`.
+    pub sealed: Vec<u8>,
+}
+
+impl SealedKey {
+    /// The TXT value to publish.
+    pub fn txt_value(&self) -> String {
+        format!("v=DKIM1; k=ed25519; p={}", self.public_key_b64)
+    }
+}
+
+/// Make an Ed25519 key for the domain with id `domain_id` and seal its private half to `seal_to` (admin web design, section 14.2). Nothing is
+/// written to a file. The caller stores the blob (`SealedWriter::put`) and the public half (`DnsStore::add_dkim_key`). The published selector is
+/// `<selector>-ed25519`, like the key files of `rustyctl dkim generate`.
+pub fn generate_sealed(domain_id: i64, selector: &str, seal_to: &rusty_seal::SealingKey) -> Result<SealedKey> {
+    if !safe_label(selector) {
+        return Err(Error::Invalid("selector is not valid for a DKIM key".into()));
+    }
+    let published = format!("{selector}-ed25519");
+    let (pem, public_key_b64) = lib::generate_ed25519_pem()?;
+    let purpose = sealed_purpose(&published);
+    let sealed = seal_to.seal(&rusty_seal::Context::new("domain", domain_id, &purpose)?, pem.as_bytes())?;
+    Ok(SealedKey { selector: published, public_key_b64, key_id: seal_to.id().to_hex(), purpose, sealed })
+}
+
 const SEALED_TTL: Duration = Duration::from_secs(60);
 
 /// The signers loaded for a domain and when.
