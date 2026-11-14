@@ -15,5 +15,6 @@ toml.workspace = true
 rustix.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
 tempfile.workspace = true
 proptest.workspace = true
