@@ -1077,12 +1077,15 @@ async fn cancelled_postgres_operations_leave_a_clean_connection_and_gapless_coun
             .unwrap_or_else(|e| panic!("n={n}: {e:?}"));
         tx.commit().await.unwrap();
     }
-    let mut completed = 0;
-    for n in 1..=60usize {
+    // Cancel after n polls for n = 1, 2, 3, ... until one append runs to completion: every await point is hit, the
+    // last one included, however many polls an append needs on this machine and under this load (a fixed range
+    // such as 1..=60 failed once on a loaded run).
+    let mut n = 0usize;
+    loop {
+        n += 1;
+        assert!(n <= 10_000, "an append never completed within {n} polls");
         let fut = mb.append(INBOX, raw(&format!("c{n}"), None), Flags::default());
-        if poll_n_then_drop(fut, n).await {
-            completed += 1;
-        }
+        let completed = poll_n_then_drop(fut, n).await;
         // sqlx 0.9 recycles a connection that was dropped mid-statement in a background task, and an
         // `acquire` that meets the pool at its limit meanwhile retries in a yield loop (sqlx-core
         // pool/inner.rs). That burns polls, so the next cancelled append could never run to
@@ -1094,8 +1097,10 @@ async fn cancelled_postgres_operations_leave_a_clean_connection_and_gapless_coun
         )
         .await;
         assert!(matches!(settle, Ok(Ok(_))), "n={n}: {settle:?}");
+        if completed {
+            break;
+        }
     }
-    assert!(completed > 0, "some appends must have run to completion");
     for k in 0..200u64 {
         let fut = mb.append(INBOX, raw(&format!("t{k}"), None), Flags::default());
         let _ = tokio::time::timeout(Duration::from_micros((k % 50) * 20), fut).await;

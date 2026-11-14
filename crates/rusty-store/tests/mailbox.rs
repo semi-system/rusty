@@ -1071,13 +1071,16 @@ async fn poll_n_then_drop<F: std::future::Future>(fut: F, n: usize) -> bool {
 /// COMMIT) and with short timeouts; afterwards a normal append must succeed and whatever
 /// committed must be gapless.
 async fn cancel_appends_then_check(e: &Env) {
-    let mut completed = 0;
-    for n in 1..=60usize {
+    // Cancel after n polls for n = 1, 2, 3, ... until one append runs to completion: every await point is hit, the
+    // last one included, however many polls an append needs on this machine and under this load (a fixed range
+    // such as 1..=60 failed once on a loaded run).
+    let mut n = 0usize;
+    loop {
+        n += 1;
+        assert!(n <= 10_000, "an append never completed within {n} polls");
         let fut =
             e.mb.append(INBOX, raw(&format!("c{n}"), None), Flags::empty());
-        if poll_n_then_drop(fut, n).await {
-            completed += 1;
-        }
+        let completed = poll_n_then_drop(fut, n).await;
         // sqlx 0.9 recycles a connection that was dropped mid-statement in a background task, and an
         // `acquire` that finds the pool at its limit meanwhile retries in a yield loop (sqlx-core
         // pool/inner.rs, "woke but was unable to acquire idle connection"). That loop burns polls,
@@ -1089,8 +1092,10 @@ async fn cancel_appends_then_check(e: &Env) {
         )
         .await;
         assert!(matches!(settle, Ok(Ok(_))), "n={n}: {settle:?}");
+        if completed {
+            break;
+        }
     }
-    assert!(completed > 0, "some appends must have run to completion");
     for k in 0..200u64 {
         let fut =
             e.mb.append(INBOX, raw(&format!("t{k}"), None), Flags::empty());

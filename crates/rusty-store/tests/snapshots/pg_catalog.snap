@@ -420,7 +420,9 @@ TRIGGER aliases.aliases_same_domain_ins CREATE TRIGGER aliases_same_domain_ins B
 TRIGGER aliases.aliases_same_domain_upd CREATE TRIGGER aliases_same_domain_upd BEFORE UPDATE OF domain_id, account_id ON aliases FOR EACH ROW EXECUTE FUNCTION rs_alias_same_domain()
 TRIGGER blobs.blobs_zero_since_ins CREATE TRIGGER blobs_zero_since_ins BEFORE INSERT ON blobs FOR EACH ROW EXECUTE FUNCTION rs_blobs_zero_since()
 TRIGGER blobs.blobs_zero_since_refcount CREATE TRIGGER blobs_zero_since_refcount BEFORE UPDATE OF refcount ON blobs FOR EACH ROW EXECUTE FUNCTION rs_blobs_zero_since()
+TRIGGER change_log.change_log_notify CREATE TRIGGER change_log_notify AFTER INSERT ON change_log REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION rs_notify_mailboxes()
 TRIGGER folders.folders_no_cycle CREATE TRIGGER folders_no_cycle BEFORE UPDATE OF parent_id ON folders FOR EACH ROW EXECUTE FUNCTION rs_folders_no_cycle()
+TRIGGER jobs.jobs_notify CREATE TRIGGER jobs_notify AFTER INSERT ON jobs FOR EACH STATEMENT EXECUTE FUNCTION rs_notify_jobs()
 TRIGGER list_members.list_members_same_domain_ins CREATE TRIGGER list_members_same_domain_ins BEFORE INSERT ON list_members FOR EACH ROW EXECUTE FUNCTION rs_list_member_same_domain()
 TRIGGER list_members.list_members_same_domain_upd CREATE TRIGGER list_members_same_domain_upd BEFORE UPDATE OF account_id, list_id ON list_members FOR EACH ROW EXECUTE FUNCTION rs_list_member_same_domain()
 TRIGGER list_members.list_members_seq_ins CREATE TRIGGER list_members_seq_ins BEFORE INSERT ON list_members FOR EACH ROW WHEN (new.seq IS NULL) EXECUTE FUNCTION rs_list_members_seq()
@@ -638,6 +640,32 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
+$function$
+FUNCTION rs_notify_jobs
+CREATE OR REPLACE FUNCTION public.rs_notify_jobs()
+ RETURNS trigger
+ LANGUAGE plpgsql
+ SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+AS $function$
+BEGIN
+  PERFORM pg_notify('rusty_jobs', '');
+  RETURN NULL;
+END
+$function$
+FUNCTION rs_notify_mailboxes
+CREATE OR REPLACE FUNCTION public.rs_notify_mailboxes()
+ RETURNS trigger
+ LANGUAGE plpgsql
+ SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+AS $function$
+DECLARE
+  r record;
+BEGIN
+  FOR r IN SELECT mailbox_id, max(seq) AS newest FROM new_rows GROUP BY mailbox_id LOOP
+    PERFORM pg_notify('rusty_mailbox', r.mailbox_id::text || ':' || r.newest::text);
+  END LOOP;
+  RETURN NULL;
+END
 $function$
 FUNCTION rs_now
 CREATE OR REPLACE FUNCTION public.rs_now()

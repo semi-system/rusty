@@ -11,6 +11,7 @@
 
 mod accept;
 mod budget;
+mod change_feed;
 mod context;
 mod events;
 mod gc;
@@ -27,6 +28,7 @@ mod throttle;
 mod tls;
 
 pub use budget::MemoryBudget;
+pub use change_feed::{ChangeFanout, ChangeFeedService};
 pub use accept::{Accept, AsyncStream, BoxedStream, DirectTcp, DirectTls, PeerInfo, DEFAULT_HANDSHAKE_TIMEOUT};
 pub use context::Context;
 pub use events::{RejectReason, ServiceEvent, ServiceEvents, TracingEvents};

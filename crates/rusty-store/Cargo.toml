@@ -25,8 +25,9 @@ rusty-mime = { path = "../rusty-mime" }
 async-trait.workspace = true
 bytes.workspace = true
 sqlx.workspace = true
-# spawn and spawn_blocking; "time" for the Postgres retry backoff sleep.
-tokio = { workspace = true, features = ["rt", "time", "sync"] }
+# spawn and spawn_blocking; "time" for the Postgres retry backoff sleep; "macros" for the select! of the change feed.
+tokio = { workspace = true, features = ["rt", "time", "sync", "macros"] }
+tokio-util.workspace = true
 rustix.workspace = true
 rand_core.workspace = true
 serde_json.workspace = true

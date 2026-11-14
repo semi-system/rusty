@@ -70,6 +70,16 @@ impl MailboxHub {
         });
     }
 
+    /// Wake every follower of every mailbox without carrying a sequence (`watch` reports a change, the
+    /// value stays). Used after the change feed reconnected: announcements made while it was away are
+    /// lost, so each IDLE session looks at its change log again. Never lowers or raises a sequence.
+    pub fn poke_all(&self) {
+        let m = self.lock();
+        for tx in m.values() {
+            tx.send_modify(|_| {});
+        }
+    }
+
     /// Number of live channels (diagnostics and the leak test).
     pub fn channels(&self) -> usize {
         self.lock().len()
