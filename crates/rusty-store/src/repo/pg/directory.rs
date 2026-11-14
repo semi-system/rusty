@@ -24,7 +24,7 @@ const UV_MAX_BASE: i64 = u32::MAX as i64 - SYSTEM_FOLDERS;
 /// account serialize. `FOR NO KEY UPDATE` does not block the key-share locks of foreign-key
 /// checks (aliases, capabilities) against the account.
 async fn lock_account(c: &mut PgConnection, account: AccountId) -> TxResult<bool> {
-    let found = sqlx::query_scalar::<_, i64>(&crate::repo::pg_lit("SELECT id FROM accounts WHERE id = $1 FOR NO KEY UPDATE"))
+    let found = sqlx::query_scalar::<_, i64>(crate::repo::pg_lit("SELECT id FROM accounts WHERE id = $1 FOR NO KEY UPDATE"))
         .bind(account.0)
         .fetch_optional(&mut *c)
         .await?;
@@ -32,7 +32,7 @@ async fn lock_account(c: &mut PgConnection, account: AccountId) -> TxResult<bool
 }
 
 async fn revoke_all_in(c: &mut PgConnection, account: AccountId, now: Option<i64>) -> TxResult<u64> {
-    Ok(sqlx::query(&r(sql::CAP_REVOKE_ALL))
+    Ok(sqlx::query(r(sql::CAP_REVOKE_ALL))
         .bind(now)
         .bind(account.0)
         .execute(&mut *c)
@@ -44,7 +44,7 @@ async fn revoke_all_in(c: &mut PgConnection, account: AccountId, now: Option<i64
 impl DirectoryRepo for PgRepo {
     async fn create_domain(&self, name: &str) -> Result<DomainId> {
         check_text(name, MAX_DOMAIN_BYTES)?;
-        let id: i64 = sqlx::query_scalar(&r(sql::INSERT_DOMAIN))
+        let id: i64 = sqlx::query_scalar(r(sql::INSERT_DOMAIN))
             .bind(name)
             .fetch_one(self.store.pool())
             .await
@@ -55,7 +55,7 @@ impl DirectoryRepo for PgRepo {
     async fn create_plan(&self, name: &str, config: &str) -> Result<PlanId> {
         check_text(name, MAX_PLAN_NAME_BYTES)?;
         check_no_nul(config)?;
-        let id: i64 = sqlx::query_scalar(&r(sql::INSERT_PLAN))
+        let id: i64 = sqlx::query_scalar(r(sql::INSERT_PLAN))
             .bind(name)
             .bind(config)
             .fetch_one(self.store.pool())
@@ -66,7 +66,7 @@ impl DirectoryRepo for PgRepo {
 
     async fn list_domains(&self, after: Option<DomainId>, limit: usize) -> Result<Vec<DomainInfo>> {
         let limit = check_page_limit(limit)?;
-        let rows: Vec<(i64, String, String, i64)> = sqlx::query_as(&r(sql::LIST_DOMAINS))
+        let rows: Vec<(i64, String, String, i64)> = sqlx::query_as(r(sql::LIST_DOMAINS))
             .bind(after.map(|d| d.0))
             .bind(limit)
             .fetch_all(self.store.pool())
@@ -77,7 +77,7 @@ impl DirectoryRepo for PgRepo {
 
     async fn find_domain(&self, name: &str) -> Result<Option<DomainInfo>> {
         check_text(name, MAX_DOMAIN_BYTES)?;
-        let row: Option<(i64, String, String, i64)> = sqlx::query_as(&r(sql::FIND_DOMAIN))
+        let row: Option<(i64, String, String, i64)> = sqlx::query_as(r(sql::FIND_DOMAIN))
             .bind(name)
             .fetch_optional(self.store.pool())
             .await
@@ -88,7 +88,7 @@ impl DirectoryRepo for PgRepo {
     async fn set_domain_status(&self, domain: DomainId, status: DomainStatus) -> Result<()> {
         // One transaction: disabling revokes every capability of the domain at the same moment.
         tx_retry!(self, None, |c| {
-            let n = sqlx::query(&r(sql::UPDATE_DOMAIN_STATUS))
+            let n = sqlx::query(r(sql::UPDATE_DOMAIN_STATUS))
                 .bind(status.as_str())
                 .bind(domain.0)
                 .execute(&mut *c)
@@ -98,7 +98,7 @@ impl DirectoryRepo for PgRepo {
                 return Err(TxError::Domain(Error::NotFound("domain".into())));
             }
             if status == DomainStatus::Disabled {
-                sqlx::query(&r(sql::CAP_REVOKE_DOMAIN))
+                sqlx::query(r(sql::CAP_REVOKE_DOMAIN))
                     .bind(None::<i64>)
                     .bind(domain.0)
                     .execute(&mut *c)
@@ -116,7 +116,7 @@ impl DirectoryRepo for PgRepo {
             return Ok(Vec::new());
         }
         let list: Vec<i64> = ids.iter().map(|a| a.0).collect();
-        let rows: Vec<(i64, String)> = sqlx::query_as(&r(sql::ACCOUNT_STATUSES_PG))
+        let rows: Vec<(i64, String)> = sqlx::query_as(r(sql::ACCOUNT_STATUSES_PG))
             .bind(list)
             .fetch_all(self.store.pool())
             .await
@@ -127,7 +127,7 @@ impl DirectoryRepo for PgRepo {
     async fn find_account(&self, local: &str, domain: &str) -> Result<Option<AccountInfo>> {
         check_text(local, MAX_LOCAL_PART_BYTES)?;
         check_text(domain, MAX_DOMAIN_BYTES)?;
-        let row: Option<AccountRow> = sqlx::query_as(&r(sql::FIND_ACCOUNT))
+        let row: Option<AccountRow> = sqlx::query_as(r(sql::FIND_ACCOUNT))
             .bind(domain)
             .bind(local)
             .fetch_optional(self.store.pool())
@@ -143,7 +143,7 @@ impl DirectoryRepo for PgRepo {
         limit: usize,
     ) -> Result<Vec<AccountInfo>> {
         let limit = check_page_limit(limit)?;
-        let rows: Vec<AccountRow> = sqlx::query_as(&r(sql::LIST_ACCOUNTS))
+        let rows: Vec<AccountRow> = sqlx::query_as(r(sql::LIST_ACCOUNTS))
             .bind(domain.0)
             .bind(after.map(|a| a.0))
             .bind(limit)
@@ -160,7 +160,7 @@ impl DirectoryRepo for PgRepo {
         limit: usize,
     ) -> Result<Vec<AliasInfo>> {
         let limit = check_page_limit(limit)?;
-        let rows: Vec<(i64, String, i64, String, String)> = sqlx::query_as(&r(sql::LIST_ALIASES))
+        let rows: Vec<(i64, String, i64, String, String)> = sqlx::query_as(r(sql::LIST_ALIASES))
             .bind(domain.0)
             .bind(after)
             .bind(limit)
@@ -173,7 +173,7 @@ impl DirectoryRepo for PgRepo {
     async fn remove_alias(&self, local: &str, domain: &str) -> Result<()> {
         check_text(local, MAX_LOCAL_PART_BYTES)?;
         check_text(domain, MAX_DOMAIN_BYTES)?;
-        let n = sqlx::query(&r(sql::DELETE_ALIAS))
+        let n = sqlx::query(r(sql::DELETE_ALIAS))
             .bind(local)
             .bind(domain)
             .execute(self.store.pool())
@@ -195,7 +195,7 @@ impl DirectoryRepo for PgRepo {
         let names: Vec<&str> = SYSTEM_FOLDER_TABLE.iter().map(|f| f.1).collect();
         let roles: Vec<&str> = SYSTEM_FOLDER_TABLE.iter().map(|f| f.2).collect();
         let acc = tx_retry!(self, None, |c| {
-            let acc: i64 = sqlx::query_scalar(&r(sql::INSERT_ACCOUNT))
+            let acc: i64 = sqlx::query_scalar(r(sql::INSERT_ACCOUNT))
                 .bind(&new.local)
                 .bind(new.domain.0)
                 .bind(new.plan.map(|p| p.0))
@@ -204,7 +204,7 @@ impl DirectoryRepo for PgRepo {
                 .await?;
             // uid_validity high-water mark = clamped DATABASE clock + 5 (largest value issued).
             let (mb, uv_base): (i64, i64) = sqlx::query_as(
-                &crate::repo::pg_lit("INSERT INTO mailboxes (account_id, uid_validity, next_folder_id) \
+                crate::repo::pg_lit("INSERT INTO mailboxes (account_id, uid_validity, next_folder_id) \
                  VALUES ($1, LEAST(GREATEST(rs_now(), 1), $2) + $3, $4) \
                  RETURNING id, uid_validity - $3"),
             )
@@ -215,7 +215,7 @@ impl DirectoryRepo for PgRepo {
             .fetch_one(&mut *c)
             .await?;
             sqlx::query(
-                &crate::repo::pg_lit("INSERT INTO folders (mailbox_id, id, parent_id, name, role, uid_validity) \
+                crate::repo::pg_lit("INSERT INTO folders (mailbox_id, id, parent_id, name, role, uid_validity) \
                  SELECT $1, t.id, NULL, t.name, t.role, $2 + t.id \
                  FROM unnest($3::bigint[], $4::text[], $5::text[]) AS t(id, name, role)"),
             )
@@ -232,7 +232,7 @@ impl DirectoryRepo for PgRepo {
     }
 
     async fn mailbox_for(&self, account: AccountId) -> Result<MailboxId> {
-        sqlx::query_scalar::<_, i64>(&r(sql::MAILBOX_FOR_ACCOUNT))
+        sqlx::query_scalar::<_, i64>(r(sql::MAILBOX_FOR_ACCOUNT))
             .bind(account.0)
             .fetch_optional(self.store.pool())
             .await
@@ -247,7 +247,7 @@ impl DirectoryRepo for PgRepo {
             if !lock_account(&mut *c, account).await? {
                 return Err(TxError::Domain(Error::NotFound("account".into())));
             }
-            sqlx::query(&r(sql::UPDATE_PASSWORD))
+            sqlx::query(r(sql::UPDATE_PASSWORD))
                 .bind(hash)
                 .bind(account.0)
                 .execute(&mut *c)
@@ -262,7 +262,7 @@ impl DirectoryRepo for PgRepo {
             if !lock_account(&mut *c, account).await? {
                 return Err(TxError::Domain(Error::NotFound("account".into())));
             }
-            sqlx::query(&r(sql::UPDATE_STATUS))
+            sqlx::query(r(sql::UPDATE_STATUS))
                 .bind(status.as_str())
                 .bind(account.0)
                 .execute(&mut *c)
@@ -275,7 +275,7 @@ impl DirectoryRepo for PgRepo {
     }
 
     async fn account_auth(&self, account: AccountId) -> Result<Option<AuthRow>> {
-        let row: Option<(String, Option<String>)> = sqlx::query_as(&r(sql::ACCOUNT_AUTH))
+        let row: Option<(String, Option<String>)> = sqlx::query_as(r(sql::ACCOUNT_AUTH))
             .bind(account.0)
             .fetch_optional(self.store.pool())
             .await
@@ -288,7 +288,7 @@ impl DirectoryRepo for PgRepo {
 
     async fn add_alias(&self, local: &str, domain: DomainId, account: AccountId) -> Result<()> {
         check_text(local, MAX_LOCAL_PART_BYTES)?;
-        sqlx::query(&r(sql::INSERT_ALIAS))
+        sqlx::query(r(sql::INSERT_ALIAS))
             .bind(local)
             .bind(domain.0)
             .bind(account.0)
@@ -300,7 +300,7 @@ impl DirectoryRepo for PgRepo {
 
     async fn create_list(&self, local: &str, domain: DomainId) -> Result<ListId> {
         check_text(local, MAX_LOCAL_PART_BYTES)?;
-        let id: i64 = sqlx::query_scalar(&r(sql::INSERT_LIST))
+        let id: i64 = sqlx::query_scalar(r(sql::INSERT_LIST))
             .bind(local)
             .bind(domain.0)
             .fetch_one(self.store.pool())
@@ -323,16 +323,16 @@ impl DirectoryRepo for PgRepo {
             // Lock the list row first: the count and the per-list `seq` (assigned by the
             // list_members trigger under the same lock) must not interleave. A missing list
             // is not special-cased: the insert fails on the foreign key.
-            sqlx::query_scalar::<_, i64>(&crate::repo::pg_lit("SELECT id FROM lists WHERE id = $1 FOR UPDATE"))
+            sqlx::query_scalar::<_, i64>(crate::repo::pg_lit("SELECT id FROM lists WHERE id = $1 FOR UPDATE"))
                 .bind(list.0)
                 .fetch_optional(&mut *c)
                 .await?;
-            let members: i64 = sqlx::query_scalar(&r(sql::COUNT_MEMBERS))
+            let members: i64 = sqlx::query_scalar(r(sql::COUNT_MEMBERS))
                 .bind(list.0)
                 .fetch_one(&mut *c)
                 .await?;
             check_list_capacity(members, max_members).map_err(TxError::Domain)?;
-            sqlx::query(&crate::repo::pg_lit("INSERT INTO list_members (list_id, account_id, external) VALUES ($1, $2, $3)"))
+            sqlx::query(crate::repo::pg_lit("INSERT INTO list_members (list_id, account_id, external) VALUES ($1, $2, $3)"))
                 .bind(list.0)
                 .bind(account.map(|a| a.0))
                 .bind(external)
@@ -351,7 +351,7 @@ impl DirectoryRepo for PgRepo {
         check_text(local, MAX_LOCAL_PART_BYTES)?;
         check_text(domain, MAX_DOMAIN_BYTES)?;
         let pool = self.store.pool();
-        let Some((kind, id)): Option<(i64, i64)> = sqlx::query_as(&r(sql::RESOLVE_KIND))
+        let Some((kind, id)): Option<(i64, i64)> = sqlx::query_as(r(sql::RESOLVE_KIND))
             .bind(domain)
             .bind(local)
             .fetch_optional(pool)
@@ -363,7 +363,7 @@ impl DirectoryRepo for PgRepo {
         if kind != 3 {
             return Ok(Some(Resolution::Account(AccountId(id))));
         }
-        let rows: Vec<(Option<i64>, Option<String>)> = sqlx::query_as(&r(sql::LIST_MEMBERS))
+        let rows: Vec<(Option<i64>, Option<String>)> = sqlx::query_as(r(sql::LIST_MEMBERS))
             .bind(id)
             .bind(max_members as i64 + 1)
             .fetch_all(pool)
@@ -380,7 +380,7 @@ impl DirectoryRepo for PgRepo {
             ConfigTarget::Account(a) => (sql::SET_ACCOUNT_CONFIG, a.0, "account"),
             ConfigTarget::Plan(p) => (sql::SET_PLAN_CONFIG, p.0, "plan"),
             ConfigTarget::Global => {
-                sqlx::query(&r(sql::SET_GLOBAL_CONFIG))
+                sqlx::query(r(sql::SET_GLOBAL_CONFIG))
                     .bind(GLOBAL_PLAN)
                     .bind(config)
                     .execute(pool)
@@ -389,7 +389,7 @@ impl DirectoryRepo for PgRepo {
                 return Ok(());
             }
         };
-        let n = sqlx::query(&r(stmt))
+        let n = sqlx::query(r(stmt))
             .bind(config)
             .bind(id)
             .execute(pool)
@@ -404,7 +404,7 @@ impl DirectoryRepo for PgRepo {
 
     async fn config_layers(&self, account: AccountId) -> Result<ConfigLayers> {
         let row: Option<(String, Option<String>, Option<String>, Option<String>)> =
-            sqlx::query_as(&r(sql::CONFIG_LAYERS))
+            sqlx::query_as(r(sql::CONFIG_LAYERS))
                 .bind(account.0)
                 .bind(GLOBAL_PLAN)
                 .fetch_optional(self.store.pool())
@@ -435,10 +435,10 @@ impl DirectoryRepo for PgRepo {
             }
             let now = match now {
                 Some(n) => n,
-                None => sqlx::query_scalar(&r(sql::NOW)).fetch_one(&mut *c).await?,
+                None => sqlx::query_scalar(r(sql::NOW)).fetch_one(&mut *c).await?,
             };
             let expires_at = capability_expiry(now, ttl_secs).map_err(TxError::Domain)?;
-            let inserted = sqlx::query(&r(sql::CAP_INSERT))
+            let inserted = sqlx::query(r(sql::CAP_INSERT))
                 .bind(&token_hash[..])
                 .bind(role)
                 .bind(now)
@@ -453,7 +453,7 @@ impl DirectoryRepo for PgRepo {
             // Keep at most `max_active`: revoke the oldest beyond that. The new row is never a
             // candidate. Ties on `issued_at` (second granularity) are broken by `token_hash`.
             sqlx::query(
-                &crate::repo::pg_lit("UPDATE capabilities SET revoked_at = GREATEST($1, issued_at) WHERE token_hash IN (\
+                crate::repo::pg_lit("UPDATE capabilities SET revoked_at = GREATEST($1, issued_at) WHERE token_hash IN (\
                    SELECT token_hash FROM capabilities \
                    WHERE account_id = $2 AND revoked_at IS NULL AND expires_at > $1 \
                      AND token_hash <> $4 \
@@ -477,7 +477,7 @@ impl DirectoryRepo for PgRepo {
         role: &str,
         now: Option<i64>,
     ) -> Result<Option<CapabilityGrant>> {
-        let row: Option<(i64, i64, String, i64)> = sqlx::query_as(&r(sql::CAP_VALIDATE))
+        let row: Option<(i64, i64, String, i64)> = sqlx::query_as(r(sql::CAP_VALIDATE))
             .bind(&token_hash[..])
             .bind(now)
             .bind(role)
@@ -493,7 +493,7 @@ impl DirectoryRepo for PgRepo {
     }
 
     async fn revoke_capability(&self, token_hash: &[u8; 32], now: Option<i64>) -> Result<bool> {
-        let n = sqlx::query(&r(sql::CAP_REVOKE_ONE))
+        let n = sqlx::query(r(sql::CAP_REVOKE_ONE))
             .bind(now)
             .bind(&token_hash[..])
             .execute(self.store.pool())

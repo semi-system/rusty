@@ -31,7 +31,7 @@ fn sqlstate(e: &sqlx::Error) -> String {
 
 /// The statement is refused for lack of privilege (42501 insufficient_privilege).
 async fn denied(pool: &PgPool, sql: &str) {
-    let r = sqlx::query(sql).execute(pool).await;
+    let r = sqlx::query(sqlx::AssertSqlSafe(sql)).execute(pool).await;
     match r {
         Err(e) => assert_eq!(sqlstate(&e), "42501", "{sql}: {e}"),
         Ok(_) => panic!("{sql} was allowed"),
@@ -243,15 +243,15 @@ async fn startup_refuses_a_runtime_role_with_ddl_rights_or_without_timeouts() {
     let a = admin_pool(&db).await;
     let dbname = db.name().to_owned();
     for (value, why) in [("0", "disabled"), ("2h", "too long")] {
-        sqlx::query(&format!("ALTER ROLE rusty_app IN DATABASE \"{dbname}\" SET statement_timeout = '{value}'"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("ALTER ROLE rusty_app IN DATABASE \"{dbname}\" SET statement_timeout = '{value}'")))
             .execute(&a)
             .await
             .unwrap();
         invalid_role(PgStore::connect_with(&db.role_url("rusty_app"), cfg.clone(), &strict()).await, "statement_timeout");
         let _ = why;
     }
-    sqlx::query(&format!("ALTER ROLE rusty_app IN DATABASE \"{dbname}\" RESET statement_timeout")).execute(&a).await.unwrap();
-    sqlx::query(&format!("ALTER ROLE rusty_app IN DATABASE \"{dbname}\" SET idle_in_transaction_session_timeout = 0"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("ALTER ROLE rusty_app IN DATABASE \"{dbname}\" RESET statement_timeout"))).execute(&a).await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("ALTER ROLE rusty_app IN DATABASE \"{dbname}\" SET idle_in_transaction_session_timeout = 0")))
         .execute(&a)
         .await
         .unwrap();
@@ -259,7 +259,7 @@ async fn startup_refuses_a_runtime_role_with_ddl_rights_or_without_timeouts() {
         PgStore::connect_with(&db.role_url("rusty_app"), cfg.clone(), &strict()).await,
         "idle_in_transaction_session_timeout",
     );
-    sqlx::query(&format!("ALTER ROLE rusty_app IN DATABASE \"{dbname}\" RESET idle_in_transaction_session_timeout"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("ALTER ROLE rusty_app IN DATABASE \"{dbname}\" RESET idle_in_transaction_session_timeout")))
         .execute(&a)
         .await
         .unwrap();

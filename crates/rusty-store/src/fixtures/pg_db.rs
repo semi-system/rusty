@@ -46,6 +46,7 @@ fn url_for(admin_db_url: &str, user: &str, password: &str) -> String {
 /// race on the cluster-wide role catalog ("tuple concurrently updated"), so the whole step is retried.
 async fn apply_roles(admin_db_url: &str) {
     let admin = PgPoolOptions::new().max_connections(1).connect(admin_db_url).await.expect("connect to the test database");
+    // The three passwords are constants of this test-support module, nothing from outside reaches it.
     let logins = format!(
         "ALTER ROLE rusty_migrator LOGIN PASSWORD '{TEST_MIGRATOR_PASSWORD}'; \
          ALTER ROLE rusty_app LOGIN PASSWORD '{TEST_APP_PASSWORD}'; \
@@ -55,7 +56,7 @@ async fn apply_roles(admin_db_url: &str) {
     for attempt in 0..40u64 {
         let first = sqlx::raw_sql(ROLES_SQL).execute(&admin).await;
         let res = match first {
-            Ok(_) => sqlx::raw_sql(&logins).execute(&admin).await,
+            Ok(_) => sqlx::raw_sql(sqlx::AssertSqlSafe(logins.as_str())).execute(&admin).await,
             Err(e) => Err(e),
         };
         match res {
@@ -138,7 +139,7 @@ impl PgTestDb {
         // `name` is generated above from a fixed prefix and lowercase hex only. PostgreSQL
         // identifiers cannot be bound as parameters, so this is the sole intentional SQL
         // interpolation in the helper.
-        sqlx::query(&format!("CREATE DATABASE \"{name}\""))
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE \"{name}\"")))
             .execute(&admin)
             .await
             .expect("create isolated Postgres test database");
@@ -191,17 +192,17 @@ impl PgTestDb {
         assert!(name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'), "setting name");
         assert!(value.bytes().all(|b| b.is_ascii_alphanumeric()), "setting value");
         let admin = PgPoolOptions::new().max_connections(1).connect(&self.admin_url).await.expect("connect to Postgres test admin");
-        sqlx::query(&format!("ALTER DATABASE \"{}\" SET {name} = '{value}'", self.name))
+        sqlx::query(sqlx::AssertSqlSafe(format!("ALTER DATABASE \"{}\" SET {name} = '{value}'", self.name)))
             .execute(&admin)
             .await
             .expect("alter the test database setting");
         // In roles mode `rusty_app` carries its own role-level timeouts (deploy/db/roles.sql) and a role setting
         // beats a database setting: override it for this database only, as an operator would per database.
         if roles_mode() {
-            sqlx::query(&format!(
+            sqlx::query(sqlx::AssertSqlSafe(format!(
                 "ALTER ROLE rusty_app IN DATABASE \"{}\" SET {name} = '{value}'",
                 self.name
-            ))
+            )))
             .execute(&admin)
             .await
             .expect("alter the app role setting for the test database");
@@ -303,7 +304,7 @@ async fn drop_database(admin: &sqlx::PgPool, name: &str) {
     .bind(name)
     .execute(admin)
     .await;
-    let _ = sqlx::query(&format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)"))
+    let _ = sqlx::query(sqlx::AssertSqlSafe(format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)")))
         .execute(admin)
         .await;
 }

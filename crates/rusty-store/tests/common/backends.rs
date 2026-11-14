@@ -107,7 +107,7 @@ pub async fn exec(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> i64 {
     // Every fixture statement ends in `RETURNING id`.
     if b.pg.is_some() {
         let sql = dialect_sql(b, sql);
-        let mut q = sqlx::query_scalar::<_, i64>(&sql);
+        let mut q = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql.as_str()));
         for x in binds {
             q = match x {
                 Bind::I(v) => q.bind(*v),
@@ -164,7 +164,7 @@ macro_rules! bind_all {
 pub async fn fetch_i64s(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> Vec<i64> {
     let sql = dialect_sql(b, sql);
     if b.pg.is_some() {
-        return bind_all!(sqlx::query_scalar::<_, i64>(&sql), binds)
+        return bind_all!(sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql.as_str())), binds)
             .fetch_all(b.fx())
             .await
             .unwrap();
@@ -176,7 +176,7 @@ pub async fn fetch_i64s(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> Vec<i64> 
 pub async fn fetch_strings(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> Vec<String> {
     let sql = dialect_sql(b, sql);
     if b.pg.is_some() {
-        return bind_all!(sqlx::query_scalar::<_, String>(&sql), binds)
+        return bind_all!(sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(sql.as_str())), binds)
             .fetch_all(b.fx())
             .await
             .unwrap();
@@ -188,7 +188,7 @@ pub async fn fetch_strings(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> Vec<St
 pub async fn fetch_opt_i64(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> Option<i64> {
     let sql = dialect_sql(b, sql);
     if b.pg.is_some() {
-        return bind_all!(sqlx::query_scalar::<_, Option<i64>>(&sql), binds)
+        return bind_all!(sqlx::query_scalar::<_, Option<i64>>(sqlx::AssertSqlSafe(sql.as_str())), binds)
             .fetch_one(b.fx())
             .await
             .unwrap();
@@ -207,7 +207,7 @@ pub async fn fetch_rows(
     use sqlx::Row;
     let sql = dialect_sql(b, sql);
     if b.pg.is_some() {
-        let rows = bind_all!(sqlx::query(&sql), binds)
+        let rows = bind_all!(sqlx::query(sqlx::AssertSqlSafe(sql.as_str())), binds)
             .fetch_all(b.fx())
             .await
             .unwrap();
@@ -230,7 +230,7 @@ pub async fn fetch_rows(
 pub async fn execute(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> u64 {
     let sql = dialect_sql(b, sql);
     if b.pg.is_some() {
-        return bind_all!(sqlx::query(&sql), binds)
+        return bind_all!(sqlx::query(sqlx::AssertSqlSafe(sql.as_str())), binds)
             .execute(b.fx())
             .await
             .unwrap()
@@ -271,7 +271,7 @@ fn failure(e: sqlx::Error) -> SqlFailure {
 pub async fn try_execute(b: &Backend, sql: &str, binds: &[Bind<'_>]) -> Result<u64, SqlFailure> {
     let sql = dialect_sql(b, sql);
     if b.pg.is_some() {
-        return bind_all!(sqlx::query(&sql), binds)
+        return bind_all!(sqlx::query(sqlx::AssertSqlSafe(sql.as_str())), binds)
             .execute(b.fx())
             .await
             .map(|r| r.rows_affected())
@@ -316,7 +316,7 @@ pub async fn acct_in(b: &Backend, dom: DomainId, local: &str) -> Mailbox {
 /// One `bigint` from a fixture query (no parameters; use `count(*)`, never `sum`).
 pub async fn scalar(b: &Backend, sql: &str) -> i64 {
     if b.pg.is_some() {
-        return sqlx::query_scalar::<_, i64>(sql)
+        return sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql))
             .fetch_one(b.fx())
             .await
             .unwrap();
@@ -327,7 +327,7 @@ pub async fn scalar(b: &Backend, sql: &str) -> i64 {
 /// All rows of a one-column `bigint` fixture query.
 pub async fn scalars(b: &Backend, sql: &str) -> Vec<i64> {
     if b.pg.is_some() {
-        return sqlx::query_scalar::<_, i64>(sql)
+        return sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql))
             .fetch_all(b.fx())
             .await
             .unwrap();
@@ -429,7 +429,7 @@ impl Backend {
 /// Run one fixture statement with no parameters and no result (dialect-neutral SQL text).
 pub async fn run(b: &Backend, sql: &str) {
     if b.pg.is_some() {
-        sqlx::query(sql).execute(b.fx()).await.unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(sql)).execute(b.fx()).await.unwrap();
         return;
     }
     unreachable!()
@@ -438,7 +438,7 @@ pub async fn run(b: &Backend, sql: &str) {
 /// One text value from a fixture query.
 pub async fn text(b: &Backend, sql: &str) -> String {
     if b.pg.is_some() {
-        return sqlx::query_scalar::<_, String>(sql)
+        return sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(sql))
             .fetch_one(b.fx())
             .await
             .unwrap();

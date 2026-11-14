@@ -951,7 +951,7 @@ impl OneConn {
     }
 
     async fn scalar(&self, sql: &str) -> i64 {
-        sqlx::query_scalar(sql).fetch_one(self.store.pool()).await.unwrap()
+        sqlx::query_scalar(sqlx::AssertSqlSafe(sql)).fetch_one(self.store.pool()).await.unwrap()
     }
 }
 

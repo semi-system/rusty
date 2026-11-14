@@ -59,7 +59,7 @@ const CLAIM_LOCK: &str = "SELECT j.id, j.state, j.attempts, j.max_attempts FROM 
 /// The two claim probe statements, rendered for Postgres, for the plan tests.
 #[cfg(feature = "test-knobs")]
 pub fn claim_statements_for_test() -> (String, String) {
-    (r(CLAIM_PEEK), r(CLAIM_LOCK))
+    (crate::repo::render_text(CLAIM_PEEK), crate::repo::render_text(CLAIM_LOCK))
 }
 
 struct Candidate {
@@ -81,7 +81,7 @@ async fn next_candidate(
 ) -> std::result::Result<Option<Candidate>, sqlx::Error> {
     let mut after = (i64::MIN, i64::MIN);
     for _ in 0..CLAIM_MAX_ROUNDS {
-        let window = sqlx::query(&r(CLAIM_PEEK))
+        let window = sqlx::query(r(CLAIM_PEEK))
             .bind(kinds)
             .bind(now)
             .bind(after.0)
@@ -93,7 +93,7 @@ async fn next_candidate(
         };
         let decided: i64 = first.try_get("now")?;
         let ids: Vec<i64> = window.iter().map(|w| w.try_get("id")).collect::<std::result::Result<_, sqlx::Error>>()?;
-        if let Some(row) = sqlx::query(&crate::repo::pg_lit(CLAIM_LOCK))
+        if let Some(row) = sqlx::query(crate::repo::pg_lit(CLAIM_LOCK))
             .bind(&ids)
             .bind(decided)
             .fetch_optional(&mut *c)
@@ -118,7 +118,7 @@ async fn next_candidate(
 #[async_trait]
 impl JobRepo for PgRepo {
     async fn db_now(&self) -> Result<i64> {
-        sqlx::query_scalar(&r("SELECT {NOW}"))
+        sqlx::query_scalar(r("SELECT {NOW}"))
             .fetch_one(self.store.pool())
             .await
             .map_err(map_db_error)
@@ -131,14 +131,14 @@ impl JobRepo for PgRepo {
                 match job.domain {
                     Some(d) => {
                         sqlx::query_scalar::<_, i64>(
-                            &crate::repo::pg_lit("SELECT id FROM domains WHERE id = $1 FOR NO KEY UPDATE"),
+                            crate::repo::pg_lit("SELECT id FROM domains WHERE id = $1 FOR NO KEY UPDATE"),
                         )
                         .bind(d.0)
                         .fetch_optional(&mut *c)
                         .await?;
                     }
                     None => {
-                        sqlx::query(&crate::repo::pg_lit("SELECT pg_advisory_xact_lock($1, $2)"))
+                        sqlx::query(crate::repo::pg_lit("SELECT pg_advisory_xact_lock($1, $2)"))
                             .bind(NO_DOMAIN_LOCK_CLASS)
                             .bind(NO_DOMAIN_LOCK_KEY)
                             .execute(&mut *c)
@@ -148,7 +148,7 @@ impl JobRepo for PgRepo {
                 let pending: i64 = match job.domain {
                     Some(d) => {
                         sqlx::query_scalar(
-                            &crate::repo::pg_lit("SELECT count(*) FROM jobs WHERE domain_id = $1 \
+                            crate::repo::pg_lit("SELECT count(*) FROM jobs WHERE domain_id = $1 \
                              AND state IN ('queued', 'running')"),
                         )
                         .bind(d.0)
@@ -157,7 +157,7 @@ impl JobRepo for PgRepo {
                     }
                     None => {
                         sqlx::query_scalar(
-                            &crate::repo::pg_lit("SELECT count(*) FROM jobs WHERE domain_id IS NULL \
+                            crate::repo::pg_lit("SELECT count(*) FROM jobs WHERE domain_id IS NULL \
                              AND state IN ('queued', 'running')"),
                         )
                         .fetch_one(&mut *c)
@@ -167,7 +167,7 @@ impl JobRepo for PgRepo {
                 if pending >= i64::from(job.effective_cap()) {
                     return Err(Error::Quota("job queue full".into()).into());
                 }
-                let id: i64 = sqlx::query_scalar(&r(
+                let id: i64 = sqlx::query_scalar(r(
                     "INSERT INTO jobs (kind, domain_id, state, payload, attempts, max_attempts, \
                                        run_after, epoch, created_at, updated_at) \
                      SELECT $1, $2, 'queued', $3, 0, $4, COALESCE($5, t.now), 0, t.now, t.now \
@@ -198,13 +198,13 @@ impl JobRepo for PgRepo {
                 for d in &domains {
                     match d {
                         Some(d) => {
-                            sqlx::query_scalar::<_, i64>(&crate::repo::pg_lit("SELECT id FROM domains WHERE id = $1 FOR NO KEY UPDATE"))
+                            sqlx::query_scalar::<_, i64>(crate::repo::pg_lit("SELECT id FROM domains WHERE id = $1 FOR NO KEY UPDATE"))
                                 .bind(*d)
                                 .fetch_optional(&mut *c)
                                 .await?;
                         }
                         None => {
-                            sqlx::query(&crate::repo::pg_lit("SELECT pg_advisory_xact_lock($1, $2)"))
+                            sqlx::query(crate::repo::pg_lit("SELECT pg_advisory_xact_lock($1, $2)"))
                                 .bind(NO_DOMAIN_LOCK_CLASS)
                                 .bind(NO_DOMAIN_LOCK_KEY)
                                 .execute(&mut *c)
@@ -213,20 +213,20 @@ impl JobRepo for PgRepo {
                     }
                 }
                 if let Some((owner, _)) = req.owner {
-                    sqlx::query_scalar::<_, i64>(&crate::repo::pg_lit("SELECT id FROM accounts WHERE id = $1 FOR NO KEY UPDATE"))
+                    sqlx::query_scalar::<_, i64>(crate::repo::pg_lit("SELECT id FROM accounts WHERE id = $1 FOR NO KEY UPDATE"))
                         .bind(owner)
                         .fetch_optional(&mut *c)
                         .await?;
                 }
                 let now: i64 = match req.now {
                     Some(n) => n,
-                    None => sqlx::query_scalar(&r("SELECT {NOW}")).fetch_one(&mut *c).await?,
+                    None => sqlx::query_scalar(r("SELECT {NOW}")).fetch_one(&mut *c).await?,
                 };
                 let mut known: Vec<Option<i64>> = Vec::with_capacity(req.jobs.len());
                 for j in req.jobs {
                     let existing = match j.dedupe_key {
                         Some(k) => {
-                            sqlx::query_scalar::<_, i64>(&crate::repo::pg_lit("SELECT id FROM jobs WHERE dedupe_key = $1"))
+                            sqlx::query_scalar::<_, i64>(crate::repo::pg_lit("SELECT id FROM jobs WHERE dedupe_key = $1"))
                                 .bind(k)
                                 .fetch_optional(&mut *c)
                                 .await?
@@ -248,13 +248,13 @@ impl JobRepo for PgRepo {
                 for (d, add) in scopes {
                     let pending: i64 = match d {
                         Some(d) => {
-                            sqlx::query_scalar(&crate::repo::pg_lit("SELECT count(*) FROM jobs WHERE domain_id = $1 AND state IN ('queued', 'running')"))
+                            sqlx::query_scalar(crate::repo::pg_lit("SELECT count(*) FROM jobs WHERE domain_id = $1 AND state IN ('queued', 'running')"))
                                 .bind(d)
                                 .fetch_one(&mut *c)
                                 .await?
                         }
                         None => {
-                            sqlx::query_scalar(&crate::repo::pg_lit("SELECT count(*) FROM jobs WHERE domain_id IS NULL AND state IN ('queued', 'running')"))
+                            sqlx::query_scalar(crate::repo::pg_lit("SELECT count(*) FROM jobs WHERE domain_id IS NULL AND state IN ('queued', 'running')"))
                                 .fetch_one(&mut *c)
                                 .await?
                         }
@@ -268,11 +268,11 @@ impl JobRepo for PgRepo {
                     }
                 }
                 if let (Some((owner, lim)), false) = (req.owner, new.is_empty()) {
-                    let pending: i64 = sqlx::query_scalar(&crate::repo::pg_lit("SELECT count(*) FROM jobs WHERE owner_id = $1 AND state IN ('queued', 'running')"))
+                    let pending: i64 = sqlx::query_scalar(crate::repo::pg_lit("SELECT count(*) FROM jobs WHERE owner_id = $1 AND state IN ('queued', 'running')"))
                         .bind(owner)
                         .fetch_one(&mut *c)
                         .await?;
-                    let (jobs, units, bytes): (i64, i64, i64) = sqlx::query_as(&crate::repo::pg_lit(
+                    let (jobs, units, bytes): (i64, i64, i64) = sqlx::query_as(crate::repo::pg_lit(
                         "SELECT count(*), COALESCE(sum(units), 0)::bigint, COALESCE(sum(bytes), 0)::bigint FROM jobs WHERE owner_id = $1 AND created_at > $2",
                     ))
                     .bind(owner)
@@ -297,7 +297,7 @@ impl JobRepo for PgRepo {
                         out.push(id);
                         continue;
                     }
-                    let id: i64 = sqlx::query_scalar(&crate::repo::pg_lit(
+                    let id: i64 = sqlx::query_scalar(crate::repo::pg_lit(
                         "INSERT INTO jobs (kind, domain_id, state, payload, attempts, max_attempts, run_after, epoch, created_at, updated_at, \
                                            dedupe_key, owner_id, units, bytes) \
                          VALUES ($1, $2, 'queued', $3, 0, $4, $5, 0, $5, $5, $6, $7, $8, $9) RETURNING id",
@@ -335,7 +335,7 @@ impl JobRepo for PgRepo {
                     };
                     let Candidate { id, state, attempts, max_attempts, now } = cand;
                     if attempts >= max_attempts {
-                        sqlx::query(&crate::repo::pg_lit(sql::SETTLE_DEAD))
+                        sqlx::query(crate::repo::pg_lit(sql::SETTLE_DEAD))
                             .bind(id)
                             .bind(exhausted_reason(state == "running"))
                             .bind(now)
@@ -369,7 +369,7 @@ impl JobRepo for PgRepo {
                         }
                         None => {
                             // A row that can never be handed to a worker: park it, keep going.
-                            sqlx::query(&crate::repo::pg_lit(sql::SETTLE_DEAD))
+                            sqlx::query(crate::repo::pg_lit(sql::SETTLE_DEAD))
                                 .bind(id)
                                 .bind("unreadable payload")
                                 .bind(now)
@@ -387,7 +387,7 @@ impl JobRepo for PgRepo {
     async fn heartbeat(&self, id: JobId, epoch: i64, lease_secs: u32, now: Option<i64>) -> Result<()> {
         let n = tx_retry!(self, None, |c| {
             {
-                Ok(sqlx::query(&r(sql::HEARTBEAT))
+                Ok(sqlx::query(r(sql::HEARTBEAT))
                     .bind(id.0)
                     .bind(epoch)
                     .bind(i64::from(lease_secs))
@@ -403,7 +403,7 @@ impl JobRepo for PgRepo {
     async fn complete(&self, id: JobId, epoch: i64, now: Option<i64>) -> Result<()> {
         let n = tx_retry!(self, None, |c| {
             {
-                Ok(sqlx::query(&r(sql::COMPLETE))
+                Ok(sqlx::query(r(sql::COMPLETE))
                     .bind(id.0)
                     .bind(epoch)
                     .bind(now)
@@ -418,7 +418,7 @@ impl JobRepo for PgRepo {
     async fn fail(&self, id: JobId, epoch: i64, error: &str, retry_secs: i64, now: Option<i64>) -> Result<()> {
         let n = tx_retry!(self, None, |c| {
             {
-                Ok(sqlx::query(&r(sql::FAIL))
+                Ok(sqlx::query(r(sql::FAIL))
                     .bind(id.0)
                     .bind(epoch)
                     .bind(error)
@@ -443,7 +443,7 @@ impl JobRepo for PgRepo {
     ) -> Result<()> {
         let n = tx_retry!(self, None, |c| {
             {
-                Ok(sqlx::query(&r(sql::RESCHEDULE))
+                Ok(sqlx::query(r(sql::RESCHEDULE))
                     .bind(id.0)
                     .bind(epoch)
                     .bind(payload)
@@ -459,7 +459,7 @@ impl JobRepo for PgRepo {
     }
 
     async fn fence_check(&self, fence: JobFence, now: Option<i64>) -> Result<()> {
-        let ok: Option<i64> = sqlx::query_scalar(&r(sql::FENCE))
+        let ok: Option<i64> = sqlx::query_scalar(r(sql::FENCE))
             .bind(fence.id.0)
             .bind(fence.epoch)
             .bind(now)
@@ -473,7 +473,7 @@ impl JobRepo for PgRepo {
         let n = tx_retry!(self, None, |c| {
             {
                 Ok(sqlx::query(
-                    &crate::repo::pg_lit("DELETE FROM jobs WHERE id IN (\
+                    crate::repo::pg_lit("DELETE FROM jobs WHERE id IN (\
                        SELECT id FROM jobs \
                        WHERE state IN ('done', 'failed', 'dead') AND updated_at < $1 \
                        ORDER BY id LIMIT $2 FOR UPDATE SKIP LOCKED)"),

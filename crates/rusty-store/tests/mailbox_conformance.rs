@@ -520,7 +520,7 @@ async fn running_job(b: &Backend, epoch: i64) -> i64 {
 async fn job_state(b: &Backend, id: i64) -> String {
     let sql = "SELECT state FROM jobs WHERE id = ";
     if let Some((p, _)) = &b.pg {
-        return sqlx::query_scalar(&format!("{sql}{id}")).fetch_one(p.pool()).await.unwrap();
+        return sqlx::query_scalar(sqlx::AssertSqlSafe(format!("{sql}{id}"))).fetch_one(p.pool()).await.unwrap();
     }
     unreachable!()
 }

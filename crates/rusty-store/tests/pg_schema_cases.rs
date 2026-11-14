@@ -105,12 +105,12 @@ async fn seed(p: &PgPool) {
         "INSERT INTO blobs(hash,size) VALUES (decode(repeat('aa',32),'hex'),10),(decode(repeat('bb',32),'hex'),10)",
     ];
     for s in statements {
-        sqlx::query(s).execute(p).await.expect(s);
+        sqlx::query(sqlx::AssertSqlSafe(s)).execute(p).await.expect(s);
     }
     for t in ["domains", "plans", "accounts", "aliases", "lists", "mailboxes", "jobs"] {
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT setval(pg_get_serial_sequence('{t}','id'), 1000)"
-        ))
+        )))
         .execute(p)
         .await
         .unwrap();
@@ -377,11 +377,11 @@ fn cases() -> Vec<Case> {
 async fn run_case(pool: &PgPool, c: &Case) -> Result<(), String> {
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     for s in &c.setup {
-        if let Result::Err(e) = sqlx::query(s).execute(&mut *tx).await {
+        if let Result::Err(e) = sqlx::query(sqlx::AssertSqlSafe(s.as_str())).execute(&mut *tx).await {
             return Result::Err(format!("setup failed `{s}`: {e}"));
         }
     }
-    let result = sqlx::query(&c.sql).execute(&mut *tx).await;
+    let result = sqlx::query(sqlx::AssertSqlSafe(c.sql.as_str())).execute(&mut *tx).await;
     let _ = tx.rollback().await;
     match (c.exp, result) {
         (Exp::Ok, Ok(_)) => Ok(()),
@@ -442,18 +442,18 @@ fn unix_now() -> i64 {
 }
 
 async fn zero_since(p: &PgPool, hash: &str) -> Option<i64> {
-    sqlx::query_scalar(&format!("SELECT zero_since FROM blobs WHERE hash={hash}"))
+    sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT zero_since FROM blobs WHERE hash={hash}")))
         .fetch_one(p)
         .await
         .unwrap()
 }
 
 async fn count(p: &PgPool, sql: &str) -> i64 {
-    sqlx::query_scalar(sql).fetch_one(p).await.unwrap()
+    sqlx::query_scalar(sqlx::AssertSqlSafe(sql)).fetch_one(p).await.unwrap()
 }
 
 async fn exec(p: &PgPool, sql: &str) {
-    sqlx::query(sql).execute(p).await.expect(sql);
+    sqlx::query(sqlx::AssertSqlSafe(sql)).execute(p).await.expect(sql);
 }
 
 /// Wall-clock window check: kills rs_now() returning milliseconds or a constant.
