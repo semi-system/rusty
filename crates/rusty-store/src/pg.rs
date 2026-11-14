@@ -227,6 +227,12 @@ impl PgStore {
         Ok(tx)
     }
 
+    /// The feed of changes made by other processes (migration 0017): one dedicated connection that LISTENs.
+    /// Nothing connects until it is run.
+    pub fn change_feed(&self) -> crate::feed::PgChangeFeed {
+        crate::feed::PgChangeFeed::new(&self.pool)
+    }
+
     /// Close all connections and wait for checked-out connections to return.
     pub async fn close(&self) {
         self.pool.close().await;

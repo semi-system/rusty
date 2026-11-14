@@ -13,7 +13,8 @@ use rusty_core::{Error, Result};
 use rusty_store::{BlobStore, FsBlobStore, Store};
 use rusty_svc::{
     listener_plan, run_services, Accept, BoundListener, Context, DirectTcp, DirectTls, FileSecretSource,
-    GcService, ListenerKind, ListenerService, Service, SessionHandler, SystemClock, TlsProvider,
+    ChangeFanout, ChangeFeedService, GcService, ListenerKind, ListenerService, Service, SessionHandler, SystemClock,
+    TlsProvider,
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -189,6 +190,13 @@ async fn build(
         services.push(Box::new(ListenerService::new(bound, accept, handler)));
     }
     services.push(Box::new(GcService::new(GC_EVERY)));
+    // Changes made by OTHER processes (a delivery by smtp-in, a job queued by submission): the database announces them
+    // at commit (migration 0017) and this one LISTEN connection hands them to the hub (IMAP IDLE) and the outbound
+    // worker. In this all-in-one process it only repeats what the in-memory path already did; it is here so that the
+    // path every split deployment depends on runs in every start-up. Notifications are hints: IDLE and the worker
+    // keep their timers.
+    let changes = ChangeFanout::new(ctx.hub.clone()).with_jobs(wake.0.clone());
+    services.push(Box::new(ChangeFeedService::new(store.change_feed(), Arc::new(changes))));
     if let Some(dns) = dns {
         let deps = WorkerDeps {
             resolver: dns.resolver.clone(),

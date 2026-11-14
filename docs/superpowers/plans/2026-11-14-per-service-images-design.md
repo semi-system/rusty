@@ -8,8 +8,9 @@ test server, rusty-ctl image, NOTIFY instead of a poll). The owner writes Vietna
 
 - One separate binary and one image per service; no shared multi-call binary in production (a shared binary is one
   exploitation point). The all-in-one (`rusty d`, `--dev`) is dropped; development runs through compose with many containers.
-- At most 10 services in total, counting the database and the web parts (it was "fewer than 10"; the owner relaxed it to 10
-  on 2026-11-14). The current plan uses 9, so exactly one slot is left; anything added later needs a new decision.
+- The number of services is kept small on purpose, but "10" is a guard against sprawl, not a hard limit (owner, 2026-11-14:
+  "10 is not a problem, I only put it there so the service count does not overflow"). Adding a service needs a technical
+  reason, not a free slot; the current plan has 9.
 - Postgres is the only database. Blobs will be S3 only; S3 credentials come from environment variables
   (plus a `*_FILE` form), per service, never from the database. Any S3-compatible server is supported (on-premises
   operators bring their own); the server used in tests and CI is **RustFS** (decided 2026-11-14).
@@ -30,9 +31,10 @@ test server, rusty-ctl image, NOTIFY instead of a poll). The owner writes Vietna
 | 7 | `rusty-admin` | 443 (via edge) | admin web (server-rendered), W2 | own design document |
 | 8 | `rusty-webmail` | 443 (via edge) | webmail BE+FE | own design document, later |
 | 9 | HAProxy | 25, 80, 110, 143, 443, 465, 587, 993, 995 | edge (TLS, PROXY v2, limits) | already built and tested; the owner's `prost` proxy is a candidate for later |
+| 10 | PgBouncer | 6432 (internal) | connection pooling in front of Postgres (transaction mode), the default path of every runtime service | section 5b; owner's decision 2026-11-14 |
 
-Count: 9 containers. S3 is external and not counted. In the development compose the edge is left out (ports published
-directly), so a dev stack with an S3 server is also 9.
+Count: 10 containers. S3 is external and not counted. In the development compose the edge is left out (ports published
+directly), so a dev stack with an S3 server is also 10.
 
 `rustyctl` stays its own binary and image (`rusty-ctl`): the one-shot `db migrate` job and operator commands. It is the only
 place that holds the migrator role's credentials. It is not a long-running service and is not in the count.
@@ -109,6 +111,42 @@ path and the definer triggers of migration 0016). The way to derive it, and to k
    a missing privilege fails a test, an extra one is found by the same generator.
 3. Keep `rusty_app` until all five are green, then drop it.
 
+## 5b. PgBouncer is the default path to Postgres (owner's decision, 2026-11-14)
+
+Every runtime service connects to PgBouncer in **transaction pooling** mode, not to Postgres. The reason is the connection
+arithmetic, not throughput: services x replicas x `pool_size` plus one `LISTEN` connection per process exceeds the default
+`max_connections` (100) at two replicas per service, and every Postgres connection is a process with its own memory.
+
+Two connections must **not** go through the pooler (they need a session):
+1. the change feed's `LISTEN` connection (section 7.1): in transaction mode the `LISTEN` is lost between transactions and
+   notifications silently never arrive. The timers (IDLE 30 s, worker 2 s) would keep the system correct but slow, which is
+   the worst kind of failure: it looks fine;
+2. `rustyctl db migrate` and `db status` (DDL, the migrator role).
+
+What this means for the code and the deployment (none of it exists yet):
+- **Configuration.** `[store]` gets a second endpoint for the direct connections (for example `direct_url`) and a flag that the
+  main `url` is a pooler. When the flag is set the change feed and `rusty-ctl` use the direct endpoint, and a start-up check
+  refuses a configuration that says "pooler" without one. `PgChangeFeed::new` today reuses the store pool's connect options, so it
+  must take the direct options instead (follow-up of step 1).
+- **Authentication per service role.** Each service role (section 5) logs in through PgBouncer, which passes the identity on
+  so the role's privileges and its role-level timeouts apply. `auth_type = scram-sha-256` with either an `auth_query` (one
+  small privileged lookup role) or a generated user list. Server connections are pooled per (database, role): the number of
+  server connections is the SUM over roles of their `default_pool_size`, set per role.
+- **Prepared statements, the real risk (not verified).** sqlx keeps a cache of server-side prepared statements per connection.
+  Behind a transaction pooler that needs PgBouncer 1.21 or later with `max_prepared_statements`, or the cache switched off.
+  Nothing here has been tried with sqlx 0.9. This must be proven before the default is relied upon: run the **whole test
+  suite through PgBouncer in CI** (the test harness keeps a direct admin URL for `CREATE DATABASE` and the migrator, and a pooled URL
+  for the code under test), the long-planned PG8a.
+- **No session state in the code.** `lock_timeout` is applied per transaction, `statement_timeout` and
+  `idle_in_transaction_session_timeout` are role-level, and no code issues `SET`; this was built for a pooler and is what the
+  tests of step 1 for the cancellation sweep also exercise.
+- **Security.** PgBouncer holds credentials, so it is internal only (no published port), TLS is verified on both hops
+  (service to PgBouncer, PgBouncer to Postgres, `verify-full`), its admin console is off or limited to a local role, and
+  the image is pinned by digest and verified, not copied (`deploy/images.lock`).
+- **Availability.** PgBouncer is stateless: one per node (a sidecar of the services on that node) or two behind the compose or
+  cluster network; it is not a single point of failure by design, but its health check belongs in the dependency order of the
+  stack (Postgres, then PgBouncer, then the services).
+
 ## 6. S3 credentials per service (when the S3 blob store lands)
 
 | Service | S3 rights |
@@ -149,9 +187,9 @@ holds without it. Decision (2026-11-14): remove the delay with the **same Postgr
 calls `pg_notify('rusty_jobs')` and `rusty-outbound` keeps one `LISTEN` connection that wakes the worker. The 2 s poll stays as the
 fallback (NOTIFY is not durable). One mechanism, one listener implementation, both notifications in migration 0017.
 
-**Why not a message queue such as MQTT** (the owner offered it as an alternative): it adds a broker container, which makes the
-stack 10 and breaks the "fewer than 10" budget; it adds a new network service with its own authentication and failure modes;
-and a publish from the application is not part of the database transaction, so it can announce a change before the commit
+**Why not a message queue such as MQTT** (the owner offered it as an alternative): it adds a broker, a new stateful component to run, secure
+and monitor (the service count is not the objection: 10 is a guard, not a limit); it has its own authentication and failure
+modes; and a publish from the application is not part of the database transaction, so it can announce a change before the commit
 or be lost after it, while `NOTIFY` is delivered at commit. If the broker is wanted later for other reasons (webmail push, for
 example), the listener sits behind a small trait, so the source of notifications can change without touching the services.
 
@@ -193,6 +231,8 @@ later item. To be written in the operator documentation.
    (`rusty-auth`, per-role context, the four SMTP crates), tests and fuzz targets moving with their code. Behaviour-neutral.
 5. **Five thin binaries + multi-target Dockerfile + the per-image gates**; at the end `rusty d` and `crates/rusty` are removed
    and the dev compose replaces the dev profile.
+6a. **PgBouncer by default** (section 5b): first a spike that runs the suite through it and settles the prepared-statement question,
+   then `direct_url` plus the change feed on the direct endpoint, then the compose profile and a CI job through the pooler.
 6. **GC lease** (migration 0018).
 7. **Per-service database roles** with each service's tests running as its own role (section 5), then drop `rusty_app`.
 8. **S3 blob store** (own design, RustFS in tests): trait change, DB-driven GC, ranged reads.
@@ -208,10 +248,11 @@ Steps 1 to 4 are refactors under the existing tests; step 5 is the visible chang
 | 2 | one role per service or one `rusty_app`? | **One role per service** | section 5, step 7 |
 | 3 | which S3? | **Any S3-compatible server; RustFS in tests** | section 6 |
 | 4 | the `rusty-ctl` image with the migrator credentials? | **Yes** | section 2 |
-| 5 | the 2 s outbound poll? | **Remove the delay (NOTIFY); a message queue such as MQTT was offered as an alternative** | section 7.2: NOTIFY chosen, MQTT rejected with reasons; the owner can overrule, but a broker is a tenth container |
+| 5 | the 2 s outbound poll? | **Remove the delay (NOTIFY); a message queue such as MQTT was offered as an alternative** | section 7.2: NOTIFY chosen (confirmed by the owner), MQTT rejected with technical reasons |
+| 6 | add PgBouncer? | **Yes, as the default path** | section 5b, the direct exceptions, the PG8a suite through it |
 
 Still open:
-1. Question 5: confirm NOTIFY (recommended) or ask for MQTT and then decide what leaves the budget of 10.
+1. Question 5: the owner chose NOTIFY on 2026-11-14 (the choice "NOTIFY or MQTT" was left open; NOTIFY needs no new component). Closed.
 2. Question 1 widens the work: step 4 touches the most fuzzed code. The owner accepted the cost; the order (gate first, then moves)
    is mine and can be changed.
 

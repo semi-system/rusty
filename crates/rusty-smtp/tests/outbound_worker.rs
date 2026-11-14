@@ -790,3 +790,68 @@ async fn the_body_of_a_retrying_job_survives_the_blob_gc_after_the_default_grace
     })
     .await;
 }
+
+// ---- the wake-up across processes (migration 0017) -----------------------------------------------
+
+/// A worker that polls once a minute, so nothing but a wake-up can make it pick a job up in a test.
+fn sleeper(r: &Rig, wake: Option<rusty_smtp::outbound::worker::Wake>) -> OutboundWorker {
+    let mut opts = r.opts.clone();
+    opts.poll = Duration::from_secs(60);
+    let w = OutboundWorker::new(r.deps.clone(), opts);
+    match wake {
+        Some(wake) => w.with_wake(wake),
+        None => w,
+    }
+}
+
+#[tokio::test]
+async fn control_a_sleeping_worker_does_not_see_a_job_queued_by_another_process() {
+    for_each_backend(|b| async move {
+        let mta = FakeMta::start(|_| Script::default()).await;
+        let dialer = MapDialer::new(&[("192.0.2.10", mta.addr)]);
+        let mut r = rig(b, dialer, dns_one("mx.fake.test", "192.0.2.10"), fast_cfg()).await;
+        let worker = sleeper(&r, None);
+        let (ctx, token) = (r.ctx.clone(), r.token.clone());
+        r.task = Some(tokio::spawn(async move { Box::new(worker).run(ctx, token).await }));
+        tokio::time::sleep(Duration::from_millis(500)).await; // its first look at the (empty) queue
+        r.submit("alice@example.net", &["bob@remote.test"], MSG).await; // another process: no in-process wake
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(r.jobs("done").await, 0, "the worker picked the job up without any wake-up: the test below proves nothing");
+        assert_eq!(r.jobs("queued").await, 1);
+        r.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_job_queued_by_another_process_wakes_a_sleeping_worker_through_the_change_feed() {
+    for_each_backend(|b| async move {
+        let mta = FakeMta::start(|_| Script::default()).await;
+        let dialer = MapDialer::new(&[("192.0.2.10", mta.addr)]);
+        let mut r = rig(b, dialer, dns_one("mx.fake.test", "192.0.2.10"), fast_cfg()).await;
+        let wake = rusty_smtp::outbound::worker::Wake::default();
+        let worker = sleeper(&r, Some(wake.clone()));
+        let (ctx, token) = (r.ctx.clone(), r.token.clone());
+        r.task = Some(tokio::spawn(async move { Box::new(worker).run(ctx, token).await }));
+
+        // The feed of THIS process, into the worker's wake-up (what the composition root wires).
+        let sink = Arc::new(rusty_svc::ChangeFanout::new(r.ctx.hub.clone()).with_jobs(wake.0.clone()));
+        let stop = CancellationToken::new();
+        let feed = r.b.store.change_feed();
+        let feed_task = tokio::spawn({
+            let stop = stop.clone();
+            async move { feed.run(sink, stop).await }
+        });
+        // Let the first resync wake the worker and let it go back to sleep: from here only a job can wake it.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        r.submit("alice@example.net", &["bob@remote.test"], MSG).await; // another process: no in-process wake
+        r.wait_done(1).await;
+        assert_eq!(mta.messages().len(), 1);
+
+        stop.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(5), feed_task).await;
+        r.stop().await;
+    })
+    .await;
+}

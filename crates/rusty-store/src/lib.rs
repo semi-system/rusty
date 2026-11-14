@@ -3,6 +3,7 @@
 mod blob;
 mod dns;
 mod error_map;
+mod feed;
 mod gc;
 mod jobs;
 mod mailbox;
@@ -28,6 +29,7 @@ pub use dns::{
     DnsStore, OwnershipToken, TokenVerifier, DNS_EVENTS_PER_DOMAIN, MAX_DNS_EVENT_PAGE, MAX_RECORDS_PER_DOMAIN,
 };
 pub use error_map::map_db_error;
+pub use feed::{ChangeFeed, ChangeSink, PgChangeFeed, CHANNEL_JOBS, CHANNEL_MAILBOX};
 pub use jobs::{
     ClaimedJob, JobQueue, DEFAULT_JOB_ATTEMPTS, JOB_RETENTION_SECS, MAX_CLAIM_KINDS,
     MAX_JOB_ATTEMPTS, MAX_JOB_KIND_BYTES, MAX_JOB_PAYLOAD_BYTES, MAX_LAST_ERROR_BYTES,

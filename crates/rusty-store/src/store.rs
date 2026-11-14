@@ -88,6 +88,11 @@ impl Store {
         &self.repos
     }
 
+    /// The feed of changes made by other processes: run it as a service of the process and give it a sink.
+    pub fn change_feed(&self) -> Arc<dyn crate::ChangeFeed> {
+        Arc::new(self.pg.change_feed())
+    }
+
     /// Graceful shutdown: the pool is closed. Call once after every service holding `Repos` has stopped.
     pub async fn close(&self) -> Result<()> {
         self.pg.close().await;

@@ -117,6 +117,31 @@ as the largest acceptable value, a role with no timeout (0) or a longer one make
   locked database and an exhausted pool answer SMTP `451 4.3.0` / IMAP `NO [UNAVAILABLE]` within a bound,
   nothing is stored, and the same message is accepted once the database is free (idempotent `DeliveryId`).
 
+## 5a. Cross-process notifications (`LISTEN` / `NOTIFY`)
+
+With one process per service, a message delivered by one process must wake the IDLE sessions of another, and a job queued by
+submission must wake the outbound worker. The database announces both, at commit (migration 0017):
+
+| Channel | Payload | Sent when | Heard by |
+|---|---|---|---|
+| `rusty_mailbox` | `<mailbox id>:<newest seq>` | rows are inserted into `change_log` (one notification per mailbox and statement) | IMAP IDLE (`MailboxHub`) |
+| `rusty_jobs` | empty | rows are inserted into `jobs` | the outbound worker |
+
+* **One extra connection per process.** Every process that runs the change feed keeps ONE dedicated connection that
+  `LISTEN`s. It is not part of `pool_size` (it has its own pool of one) and it uses the same host, role, credentials and TLS
+  policy as the store. Count it in `max_connections` of the server: one per running process. `LISTEN` needs a session, so
+  behind PgBouncer in transaction mode this connection must go to the server directly (or to a pooler in session mode).
+  No extra privilege is needed.
+* **A notification is a hint, never the record.** Postgres keeps nothing for a listener that is away. After every
+  (re)subscription the feed reports a resync: IDLE sessions look at their change log again and the worker at the queue. Both
+  also keep their timers (IDLE polls the change log every 30 s, the worker polls the queue every 2 s), so a lost notification
+  costs latency, never mail. A lost connection is retried with a delay that grows from 0.5 s to 30 s and is logged as
+  `change feed: connection lost, retrying`.
+* **Rolled-back work is never announced** (`NOTIFY` is delivered at commit).
+* Tests: `rusty-store/tests/pg_notify.rs` (the triggers), `pg_change_feed.rs` (listening, reconnect, stop),
+  `rusty-imap/tests/cross_process_idle.rs` (two contexts with separate hubs, including a delivery made while the feed was
+  down), `rusty-smtp/tests/outbound_worker.rs` (a sleeping worker woken by a job another process queued).
+
 ## 6. Migrations
 
 * `rustyctl db migrate [--without-roles]` (migrator credentials from `[store]`, connects directly to Postgres, never
@@ -144,6 +169,7 @@ fails if the gap is filled. Applied migrations are frozen once released.
 | 0013 | jobs enqueue (U5) |
 | 0014, 0015 | DNS state tables (U10) |
 | 0016 | address registry `SECURITY DEFINER` |
+| 0017 | `NOTIFY` triggers on `change_log` and `jobs` (cross-process notifications, section 5a) |
 
 A new migration takes the next number.
 
