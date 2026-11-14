@@ -23,6 +23,7 @@ pub struct Backend {
     pub mrepo: Arc<dyn MailboxRepo>,
     pub jrepo: Arc<dyn JobRepo>,
     pub nrepo: Arc<dyn DnsRepo>,
+    pub srepo: Arc<dyn rusty_store::repo::SealedRepo>,
     pub grepo: Arc<dyn GcRepo>,
     pub blobs: Arc<dyn BlobStore>,
     pub pg: Option<(PgStore, PgRepo)>,
@@ -58,6 +59,7 @@ pub async fn pg_backend() -> Option<Backend> {
         mrepo: arc.clone(),
         jrepo: arc.clone(),
         nrepo: arc.clone(),
+        srepo: arc.clone(),
         grepo: arc,
         blobs: blob_dir(&tmp).await,
         pg: Some((store, repo)),
@@ -418,6 +420,16 @@ impl Backend {
     /// The DNS validation store over this backend's repository.
     pub fn dns(&self) -> DnsStore {
         DnsStore::with_repo(self.nrepo.clone())
+    }
+
+    /// The writer facade of the sealed secrets (what the admin service holds).
+    pub fn sealed_writer(&self) -> rusty_store::SealedWriter {
+        rusty_store::SealedWriter::with_repo(self.srepo.clone())
+    }
+
+    /// The reader facade of the sealed secrets (what the outbound service holds).
+    pub fn sealed_reader(&self) -> rusty_store::SealedReader {
+        rusty_store::SealedReader::with_repo(self.srepo.clone())
     }
 
     /// The garbage collector over this backend's repository.

@@ -159,6 +159,9 @@ async fn read_only_role_cannot_write_or_read_password_hashes() {
     denied(&ro, "DELETE FROM mailboxes").await;
     denied(&ro, "TRUNCATE domains CASCADE").await;
     denied(&ro, "CREATE TABLE t (id int)").await;
+    // A reporting role has no business with sealed secrets, ciphertext or not (it cannot open them, but it need not see them).
+    denied(&ro, "SELECT count(*) FROM sealed_secrets").await;
+    denied(&ro, "SELECT sealed FROM sealed_secrets").await;
     ro.close().await;
     db.cleanup().await;
 }

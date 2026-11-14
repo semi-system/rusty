@@ -136,6 +136,13 @@ COLUMN messages.deleted_at bigint nullable=YES identity=NO/ collation= default=
 COLUMN plans.id bigint nullable=NO identity=YES/ALWAYS collation= default=
 COLUMN plans.name text nullable=NO identity=NO/ collation=C default=
 COLUMN plans.config jsonb nullable=NO identity=NO/ collation= default='{}'::jsonb
+COLUMN sealed_secrets.owner_kind text nullable=NO identity=NO/ collation=C default=
+COLUMN sealed_secrets.owner_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN sealed_secrets.purpose text nullable=NO identity=NO/ collation=C default=
+COLUMN sealed_secrets.key_id text nullable=NO identity=NO/ collation=C default=
+COLUMN sealed_secrets.sealed bytea nullable=NO identity=NO/ collation= default=
+COLUMN sealed_secrets.created_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN sealed_secrets.updated_at bigint nullable=NO identity=NO/ collation= default=
 CONSTRAINT accounts.accounts_config_not_null NOT NULL config
 CONSTRAINT accounts.accounts_created_at_not_null NOT NULL created_at
 CONSTRAINT accounts.accounts_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE RESTRICT
@@ -374,6 +381,18 @@ CONSTRAINT plans.plans_name_key UNIQUE (name)
 CONSTRAINT plans.plans_name_not_null NOT NULL name
 CONSTRAINT plans.plans_name_valid CHECK (length(name) > 0)
 CONSTRAINT plans.plans_pkey PRIMARY KEY (id)
+CONSTRAINT sealed_secrets.sealed_secrets_created_at_not_null NOT NULL created_at
+CONSTRAINT sealed_secrets.sealed_secrets_key_id_not_null NOT NULL key_id
+CONSTRAINT sealed_secrets.sealed_secrets_key_id_valid CHECK (key_id ~ '^[0-9a-f]{16}$'::text)
+CONSTRAINT sealed_secrets.sealed_secrets_kind_valid CHECK (owner_kind ~ '^[a-z0-9_-]{1,32}$'::text)
+CONSTRAINT sealed_secrets.sealed_secrets_owner_id_not_null NOT NULL owner_id
+CONSTRAINT sealed_secrets.sealed_secrets_owner_kind_not_null NOT NULL owner_kind
+CONSTRAINT sealed_secrets.sealed_secrets_pkey PRIMARY KEY (owner_kind, owner_id, purpose)
+CONSTRAINT sealed_secrets.sealed_secrets_purpose_not_null NOT NULL purpose
+CONSTRAINT sealed_secrets.sealed_secrets_purpose_valid CHECK (purpose ~ '^[a-z0-9_-]{1,32}$'::text)
+CONSTRAINT sealed_secrets.sealed_secrets_sealed_not_null NOT NULL sealed
+CONSTRAINT sealed_secrets.sealed_secrets_size_valid CHECK (octet_length(sealed) >= 16 AND octet_length(sealed) <= 66000)
+CONSTRAINT sealed_secrets.sealed_secrets_updated_at_not_null NOT NULL updated_at
 INDEX accounts.accounts_id_domain CREATE UNIQUE INDEX accounts_id_domain ON public.accounts USING btree (id, domain_id)
 INDEX accounts.accounts_local_part_domain_id_key CREATE UNIQUE INDEX accounts_local_part_domain_id_key ON public.accounts USING btree (local_part, domain_id)
 INDEX accounts.accounts_pkey CREATE UNIQUE INDEX accounts_pkey ON public.accounts USING btree (id)
@@ -422,6 +441,7 @@ INDEX messages.messages_pkey CREATE UNIQUE INDEX messages_pkey ON public.message
 INDEX messages.messages_thread CREATE INDEX messages_thread ON public.messages USING btree (mailbox_id, thread_id)
 INDEX plans.plans_name_key CREATE UNIQUE INDEX plans_name_key ON public.plans USING btree (name)
 INDEX plans.plans_pkey CREATE UNIQUE INDEX plans_pkey ON public.plans USING btree (id)
+INDEX sealed_secrets.sealed_secrets_pkey CREATE UNIQUE INDEX sealed_secrets_pkey ON public.sealed_secrets USING btree (owner_kind, owner_id, purpose)
 TRIGGER accounts.accounts_addr_truncate CREATE TRIGGER accounts_addr_truncate AFTER TRUNCATE ON accounts FOR EACH STATEMENT EXECUTE FUNCTION rs_address_truncate()
 TRIGGER accounts.accounts_addr_unique_del CREATE TRIGGER accounts_addr_unique_del BEFORE DELETE ON accounts FOR EACH ROW EXECUTE FUNCTION rs_address_unique()
 TRIGGER accounts.accounts_addr_unique_ins CREATE TRIGGER accounts_addr_unique_ins BEFORE INSERT ON accounts FOR EACH ROW EXECUTE FUNCTION rs_address_unique()
@@ -438,6 +458,7 @@ TRIGGER blobs.blobs_zero_since_ins CREATE TRIGGER blobs_zero_since_ins BEFORE IN
 TRIGGER blobs.blobs_zero_since_refcount CREATE TRIGGER blobs_zero_since_refcount BEFORE UPDATE OF refcount ON blobs FOR EACH ROW EXECUTE FUNCTION rs_blobs_zero_since()
 TRIGGER change_log.change_log_notify CREATE TRIGGER change_log_notify AFTER INSERT ON change_log REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION rs_notify_mailboxes()
 TRIGGER domain_dkim_keys.domain_dkim_keys_immutable CREATE TRIGGER domain_dkim_keys_immutable BEFORE UPDATE ON domain_dkim_keys FOR EACH ROW EXECUTE FUNCTION rs_dkim_keys_immutable()
+TRIGGER domains.domains_sealed_cleanup CREATE TRIGGER domains_sealed_cleanup AFTER DELETE ON domains FOR EACH ROW EXECUTE FUNCTION rs_sealed_domain_cleanup()
 TRIGGER folders.folders_no_cycle CREATE TRIGGER folders_no_cycle BEFORE UPDATE OF parent_id ON folders FOR EACH ROW EXECUTE FUNCTION rs_folders_no_cycle()
 TRIGGER jobs.jobs_notify CREATE TRIGGER jobs_notify AFTER INSERT ON jobs FOR EACH STATEMENT EXECUTE FUNCTION rs_notify_jobs()
 TRIGGER list_members.list_members_same_domain_ins CREATE TRIGGER list_members_same_domain_ins BEFORE INSERT ON list_members FOR EACH ROW EXECUTE FUNCTION rs_list_member_same_domain()
@@ -700,3 +721,14 @@ CREATE OR REPLACE FUNCTION public.rs_now()
  LANGUAGE sql
  STABLE PARALLEL SAFE
 RETURN (EXTRACT(epoch FROM statement_timestamp()))::bigint
+FUNCTION rs_sealed_domain_cleanup
+CREATE OR REPLACE FUNCTION public.rs_sealed_domain_cleanup()
+ RETURNS trigger
+ LANGUAGE plpgsql
+ SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+AS $function$
+BEGIN
+  DELETE FROM sealed_secrets WHERE owner_kind = 'domain' AND owner_id = OLD.id;
+  RETURN OLD;
+END
+$function$

@@ -2,6 +2,7 @@
 
 mod blob;
 mod dns;
+mod sealed;
 mod error_map;
 mod feed;
 mod gc;
@@ -29,6 +30,7 @@ pub use dns::{
     DnsStore, OwnershipToken, TokenVerifier, DNS_EVENTS_PER_DOMAIN, MAX_DNS_EVENT_PAGE, MAX_RECORDS_PER_DOMAIN,
 };
 pub use error_map::map_db_error;
+pub use sealed::{SealedReader, SealedWriter, MAX_SEALED_BYTES, MIN_SEALED_BYTES};
 pub use feed::{ChangeFeed, ChangeSink, PgChangeFeed, CHANNEL_JOBS, CHANNEL_MAILBOX};
 pub use jobs::{
     ClaimedJob, JobQueue, DEFAULT_JOB_ATTEMPTS, JOB_RETENTION_SECS, MAX_CLAIM_KINDS,
