@@ -251,9 +251,15 @@ no signing key and no relay password, which is what the earlier "secrets only wh
   public key id it was sealed to, `created_at`. The purpose and the owner are bound into the HPKE context (`info`/`aad`), so a ciphertext cannot be
   moved to another domain or used for another purpose. A write replaces the whole row; the admin role gets `INSERT`, `UPDATE` and `DELETE` and **no
   `SELECT`** on this table, only the outbound service's role can read the ciphertext.
-* **Library**: no hand-assembled primitives. A vetted HPKE crate behind an adapter (`wrapped-libs.txt`), pure Rust, no `aws-lc`. The candidates
-  are the RustCrypto `hpke` family and `rust-hpke`; the choice is made by a short spike (licence, maintenance, advisories, the size of the new tree,
-  ciphersuite DHKEM(X25519)/HKDF-SHA256/ChaCha20-Poly1305 or AES-GCM) before any code, and recorded in the pull request.
+* **Library**: no hand-assembled primitives. A vetted HPKE crate behind an adapter (`wrapped-libs.txt`), pure Rust, no `aws-lc`.
+  **Spike done (2026-11-14): `hpke` 0.15.1 (`rozbb/rust-hpke`), exact pin, `default-features = false`, features `alloc`, `getrandom`, `x25519`, `chacha`**
+  (no ML-KEM, no `aes`): the suite DHKEM(X25519, HKDF-SHA256) / HKDF-SHA256 / ChaCha20-Poly1305 of RFC 9180. Licence MIT OR Apache-2.0 (the whole tree is
+  inside the `deny.toml` allow-list: MIT, Apache-2.0, BSD-3-Clause, Unicode-3.0; no OpenSSL, no `aws-lc`); minimum Rust 1.87 (ours is 1.89). Its tree is 34
+  crates of which only **nine are new to our lockfile** (`hpke`, `x25519-dalek` 3, `chacha20poly1305`, `aead`, `cipher`, `inout`, `poly1305`, `universal-hash`,
+  `zeroize_derive`); `curve25519-dalek` 5, `sha2` 0.11, `hkdf`, `hmac`, `getrandom` 0.4 and `rand_core` 0.10 are already there at the same versions.
+  `hpke-rs` (MPL-2.0, backends `libcrux` or `rustcrypto`, more moving parts) was the alternative and is not needed. **Not checked here** (neither `cargo audit` nor
+  `cargo deny` is installed on the workstation): RustSec advisories and the audit status of the crate; the pull request that adds it must show CI's `cargo-deny`
+  and `cargo-audit` green, and its description states what is known about the crate's review history. The decision is reversible: the adapter hides the crate.
 * The outbound service reads DKIM keys and tenant relay credentials from the database (a small cache with a short lifetime) and unseals them in memory.
   Key **files** in `dkim_dir` stay supported (the `rustyctl` path and existing installations); the keyring looks at the database first.
 
