@@ -49,6 +49,8 @@ pub enum Command {
     AliasList { domain: Option<String> },
     AliasRemove { alias: String },
     DkimGenerate { domain: String, selector: String },
+    /// `dkim generate --sealed`: make the key and seal its private half in the database; no file, no key directory.
+    DkimGenerateSealed { domain: String, selector: String },
     DkimImport { domain: String, selector: String, key_file: PathBuf },
     Check,
     /// `db migrate`: apply pending Postgres migrations with the migrator role (never the daemon).
@@ -97,7 +99,9 @@ pub const USAGE: &str = "usage: rustyctl [--config FILE | --dev [--data-dir DIR]
   account set-password <addr> (--password-stdin | --prompt)\n\
   account disable <addr> | enable <addr>\n\
   alias add <alias-addr> <account-addr> | list [domain] | remove <alias-addr>\n\
-  dkim generate <domain> [--selector S]      create an ed25519 DKIM key (0600) and print its DNS record\n\
+  dkim generate <domain> [--selector S] [--sealed]\n\
+                                             create an ed25519 DKIM key and print its DNS record: the private key is a\n\
+                                             file (0600), or with --sealed sealed in the database (no file)\n\
   dkim import <domain> <key.pem> [--selector S]\n\
                                              keep an RSA (2048-4096 bit) or ed25519 private key (0600)\n\
                                              and print its DNS record; make an RSA key with\n\
@@ -124,6 +128,7 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
     let mut selector: Option<String> = None;
     let mut help = false;
     let mut without_roles = false;
+    let mut sealed = false;
     let mut words: Vec<&str> = Vec::new();
 
     let mut it = args.iter();
@@ -131,6 +136,7 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         match a.as_str() {
             "--json" => json = true,
             "--without-roles" => without_roles = true,
+            "--sealed" => sealed = true,
             "--dev" => dev = true,
             "--prompt" => prompt = true,
             "--password-stdin" => stdin = true,
@@ -199,6 +205,10 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             Some(_) => Err(err("--selector must be a DNS label (letters, digits, - and .)")),
         }
     };
+
+    if sealed && !matches!(words.as_slice(), ["dkim", "generate", _]) {
+        return Err(err("--sealed applies to dkim generate only"));
+    }
 
     match words.as_slice() {
         ["domain", "add", name] => {
@@ -271,7 +281,11 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         ["dkim", "generate", domain] => {
             no_password()?;
             no_without_roles()?;
-            done(Command::DkimGenerate { domain: (*domain).to_owned(), selector: dkim_selector()? })
+            if sealed {
+                done(Command::DkimGenerateSealed { domain: (*domain).to_owned(), selector: dkim_selector()? })
+            } else {
+                done(Command::DkimGenerate { domain: (*domain).to_owned(), selector: dkim_selector()? })
+            }
         }
         ["dkim", "import", domain, key_file] => {
             no_password()?;

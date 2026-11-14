@@ -181,6 +181,9 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
             None
         };
         let relay = cfg.outbound.relay.as_ref();
+        // The configuration was validated, so a present `[sealing]` holds a well-formed key.
+        let sealing = cfg.sealing.as_ref().and_then(|s| rusty_seal::SealingKey::from_text(&s.public_key).ok());
+        let sealed = rusty_store::SealedWriter::with_repo(store.repos().sealed.clone());
         let mut env = CtlEnv {
             directory: &directory,
             passwords: &mut passwords,
@@ -194,6 +197,8 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
                 spf_include: relay.and_then(|r| r.spf_include.as_deref()),
             },
             live_dns: live.as_ref(),
+            sealing: sealing.as_ref(),
+            sealed: Some(&sealed),
         };
         let code = match execute(&parsed.command, &mut env).await {
             Ok(outcome) => {
