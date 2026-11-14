@@ -23,7 +23,7 @@ PATTERN='SqliteStore|PgStore|SqliteRepo|PgRepo|repo::sqlite|repo::pg|\.[[:space:
 
 fail=0
 hits=""
-for c in rusty-svc rusty-smtp rusty-imap rusty-ctl rusty-http rusty; do
+for c in rusty-svc rusty-smtp rusty-imap rusty-ctl rusty-runtime rusty-http rusty; do
   [ -d "crates/$c" ] || continue
   while IFS= read -r f; do
     [ -n "$f" ] || continue

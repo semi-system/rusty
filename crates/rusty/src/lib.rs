@@ -9,5 +9,4 @@
 pub mod cli;
 pub mod ctl;
 pub mod daemon;
-pub mod storecfg;
 pub mod health;

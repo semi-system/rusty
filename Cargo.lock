@@ -2037,6 +2037,7 @@ dependencies = [
  "rusty-ctl",
  "rusty-directory",
  "rusty-imap",
+ "rusty-runtime",
  "rusty-smtp",
  "rusty-store",
  "rusty-svc",
@@ -2158,6 +2159,19 @@ dependencies = [
  "mail-parser",
  "proptest",
  "rusty-core",
+]
+
+[[package]]
+name = "rusty-runtime"
+version = "0.1.0"
+dependencies = [
+ "rusty-core",
+ "rusty-store",
+ "rusty-svc",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]

@@ -113,7 +113,7 @@ async fn open_directory(cfg: &StartupConfig, dev: bool) -> Result<(Store, Direct
         prepare_dev_dirs(cfg).await.map_err(|e| e.to_string())?;
     }
     let profile = if dev { Profile::Dev } else { Profile::Production };
-    let sc = crate::storecfg::store_config(cfg, profile).map_err(|e| e.to_string())?;
+    let sc = rusty_runtime::store::store_config(cfg, profile).map_err(|e| e.to_string())?;
     let store = Store::open(sc).await.map_err(|e| format!("cannot open the database: {e}"))?;
     let dir = Directory::with_repo(store.repos().directory.clone());
     Ok((store, dir))
@@ -206,7 +206,7 @@ async fn run_db(prog: &str, cfg: &StartupConfig, parsed: &rusty_ctl::Parsed) -> 
     let say = |text: String, json: serde_json::Value| {
         println!("{}", if parsed.json { json.to_string() } else { text });
     };
-    let (url, security) = match crate::storecfg::migrator_target(cfg) {
+    let (url, security) = match rusty_runtime::store::migrator_target(cfg) {
         Ok(x) => x,
         Err(e) => {
             eprintln!("{prog}: {e}");
