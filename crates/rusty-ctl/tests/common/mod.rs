@@ -5,7 +5,8 @@
 
 use std::future::Future;
 
-use rusty_ctl::{execute, Command, CtlEnv, CtlError, Outcome, PasswordReader, PasswordSource, Secret};
+use rusty_ctl::{check_domain, execute, Command, CtlEnv, CtlError, OutboundFacts, Outcome, PasswordReader, PasswordSource, Secret};
+use rusty_core::dns_check::DnsSource;
 use rusty_directory::Directory;
 use rusty_store::fixtures::Fixtures;
 use rusty_store::{DnsStore, Store, StoreConfig};
@@ -57,14 +58,28 @@ impl Backend {
         hostname: Option<&str>,
     ) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(passwords);
-        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname, config_note: "test", dkim_dir: None, dns: &self.dns };
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname, config_note: "test", dkim_dir: None, dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None };
         execute(&cmd, &mut env).await
     }
 
     pub async fn run_with_dkim(&self, cmd: Command, dkim_dir: &std::path::Path) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(&[]);
-        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: Some(dkim_dir), dns: &self.dns };
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: Some(dkim_dir), dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None };
         execute(&cmd, &mut env).await
+    }
+
+    /// `domain dns` with the outbound facts of a configuration.
+    pub async fn run_dns(&self, cmd: Command, outbound: OutboundFacts<'_>) -> Result<Outcome, CtlError> {
+        let mut pw = FakePasswords::new(&[]);
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound, live_dns: None };
+        execute(&cmd, &mut env).await
+    }
+
+    /// `domain check` against `src` (a zone in memory) with the outbound facts of a configuration.
+    pub async fn check_with<S: DnsSource>(&self, src: &S, outbound: OutboundFacts<'_>, domain: &str) -> Result<Outcome, CtlError> {
+        let mut pw = FakePasswords::new(&[]);
+        let env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound, live_dns: None };
+        check_domain(&env, src, domain).await
     }
 
     pub async fn count(&self, table: &str) -> i64 {

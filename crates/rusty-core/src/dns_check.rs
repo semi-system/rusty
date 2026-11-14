@@ -642,6 +642,8 @@ struct Walk {
     macros: bool,
     all: Option<char>,
     redirected: bool,
+    /// Every domain named by an `include:` or a `redirect=` anywhere in the tree (lower case), in the order met.
+    named: Vec<String>,
 }
 
 /// The SPF records among `records`: those that start with `v=spf1` as a whole word.
@@ -675,6 +677,7 @@ fn walk<'a, S: DnsSource>(net: &'a mut Net<'_, S>, text: &'a str, top: bool, w: 
                 Mech::Ptr => count(w, opts)?,
                 Mech::Include(d) => {
                     count(w, opts)?;
+                    w.named.push(d.clone());
                     let records = net.txt(d).await.map_err(|_| Stop::Temp)?;
                     let found = spf_records(&records);
                     match found.as_slice() {
@@ -707,6 +710,7 @@ fn walk<'a, S: DnsSource>(net: &'a mut Net<'_, S>, text: &'a str, top: bool, w: 
         if let Some(target) = &spf.redirect {
             count(w, opts)?;
             w.redirected = true;
+            w.named.push(target.clone());
             let records = net.txt(target).await.map_err(|_| Stop::Temp)?;
             let found = spf_records(&records);
             match found.as_slice() {
@@ -827,7 +831,7 @@ async fn check_spf<S: DnsSource>(net: &mut Net<'_, S>, r: &DnsRecord, name: &str
         v.add(Sev::Bad, "spf.too_long");
         return v.finish(r);
     }
-    let mut w = Walk { lookups: 0, void: 0, macros: false, all: None, redirected: false };
+    let mut w = Walk { lookups: 0, void: 0, macros: false, all: None, redirected: false, named: Vec::new() };
     match walk(net, &text, true, &mut w, opts, name).await {
         Err(Stop::Lookups) => v.add(Sev::Bad, "spf.too_many_lookups"),
         Err(Stop::Void) => v.add(Sev::Bad, "spf.too_many_void"),
@@ -846,6 +850,16 @@ async fn check_spf<S: DnsSource>(net: &mut Net<'_, S>, r: &DnsRecord, name: &str
                         Err(Stop::Syntax(code)) => v.add(Sev::Bad, code),
                     }
                 }
+            }
+            // A relay's provider sends our mail from its own addresses, which we cannot list: what can be checked is that its
+            // include is named, directly or through another include, in the record that is published.
+            let wanted: Vec<String> = r.value.split_whitespace().filter_map(|t| t.strip_prefix("include:")).map(str::to_ascii_lowercase).collect();
+            if wanted.iter().any(|inc| !w.named.iter().any(|n| n == inc)) {
+                v.add(Sev::Bad, "spf.provider_not_included");
+            }
+            // Nothing to authorise and nothing to find: an `ok` here would claim a check that was not made.
+            if ips.is_empty() && wanted.is_empty() {
+                v.add(Sev::Warn, "spf.not_verifiable");
             }
             match (w.all, w.redirected) {
                 (Some('+'), _) => v.add(Sev::Bad, "spf.open"),

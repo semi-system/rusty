@@ -252,7 +252,7 @@ fn the_dns_generator_record_matches_the_generated_key() {
         mail_host: "mail.example.org",
         outbound_ips: &ip,
         dkim: &[rusty_core::dns::DkimPublic { selector: &k.selector, kind: rusty_core::dns::DkimKind::Rsa, public_key_b64: &k.public_key_b64 }],
-        dmarc_rua: None,
+        spf_includes: &[], dmarc_rua: None,
     })
     .unwrap();
     assert!(recs.iter().any(|r| r.value == k.txt_value()), "{recs:?}");
@@ -283,7 +283,7 @@ fn the_dns_generator_record_of_an_ed25519_key_says_k_ed25519() {
         mail_host: "mail.example.org",
         outbound_ips: &ip,
         dkim: &[rusty_core::dns::DkimPublic { selector: &k.selector, kind: rusty_core::dns::DkimKind::Ed25519, public_key_b64: &k.public_key_b64 }],
-        dmarc_rua: None,
+        spf_includes: &[], dmarc_rua: None,
     })
     .unwrap();
     assert!(recs.iter().any(|r| r.value == k.txt_value() && r.value.contains("k=ed25519")), "{recs:?}");

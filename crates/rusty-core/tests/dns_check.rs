@@ -28,7 +28,7 @@ fn expected() -> Vec<DnsRecord> {
         mail_host: HOST,
         outbound_ips: &ips,
         dkim: &[DkimPublic { selector: "rusty", kind: DkimKind::Rsa, public_key_b64: &b64 }],
-        dmarc_rua: Some("dmarc@example.net"),
+        spf_includes: &[], dmarc_rua: Some("dmarc@example.net"),
     })
     .unwrap()
 }
@@ -386,7 +386,7 @@ async fn dkim_warnings_testing_mode_and_a_short_rsa_key() {
 #[tokio::test]
 async fn a_dkim_record_that_was_not_generated_yet_is_not_looked_up() {
     let ips: Vec<IpAddr> = vec![V4.parse().unwrap()];
-    let no_key = records_for_domain(&DnsInputs { domain: DOMAIN, mail_host: HOST, outbound_ips: &ips, dkim: &[], dmarc_rua: None }).unwrap();
+    let no_key = records_for_domain(&DnsInputs { domain: DOMAIN, mail_host: HOST, outbound_ips: &ips, dkim: &[], spf_includes: &[], dmarc_rua: None }).unwrap();
     let z = Zone::default();
     let c = check_records(&z, &no_key, &CheckOptions::default()).await;
     let k = c.iter().find(|c| c.record.name.starts_with("<selector>")).unwrap();
@@ -528,4 +528,47 @@ async fn an_observation_carries_the_key_and_a_hash_of_what_was_expected() {
     // All the hashes of a set are different from one another.
     let hashes: BTreeSet<String> = c.iter().map(|c| c.observation().expected_hash).collect();
     assert_eq!(hashes.len(), c.len());
+}
+
+// ---------------------------------------------------------------------- relay: the provider's include
+
+fn relay_expected() -> Vec<DnsRecord> {
+    records_for_domain(&DnsInputs { domain: DOMAIN, mail_host: HOST, outbound_ips: &[], dkim: &[], spf_includes: &["amazonses.com"], dmarc_rua: None }).unwrap()
+}
+
+async fn run_relay(z: &Zone) -> Vec<RecordCheck> {
+    check_records(z, &relay_expected(), &CheckOptions { via_relay: true, ..CheckOptions::default() }).await
+}
+
+#[tokio::test]
+async fn the_providers_include_must_be_in_the_published_spf_directly_or_through_another_include() {
+    let mut z = Zone::published(&relay_expected());
+    z.set_txt("amazonses.com", &["v=spf1 ip4:198.51.100.0/24 -all"]);
+    assert_eq!(spf(&run_relay(&z).await).status, RecordStatus::Ok, "the generated record");
+
+    z.set_txt(DOMAIN, &["v=spf1 mx -all"]);
+    let c = run_relay(&z).await;
+    assert_eq!(spf(&c).status, RecordStatus::Mismatch);
+    assert!(has(spf(&c), "spf.provider_not_included"), "{:?}", spf(&c).findings);
+
+    z.set_txt(DOMAIN, &["v=spf1 include:_spf.shared.example -all"]);
+    z.set_txt("_spf.shared.example", &["v=spf1 include:amazonses.com -all"]);
+    assert_eq!(spf(&run_relay(&z).await).status, RecordStatus::Ok, "through another include");
+
+    z.set_txt(DOMAIN, &["v=spf1 include:AmazonSES.com -all"]);
+    assert_eq!(spf(&run_relay(&z).await).status, RecordStatus::Ok, "domain names are case-insensitive");
+
+    z.set_txt(DOMAIN, &["v=spf1 include:amazonses.com.evil.example -all"]);
+    z.set_txt("amazonses.com.evil.example", &["v=spf1 -all"]);
+    assert!(has(spf(&run_relay(&z).await), "spf.provider_not_included"), "a lookalike is not the provider");
+}
+
+#[tokio::test]
+async fn with_neither_an_address_nor_an_include_the_spf_cannot_be_verified_and_does_not_pretend() {
+    let expected = records_for_domain(&DnsInputs { domain: DOMAIN, mail_host: HOST, outbound_ips: &[], dkim: &[], spf_includes: &[], dmarc_rua: None }).unwrap();
+    let mut z = Zone::published(&expected);
+    z.set_txt(DOMAIN, &["v=spf1 -all"]);
+    let c = check_records(&z, &expected, &CheckOptions::default()).await;
+    assert_eq!(spf(&c).status, RecordStatus::Warning);
+    assert!(has(spf(&c), "spf.not_verifiable"), "{:?}", spf(&c).findings);
 }

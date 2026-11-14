@@ -702,7 +702,7 @@ fn relay_cfg(dir: &tempfile::TempDir, pki: &TestPki, tls: RelayTls) -> OutboundC
     std::fs::set_permissions(&pw, std::fs::Permissions::from_mode(0o600)).unwrap();
     let mut cfg = fast_cfg();
     cfg.ca_bundle = Some(write_bundle(dir, &pki.ca_pem));
-    cfg.relay = Some(RelayConfig { host: "relay.fake.test".into(), port: 587, tls, username: Some("mailer".into()), password_file: Some(pw) });
+    cfg.relay = Some(RelayConfig { host: "relay.fake.test".into(), port: 587, tls, username: Some("mailer".into()), password_file: Some(pw), spf_include: None });
     cfg.backoff_secs = vec![3600];
     cfg
 }

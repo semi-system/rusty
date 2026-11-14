@@ -194,3 +194,15 @@ fn db_commands() {
         assert!(p(bad).is_err(), "{bad:?}");
     }
 }
+
+#[test]
+fn domain_dns_and_domain_check_take_one_domain() {
+    assert_eq!(cmd(&["domain", "dns", "example.com"]), Command::DomainDns { name: "example.com".into() });
+    assert_eq!(cmd(&["domain", "check", "example.com"]), Command::DomainCheck { name: "example.com".into() });
+    assert!(p(&["domain", "check"]).is_err());
+    assert!(p(&["domain", "dns"]).is_err());
+    assert!(p(&["domain", "check", "a.example", "b.example"]).is_err());
+    assert!(p(&["domain", "check", "example.com", "--prompt"]).is_err());
+    assert!(p(&["domain", "check", "example.com", "--selector", "s"]).is_err());
+    assert!(p(&["--json", "domain", "check", "example.com"]).unwrap().json);
+}

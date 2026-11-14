@@ -4,8 +4,11 @@
 //! code runs over any backend and under test.
 
 use std::fmt;
+use std::net::IpAddr;
 
-use rusty_core::dns::{records_for_domain, zone_line, DkimKind, DkimPublic, DnsInputs};
+use rusty_core::dns::{records_for_domain, zone_line, DkimKind, DkimPublic, DnsInputs, DnsRecord, Requirement};
+use rusty_core::dns_check::{check_records, CheckOptions, DnsSource};
+use rusty_core::dns_state::RecordStatus;
 use rusty_core::Error;
 use rusty_directory::{
     parse_address, AccountInfo, AccountStatus, Directory, DomainInfo, DomainStatus,
@@ -60,6 +63,21 @@ pub struct CtlEnv<'a> {
     /// The DNS facade: the public half of every key made here is kept in the database, so the admin web (which never reads a
     /// private key) and `check` can show the record to publish.
     pub dns: &'a DnsStore,
+    /// What the configuration says about outgoing mail, for the SPF and address records.
+    pub outbound: OutboundFacts<'a>,
+    /// The live DNS source of `domain check` (the composition root builds it only for that command).
+    pub live_dns: Option<&'a rusty_smtp::stack::LiveDns>,
+}
+
+/// The parts of `[outbound]` the DNS records depend on.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OutboundFacts<'a> {
+    /// `[outbound] public_ips`: the addresses mail leaves from (and the mail host resolves to).
+    pub public_ips: &'a [IpAddr],
+    /// Mail goes through `[outbound.relay]`: the reverse records of our own addresses are not checked.
+    pub via_relay: bool,
+    /// `[outbound.relay] spf_include`: the provider's SPF include.
+    pub spf_include: Option<&'a str>,
 }
 
 /// What a command produced.
@@ -67,11 +85,18 @@ pub struct CtlEnv<'a> {
 pub struct Outcome {
     pub text: String,
     pub json: Value,
+    /// The command ran but found a problem (a required DNS record that is wrong): the process exits 1 after printing it.
+    pub failed: bool,
 }
 
 impl Outcome {
     fn new(text: impl Into<String>, json: Value) -> Outcome {
-        Outcome { text: text.into(), json }
+        Outcome { text: text.into(), json, failed: false }
+    }
+
+    fn failing(mut self, failed: bool) -> Outcome {
+        self.failed = failed;
+        self
     }
 }
 
@@ -391,6 +416,13 @@ pub async fn execute(command: &Command, env: &mut CtlEnv<'_>) -> Result<Outcome,
 
         Command::DkimImport { domain, selector, key_file } => dkim_import(env, domain, selector, key_file).await,
 
+        Command::DomainDns { name } => domain_dns(env, name).await,
+
+        Command::DomainCheck { name } => match env.live_dns {
+            Some(live) => check_domain(env, live, name).await,
+            None => Err(CtlError::runtime("no DNS resolver is available for this command")),
+        },
+
         Command::Check => check(env).await,
         Command::DbMigrate { .. } | Command::DbStatus | Command::RelayCheck => {
             Err(CtlError::runtime("db and relay commands are run by the composition root, not against the directory"))
@@ -521,15 +553,10 @@ async fn check(env: &mut CtlEnv<'_>) -> Result<Outcome, CtlError> {
     for dom in domains.iter().filter(|d| d.status == DomainStatus::Active) {
         // The records come from the pure generator (rusty_core::dns), the same one the web setup page will
         // use; this command only formats them. Without a mail host name there is nothing to point them at.
-        let Some(host) = env.hostname else { continue };
-        // The keys come from the database (their public halves; the private ones are never read here).
-        let stored = env.dns.dkim_keys(dom.id).await.map_err(|e| map_error(&e, "dkim keys"))?;
-        let keys: Vec<DkimPublic> = stored
-            .iter()
-            .filter_map(|k| Some(DkimPublic { selector: &k.selector, kind: DkimKind::parse(&k.algorithm)?, public_key_b64: &k.public_key_b64 }))
-            .collect();
-        let inputs = DnsInputs { domain: &dom.name, mail_host: host, outbound_ips: &[], dkim: &keys, dmarc_rua: None };
-        let records = records_for_domain(&inputs).map_err(|e| map_error(&e, "dns records"))?;
+        if env.hostname.is_none() {
+            continue;
+        }
+        let (records, _) = records_of(env, dom).await?;
         lines.push(format!("domain {}:", dom.name));
         lines.extend(records.iter().map(|r| format!("  {}", zone_line(r))));
         let j: Vec<Value> = records
@@ -549,6 +576,121 @@ async fn check(env: &mut CtlEnv<'_>) -> Result<Outcome, CtlError> {
         lines.join("\n"),
         json!({ "configuration": env.config_note, "hostname": env.hostname, "domains": jd }),
     ))
+}
+
+/// Failed checks of a domain trigger an alert after this many in a row (the drift rule of `rusty_core::dns_state`).
+const ALERT_AFTER: u32 = 3;
+
+/// The records a domain needs, and the warnings about what the configuration leaves out. The keys come from the database
+/// (their public halves; the private ones are never read here), the addresses and the relay's SPF include from `[outbound]`.
+async fn records_of(env: &CtlEnv<'_>, dom: &DomainInfo) -> Result<(Vec<DnsRecord>, Vec<&'static str>), CtlError> {
+    let Some(host) = env.hostname else {
+        return Err(CtlError::runtime("set hostname in the configuration: the DNS records point at it"));
+    };
+    let stored = env.dns.dkim_keys(dom.id).await.map_err(|e| map_error(&e, "dkim keys"))?;
+    let keys: Vec<DkimPublic> = stored
+        .iter()
+        .filter_map(|k| Some(DkimPublic { selector: &k.selector, kind: DkimKind::parse(&k.algorithm)?, public_key_b64: &k.public_key_b64 }))
+        .collect();
+    let includes: Vec<&str> = env.outbound.spf_include.into_iter().collect();
+    let inputs = DnsInputs { domain: &dom.name, mail_host: host, outbound_ips: env.outbound.public_ips, dkim: &keys, spf_includes: &includes, dmarc_rua: None };
+    let records = records_for_domain(&inputs).map_err(|e| map_error(&e, "dns records"))?;
+    let mut warnings = Vec::new();
+    if env.outbound.public_ips.is_empty() {
+        warnings.push("no_public_ips");
+    }
+    Ok((records, warnings))
+}
+
+fn warning_text(code: &str) -> &'static str {
+    match code {
+        "no_public_ips" => "[outbound] public_ips is not set: the address records and the SPF record do not name the addresses mail leaves from",
+        _ => "see the documentation",
+    }
+}
+
+async fn find_domain(env: &CtlEnv<'_>, name: &str) -> Result<DomainInfo, CtlError> {
+    env.directory.find_domain(name).await.map_err(|e| map_error(&e, "domain"))?.ok_or_else(|| CtlError::runtime("no such domain"))
+}
+
+fn record_json(r: &DnsRecord) -> Value {
+    json!({
+        "name": r.name, "type": r.rtype.as_str(), "value": r.value, "ttl": r.ttl_hint,
+        "purpose": r.purpose, "required": requirement(r.required), "zone_line": zone_line(r),
+    })
+}
+
+fn requirement(r: Requirement) -> &'static str {
+    match r {
+        Requirement::Required => "required",
+        Requirement::Recommended => "recommended",
+        Requirement::Optional => "optional",
+    }
+}
+
+/// `domain dns`: the records to publish for one domain (nothing is queried).
+async fn domain_dns(env: &CtlEnv<'_>, name: &str) -> Result<Outcome, CtlError> {
+    let dom = find_domain(env, name).await?;
+    let (records, warnings) = records_of(env, &dom).await?;
+    let mut lines: Vec<String> = records.iter().map(zone_line).collect();
+    lines.extend(warnings.iter().map(|w| format!("warning: {}", warning_text(w))));
+    Ok(Outcome::new(lines.join("\n"), json!({ "domain": dom.name, "records": records.iter().map(record_json).collect::<Vec<_>>(), "warnings": warnings })))
+}
+
+fn record_status_word(s: RecordStatus) -> &'static str {
+    s.as_str()
+}
+
+/// `domain check`: the records of `domain` against what `src` says DNS publishes, recorded as drift state (a record that was
+/// `ok` and now is not raises an alert after three checks in a row). The outcome is `failed` when a **required** record is
+/// missing or wrong; a recommended or optional one that is wrong, and anything that could not be decided, is reported without
+/// failing the run. The placeholder for a key that was not generated yet is shown but not recorded (it is no DNS record).
+pub async fn check_domain<S: DnsSource>(env: &CtlEnv<'_>, src: &S, domain: &str) -> Result<Outcome, CtlError> {
+    let dom = find_domain(env, domain).await?;
+    let (expected, warnings) = records_of(env, &dom).await?;
+    let opts = CheckOptions { via_relay: env.outbound.via_relay, ..CheckOptions::default() };
+    let checks = check_records(src, &expected, &opts).await;
+    let recorded: Vec<_> = checks.iter().filter(|c| !c.record.name.starts_with('<')).map(|c| c.observation()).collect();
+    let steps = env.dns.record_check(dom.id, &recorded, ALERT_AFTER).await.map_err(|e| map_error(&e, "dns state"))?;
+    let change_of = |c: &rusty_core::dns_check::RecordCheck| -> Option<String> {
+        let key = c.key();
+        steps.iter().find(|s| s.row.key == key).and_then(|s| s.change.as_ref()).and_then(|ch| ch.from.map(|f| format!("{} -> {}", record_status_word(f), record_status_word(ch.to))))
+    };
+    let alerts: Vec<String> = steps.iter().filter(|s| s.alert == rusty_core::dns_state::AlertChange::Raised).map(|s| s.row.key.name.clone()).collect();
+    let failed = checks.iter().any(|c| c.record.required == Requirement::Required && matches!(c.status, RecordStatus::Missing | RecordStatus::Mismatch));
+    let mut lines = vec![format!("{}: {} records checked against live DNS", dom.name, checks.len())];
+    for c in &checks {
+        let mut line = format!("  {:<9} {:<5} {}", record_status_word(c.status), c.record.rtype.as_str(), c.record.name);
+        if !c.findings.is_empty() {
+            line.push_str(&format!("  [{}]", c.findings.join(", ")));
+        }
+        if let Some(ch) = change_of(c) {
+            line.push_str(&format!("  ({ch})"));
+        }
+        lines.push(line);
+        if c.status != RecordStatus::Ok {
+            if let Some(seen) = &c.seen {
+                lines.push(format!("            DNS shows: {}", rusty_core::dns_state::clean_seen(seen)));
+            }
+        }
+    }
+    lines.extend(warnings.iter().map(|w| format!("warning: {}", warning_text(w))));
+    lines.extend(alerts.iter().map(|n| format!("ALERT: {n} was ok and has failed {ALERT_AFTER} checks in a row")));
+    lines.push(if failed { "result: a required record is missing or wrong".to_owned() } else { "result: every required record is correct".to_owned() });
+    let records: Vec<Value> = checks
+        .iter()
+        .map(|c| {
+            let mut v = record_json(&c.record);
+            if let Some(o) = v.as_object_mut() {
+                o.insert("status".into(), json!(record_status_word(c.status)));
+                o.insert("seen".into(), json!(c.seen.as_deref().map(rusty_core::dns_state::clean_seen)));
+                o.insert("findings".into(), json!(c.findings));
+                o.insert("change".into(), json!(change_of(c)));
+            }
+            v
+        })
+        .collect();
+    Ok(Outcome::new(lines.join("\n"), json!({ "domain": dom.name, "ok": !failed, "records": records, "warnings": warnings, "alerts": alerts })).failing(failed))
 }
 
 /// Text for the terminal: the plain text, or the JSON value when `json` is set.
