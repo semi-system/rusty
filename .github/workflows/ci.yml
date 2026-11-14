@@ -145,6 +145,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Valkey test server
+        # A throw-away Valkey on the runner (scripts/kv-up.sh, digest-pinned in deploy/images.lock). The URL carries a
+        # random password: it is masked before it reaches the environment.
+        run: |
+          bash scripts/kv-up.sh
+          url="$(cat "$HOME/.rusty-kv-test-url.dev")"
+          echo "::add-mask::$url"
+          echo "RUSTY_TEST_VALKEY_URL=$url" >> "$GITHUB_ENV"
+          echo "RUSTY_REQUIRE_VALKEY=1" >> "$GITHUB_ENV"
       - name: Rust toolchain (minimal profile, no rust-docs download)
         run: rustup set profile minimal
       - name: Restore the cargo registry and git cache
@@ -320,6 +329,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Valkey test server
+        # A throw-away Valkey on the runner (scripts/kv-up.sh, digest-pinned in deploy/images.lock). The URL carries a
+        # random password: it is masked before it reaches the environment.
+        run: |
+          bash scripts/kv-up.sh
+          url="$(cat "$HOME/.rusty-kv-test-url.dev")"
+          echo "::add-mask::$url"
+          echo "RUSTY_TEST_VALKEY_URL=$url" >> "$GITHUB_ENV"
+          echo "RUSTY_REQUIRE_VALKEY=1" >> "$GITHUB_ENV"
       - run: bash scripts/ci-apt-install.sh musl-tools
       - name: Rust toolchain (minimal profile, no rust-docs download)
         run: rustup set profile minimal

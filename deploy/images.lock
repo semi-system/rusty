@@ -7,3 +7,4 @@ rust:1.99.1-alpine3.22  rust@sha256:9a744dc47d1ac2a7d17fc3cedfc8b4928b1696dfcba3
 gcr.io/distroless/static-debian13:nonroot  gcr.io/distroless/static-debian13@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329  2026-11-10  (final stage of deploy/docker/Dockerfile; multi-arch index amd64+arm64, verified with `docker buildx imagetools inspect`)
 rhysd/actionlint:1.7.7  rhysd/actionlint@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9  2026-11-10  (scripts/ci-workflows-lint.sh)
 koalaman/shellcheck:v0.10.0  koalaman/shellcheck@sha256:2097951f02e735b613f4a34de20c40f937a6c8f18ecb170612c88c34517221fb  2026-11-10  (scripts/ci-workflows-lint.sh)
+valkey/valkey:9-alpine  valkey/valkey@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b  2026-11-14  (Valkey 9.1.3; tests and the dev compose)
