@@ -69,6 +69,14 @@ pub enum HostFailure {
     Permanent { diagnostic: String, status: String },
     /// The STARTTLS handshake failed; a plain-text retry is allowed when the policy says opportunistic.
     TlsHandshake(String),
+    /// TLS is required here and the server does not offer it (or refused it). Deferred like a
+    /// temporary failure; kept apart so a relay check can say which stage failed.
+    TlsRequired(String),
+    /// The relay refused the login. A configuration problem, so the mail is deferred, not bounced;
+    /// the worker logs it as a warning and the operator finds it with `rustyctl relay check`.
+    AuthRejected,
+    /// The relay offers no mechanism this client speaks (`offered`: what it does offer, sanitised).
+    NoAuthMechanism { offered: Vec<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,7 +99,16 @@ struct Caps {
     size: Option<u64>,
     eightbit: bool,
     smtputf8: bool,
-    auth_plain: bool,
+    /// SASL mechanisms the server offers: upper case, sanitised and bounded (the server's words are
+    /// untrusted and an operator may read them).
+    auth: Vec<String>,
+}
+
+const MAX_AUTH_MECHANISMS: usize = 16;
+
+fn sanitise_mechanism(m: &str) -> Option<String> {
+    let up = m.to_ascii_uppercase();
+    (!up.is_empty() && up.len() <= 20 && up.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-' || b == b'_')).then_some(up)
 }
 
 fn parse_caps(r: &Reply) -> Caps {
@@ -104,7 +121,7 @@ fn parse_caps(r: &Reply) -> Caps {
             "8BITMIME" => c.eightbit = true,
             "SMTPUTF8" => c.smtputf8 = true,
             "SIZE" => c.size = it.next().and_then(|n| n.parse().ok()),
-            "AUTH" => c.auth_plain = it.any(|m| m.eq_ignore_ascii_case("PLAIN")),
+            "AUTH" => c.auth = it.filter_map(sanitise_mechanism).take(MAX_AUTH_MECHANISMS).collect(),
             _ => {}
         }
     }
@@ -198,15 +215,29 @@ fn refused(r: &Reply) -> HostFailure {
     }
 }
 
-/// Run one delivery session. See the module docs for the failure semantics.
-pub async fn run_session(
-    stream: BoxedStream,
-    p: &SessionParams<'_>,
-    tls: &dyn TlsUpgrader,
-    mail: &Mail<'_>,
-    gate: &dyn Gate,
-    cancel: &CancellationToken,
-) -> Result<Delivery, HostFailure> {
+/// A session that is ready for the envelope: greeted, TLS as the policy says, authenticated when asked.
+struct Opened {
+    conn: Conn,
+    caps: Caps,
+    tls_info: Option<TlsInfo>,
+    remote: String,
+    /// The SASL mechanism that was used (`None`: no credentials were configured).
+    mechanism: Option<&'static str>,
+}
+
+/// What a relay check learns: the same steps as a delivery, up to and including AUTH, and no mail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Probe {
+    pub tls: Option<TlsInfo>,
+    /// Mechanisms the server offered after TLS (sanitised, at most 16).
+    pub offered: Vec<String>,
+    pub mechanism: Option<&'static str>,
+    pub size_limit: Option<u64>,
+}
+
+/// Connect-level steps shared by delivery and the relay check: greeting, EHLO, STARTTLS by policy and
+/// the relay login. Nothing here sends an envelope or a message.
+async fn open(stream: BoxedStream, p: &SessionParams<'_>, tls: &dyn TlsUpgrader) -> Result<Opened, HostFailure> {
     let mut tls_info: Option<TlsInfo> = None;
     let strict = p.policy == TlsPolicy::Verified;
     let mut conn = Conn { stream, buf: Vec::new() };
@@ -236,7 +267,7 @@ pub async fn run_session(
                 if p.policy == TlsPolicy::Opportunistic {
                     // The server advertised it and then refused: carry on in clear, as the policy allows.
                 } else {
-                    return Err(HostFailure::Temporary(format!("STARTTLS refused: {}", r.summary())));
+                    return Err(HostFailure::TlsRequired(format!("STARTTLS refused: {}", r.summary())));
                 }
             } else {
                 if !conn.buf.is_empty() {
@@ -248,30 +279,67 @@ pub async fn run_session(
                 caps = ehlo(&mut conn, p).await?;
             }
         } else if p.policy != TlsPolicy::Opportunistic {
-            return Err(HostFailure::Temporary("TLS is required for this destination but the server does not offer STARTTLS".into()));
+            return Err(HostFailure::TlsRequired("TLS is required for this destination but the server does not offer STARTTLS".into()));
         }
     }
     if tls_info.is_none() && p.policy != TlsPolicy::None && p.policy != TlsPolicy::Opportunistic {
-        return Err(HostFailure::Temporary("TLS is required for this destination".into()));
+        return Err(HostFailure::TlsRequired("TLS is required for this destination".into()));
     }
 
     // Relay authentication, only over TLS (the password never crosses the network in clear).
+    let mut mechanism = None;
     if let Some((user, pass)) = p.auth {
         if tls_info.is_none() {
-            return Err(HostFailure::Temporary("refusing to send relay credentials without TLS".into()));
+            return Err(HostFailure::TlsRequired("refusing to send relay credentials without TLS".into()));
         }
-        if !caps.auth_plain {
-            return Err(HostFailure::Temporary("the relay does not offer AUTH PLAIN".into()));
-        }
-        use base64::Engine;
-        let blob = base64::engine::general_purpose::STANDARD.encode(format!("\0{user}\0{pass}"));
-        let r = conn.command(&format!("AUTH PLAIN {blob}"), p.timeouts.command).await?;
-        if r.class() != Class::Positive {
-            // Never echo the server's text next to credentials; a failed login is a configuration
-            // problem, so defer (retrying is harmless) instead of bouncing the user's mail.
-            return Err(HostFailure::Temporary("the relay refused the credentials".into()));
-        }
+        mechanism = Some(authenticate(&mut conn, &caps, user, pass, p.timeouts.command).await?);
     }
+    Ok(Opened { conn, caps, tls_info, remote, mechanism })
+}
+
+/// The relay login: PLAIN when offered (one round trip), else LOGIN. The server's text is never
+/// echoed next to credentials (nor kept): a refusal is just [`HostFailure::AuthRejected`].
+async fn authenticate(conn: &mut Conn, caps: &Caps, user: &str, pass: &str, limit: Duration) -> Result<&'static str, HostFailure> {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let offers = |m: &str| caps.auth.iter().any(|a| a == m);
+    if offers("PLAIN") {
+        let r = conn.command(&format!("AUTH PLAIN {}", b64.encode(format!("\0{user}\0{pass}"))), limit).await?;
+        return if r.class() == Class::Positive { Ok("PLAIN") } else { Err(HostFailure::AuthRejected) };
+    }
+    if offers("LOGIN") {
+        // The challenges ("Username:", "Password:") are not interpreted: every server asks the user first.
+        let r = conn.command("AUTH LOGIN", limit).await?;
+        if r.class() != Class::Intermediate {
+            return Err(HostFailure::AuthRejected);
+        }
+        let r = conn.command(&b64.encode(user), limit).await?;
+        if r.class() != Class::Intermediate {
+            return Err(HostFailure::AuthRejected);
+        }
+        let r = conn.command(&b64.encode(pass), limit).await?;
+        return if r.class() == Class::Positive { Ok("LOGIN") } else { Err(HostFailure::AuthRejected) };
+    }
+    Err(HostFailure::NoAuthMechanism { offered: caps.auth.clone() })
+}
+
+/// Check a relay without sending mail: the steps of a delivery up to and including the login, then QUIT.
+pub async fn probe_session(stream: BoxedStream, p: &SessionParams<'_>, tls: &dyn TlsUpgrader) -> Result<Probe, HostFailure> {
+    let Opened { mut conn, caps, tls_info, mechanism, .. } = open(stream, p, tls).await?;
+    let _ = conn.command("QUIT", Duration::from_secs(5)).await;
+    Ok(Probe { tls: tls_info, offered: caps.auth, mechanism, size_limit: caps.size })
+}
+
+/// Run one delivery session. See the module docs for the failure semantics.
+pub async fn run_session(
+    stream: BoxedStream,
+    p: &SessionParams<'_>,
+    tls: &dyn TlsUpgrader,
+    mail: &Mail<'_>,
+    gate: &dyn Gate,
+    cancel: &CancellationToken,
+) -> Result<Delivery, HostFailure> {
+    let Opened { mut conn, caps, tls_info, remote, .. } = open(stream, p, tls).await?;
 
     // Envelope.
     let (from_wire, from_utf8) = if mail.from.is_empty() {

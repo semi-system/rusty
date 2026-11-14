@@ -155,6 +155,9 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         if matches!(parsed.command, rusty_ctl::Command::DbMigrate { .. } | rusty_ctl::Command::DbStatus) {
             return run_db(prog, &cfg, &parsed).await;
         }
+        if parsed.command == rusty_ctl::Command::RelayCheck {
+            return run_relay_check(prog, &cfg, parsed.json).await;
+        }
         let (store, directory) = match open_directory(&cfg, dev).await {
             Ok(x) => x,
             Err(e) => {
@@ -240,6 +243,73 @@ async fn run_db(prog: &str, cfg: &StartupConfig, parsed: &rusty_ctl::Parsed) -> 
             }
         },
         _ => 2,
+    }
+}
+
+/// `relay check`: the worker's steps up to the login against the configured relay, with the same resolver, TLS
+/// roots and password reader as the daemon, and no mail. No database is opened. Exit 0 when the relay works,
+/// 1 when it does not (the reason is one fixed line: nothing secret and nothing the relay said is printed).
+async fn run_relay_check(prog: &str, cfg: &StartupConfig, json: bool) -> u8 {
+    use rusty_smtp::outbound::dial::TcpDialer;
+    use rusty_smtp::outbound::relay_check::{check_relay, RelayCheckDeps, RelayFailure};
+    use rusty_smtp::outbound::tls::RustlsUpgrader;
+    use rusty_smtp::stack::DnsStack;
+    use rusty_svc::FileSecretSource;
+
+    let fail = |e: &dyn std::fmt::Display, extra: Option<Vec<String>>| {
+        if json {
+            eprintln!("{}", serde_json::json!({ "ok": false, "error": e.to_string(), "offered": extra }));
+        } else {
+            eprintln!("{prog}: relay check failed: {e}");
+            if let Some(o) = extra {
+                eprintln!("{prog}: the relay offers: {}", if o.is_empty() { "no login mechanism".to_owned() } else { o.join(" ") });
+            }
+        }
+        1
+    };
+    let hostname = cfg.hostname.clone().unwrap_or_else(|| "localhost".to_owned());
+    let helo = cfg.outbound.helo_name.clone().unwrap_or_else(|| hostname.clone());
+    let dns = match DnsStack::from_config(&cfg.outbound, &hostname) {
+        Ok(d) => d,
+        Err(e) => return fail(&format!("cannot start the DNS resolver: {e}"), None),
+    };
+    let tls = match RustlsUpgrader::new(cfg.outbound.ca_bundle.as_deref()) {
+        Ok(t) => t,
+        Err(e) => return fail(&format!("{e}"), None),
+    };
+    let secrets = FileSecretSource::new();
+    let deps = RelayCheckDeps { resolver: dns.resolver.as_ref(), dialer: &TcpDialer, tls: &tls, secrets: &secrets, helo: &helo };
+    match check_relay(&cfg.outbound, &deps).await {
+        Ok(r) => {
+            let tls_text = match &r.tls {
+                Some(t) => format!("{}, certificate {}", t.protocol, if t.verified { "verified" } else { "NOT verified" }),
+                None => "none (plain text)".to_owned(),
+            };
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "ok": true, "host": r.host, "address": r.address.to_string(), "port": r.port,
+                        "tls": r.tls.as_ref().map(|t| serde_json::json!({ "protocol": t.protocol, "verified": t.verified })),
+                        "offered": r.offered, "mechanism": r.mechanism, "size_limit": r.size_limit,
+                    })
+                );
+            } else {
+                println!("relay: {}:{} ({})", r.host, r.port, r.address);
+                println!("tls: {tls_text}");
+                match &r.mechanism {
+                    Some(m) => println!("login: {m} accepted (offered: {})", r.offered.join(" ")),
+                    None => println!("login: none configured"),
+                }
+                if let Some(s) = r.size_limit {
+                    println!("size limit: {s} bytes");
+                }
+                println!("no mail was sent");
+            }
+            0
+        }
+        Err(RelayFailure::NoMechanism { offered }) => fail(&RelayFailure::NoMechanism { offered: Vec::new() }, Some(offered)),
+        Err(e) => fail(&e, None),
     }
 }
 
