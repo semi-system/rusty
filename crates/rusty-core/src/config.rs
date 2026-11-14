@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 use crate::{Error, Result};
 
+pub use crate::config_valkey::ValkeyConfig;
 pub use crate::config_store::{
     is_loopback_host, parse_pg_url, PgEndpoint, SslMode, StoreSection, DEFAULT_POOL_SIZE, MAX_POOL_SIZE,
     POOL_HEADROOM,
@@ -80,6 +81,10 @@ pub struct StartupConfig {
     pub dns_check: DnsCheckConfig,
     #[serde(default)]
     pub store: StoreSection,
+    /// `[valkey]`: the shared key-value store (rate limits, sessions, read cache); absent = every consumer keeps
+    /// its own in-process state.
+    #[serde(default)]
+    pub valkey: Option<ValkeyConfig>,
 }
 
 /// Which start-up rules apply (see [`StartupConfig::check_startup`]).
@@ -176,6 +181,9 @@ impl StartupConfig {
         if self.gc_grace_seconds < self.outbound.max_age_secs.saturating_add(86_400) {
             return Err(Error::Invalid("gc_grace_seconds must be at least outbound.max_age_secs plus one day".into()));
         }
+        if let Some(v) = &self.valkey {
+            v.validate()?;
+        }
         self.limits.validate()
     }
 
@@ -207,6 +215,9 @@ impl StartupConfig {
             ));
         }
         self.store.check_startup(profile, self.service_count())?;
+        if let Some(v) = &self.valkey {
+            v.check_startup(profile)?;
+        }
         Ok(())
     }
 
@@ -227,10 +238,14 @@ impl StartupConfig {
 
     /// Warnings the start-up must log (an explicit insecure database TLS override).
     pub fn startup_warnings(&self, profile: Profile) -> Vec<&'static str> {
-        match self.store.check_startup(profile, self.service_count()) {
-            Ok(Some(w)) => vec![w],
-            _ => Vec::new(),
+        let mut warnings = Vec::new();
+        if let Ok(Some(w)) = self.store.check_startup(profile, self.service_count()) {
+            warnings.push(w);
         }
+        if let Some(Ok(Some(w))) = self.valkey.as_ref().map(|v| v.check_startup(profile)) {
+            warnings.push(w);
+        }
+        warnings
     }
 
     /// Dev profile only: point the `[store]` section at the Postgres server `url` (`postgres://user@host:port/db`,
@@ -286,6 +301,7 @@ impl StartupConfig {
                 password_from_dev_env: true,
                 ..StoreSection::default()
             },
+            valkey: None,
         }
     }
 }

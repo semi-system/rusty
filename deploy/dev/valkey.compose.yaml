@@ -1,0 +1,47 @@
+# Throw-away Valkey 9 for tests and local development ONLY. Never use this file or its settings for
+# anything holding real data.
+#
+# Persistence is off (`--save ""`, no append-only file): the data directory is a tmpfs and is lost on stop
+# anyway, and a limiter or a cache must never depend on surviving a restart.
+#
+# Hardening, as for the test Postgres (deploy/dev/postgres.compose.yaml): published on 127.0.0.1 only, the
+# password supplied per run through the environment (scripts/kv-up.sh generates it; it is never committed),
+# all capabilities dropped, no-new-privileges, read-only root filesystem, memory and pids limits, the image's
+# own `valkey` user. The default user is switched off: the tests log in as an ACL user (`rusty`), the way each
+# service will in production. The image reference is pinned by digest (deploy/images.lock).
+name: rusty-kv-test
+services:
+  valkey:
+    image: valkey/valkey@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b # 9-alpine, Valkey 9.1.3
+    container_name: ${RUSTY_KV_NAME:-rusty-kv-test-dev}
+    labels:
+      # Ownership marker: kv-down removes a container only if it carries its own run id.
+      rusty.test-kv-run: "${RUSTY_KV_RUN_ID:-dev}"
+    user: "999:1000"
+    environment:
+      RUSTY_KV_PASSWORD: ${RUSTY_KV_PASSWORD:?set by scripts/kv-up.sh}
+      REDISCLI_AUTH: ${RUSTY_KV_PASSWORD:?set by scripts/kv-up.sh}
+    # The password reaches the server through the environment of the shell, never through the compose file.
+    entrypoint: ["sh", "-c"]
+    command:
+      - exec valkey-server --save "" --appendonly no --protected-mode yes --maxmemory 256mb --maxmemory-policy noeviction
+        --user default off --user rusty on ">$$RUSTY_KV_PASSWORD" "~*" "&*" "+@all"
+    ports:
+      # Omit `published`: Docker chooses an unused host port, avoiding a bind/launch race.
+      - target: 6379
+        host_ip: 127.0.0.1
+        protocol: tcp
+    read_only: true
+    tmpfs:
+      - /data:uid=999,gid=1000,mode=0700,size=64m
+      - /tmp:uid=999,gid=1000,mode=1777,size=16m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    pids_limit: 128
+    healthcheck:
+      # valkey-cli reads the password from REDISCLI_AUTH; the user name comes from --user.
+      test: ["CMD-SHELL", "valkey-cli --user rusty ping | grep -q PONG"]
+      interval: 1s
+      timeout: 3s
+      retries: 30

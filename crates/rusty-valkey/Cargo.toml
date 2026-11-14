@@ -1,0 +1,21 @@
+[package]
+name = "rusty-valkey"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+rusty-core = { path = "../rusty-core" }
+async-trait.workspace = true
+tokio = { workspace = true, features = ["rt", "time", "sync"] }
+tracing.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+# The client library stays behind src/adapter (scripts/wrapped-libs.txt). Exact pin, like the other parsers on a
+# trust boundary: it reads the server's replies. rustls with ring only; no OpenSSL, no aws-lc.
+fred = { version = "=10.1.0", default-features = false, features = ["enable-rustls-ring", "i-keys", "i-scripts", "i-server", "sha-1"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
