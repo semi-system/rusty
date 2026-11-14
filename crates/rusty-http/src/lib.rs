@@ -14,7 +14,11 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing))]
 
 mod adapter;
+pub mod assets;
+pub mod cookie;
+pub mod fuzzing;
 mod config;
+pub mod guard;
 mod request;
 mod response;
 mod router;

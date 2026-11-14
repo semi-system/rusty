@@ -17,6 +17,7 @@ rusty-svc = { path = "../crates/rusty-svc", default-features = false }
 rusty-imap = { path = "../crates/rusty-imap" }
 rusty-ctl = { path = "../crates/rusty-ctl" }
 rusty-smtp = { path = "../crates/rusty-smtp" }
+rusty-http = { path = "../crates/rusty-http" }
 
 # Not part of the main workspace (needs nightly); has its own lockfile.
 [workspace]
@@ -158,6 +159,27 @@ bench = false
 [[bin]]
 name = "fuzz_pg_url"
 path = "fuzz_targets/fuzz_pg_url.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_http_path"
+path = "fuzz_targets/fuzz_http_path.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_http_cookies"
+path = "fuzz_targets/fuzz_http_cookies.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_http_guards"
+path = "fuzz_targets/fuzz_http_guards.rs"
 test = false
 doc = false
 bench = false
