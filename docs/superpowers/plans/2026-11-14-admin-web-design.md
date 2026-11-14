@@ -1,6 +1,6 @@
 # Admin web: design (approved 2026-11-14)
 
-Status: **approved, no code yet.** The owner answered the six questions of section 12 on 2026-11-14: Q1 its own binary from
+Status: **approved; section 14 (secrets, first administrator, per-tenant relay) was added later the same day and is also approved.** The owner answered the six questions of section 12 on 2026-11-14: Q1 its own binary from
 the first commit, Q2 `hyper` with our own router, Q3 sessions in `Kv`, Q4 no 2FA now, Q5 assets embedded in the binary, Q6 all
 user-facing text in message catalogues with placeholders (section 8). Owner decisions already taken (2026-11-14): the admin web and the webmail are written in
 **Svelte 5** (Solid was the alternative); the webmail is its own service and has its own design document later; the
@@ -23,12 +23,15 @@ In scope (English only; the structure allows translations later):
 | DNS page | the generated records (MX, SPF, DKIM, DMARC, SRV/autoconfig, ownership TXT) in a copyable table with a status per record and a **Check now** button; the last check and the history of status changes |
 | Accounts | list per domain, create, set password, disable/enable |
 | Aliases | list, add, remove |
-| DKIM | generate a key for a domain (the private key never leaves the server and is never shown) |
+| DKIM | **generate** a key for a domain and see its record (the private key is sealed for the outbound service and never shown; section 14) |
+| Relay | per tenant: host, port, TLS mode, user name and password (sealed, write-only), SPF include, **Test connection** (section 14) |
 | Outbound | the state of the relay (the `relay check` result), the queue length and the oldest queued message |
+| First start | the setup page that creates the first platform administrator with a one-time token (section 14) |
 
 Out of scope for the first version: quotas and plans, lists management UI, per-domain TLS certificates, audit search, 2FA
-(hooks are designed in, see section 5), webmail, any setting that is a deployment secret (S3, database, relay password: these
-stay in the configuration files and environment, as decided).
+(hooks are designed in, see section 5), webmail, any setting that is a deployment secret of the platform (S3, the database, the TLS keys,
+the sealing key of the outbound service: these stay in configuration files and environment, as decided; the relay credentials of a
+tenant are not platform secrets, see section 14).
 
 ## 2. Architecture
 
@@ -228,3 +231,77 @@ development it runs as one more container of the compose stack.
 * `hyper` and its helpers are new on the network path; the adapter and the fuzz targets are the answer, and the limits are ours.
 * The estimate is the weakest number here: the front end is the part of this project with no code yet, and a design that looks right on paper tends to grow in the browser.
 * `admin_grants` is a new privilege surface: it needs its own tenant-isolation tests before any endpoint is reachable, and a review focused on it.
+
+## 14. Secrets entered or generated in the web, the first administrator, per-tenant relay (owner, 2026-11-14, later)
+
+These decisions change three lines above (DKIM generation, the relay password, how the first administrator is made) and are
+recorded here so that the rest of the document is read with them.
+
+### 14.1 One mechanism: sealed secrets (HPKE)
+
+A secret that the web **creates or receives** (a DKIM private key, a tenant's relay password) must be usable by the outbound service and by
+nothing else, **not even by the admin that stored it**. So it is encrypted to a public key whose private half only the outbound service has
+(HPKE, RFC 9180: a sealed box). The admin can write a secret and overwrite it; it cannot read it back. A compromised admin therefore leaks
+no signing key and no relay password, which is what the earlier "secrets only where they are used" rule was for.
+
+* The outbound service has one **sealing key pair**. Its private half is a deployment secret (a file, mode 0600, like the TLS keys; never in the
+  database, never in the web); its public half is in the database (or the admin's configuration) and is shown to the operator. Rotation: a new
+  key pair, the outbound service accepts the old and the new for unsealing, secrets are re-sealed when rewritten.
+* Table `sealed_secrets` (migration to be numbered when written): `(owner kind, owner id, purpose)` as the key, the HPKE ciphertext, the
+  public key id it was sealed to, `created_at`. The purpose and the owner are bound into the HPKE context (`info`/`aad`), so a ciphertext cannot be
+  moved to another domain or used for another purpose. A write replaces the whole row; the admin role gets `INSERT`, `UPDATE` and `DELETE` and **no
+  `SELECT`** on this table, only the outbound service's role can read the ciphertext.
+* **Library**: no hand-assembled primitives. A vetted HPKE crate behind an adapter (`wrapped-libs.txt`), pure Rust, no `aws-lc`. The candidates
+  are the RustCrypto `hpke` family and `rust-hpke`; the choice is made by a short spike (licence, maintenance, advisories, the size of the new tree,
+  ciphersuite DHKEM(X25519)/HKDF-SHA256/ChaCha20-Poly1305 or AES-GCM) before any code, and recorded in the pull request.
+* The outbound service reads DKIM keys and tenant relay credentials from the database (a small cache with a short lifetime) and unseals them in memory.
+  Key **files** in `dkim_dir` stay supported (the `rustyctl` path and existing installations); the keyring looks at the database first.
+
+### 14.2 DKIM keys generated in the web
+
+The admin generates an ed25519 key (the library that makes them today), seals the private key to the outbound service (14.1), stores it with the public
+half in `domain_dkim_keys` (already there, write once), and shows the **record to publish** in the standard record table of the DNS page (name, type,
+value, a copy button, status from the DNS check). The private key is never displayed and never leaves the process unsealed. The same selector rules
+apply: a key is made once and never replaced; a new key is a new selector. RSA keys can still be imported with `rustyctl` (the web does not accept
+a pasted private key). `rustyctl dkim generate` keeps working and writes the same places.
+
+### 14.3 The first platform administrator: a setup token
+
+When the admin service starts and **no administrator exists**, it prints one random 256-bit token to **standard output** once (nothing else is
+printed with it) and serves the setup page. The page asks for the token and then for the e-mail and password of the first platform administrator.
+
+* The token is kept in memory only, as a hash; it is compared in constant time; a **new token is made at every start** until an administrator exists.
+* At most 5 wrong tokens per source address and 20 in all per hour, then the setup page answers `429` for an hour.
+* The page is **gone for good** the moment one administrator exists (the route is not registered; the check is a database fact, not a flag in memory).
+* It is only reachable through the edge, with the admin host's IP allow-list, like every admin page.
+* The risk to know: whoever can read the service's standard output sees the token. It is accepted because the window is the time between the first
+  start and the first administrator, and because the token is useless afterwards. `rustyctl admin grant` remains the recovery path.
+
+### 14.4 Relay credentials per tenant
+
+A tenant administrator (or the platform administrator) enters the relay of a domain in the web: host, port, TLS mode (`starttls`, `implicit`, `none` without a
+login), user name, password, and the provider's SPF `include:`. The password is sealed (14.1) and can only be overwritten. The platform-wide relay of
+`[outbound.relay]` stays as the default for domains without their own.
+
+* New implementation of the `OutboundRoute` seam: `route(sender_domain, rcpt_domain)` reads the sender domain's relay from the database (cached) and falls
+  back to the global one. The worker does not change.
+* **SSRF policy**, because a tenant now chooses where the outbound service connects: the host must resolve to **public addresses only** (the
+  existing `forbidden_address` list plus private ranges, loopback, link-local, the cloud metadata address and CGNAT), checked **again at every
+  connection** (a name that resolved to a public address when it was entered may point inside later), and the port must be one of 25, 465, 587, 2525.
+  A platform administrator may allow named private hosts (an in-house relay) by setting, not a tenant.
+* TLS is verified (`verified` against the platform bundle); a tenant cannot lower it.
+* **Test connection**: the admin cannot read the password back, so the test runs in the outbound service: a job (`relay.check`) that unseals the credentials,
+  runs the same check as `rustyctl relay check` and stores the result (the fixed category and the time). When the password is first entered the admin
+  may run the check at once with the plaintext it just received, before sealing.
+* A failed login is shown as such (a fixed category) on the domain page and in the outbound page; mail stays queued, as today.
+
+### 14.5 Order of work
+
+New step **S** before C: the spike and the `rusty-seal` crate (the HPKE adapter, `Sealer` and `Unsealer` with the context binding, the table and its
+privileges). Then the outbound service reads sealed DKIM keys and the per-tenant route; then the web endpoints and pages. The first-administrator setup
+page belongs to step C (sign-in).
+
+### 14.6 Open: SCRAM
+
+The owner asked whether SCRAM can be tried. Where it would apply (mail client login, web login, the relay) is not decided. Nothing in sections 1 to 14
+depends on it.
