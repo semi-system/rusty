@@ -192,6 +192,17 @@ fn remote_text_cannot_inject_headers_or_boundaries_into_a_bounce() {
 }
 
 #[test]
+fn control_characters_cannot_hide_a_boundary_line_in_the_copied_headers() {
+    // The boundary check has to look at what is copied, not at the raw line: stripping the control
+    // character from `\x01--x` would otherwise leave a line that starts with `--` (found by the
+    // `arbitrary_bytes_never_panic` property test of the fuzz smoke run). A line that is empty once
+    // cleaned must not become a blank line either, which would end the copied header section early.
+    let original = b"Subject: a\r\n\x01--rusty-dsn-fake\r\n\x7f--also\r\n\x1b\r\nX: y\r\n\r\nbody";
+    let hdrs = dsn::header_section(original, 8192);
+    assert_eq!(hdrs, b"Subject: a\r\nX: y\r\n", "{:?}", String::from_utf8_lossy(&hdrs));
+}
+
+#[test]
 fn the_bounce_id_is_stable_per_job_and_failure_set() {
     let a = dsn::delivery_id("7", &[failure("a@r.test"), failure("b@r.test")]);
     assert_eq!(a, dsn::delivery_id("7", &[failure("b@r.test"), failure("a@r.test")]), "order does not matter");
