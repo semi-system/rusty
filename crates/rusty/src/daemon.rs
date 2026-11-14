@@ -205,6 +205,18 @@ async fn build(
             route: route_of(&cfg, store, &ctx, secrets.as_ref())?,
             signer: signer_of(&cfg, store, &ctx, secrets.as_ref())?,
         };
+        // The check of a tenant's relay (`relay.check`) runs here, where the unsealing key is: only with `[unsealing]` can a relay password be opened.
+        if cfg.unsealing.is_some() {
+            services.push(Box::new(rusty_smtp::outbound::relay_job::RelayCheckWorker::new(
+                rusty_store::RelayStore::with_repo(store.repos().relay.clone()),
+                deps.route.clone(),
+                cfg.outbound.clone(),
+                deps.resolver.clone(),
+                deps.dialer.clone(),
+                deps.tls.clone(),
+                hostname,
+            )));
+        }
         services.push(Box::new(OutboundWorker::new(deps, WorkerOptions::new(cfg.outbound.clone(), hostname)).with_wake(wake)));
     }
     for (kind, addr) in &addrs {

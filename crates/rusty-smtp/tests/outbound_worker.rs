@@ -1031,7 +1031,7 @@ mod tenant {
     use rusty_store::{RelayStore, SealedReader, SealedWriter};
 
     /// Enter the relay of `example.net` the way the admin web will: the row, and the password sealed to `pk` (`None`: no password stored).
-    async fn enter(r: &Rig, host: &str, port: u16, tls: RelayTls, user: Option<&str>, password: Option<&str>, pk: &SealingKey) {
+    pub(super) async fn enter(r: &Rig, host: &str, port: u16, tls: RelayTls, user: Option<&str>, password: Option<&str>, pk: &SealingKey) {
         let repos = r.b.store.repos();
         let dom = r.b.dir.find_domain("example.net").await.unwrap().unwrap();
         let relay = validate_tenant_relay(host, port, tls, user).unwrap();
@@ -1042,7 +1042,7 @@ mod tenant {
         }
     }
 
-    fn route_with(r: &Rig, keys: Vec<UnsealingKey>, fallback: Arc<dyn OutboundRoute>) -> Arc<dyn OutboundRoute> {
+    pub(super) fn route_with(r: &Rig, keys: Vec<UnsealingKey>, fallback: Arc<dyn OutboundRoute>) -> Arc<dyn OutboundRoute> {
         let repos = r.b.store.repos();
         Arc::new(
             DomainRoute::new(r.b.dir.clone(), RelayStore::with_repo(repos.relay.clone()), SealedReader::with_repo(repos.sealed.clone()), Unsealer::new(keys).unwrap(), fallback)
@@ -1050,14 +1050,14 @@ mod tenant {
         )
     }
 
-    fn base_cfg(dir: &tempfile::TempDir, pki: &TestPki) -> OutboundConfig {
+    pub(super) fn base_cfg(dir: &tempfile::TempDir, pki: &TestPki) -> OutboundConfig {
         let mut cfg = fast_cfg();
         cfg.ca_bundle = Some(write_bundle(dir, &pki.ca_pem));
         cfg.backoff_secs = vec![3600];
         cfg
     }
 
-    fn direct(cfg: &OutboundConfig) -> Arc<dyn OutboundRoute> {
+    pub(super) fn direct(cfg: &OutboundConfig) -> Arc<dyn OutboundRoute> {
         Arc::new(ConfigRoute::from_config(cfg, &FileSecretSource::new()).unwrap())
     }
 
@@ -1184,6 +1184,103 @@ mod tenant {
             r.wait_done(1).await;
             assert_eq!(relay.messages()[0].auth.as_deref(), Some("|mailer|s3cret"));
             r.stop().await;
+        })
+        .await;
+    }
+}
+
+// ------------------------------------------------------------------------------------------------ relay.check job
+
+mod relay_check_job {
+    use super::tenant::{base_cfg, direct, enter, route_with};
+    use super::*;
+    use rusty_seal::generate;
+    use rusty_smtp::outbound::relay_job::{enqueue_relay_check, RelayCheckWorker};
+    use rusty_store::RelayStore;
+
+    /// Start the check worker of a rig and ask for a check of example.net; the category it records (None: nothing within the wait).
+    async fn checked(r: &Rig, cfg: &OutboundConfig) -> Option<String> {
+        let repos = r.b.store.repos();
+        let relays = RelayStore::with_repo(repos.relay.clone());
+        let dom = r.b.dir.find_domain("example.net").await.unwrap().unwrap();
+        let worker = RelayCheckWorker::new(relays.clone(), r.deps.route.clone(), cfg.clone(), r.deps.resolver.clone(), r.deps.dialer.clone(), r.deps.tls.clone(), HOST)
+            .with_poll(Duration::from_millis(50));
+        let (ctx, token) = (r.ctx.clone(), CancellationToken::new());
+        let task = tokio::spawn({
+            let token = token.clone();
+            async move { Box::new(worker).run(ctx, token).await }
+        });
+        enqueue_relay_check(&r.ctx.jobs, dom.id, "example.net").await.unwrap();
+        let mut seen = None;
+        for _ in 0..100 {
+            if let Some(row) = relays.get(dom.id).await.unwrap() {
+                if let Some(s) = row.check_status {
+                    seen = Some(s);
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        token.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+        seen
+    }
+
+    async fn rig_for(b: Backend, ip: &str, script: impl Fn(Arc<rustls::ServerConfig>) -> Script + Send + Sync + 'static, user: Option<&str>, stored_pw: Option<&str>) -> (Rig, FakeMta, OutboundConfig) {
+        let pki = TestPki::new("relay.tenant-mail.net");
+        let dir = tempfile::tempdir().unwrap();
+        let sel = pki.server.clone();
+        let relay = FakeMta::start(move |_| script(sel.clone())).await;
+        let dialer = MapDialer::new(&[(ip, relay.addr)]);
+        let mut dns = StaticDns::default();
+        dns.addrs.insert("relay.tenant-mail.net".into(), vec![ip.parse().unwrap()]);
+        let cfg = base_cfg(&dir, &pki);
+        let mut r = rig(b, dialer, dns, cfg.clone()).await;
+        let (sk, pk) = generate();
+        enter(&r, "relay.tenant-mail.net", 587, RelayTls::Starttls, user, stored_pw, &pk).await;
+        r.deps.route = route_with(&r, vec![sk], direct(&cfg));
+        std::mem::forget(dir);
+        (r, relay, cfg)
+    }
+
+    #[tokio::test]
+    async fn a_working_relay_is_recorded_ok_and_no_mail_is_sent() {
+        for_each_backend(|b| async move {
+            let (r, relay, cfg) = rig_for(b, "203.0.114.50", |s| Script { tls: Some(s), require_auth: Some(("tenant".into(), "tenant-pw".into())), ..Script::default() }, Some("tenant"), Some("tenant-pw")).await;
+            assert_eq!(checked(&r, &cfg).await.as_deref(), Some("ok"));
+            assert!(relay.messages().is_empty(), "a check logs in and stops");
+            assert_eq!(r.jobs("done").await, 1);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_wrong_password_is_recorded_as_auth_failed_without_the_text_of_the_server() {
+        for_each_backend(|b| async move {
+            let (r, _relay, cfg) = rig_for(b, "203.0.114.50", |s| Script { tls: Some(s), require_auth: Some(("tenant".into(), "another-pw".into())), ..Script::default() }, Some("tenant"), Some("tenant-pw")).await;
+            assert_eq!(checked(&r, &cfg).await.as_deref(), Some("auth_failed"));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_relay_that_resolves_inside_is_recorded_refused_and_never_connected_to() {
+        for_each_backend(|b| async move {
+            let (r, relay, cfg) = rig_for(b, "10.1.2.3", |s| Script { tls: Some(s), ..Script::default() }, None, None).await;
+            assert_eq!(checked(&r, &cfg).await.as_deref(), Some("refused_address"));
+            assert_eq!(relay.connection_count(), 0);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_password_this_service_cannot_open_is_recorded_unsealable() {
+        for_each_backend(|b| async move {
+            let (mut r, relay, cfg) = rig_for(b, "203.0.114.50", |s| Script { tls: Some(s), ..Script::default() }, Some("tenant"), Some("tenant-pw")).await;
+            let (stranger, _) = generate();
+            r.deps.route = route_with(&r, vec![stranger], direct(&cfg));
+            assert_eq!(checked(&r, &cfg).await.as_deref(), Some("unsealable"));
+            assert_eq!(relay.connection_count(), 0);
         })
         .await;
     }

@@ -73,6 +73,8 @@ pub struct CtlEnv<'a> {
     pub sealed: Option<&'a rusty_store::SealedWriter>,
     /// The per-domain relay store (`domain relay`).
     pub relays: Option<&'a rusty_store::RelayStore>,
+    /// The job queue (`domain relay check` enqueues a `relay.check` job for the outbound service).
+    pub jobs: Option<&'a rusty_store::JobQueue>,
 }
 
 /// The parts of `[outbound]` the DNS records depend on.
@@ -310,6 +312,22 @@ async fn domain_relay_show(env: &mut CtlEnv<'_>, name: &str) -> Result<Outcome, 
     ))
 }
 
+/// `domain relay check`: the admin cannot read the password, so the outbound service (which holds the unsealing key) runs the check as a
+/// `relay.check` job and records a fixed category on the relay; `domain relay show` displays it.
+async fn domain_relay_check(env: &mut CtlEnv<'_>, name: &str) -> Result<Outcome, CtlError> {
+    let (relays, _) = relay_stores(env)?;
+    let Some(jobs) = env.jobs else { return Err(CtlError::runtime("the job queue is not available here")) };
+    let dom = find_domain(env, name).await?;
+    if relays.get(dom.id).await.map_err(|e| map_error(&e, "relay"))?.is_none() {
+        return Err(CtlError::runtime("this domain has no relay of its own (set one with `domain relay set`)"));
+    }
+    rusty_smtp::outbound::relay_job::enqueue_relay_check(jobs, dom.id, &dom.name).await.map_err(|e| map_error(&e, "relay check"))?;
+    Ok(Outcome::new(
+        format!("check of the relay of {} queued: the outbound service runs it; see the result with `domain relay show {}`", dom.name, dom.name),
+        json!({ "domain": dom.name, "queued": true }),
+    ))
+}
+
 /// `domain relay remove`: the domain goes back to the platform route and its sealed password goes with the relay.
 async fn domain_relay_remove(env: &mut CtlEnv<'_>, name: &str) -> Result<Outcome, CtlError> {
     let (relays, writer) = relay_stores(env)?;
@@ -527,6 +545,8 @@ pub async fn execute(command: &Command, env: &mut CtlEnv<'_>) -> Result<Outcome,
         Command::DomainRelaySet { .. } => domain_relay_set(env, command).await,
 
         Command::DomainRelayShow { name } => domain_relay_show(env, name).await,
+
+        Command::DomainRelayCheck { name } => domain_relay_check(env, name).await,
 
         Command::DomainRelayRemove { name } => domain_relay_remove(env, name).await,
 

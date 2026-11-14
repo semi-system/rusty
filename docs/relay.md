@@ -120,3 +120,26 @@ rustyctl domain relay remove example.org    # the domain goes back to the platfo
   A new host never inherits the password given for an earlier one; setting a relay without a login deletes the old sealed password.
 * `show` tells whether a password is set and the category of the last connection check (`never checked` until the `relay.check` job exists).
 * The outbound service uses the relay within a minute (its cache), once `[unsealing]` is configured there.
+
+## Testing a domain's relay: `relay.check`
+
+```
+rustyctl domain relay check example.org     # queues the check; the outbound service runs it
+rustyctl domain relay show example.org      # ... last check: ok (at <unix time>)
+```
+
+The admin side cannot read the password back, so it cannot test the connection itself. `domain relay check` (and, later, the web's "Test connection")
+enqueues a `relay.check` job; the outbound service, which holds the unsealing key (`[unsealing]`), resolves the relay, connects, negotiates TLS and logs in
+through the same code and the same route the worker uses, **sends no mail**, and records one fixed category with its time on the relay:
+
+| `last check` | Meaning |
+|---|---|
+| `ok` | resolved, TLS verified, login accepted |
+| `auth_failed` | the relay refused the user name or password |
+| `tls_failed` | TLS not offered, refused, or the certificate does not verify |
+| `no_login_mechanism` | the relay offers no PLAIN or LOGIN |
+| `refused_address` | the name resolves only to non-public addresses; nothing was connected to |
+| `unsealable` | the password is missing or this service cannot open it |
+| `unreachable` | the name does not resolve, nothing accepted a connection, or the conversation failed |
+
+No text of the remote server, no host and no address is stored. Replacing the relay clears the last check (it described another server).

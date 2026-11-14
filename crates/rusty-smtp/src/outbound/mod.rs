@@ -11,6 +11,7 @@ pub mod dsn;
 pub mod payload;
 pub mod policy;
 pub mod relay_check;
+pub mod relay_job;
 pub mod route;
 pub mod smtp_reply;
 pub mod tls;

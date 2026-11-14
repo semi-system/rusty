@@ -56,6 +56,8 @@ pub enum Command {
     DomainRelaySet { name: String, host: String, port: u16, tls: rusty_core::config::RelayTls, user: Option<String>, spf_include: Option<String>, password: PasswordSource },
     /// `domain relay show`: the relay of the domain, without its password.
     DomainRelayShow { name: String },
+    /// `domain relay check`: ask the outbound service to test the relay (a `relay.check` job); the result shows in `domain relay show`.
+    DomainRelayCheck { name: String },
     /// `domain relay remove`: the domain goes back to the platform route; its sealed password is removed.
     DomainRelayRemove { name: String },
     Check,
@@ -114,7 +116,7 @@ pub const USAGE: &str = "usage: rustyctl [--config FILE | --dev [--data-dir DIR]
                                              openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048\n\
   domain relay set <domain> --host H [--port P] [--tls starttls|implicit|none] [--user U] [--spf-include NAME] [--password-stdin | --prompt]
                                              the relay this domain's mail leaves through (a login needs the password, which is sealed)
-  domain relay show <domain> | remove <domain>
+  domain relay show <domain> | remove <domain> | check <domain>
   relay check                                log in to the configured relay (resolve, TLS, AUTH) without sending mail
   seal keygen <file>                         make the key that opens sealed secrets (private half to <file>, 0600), print the public half
   seal show <file>                           print the public half and the id of the key in <file>
@@ -334,6 +336,10 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         ["domain", "relay", "show", name] => {
             plain()?;
             done(Command::DomainRelayShow { name: (*name).to_owned() })
+        }
+        ["domain", "relay", "check", name] => {
+            plain()?;
+            done(Command::DomainRelayCheck { name: (*name).to_owned() })
         }
         ["domain", "relay", "remove", name] => {
             plain()?;

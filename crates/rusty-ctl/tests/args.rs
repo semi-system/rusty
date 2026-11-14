@@ -265,6 +265,8 @@ fn domain_relay_commands_parse_with_defaults_and_refuse_their_options_elsewhere(
     assert!(matches!(cmd(&["domain", "relay", "set", "example.com", "--host", "h.net", "--tls", "none", "--port", "25"]), Command::DomainRelaySet { port: 25, .. }));
     assert_eq!(cmd(&["domain", "relay", "show", "example.com"]), Command::DomainRelayShow { name: "example.com".into() });
     assert_eq!(cmd(&["domain", "relay", "remove", "example.com"]), Command::DomainRelayRemove { name: "example.com".into() });
+    assert_eq!(cmd(&["domain", "relay", "check", "example.com"]), Command::DomainRelayCheck { name: "example.com".into() });
+    assert!(p(&["domain", "relay", "check", "example.com", "--host", "h.net"]).is_err());
     for bad in [
         &["domain", "relay", "set", "example.com"][..],
         &["domain", "relay", "set", "example.com", "--host", "h.net", "--tls", "ssl"],

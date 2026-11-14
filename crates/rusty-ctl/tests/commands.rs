@@ -627,3 +627,24 @@ async fn setting_a_relay_without_a_login_drops_the_old_password_and_remove_drops
     })
     .await;
 }
+
+#[tokio::test]
+async fn domain_relay_check_queues_a_job_for_the_outbound_service_and_only_for_a_domain_with_a_relay() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        b.run(Command::DomainAdd { name: "example.org".into() }, &[]).await.unwrap();
+        let (_u, seal) = rusty_seal::generate();
+        // No relay of its own: nothing to check, nothing queued.
+        let e = b.run_relay(Command::DomainRelayCheck { name: "example.org".into() }, &[], None).await.unwrap_err();
+        assert!(e.to_string().contains("no relay of its own"), "{n}: {e}");
+        assert_eq!(b.count("jobs").await, 0, "{n}");
+        b.run_relay(set("example.org", "smtp.mail.net", Some("u"), PasswordSource::Stdin), &["pw-one-1"], Some(&seal)).await.unwrap();
+        let out = b.run_relay(Command::DomainRelayCheck { name: "example.org".into() }, &[], None).await.unwrap();
+        assert_eq!(out.json["queued"], true, "{n}");
+        assert!(!out.text.contains("pw-one-1"), "{n}");
+        assert_eq!(b.fx.scalar("SELECT count(*) FROM jobs WHERE kind = 'relay.check' AND state = 'queued'", &[]).await, 1, "{n}");
+        // An unknown domain is an error.
+        assert!(b.run_relay(Command::DomainRelayCheck { name: "nowhere.org".into() }, &[], None).await.is_err(), "{n}");
+    })
+    .await;
+}
