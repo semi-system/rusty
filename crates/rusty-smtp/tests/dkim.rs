@@ -251,7 +251,7 @@ fn the_dns_generator_record_matches_the_generated_key() {
         domain: "example.org",
         mail_host: "mail.example.org",
         outbound_ips: &ip,
-        dkim: Some(rusty_core::dns::DkimPublic { selector: &k.selector, public_key_b64: &k.public_key_b64 }),
+        dkim: &[rusty_core::dns::DkimPublic { selector: &k.selector, kind: rusty_core::dns::DkimKind::Rsa, public_key_b64: &k.public_key_b64 }],
         dmarc_rua: None,
     })
     .unwrap();
@@ -269,4 +269,39 @@ async fn a_message_without_a_trailing_blank_is_still_checked() {
         .check(&AuthInput { peer: "127.0.0.1".parse().unwrap(), helo: "client.example.org", mail_from: "x@sender.example", message: msg })
         .await;
     assert_eq!(r.spf, "pass", "{r:?}");
+}
+
+#[test]
+fn the_dns_generator_record_of_an_ed25519_key_says_k_ed25519() {
+    // The generator used to say k=rsa for every key, while `dkim generate` makes ed25519 keys.
+    let d = tempfile::tempdir().unwrap();
+    let k = generate_key(d.path(), "example.org", "rusty").unwrap();
+    assert_eq!(k.algo, DkimAlgo::Ed25519);
+    let ip = [IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))];
+    let recs = rusty_core::dns::records_for_domain(&rusty_core::dns::DnsInputs {
+        domain: "example.org",
+        mail_host: "mail.example.org",
+        outbound_ips: &ip,
+        dkim: &[rusty_core::dns::DkimPublic { selector: &k.selector, kind: rusty_core::dns::DkimKind::Ed25519, public_key_b64: &k.public_key_b64 }],
+        dmarc_rua: None,
+    })
+    .unwrap();
+    assert!(recs.iter().any(|r| r.value == k.txt_value() && r.value.contains("k=ed25519")), "{recs:?}");
+}
+
+#[test]
+fn an_existing_key_is_read_back_without_changing_the_file() {
+    let d = tempfile::tempdir().unwrap();
+    assert!(rusty_smtp::dkim::existing_key(d.path(), "example.org", "rusty", DkimAlgo::Ed25519).unwrap().is_none());
+    let k = generate_key(d.path(), "example.org", "rusty").unwrap();
+    let before = std::fs::read(&k.key_file).unwrap();
+    let again = rusty_smtp::dkim::existing_key(d.path(), "example.org", "rusty", DkimAlgo::Ed25519).unwrap().unwrap();
+    assert_eq!(again, k, "the same selector, file and public key");
+    assert_eq!(std::fs::read(&k.key_file).unwrap(), before);
+    // Another algorithm under the same name is another file: nothing there.
+    assert!(rusty_smtp::dkim::existing_key(d.path(), "example.org", "rusty", DkimAlgo::Rsa).unwrap().is_none());
+    // A symlink or anything that is not a regular file is refused, not followed.
+    let link = d.path().join("example.org.other-ed25519.pem");
+    std::os::unix::fs::symlink(&k.key_file, &link).unwrap();
+    assert!(rusty_smtp::dkim::existing_key(d.path(), "example.org", "other", DkimAlgo::Ed25519).is_err());
 }

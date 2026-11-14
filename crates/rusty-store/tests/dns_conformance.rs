@@ -333,3 +333,98 @@ async fn concurrent_checks_of_one_domain_record_a_change_once() {
     })
     .await;
 }
+
+// ------------------------------------------------------------------------------------ DKIM public keys
+
+fn b64(len: usize, seed: char) -> String {
+    let mut s: String = std::iter::repeat_n(seed, len - 1).collect();
+    s.push('=');
+    s
+}
+
+#[tokio::test]
+async fn a_dkim_public_key_is_written_once_and_never_changes() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let s = b.dns();
+        let d = domain(&b, "keys.test").await;
+        let other = domain(&b, "other-keys.test").await;
+        assert!(s.dkim_keys(d).await.unwrap().is_empty(), "{n}");
+
+        let ed = b64(44, 'A');
+        let (row, created) = s.add_dkim_key_at(d, "rusty-ed25519", "ed25519", &ed, 100).await.unwrap();
+        assert!(created, "{n}");
+        assert_eq!((row.selector.as_str(), row.algorithm.as_str(), row.public_key_b64.as_str(), row.created_at), ("rusty-ed25519", "ed25519", ed.as_str(), 100), "{n}");
+
+        // The same key again is a no-op that reports the first row, not a second write.
+        let (again, created) = s.add_dkim_key_at(d, "rusty-ed25519", "ed25519", &ed, 200).await.unwrap();
+        assert!(!created, "{n}");
+        assert_eq!(again.created_at, 100, "{n}: the first write stands");
+
+        // A different key under the same selector is refused and the stored key is untouched.
+        let r = s.add_dkim_key_at(d, "rusty-ed25519", "ed25519", &b64(44, 'B'), 300).await;
+        assert!(matches!(r, Err(Error::Conflict(_))), "{n}: {r:?}");
+        let r = s.add_dkim_key_at(d, "rusty-ed25519", "rsa", &ed, 300).await;
+        assert!(matches!(r, Err(Error::Conflict(_))), "{n}: a changed algorithm is a change too");
+        assert_eq!(s.dkim_keys(d).await.unwrap()[0].public_key_b64, ed, "{n}");
+
+        // Several keys per domain (an ed25519 and an RSA key), listed by selector; other domains do not see them.
+        s.add_dkim_key_at(d, "rusty", "rsa", &b64(392, 'Q'), 150).await.unwrap();
+        let all = s.dkim_keys(d).await.unwrap();
+        assert_eq!(all.iter().map(|k| k.selector.as_str()).collect::<Vec<_>>(), ["rusty", "rusty-ed25519"], "{n}");
+        assert!(s.dkim_keys(other).await.unwrap().is_empty(), "{n}");
+        s.add_dkim_key_at(other, "rusty", "rsa", &b64(392, 'Z'), 160).await.unwrap();
+        assert_eq!(s.dkim_keys(d).await.unwrap().len(), 2, "{n}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn dkim_key_input_is_validated_before_the_database_and_the_domain_must_exist() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let s = b.dns();
+        let d = domain(&b, "keys-bad.test").await;
+        let ok = b64(44, 'A');
+        for (sel, algo, key) in [
+            ("", "ed25519", ok.as_str()),
+            ("-x", "ed25519", ok.as_str()),
+            ("a b", "ed25519", ok.as_str()),
+            ("rusty", "dsa", ok.as_str()),
+            ("rusty", "ed25519", ""),
+            ("rusty", "ed25519", "short"),
+            ("rusty", "ed25519", "not base64 at all !!!!!!!!!!!!"),
+            ("rusty", "ed25519", "AAAA\nBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="),
+        ] {
+            let r = s.add_dkim_key_at(d, sel, algo, key, 100).await;
+            assert!(matches!(r, Err(Error::Invalid(_))), "{n}: {sel:?} {algo:?} {key:.20?} -> {r:?}");
+        }
+        let long = b64(2000, 'A');
+        assert!(matches!(s.add_dkim_key_at(d, "rusty", "rsa", &long, 100).await, Err(Error::Invalid(_))), "{n}");
+        assert!(s.dkim_keys(d).await.unwrap().is_empty(), "{n}: nothing was written");
+        let r = s.add_dkim_key_at(DomainId(999_999), "rusty", "ed25519", &ok, 100).await;
+        assert!(matches!(r, Err(Error::NotFound(_))), "{n}: {r:?}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_database_itself_refuses_to_change_a_published_dkim_key() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let s = b.dns();
+        let d = domain(&b, "keys-immutable.test").await;
+        s.add_dkim_key_at(d, "rusty-ed25519", "ed25519", &b64(44, 'A'), 100).await.unwrap();
+        // Not through the store: straight SQL, as a bug or a careless operator would.
+        let r = try_execute(&b, "UPDATE domain_dkim_keys SET public_key_b64 = $1 WHERE domain_id = $2", &[Bind::S(&b64(44, 'B')), Bind::I(d.0)]).await;
+        assert!(r.is_err(), "{n}: an UPDATE of a published key must be refused");
+        let r = try_execute(&b, "UPDATE domain_dkim_keys SET algorithm = 'rsa' WHERE domain_id = $1", &[Bind::I(d.0)]).await;
+        assert!(r.is_err(), "{n}");
+        assert_eq!(s.dkim_keys(d).await.unwrap()[0].public_key_b64, b64(44, 'A'), "{n}");
+        // Deleting the domain removes its keys (nothing is left behind).
+        assert_eq!(count(&b, "domain_dkim_keys", d).await, 1, "{n}");
+        run(&b, &format!("DELETE FROM domains WHERE id = {}", d.0)).await;
+        assert_eq!(count(&b, "domain_dkim_keys", d).await, 0, "{n}: cascade");
+    })
+    .await;
+}

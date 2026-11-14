@@ -81,6 +81,14 @@ pub fn generate_key(dir: &Path, domain: &str, selector: &str) -> Result<Generate
     lib::generate_ed25519(dir, domain, selector)
 }
 
+
+/// The key already kept under the name [`generate_key`] (`DkimAlgo::Ed25519`) or [`import_key`] (`DkimAlgo::Rsa`) would
+/// write, as what DNS needs; `None` when there is none. Read back and checked like an imported key.
+pub fn existing_key(dir: &Path, domain: &str, selector: &str, algo: DkimAlgo) -> Result<Option<GeneratedKey>> {
+    check_labels(domain, selector)?;
+    lib::existing(dir, domain, selector, algo)
+}
+
 /// Take an operator-supplied private key (PEM: RSA as PKCS #8 or PKCS #1, 2048 to 4096 bits; or Ed25519 as
 /// PKCS #8), check it (it must load, sign, and verify with its own public key), and keep it in `dir` (mode
 /// 0600, never overwriting) under the name the keyring signs with: `<domain>.<selector>.pem` for RSA,

@@ -1561,6 +1561,7 @@ dependencies = [
  "rusty-core",
  "rusty-directory",
  "rusty-smtp",
+ "rusty-store",
  "serde_json",
 ]
 

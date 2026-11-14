@@ -312,8 +312,22 @@ async fn dkim_generate_writes_a_private_ed25519_key_and_prints_the_dns_record() 
         assert!(out.text.contains("dkim import"), "{}", out.text);
         assert_eq!(out.json["algorithm"], "ed25519");
         assert!(!out.text.contains("PRIVATE KEY") && !out.json.to_string().contains("PRIVATE"), "the private key is never printed");
-        // A second run never overwrites a key (that would break every published signature).
-        assert!(b.run_with_dkim(cmd, keys.path()).await.is_err(), "{}", b.name);
+        // The public half is kept in the database (the admin web never reads a private key).
+        let dom = b.dir.find_domain("example.org").await.unwrap().unwrap();
+        let stored = b.dns.dkim_keys(dom.id).await.unwrap();
+        assert_eq!(stored.len(), 1, "{}", b.name);
+        assert_eq!((stored[0].selector.as_str(), stored[0].algorithm.as_str()), ("rusty-ed25519", "ed25519"), "{}", b.name);
+        assert_eq!(out.json["created"], true);
+        // A second run never replaces a key (that would break every published signature): it succeeds, changes nothing, and
+        // prints the record of the key that is there, so an operator who lost the record can get it again.
+        let before = std::fs::read(&file).unwrap();
+        let again = b.run_with_dkim(cmd, keys.path()).await.unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), before, "{}: the key file is untouched", b.name);
+        assert_eq!(again.json["created"], false, "{}", b.name);
+        assert_eq!(again.json["record_value"], out.json["record_value"], "{}: the same key, the same record", b.name);
+        assert!(again.text.contains("already exists"), "{}", again.text);
+        assert!(!again.text.contains("PRIVATE KEY"), "{}", b.name);
+        assert_eq!(b.dns.dkim_keys(dom.id).await.unwrap(), stored, "{}: nothing changed in the database", b.name);
         // An unknown domain gets no key.
         let unknown = Command::DkimGenerate { domain: "nope.test".into(), selector: "rusty".into() };
         assert!(b.run_with_dkim(unknown, keys.path()).await.is_err());
@@ -348,6 +362,32 @@ async fn dkim_import_keeps_an_operator_rsa_key_and_refuses_weak_or_foreign_files
             assert!(b.run_with_dkim(import("dkim-rsa2048.pem"), keys.path()).await.is_err());
             let unknown = Command::DkimImport { domain: "nope.test".into(), selector: "rusty".into(), key_file: data.join("dkim-rsa2048.pem") };
             assert!(b.run_with_dkim(unknown, keys.path()).await.is_err());
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_dns_hints_list_every_stored_key_with_the_k_tag_of_its_algorithm() {
+    let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../rusty-smtp/tests/data");
+    for_each_backend(|b| {
+        let data = data.clone();
+        async move {
+            b.run(Command::DomainAdd { name: "example.org".into() }, &[]).await.unwrap();
+            let keys = tempfile::tempdir().unwrap();
+            // No key yet: one placeholder that says how to make one.
+            let out = b.run(Command::Check, &[]).await.unwrap();
+            assert!(out.text.contains("<selector>._domainkey.example.org"), "{}", out.text);
+            b.run_with_dkim(Command::DkimGenerate { domain: "example.org".into(), selector: "rusty".into() }, keys.path()).await.unwrap();
+            b.run_with_dkim(Command::DkimImport { domain: "example.org".into(), selector: "rusty".into(), key_file: data.join("dkim-rsa2048.pem") }, keys.path()).await.unwrap();
+            let out = b.run(Command::Check, &[]).await.unwrap();
+            assert!(!out.text.contains("<selector>"), "no placeholder once a key exists: {}", out.text);
+            assert!(out.text.contains("rusty-ed25519._domainkey.example.org.") && out.text.contains("k=ed25519"), "{}", out.text);
+            assert!(out.text.contains("rusty._domainkey.example.org.") && out.text.contains("k=rsa"), "{}", out.text);
+            let records = out.json["domains"][0]["records"].as_array().unwrap();
+            let dkim: Vec<&str> = records.iter().filter(|r| r["name"].as_str().unwrap().contains("._domainkey.")).map(|r| r["value"].as_str().unwrap()).collect();
+            assert_eq!(dkim.len(), 2, "{dkim:?}");
+            assert!(dkim.iter().any(|v| v.starts_with("v=DKIM1; k=ed25519; p=")) && dkim.iter().any(|v| v.starts_with("v=DKIM1; k=rsa; p=")), "{dkim:?}");
         }
     })
     .await;

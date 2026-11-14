@@ -11,7 +11,7 @@ use rusty_core::dns_state::{Observation, StateRow, Step};
 use rusty_core::{DomainId, Error, Result};
 use sha2::{Digest, Sha256};
 
-use crate::repo::{DnsConfig, DnsConfigRow, DnsEventRow, DnsRepo};
+use crate::repo::{DkimKeyRow, DnsConfig, DnsConfigRow, DnsEventRow, DnsRepo};
 
 /// Most records one domain's expected set may have (the generator makes about a dozen).
 pub const MAX_RECORDS_PER_DOMAIN: usize = 64;
@@ -88,6 +88,12 @@ fn valid_label(s: &str) -> bool {
         && !s.ends_with(['-', '.'])
 }
 
+/// Base64 of a public key: the alphabet, at most two `=` at the end, 16 to 1024 characters (what the table accepts).
+fn valid_public_key(s: &str) -> bool {
+    let body = s.trim_end_matches('=');
+    (16..=1024).contains(&s.len()) && s.len() - body.len() <= 2 && !body.is_empty() && body.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/')
+}
+
 fn valid_text(s: &str, max: usize) -> bool {
     !s.is_empty() && s.len() <= max && !s.chars().any(char::is_control)
 }
@@ -146,6 +152,38 @@ impl DnsStore {
             return Err(invalid("invalid outbound reference"));
         }
         self.repo.put_config(domain, c, now).await
+    }
+
+    /// The domain's DKIM public keys (one per published selector), ordered by selector.
+    pub async fn dkim_keys(&self, domain: DomainId) -> Result<Vec<DkimKeyRow>> {
+        self.repo.dkim_keys(domain).await
+    }
+
+    /// Remember the public half of a DKIM key (the private half lives in the outbound service's key directory). The
+    /// first write stands: the same key again returns the stored row and `false`, a different key or algorithm under
+    /// the selector is `Conflict`, and the database refuses to change a stored key at all. Returns the stored row and
+    /// whether this call created it.
+    pub async fn add_dkim_key(&self, domain: DomainId, selector: &str, algorithm: &str, public_key_b64: &str) -> Result<(DkimKeyRow, bool)> {
+        self.add_dkim_key_inner(domain, selector, algorithm, public_key_b64, None).await
+    }
+
+    #[doc(hidden)]
+    pub async fn add_dkim_key_at(&self, domain: DomainId, selector: &str, algorithm: &str, public_key_b64: &str, now: i64) -> Result<(DkimKeyRow, bool)> {
+        crate::mailbox::check_supplied_time(now)?;
+        self.add_dkim_key_inner(domain, selector, algorithm, public_key_b64, Some(now)).await
+    }
+
+    async fn add_dkim_key_inner(&self, domain: DomainId, selector: &str, algorithm: &str, key: &str, now: Option<i64>) -> Result<(DkimKeyRow, bool)> {
+        if !valid_label(selector) {
+            return Err(invalid("invalid DKIM selector"));
+        }
+        if !matches!(algorithm, "rsa" | "ed25519") {
+            return Err(invalid("invalid DKIM algorithm"));
+        }
+        if !valid_public_key(key) {
+            return Err(invalid("invalid DKIM public key"));
+        }
+        self.repo.add_dkim_key(domain, selector, algorithm, key, now).await
     }
 
     /// Generate a new ownership token for the domain (replacing the old one) and store its hash.

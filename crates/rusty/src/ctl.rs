@@ -165,6 +165,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
                 return 1;
             }
         };
+        let dns = rusty_store::DnsStore::with_repo(store.repos().dns.clone());
         let mut passwords = TerminalPasswords;
         let mut env = CtlEnv {
             directory: &directory,
@@ -172,6 +173,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
             hostname: cfg.hostname.as_deref(),
             config_note: &note,
             dkim_dir: cfg.outbound.dkim_dir.as_deref(),
+            dns: &dns,
         };
         let code = match execute(&parsed.command, &mut env).await {
             Ok(outcome) => {

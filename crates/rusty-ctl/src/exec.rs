@@ -5,11 +5,12 @@
 
 use std::fmt;
 
-use rusty_core::dns::{records_for_domain, zone_line, DnsInputs};
+use rusty_core::dns::{records_for_domain, zone_line, DkimKind, DkimPublic, DnsInputs};
 use rusty_core::Error;
 use rusty_directory::{
     parse_address, AccountInfo, AccountStatus, Directory, DomainInfo, DomainStatus,
 };
+use rusty_store::DnsStore;
 use serde_json::{json, Value};
 
 use crate::args::{Command, PasswordSource};
@@ -56,6 +57,9 @@ pub struct CtlEnv<'a> {
     pub config_note: &'a str,
     /// `[outbound] dkim_dir`: where `dkim generate` writes keys (none: the command refuses).
     pub dkim_dir: Option<&'a std::path::Path>,
+    /// The DNS facade: the public half of every key made here is kept in the database, so the admin web (which never reads a
+    /// private key) and `check` can show the record to publish.
+    pub dns: &'a DnsStore,
 }
 
 /// What a command produced.
@@ -410,33 +414,62 @@ async fn dkim_target<'e>(env: &CtlEnv<'e>, domain: &str) -> Result<(DomainInfo, 
     Ok((dom, dir))
 }
 
-/// The text and JSON for a key that was written: where it is and the TXT record to publish. Never the private key.
-fn dkim_outcome(dom: &DomainInfo, key: &rusty_smtp::dkim::GeneratedKey, note: &str) -> Outcome {
-    use rusty_smtp::dkim::DkimAlgo;
+/// The text and JSON for a key: where it is and the TXT record to publish. Never the private key. `created` is false when the
+/// key was already there (a repeated `dkim generate`): nothing was changed and the record is shown again.
+fn dkim_outcome(dom: &DomainInfo, key: &rusty_smtp::dkim::GeneratedKey, created: bool, note: &str) -> Outcome {
     let name = format!("{}._domainkey.{}", key.selector, dom.name);
-    let algorithm = match key.algo {
-        DkimAlgo::Rsa => "rsa",
-        DkimAlgo::Ed25519 => "ed25519",
+    let algorithm = dkim_algorithm(key);
+    let mut text = if created {
+        format!("key written to {} (mode 0600)\nPublish this TXT record:\n{name}. IN TXT \"{}\"", key.key_file.display(), key.txt_value())
+    } else {
+        format!(
+            "a key already exists at {} (nothing was changed; a published key is never replaced, a new key needs a new --selector)\nIts TXT record:\n{name}. IN TXT \"{}\"",
+            key.key_file.display(),
+            key.txt_value()
+        )
     };
-    let mut text = format!("key written to {} (mode 0600)\nPublish this TXT record:\n{name}. IN TXT \"{}\"", key.key_file.display(), key.txt_value());
     if !note.is_empty() {
         text.push('\n');
         text.push_str(note);
     }
     Outcome::new(
         text,
-        json!({ "domain": dom.name, "algorithm": algorithm, "selector": key.selector, "record_name": name, "record_value": key.txt_value(), "key_file": key.key_file.display().to_string() }),
+        json!({ "domain": dom.name, "algorithm": algorithm, "selector": key.selector, "record_name": name, "record_value": key.txt_value(), "key_file": key.key_file.display().to_string(), "created": created }),
     )
 }
 
-/// `dkim generate`: an ed25519 key for an existing domain, written 0600 into the configured key directory, and
-/// the DNS record to publish. Never overwrites, never prints the private key. RSA keys are imported instead
-/// (see `rusty_smtp::dkim::generate_key` for why Rusty does not make them).
+fn dkim_algorithm(key: &rusty_smtp::dkim::GeneratedKey) -> &'static str {
+    use rusty_smtp::dkim::DkimAlgo;
+    match key.algo {
+        DkimAlgo::Rsa => "rsa",
+        DkimAlgo::Ed25519 => "ed25519",
+    }
+}
+
+/// Keep the public half of a key in the database (idempotent; the first write stands). A key whose file was made before
+/// this existed is recorded the next time the same command is run.
+async fn keep_public_half(env: &CtlEnv<'_>, dom: &DomainInfo, key: &rusty_smtp::dkim::GeneratedKey) -> Result<(), CtlError> {
+    env.dns.add_dkim_key(dom.id, &key.selector, dkim_algorithm(key), &key.public_key_b64).await.map(|_| ()).map_err(|e| map_error(&e, "dkim key"))
+}
+
+/// `dkim generate`: an ed25519 key for an existing domain, written 0600 into the configured key directory, its public half
+/// kept in the database, and the DNS record to publish. Never replaces a key and never prints the private key: run again
+/// with the same selector it succeeds, changes nothing and shows the record of the key that is there. RSA keys are
+/// imported instead (see `rusty_smtp::dkim::generate_key` for why Rusty does not make them).
 async fn dkim_generate(env: &mut CtlEnv<'_>, domain: &str, selector: &str) -> Result<Outcome, CtlError> {
+    use rusty_smtp::dkim::DkimAlgo;
     let (dom, dir) = dkim_target(env, domain).await?;
-    let key = rusty_smtp::dkim::generate_key(dir, &dom.name, selector).map_err(|e| map_error(&e, "dkim key"))?;
+    let (key, created) = match rusty_smtp::dkim::generate_key(dir, &dom.name, selector) {
+        Ok(k) => (k, true),
+        Err(Error::Conflict(_)) => match rusty_smtp::dkim::existing_key(dir, &dom.name, selector, DkimAlgo::Ed25519).map_err(|e| map_error(&e, "dkim key"))? {
+            Some(k) => (k, false),
+            None => return Err(CtlError::runtime("cannot create the key")),
+        },
+        Err(e) => return Err(map_error(&e, "dkim key")),
+    };
+    keep_public_half(env, &dom, &key).await?;
     let rsa_name = format!("{}.{selector}.pem", dom.name);
-    let note = if dir.join(&rsa_name).exists() {
+    let note = if !created || dir.join(&rsa_name).exists() {
         String::new()
     } else {
         format!(
@@ -444,7 +477,7 @@ async fn dkim_generate(env: &mut CtlEnv<'_>, domain: &str, selector: &str) -> Re
             dom.name
         )
     };
-    Ok(dkim_outcome(&dom, &key, &note))
+    Ok(dkim_outcome(&dom, &key, created, &note))
 }
 
 /// The largest key file `dkim import` reads.
@@ -471,7 +504,8 @@ async fn dkim_import(env: &mut CtlEnv<'_>, domain: &str, selector: &str, key_fil
         return Err(CtlError::runtime("the key file is too large to be one private key"));
     }
     let key = rusty_smtp::dkim::import_key(dir, &dom.name, selector, &pem).map_err(|e| map_error(&e, "dkim key"))?;
-    Ok(dkim_outcome(&dom, &key, "The source key file is no longer needed by Rusty; delete it or keep it offline."))
+    keep_public_half(env, &dom, &key).await?;
+    Ok(dkim_outcome(&dom, &key, true, "The source key file is no longer needed by Rusty; delete it or keep it offline."))
 }
 
 /// `check`: the configuration that was read and the DNS records each active domain needs.
@@ -488,7 +522,13 @@ async fn check(env: &mut CtlEnv<'_>) -> Result<Outcome, CtlError> {
         // The records come from the pure generator (rusty_core::dns), the same one the web setup page will
         // use; this command only formats them. Without a mail host name there is nothing to point them at.
         let Some(host) = env.hostname else { continue };
-        let inputs = DnsInputs { domain: &dom.name, mail_host: host, outbound_ips: &[], dkim: None, dmarc_rua: None };
+        // The keys come from the database (their public halves; the private ones are never read here).
+        let stored = env.dns.dkim_keys(dom.id).await.map_err(|e| map_error(&e, "dkim keys"))?;
+        let keys: Vec<DkimPublic> = stored
+            .iter()
+            .filter_map(|k| Some(DkimPublic { selector: &k.selector, kind: DkimKind::parse(&k.algorithm)?, public_key_b64: &k.public_key_b64 }))
+            .collect();
+        let inputs = DnsInputs { domain: &dom.name, mail_host: host, outbound_ips: &[], dkim: &keys, dmarc_rua: None };
         let records = records_for_domain(&inputs).map_err(|e| map_error(&e, "dns records"))?;
         lines.push(format!("domain {}:", dom.name));
         lines.extend(records.iter().map(|r| format!("  {}", zone_line(r))));

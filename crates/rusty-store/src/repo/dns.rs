@@ -57,6 +57,18 @@ pub struct DnsConfigRow {
     pub updated_at: i64,
 }
 
+/// The public half of one DKIM key of a domain: written once, never changed (a new key is a new selector).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DkimKeyRow {
+    /// The selector as published (`rusty`, `rusty-ed25519`).
+    pub selector: String,
+    /// `rsa` or `ed25519`.
+    pub algorithm: String,
+    /// Base64 of the SubjectPublicKeyInfo, as it goes into `p=`.
+    pub public_key_b64: String,
+    pub created_at: i64,
+}
+
 /// One status change of the history.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DnsEventRow {
@@ -97,6 +109,19 @@ pub trait DnsRepo: Send + Sync {
         event_cap: u32,
         now: Option<i64>,
     ) -> Result<Vec<Step>>;
+    /// Store the public half of a DKIM key. The first write stands: the same key again returns the stored row with
+    /// `false`; a different key or algorithm under an existing selector is `Conflict` (the database refuses an UPDATE
+    /// too). `NotFound` if the domain does not exist. Returns the stored row and whether this call created it.
+    async fn add_dkim_key(
+        &self,
+        domain: DomainId,
+        selector: &str,
+        algorithm: &str,
+        public_key_b64: &str,
+        now: Option<i64>,
+    ) -> Result<(DkimKeyRow, bool)>;
+    /// The domain's DKIM public keys, ordered by selector.
+    async fn dkim_keys(&self, domain: DomainId) -> Result<Vec<DkimKeyRow>>;
     /// History rows with `at >= since`, newest first, at most `limit`.
     async fn events(&self, domain: DomainId, since: i64, limit: u32) -> Result<Vec<DnsEventRow>>;
 }
@@ -141,6 +166,12 @@ pub(crate) mod sql {
     /// `$2`-th newest (no row at that offset: the subquery is NULL and nothing is deleted).
     pub const TRIM_EVENTS: &str = "DELETE FROM domain_dns_event WHERE domain_id = $1 AND id <= \
         (SELECT id FROM domain_dns_event WHERE domain_id = $1 ORDER BY id DESC LIMIT 1 OFFSET $2)";
+    pub const ADD_KEY: &str = "INSERT INTO domain_dkim_keys (domain_id, selector, algorithm, public_key_b64, created_at) \
+        VALUES ($1, $2, $3, $4, COALESCE($5, {NOW})) ON CONFLICT (domain_id, selector) DO NOTHING";
+    pub const GET_KEY: &str = "SELECT selector, algorithm, public_key_b64, created_at FROM domain_dkim_keys \
+        WHERE domain_id = $1 AND selector = $2";
+    pub const LIST_KEYS: &str = "SELECT selector, algorithm, public_key_b64, created_at FROM domain_dkim_keys \
+        WHERE domain_id = $1 ORDER BY selector";
     pub const EVENTS: &str = "SELECT id, record_name, record_type, purpose, from_status, to_status, at \
         FROM domain_dns_event WHERE domain_id = $1 AND at >= $2 ORDER BY id DESC LIMIT $3";
 }

@@ -4,10 +4,10 @@ use std::net::IpAddr;
 
 use proptest::prelude::*;
 use rusty_core::dns::{
-    parse_zone_line, records_for_domain, reverse_name, zone_line, DkimPublic, DnsInputs, RecordType, Requirement,
+    parse_zone_line, records_for_domain, reverse_name, zone_line, DkimKind, DkimPublic, DnsInputs, RecordType, Requirement,
 };
 
-fn inputs<'a>(ips: &'a [IpAddr], dkim: Option<DkimPublic<'a>>, rua: Option<&'a str>) -> DnsInputs<'a> {
+fn inputs<'a>(ips: &'a [IpAddr], dkim: &'a [DkimPublic<'a>], rua: Option<&'a str>) -> DnsInputs<'a> {
     DnsInputs { domain: "example.com", mail_host: "mail.example.com", outbound_ips: ips, dkim, dmarc_rua: rua }
 }
 
@@ -18,8 +18,8 @@ fn find<'a>(recs: &'a [rusty_core::dns::DnsRecord], t: RecordType, name_prefix: 
 #[test]
 fn the_standard_set_for_a_domain() {
     let ips: Vec<IpAddr> = vec!["192.0.2.10".parse().unwrap(), "2001:db8::10".parse().unwrap()];
-    let dkim = DkimPublic { selector: "rusty", public_key_b64: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A" };
-    let recs = records_for_domain(&inputs(&ips, Some(dkim), Some("dmarc@example.com"))).unwrap();
+    let dkim = DkimPublic { selector: "rusty", kind: DkimKind::Rsa, public_key_b64: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A" };
+    let recs = records_for_domain(&inputs(&ips, &[dkim], Some("dmarc@example.com"))).unwrap();
     let mx = find(&recs, RecordType::Mx, "example.com.");
     assert_eq!((mx.len(), mx[0].value.as_str(), mx[0].required), (1, "10 mail.example.com.", Requirement::Required));
     assert_eq!(find(&recs, RecordType::A, "mail.example.com.")[0].value, "192.0.2.10");
@@ -40,7 +40,7 @@ fn the_standard_set_for_a_domain() {
 
 #[test]
 fn without_a_dkim_key_a_placeholder_says_how_to_make_one() {
-    let recs = records_for_domain(&inputs(&[], None, None)).unwrap();
+    let recs = records_for_domain(&inputs(&[], &[], None)).unwrap();
     let p = recs.iter().find(|r| r.name.contains("_domainkey")).unwrap();
     assert!(p.value.contains("rustyctl dkim generate") && p.required == Requirement::Recommended);
     let d = recs.iter().find(|r| r.name.starts_with("_dmarc")).unwrap();
@@ -58,22 +58,22 @@ fn reverse_names() {
 
 #[test]
 fn bad_inputs_are_invalid_and_no_private_key_text_can_appear() {
-    let mut i = inputs(&[], None, None);
+    let mut i = inputs(&[], &[], None);
     i.domain = "bad domain";
     assert!(records_for_domain(&i).is_err());
-    let mut i = inputs(&[], Some(DkimPublic { selector: "s;x", public_key_b64: "AAAA" }), None);
+    let mut i = inputs(&[], &[DkimPublic { selector: "s;x", kind: DkimKind::Rsa, public_key_b64: "AAAA" }], None);
     assert!(records_for_domain(&i).is_err());
-    i = inputs(&[], Some(DkimPublic { selector: "s", public_key_b64: "-----BEGIN PRIVATE KEY-----" }), None);
+    i = inputs(&[], &[DkimPublic { selector: "s", kind: DkimKind::Rsa, public_key_b64: "-----BEGIN PRIVATE KEY-----" }], None);
     assert!(records_for_domain(&i).is_err(), "only base64 can be published as a key");
-    i = inputs(&[], None, Some("a@b.c; evil=1"));
+    i = inputs(&[], &[], Some("a@b.c; evil=1"));
     assert!(records_for_domain(&i).is_err());
 }
 
 #[test]
 fn long_txt_values_are_split_and_rejoin() {
     let long = "A".repeat(700);
-    let dkim = DkimPublic { selector: "s1", public_key_b64: &long };
-    let recs = records_for_domain(&inputs(&[], Some(dkim), None)).unwrap();
+    let dkim = DkimPublic { selector: "s1", kind: DkimKind::Rsa, public_key_b64: &long };
+    let recs = records_for_domain(&inputs(&[], &[dkim], None)).unwrap();
     let r = recs.iter().find(|r| r.name.starts_with("s1._domainkey")).unwrap();
     let line = zone_line(r);
     assert!(line.matches("\" \"").count() >= 2, "{line}");
@@ -97,9 +97,9 @@ proptest! {
         let domain = format!("{d1}.{d2}.test");
         let host = format!("{h}.{d2}.test");
         let ips: Vec<IpAddr> = v4.into_iter().map(IpAddr::from).chain(v6.into_iter().map(IpAddr::from)).collect();
-        let dkim = with_key.then_some(DkimPublic { selector: &sel, public_key_b64: &key });
+        let keys: Vec<DkimPublic> = if with_key { vec![DkimPublic { selector: &sel, kind: DkimKind::Rsa, public_key_b64: &key }] } else { vec![] };
         let recs = records_for_domain(&DnsInputs {
-            domain: &domain, mail_host: &host, outbound_ips: &ips, dkim, dmarc_rua: Some("rua@example.org"),
+            domain: &domain, mail_host: &host, outbound_ips: &ips, dkim: &keys, dmarc_rua: Some("rua@example.org"),
         }).unwrap();
         for r in &recs {
             let line = zone_line(r);
@@ -121,9 +121,48 @@ fn trailing_dot_inputs_are_refused_instead_of_producing_double_dot_names() {
     // `example.com..` (review U4 minor).
     let ips: Vec<IpAddr> = vec!["192.0.2.10".parse().unwrap()];
     for (domain, host) in [("example.com.", "mail.example.com"), ("example.com", "mail.example.com."), ("example.com.", "mail.example.com.")] {
-        let i = DnsInputs { domain, mail_host: host, outbound_ips: &ips, dkim: None, dmarc_rua: None };
+        let i = DnsInputs { domain, mail_host: host, outbound_ips: &ips, dkim: &[], dmarc_rua: None };
         assert!(records_for_domain(&i).is_err(), "{domain:?} {host:?}");
     }
-    let ok = records_for_domain(&inputs(&ips, None, None)).unwrap();
+    let ok = records_for_domain(&inputs(&ips, &[], None)).unwrap();
     assert!(ok.iter().all(|r| !r.name.contains("..") && !r.value.contains("..")));
+}
+
+#[test]
+fn the_k_tag_follows_the_algorithm_of_the_key() {
+    // Found while reading the code for the admin web: the record always said k=rsa, while `dkim generate` makes ed25519 keys.
+    let ed = DkimPublic { selector: "rusty-ed25519", kind: DkimKind::Ed25519, public_key_b64: "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=" };
+    let recs = records_for_domain(&inputs(&[], &[ed], None)).unwrap();
+    let r = find(&recs, RecordType::Txt, "rusty-ed25519._domainkey.example.com.");
+    assert_eq!(r[0].value, "v=DKIM1; k=ed25519; p=11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=");
+}
+
+#[test]
+fn a_domain_can_publish_an_ed25519_and_an_rsa_key_side_by_side() {
+    let ed = DkimPublic { selector: "rusty-ed25519", kind: DkimKind::Ed25519, public_key_b64: "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=" };
+    let rsa = DkimPublic { selector: "rusty", kind: DkimKind::Rsa, public_key_b64: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A" };
+    let recs = records_for_domain(&inputs(&[], &[ed, rsa], None)).unwrap();
+    let keys: Vec<&str> = recs.iter().filter(|r| r.name.contains("._domainkey.")).map(|r| r.name.as_str()).collect();
+    assert_eq!(keys, ["rusty-ed25519._domainkey.example.com.", "rusty._domainkey.example.com."], "in the order given");
+    assert!(recs.iter().all(|r| !r.purpose.contains("not generated")), "no placeholder when a key exists");
+    for r in recs.iter().filter(|r| r.name.contains("._domainkey.")) {
+        assert_eq!(r.required, Requirement::Required);
+    }
+}
+
+#[test]
+fn without_a_key_there_is_one_placeholder_that_says_how_to_make_one() {
+    let recs = records_for_domain(&inputs(&[], &[], None)).unwrap();
+    let ph = recs.iter().filter(|r| r.name.contains("<selector>")).count();
+    assert_eq!(ph, 1);
+}
+
+#[test]
+fn duplicate_selectors_and_too_many_keys_are_refused() {
+    let k = |sel: &'static str| DkimPublic { selector: sel, kind: DkimKind::Rsa, public_key_b64: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A" };
+    assert!(records_for_domain(&inputs(&[], &[k("a"), k("a")], None)).is_err(), "two keys under one selector cannot be published");
+    assert!(records_for_domain(&inputs(&[], &[k("A"), k("a")], None)).is_err(), "selectors are case-insensitive in DNS");
+    let five = [k("a"), k("b"), k("c"), k("d"), k("e")];
+    assert!(records_for_domain(&inputs(&[], &five, None)).is_err());
+    assert!(records_for_domain(&inputs(&[], &five[..4], None)).is_ok());
 }
