@@ -234,3 +234,51 @@ fn dkim_generate_sealed_is_a_flag_of_dkim_generate_only() {
         assert!(p(bad).is_err(), "{bad:?}");
     }
 }
+
+#[test]
+fn domain_relay_commands_parse_with_defaults_and_refuse_their_options_elsewhere() {
+    use rusty_core::config::RelayTls;
+    assert_eq!(
+        cmd(&["domain", "relay", "set", "example.com", "--host", "smtp.mail.net"]),
+        Command::DomainRelaySet {
+            name: "example.com".into(),
+            host: "smtp.mail.net".into(),
+            port: 587,
+            tls: RelayTls::Starttls,
+            user: None,
+            spf_include: None,
+            password: PasswordSource::None
+        }
+    );
+    assert_eq!(
+        cmd(&["domain", "relay", "set", "example.com", "--host", "h.net", "--tls", "implicit", "--user", "u", "--spf-include", "spf.h.net", "--password-stdin"]),
+        Command::DomainRelaySet {
+            name: "example.com".into(),
+            host: "h.net".into(),
+            port: 465,
+            tls: RelayTls::Implicit,
+            user: Some("u".into()),
+            spf_include: Some("spf.h.net".into()),
+            password: PasswordSource::Stdin
+        }
+    );
+    assert!(matches!(cmd(&["domain", "relay", "set", "example.com", "--host", "h.net", "--tls", "none", "--port", "25"]), Command::DomainRelaySet { port: 25, .. }));
+    assert_eq!(cmd(&["domain", "relay", "show", "example.com"]), Command::DomainRelayShow { name: "example.com".into() });
+    assert_eq!(cmd(&["domain", "relay", "remove", "example.com"]), Command::DomainRelayRemove { name: "example.com".into() });
+    for bad in [
+        &["domain", "relay", "set", "example.com"][..],
+        &["domain", "relay", "set", "example.com", "--host", "h.net", "--tls", "ssl"],
+        &["domain", "relay", "set", "example.com", "--host", "h.net", "--port", "x"],
+        &["domain", "relay", "set", "example.com", "--host", "h.net", "--port", "70000"],
+        &["domain", "relay", "set", "example.com", "--host", "h.net", "--selector", "s"],
+        &["domain", "relay", "show", "example.com", "--host", "h.net"],
+        &["domain", "relay", "show", "example.com", "--prompt"],
+        &["domain", "relay", "remove", "example.com", "--user", "u"],
+        &["domain", "list", "--host", "h.net"],
+        &["account", "add", "a@example.com", "--user", "u"],
+        &["domain", "relay"],
+        &["domain", "relay", "set"],
+    ] {
+        assert!(p(bad).is_err(), "{bad:?}");
+    }
+}

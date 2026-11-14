@@ -515,3 +515,115 @@ async fn dkim_generate_sealed_refuses_without_a_sealing_key_for_an_unknown_domai
     })
     .await;
 }
+
+// ------------------------------------------------------------------------------------------------ domain relay
+
+fn set(domain: &str, host: &str, user: Option<&str>, password: PasswordSource) -> Command {
+    Command::DomainRelaySet {
+        name: domain.into(),
+        host: host.into(),
+        port: 587,
+        tls: rusty_core::config::RelayTls::Starttls,
+        user: user.map(str::to_owned),
+        spf_include: Some("spf.mail.net".into()),
+        password,
+    }
+}
+
+#[tokio::test]
+async fn domain_relay_set_seals_the_password_and_show_never_prints_it() {
+    use rusty_smtp::outbound::domain_route::RELAY_PASSWORD_PURPOSE;
+    for_each_backend(|b| async move {
+        let n = b.name;
+        b.run(Command::DomainAdd { name: "example.org".into() }, &[]).await.unwrap();
+        let dom = b.dir.find_domain("example.org").await.unwrap().unwrap();
+        let (unseal, seal) = rusty_seal::generate();
+        let out = b.run_relay(set("example.org", "SMTP.Mail.NET", Some("mailer"), PasswordSource::Stdin), &["relay-secret-1"], Some(&seal)).await.unwrap();
+        assert!(!out.text.contains("relay-secret-1") && !out.json.to_string().contains("relay-secret-1"), "{n}: the password never prints");
+        assert_eq!((out.json["host"].as_str(), out.json["password_set"].as_bool()), (Some("smtp.mail.net"), Some(true)), "{n}");
+        // The row is there; the password is in the sealed store and only this service's unsealing key opens it.
+        let row = b.relays.get(dom.id).await.unwrap().unwrap();
+        assert_eq!((row.host.as_str(), row.port, row.tls.as_str(), row.username.as_deref()), ("smtp.mail.net", 587, "starttls", Some("mailer")), "{n}");
+        let sealed = b.store.repos().sealed.get("domain", dom.id.0, RELAY_PASSWORD_PURPOSE).await.unwrap().unwrap();
+        assert!(!String::from_utf8_lossy(&sealed.sealed).contains("relay-secret-1"), "{n}");
+        let ctx = rusty_seal::Context::new("domain", dom.id.0, RELAY_PASSWORD_PURPOSE).unwrap();
+        assert_eq!(&**rusty_seal::Unsealer::new(vec![unseal]).unwrap().unseal(&ctx, &sealed.sealed).unwrap(), b"relay-secret-1", "{n}");
+        // show: everything but the password.
+        let shown = b.run_relay(Command::DomainRelayShow { name: "example.org".into() }, &[], None).await.unwrap();
+        assert!(shown.text.contains("smtp.mail.net:587") && shown.text.contains("password: set (cannot be shown)") && shown.text.contains("never checked"), "{n}: {}", shown.text);
+        assert!(!shown.text.contains("relay-secret-1") && !shown.json.to_string().contains("relay-secret-1"), "{n}");
+        assert_eq!(shown.json["relay"]["password_set"], true, "{n}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn domain_relay_set_refuses_what_a_tenant_may_not_choose_and_changes_nothing() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        b.run(Command::DomainAdd { name: "example.org".into() }, &[]).await.unwrap();
+        let dom = b.dir.find_domain("example.org").await.unwrap().unwrap();
+        let (_u, seal) = rusty_seal::generate();
+        let relay = |host: &str, port: u16, tls, user: Option<&str>, pw| Command::DomainRelaySet {
+            name: "example.org".into(),
+            host: host.into(),
+            port,
+            tls,
+            user: user.map(str::to_owned),
+            spf_include: None,
+            password: pw,
+        };
+        use rusty_core::config::RelayTls::{None as Clear, Starttls};
+        for (what, cmd, pw) in [
+            ("inside host", relay("10.0.0.1", 587, Starttls, Some("u"), PasswordSource::Stdin), vec!["pw-1"]),
+            ("metadata address", relay("169.254.169.254", 25, Clear, None, PasswordSource::None), vec![]),
+            ("localhost", relay("localhost", 587, Starttls, None, PasswordSource::None), vec![]),
+            ("bad port", relay("smtp.mail.net", 22, Starttls, None, PasswordSource::None), vec![]),
+            ("login over clear", relay("smtp.mail.net", 587, Clear, Some("u"), PasswordSource::Stdin), vec!["pw-1"]),
+            ("login without password", relay("smtp.mail.net", 587, Starttls, Some("u"), PasswordSource::None), vec![]),
+            ("password without login", relay("smtp.mail.net", 587, Starttls, None, PasswordSource::Stdin), vec!["pw-1"]),
+            ("control character in the password", relay("smtp.mail.net", 587, Starttls, Some("u"), PasswordSource::Stdin), vec!["pw\u{7}1"]),
+        ] {
+            let r = b.run_relay(cmd, &pw, Some(&seal)).await;
+            assert!(r.is_err(), "{n}: {what}");
+        }
+        assert!(b.relays.get(dom.id).await.unwrap().is_none(), "{n}");
+        assert!(b.sealed.meta("domain", dom.id.0).await.unwrap().is_empty(), "{n}: no password was sealed either");
+        // Without a sealing key a login cannot be stored; the refusal names the configuration key.
+        let e = b.run_relay(set("example.org", "smtp.mail.net", Some("u"), PasswordSource::Stdin), &["pw-1"], None).await.unwrap_err();
+        assert!(e.to_string().contains("[sealing]"), "{n}: {e}");
+        assert!(b.relays.get(dom.id).await.unwrap().is_none(), "{n}");
+        // An unknown domain is an error, not a row.
+        assert!(b.run_relay(set("nowhere.org", "smtp.mail.net", None, PasswordSource::None), &[], Some(&seal)).await.is_err(), "{n}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn setting_a_relay_without_a_login_drops_the_old_password_and_remove_drops_everything() {
+    use rusty_smtp::outbound::domain_route::RELAY_PASSWORD_PURPOSE;
+    for_each_backend(|b| async move {
+        let n = b.name;
+        b.run(Command::DomainAdd { name: "example.org".into() }, &[]).await.unwrap();
+        let dom = b.dir.find_domain("example.org").await.unwrap().unwrap();
+        let (_u, seal) = rusty_seal::generate();
+        b.run_relay(set("example.org", "one.mail.net", Some("u"), PasswordSource::Stdin), &["pw-one-1"], Some(&seal)).await.unwrap();
+        assert_eq!(b.sealed.meta("domain", dom.id.0).await.unwrap().len(), 1, "{n}");
+        // The new relay has no login: the password of the old one is gone, not kept for a host it was never meant for.
+        b.run_relay(set("example.org", "two.mail.net", None, PasswordSource::None), &[], Some(&seal)).await.unwrap();
+        assert!(b.sealed.meta("domain", dom.id.0).await.unwrap().is_empty(), "{n}");
+        assert_eq!(b.relays.get(dom.id).await.unwrap().unwrap().host, "two.mail.net", "{n}");
+        // Back to a login: a new password is required, the old one cannot be reused.
+        assert!(b.run_relay(set("example.org", "three.mail.net", Some("u"), PasswordSource::None), &[], Some(&seal)).await.is_err(), "{n}");
+        b.run_relay(set("example.org", "three.mail.net", Some("u"), PasswordSource::Stdin), &["pw-three-3"], Some(&seal)).await.unwrap();
+        assert!(b.store.repos().sealed.get("domain", dom.id.0, RELAY_PASSWORD_PURPOSE).await.unwrap().is_some(), "{n}");
+        let removed = b.run_relay(Command::DomainRelayRemove { name: "example.org".into() }, &[], None).await.unwrap();
+        assert_eq!(removed.json["removed"], true, "{n}");
+        assert!(b.relays.get(dom.id).await.unwrap().is_none() && b.sealed.meta("domain", dom.id.0).await.unwrap().is_empty(), "{n}");
+        let again = b.run_relay(Command::DomainRelayRemove { name: "example.org".into() }, &[], None).await.unwrap();
+        assert_eq!(again.json["removed"], false, "{n}: removing twice is not an error");
+        let shown = b.run_relay(Command::DomainRelayShow { name: "example.org".into() }, &[], None).await.unwrap();
+        assert!(shown.text.contains("no relay of its own") && shown.json["relay"].is_null(), "{n}: {}", shown.text);
+    })
+    .await;
+}

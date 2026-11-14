@@ -87,7 +87,7 @@ try `relay check` with your account before relying on it.
 ## Per-domain relays: the rules, the storage and the outbound route
 
 A tenant administrator will be able to enter the relay of **its own domain** in the web admin (design section 14.4). This change adds the rules and the
-storage and the outbound service side; nothing in the web or `rustyctl` writes a relay yet (a row and a sealed password can only be made by tests for now).
+storage and the outbound service side; `rustyctl domain relay` enters one (below), the web comes later.
 
 * `rusty_core::relay_policy`: what a tenant may choose. The port is one of 25, 465, 587, 2525; the host is a DNS name of two or more labels (no
   `localhost`, `.local`, `.internal`, numeric last label) or a **public** IP literal; a login is refused over `tls = none`; implicit TLS only on 465.
@@ -104,3 +104,19 @@ storage and the outbound service side; nothing in the web or `rustyctl` writes a
 * **SSRF at every connection**: a tenant's relay is marked `public_only`; each attempt resolves the name again and the worker connects only to addresses
   for which `is_public_address` holds. A name that now points inside (10.x, 127.x, 169.254.169.254, CGNAT, ULA, ...) makes the attempt fail and the mail wait;
   no connection is made. The platform relay of the operator is not subject to this (it is the operator's own choice).
+
+## Entering a domain's relay: `rustyctl domain relay`
+
+```
+rustyctl domain relay set example.org --host smtp.mail.net [--port 587] [--tls starttls|implicit|none] \
+                                      [--user U] [--spf-include spf.mail.net] [--password-stdin | --prompt]
+rustyctl domain relay show example.org      # everything except the password (it can only be overwritten, never read back)
+rustyctl domain relay remove example.org    # the domain goes back to the platform route; the sealed password goes too
+```
+
+* The rules are those of `rusty_core::relay_policy` (the web will apply the same): the four mail ports, a public host, a login only over TLS.
+  The default port is 587, or 465 with `--tls implicit`.
+* A relay with `--user` **always** needs its password in the same command, and the password is sealed to `[sealing] public_key` before it is stored.
+  A new host never inherits the password given for an earlier one; setting a relay without a login deletes the old sealed password.
+* `show` tells whether a password is set and the category of the last connection check (`never checked` until the `relay.check` job exists).
+* The outbound service uses the relay within a minute (its cache), once `[unsealing]` is configured there.

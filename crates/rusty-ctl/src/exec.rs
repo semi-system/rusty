@@ -71,6 +71,8 @@ pub struct CtlEnv<'a> {
     pub sealing: Option<&'a rusty_seal::SealingKey>,
     /// Where sealed secrets are written.
     pub sealed: Option<&'a rusty_store::SealedWriter>,
+    /// The per-domain relay store (`domain relay`).
+    pub relays: Option<&'a rusty_store::RelayStore>,
 }
 
 /// The parts of `[outbound]` the DNS records depend on.
@@ -218,6 +220,111 @@ async fn scope(d: &Directory, domain: &Option<String>) -> Result<Vec<DomainInfo>
         Some(n) => Ok(vec![domain_named(d, n).await?]),
         None => all_domains(d).await,
     }
+}
+
+/// `sealed_secrets.purpose` of a relay password; the outbound service opens it under the same name (`DomainRoute`).
+const RELAY_PASSWORD_PURPOSE: &str = rusty_smtp::outbound::domain_route::RELAY_PASSWORD_PURPOSE;
+
+fn relay_stores<'a>(env: &CtlEnv<'a>) -> Result<(&'a rusty_store::RelayStore, &'a rusty_store::SealedWriter), CtlError> {
+    match (env.relays, env.sealed) {
+        (Some(r), Some(w)) => Ok((r, w)),
+        _ => Err(CtlError::runtime("domain relays are not available here")),
+    }
+}
+
+/// `domain relay set`: validate what was typed with the same rules the web will apply, seal the password, store both.
+///
+/// A login **always** needs its password in the same command: a new host must never inherit the password that was given for the old one.
+async fn domain_relay_set(
+    env: &mut CtlEnv<'_>,
+    name: &str,
+    host: &str,
+    port: u16,
+    tls: rusty_core::config::RelayTls,
+    user: Option<&str>,
+    spf_include: Option<&str>,
+    source: PasswordSource,
+) -> Result<Outcome, CtlError> {
+    let relay = rusty_core::relay_policy::validate_tenant_relay(host, port, tls, user).map_err(|e| map_error(&e, "relay"))?;
+    // The password is read before any database work, so a refused one changes nothing.
+    let password = match (user, source) {
+        (Some(_), PasswordSource::None) => return Err(CtlError::runtime("a relay with --user needs its password: use --password-stdin or --prompt")),
+        (None, s) if s != PasswordSource::None => return Err(CtlError::runtime("a password needs --user (a relay without a login has none)")),
+        (Some(_), s) => {
+            let p = env.passwords.read(s)?;
+            let t = p.expose();
+            if t.is_empty() || t.len() > 1024 || t.chars().any(char::is_control) {
+                return Err(CtlError::runtime("the relay password must be one printable line of at most 1024 bytes"));
+            }
+            Some(p)
+        }
+        (None, _) => None,
+    };
+    let (relays, writer) = relay_stores(env)?;
+    let dom = find_domain(env, name).await?;
+    if let Some(p) = &password {
+        let Some(seal) = env.sealing else {
+            return Err(CtlError::runtime("set [sealing] public_key in the configuration: the password is sealed to it (`rustyctl seal keygen` makes one)"));
+        };
+        let context = rusty_seal::Context::new("domain", dom.id.0, RELAY_PASSWORD_PURPOSE).map_err(|e| map_error(&e, "relay password"))?;
+        let sealed = seal.seal(&context, p.expose().as_bytes()).map_err(|e| map_error(&e, "relay password"))?;
+        writer.put("domain", dom.id.0, RELAY_PASSWORD_PURPOSE, &seal.id().to_hex(), &sealed).await.map_err(|e| map_error(&e, "relay password"))?;
+    } else {
+        // No login any more: a password kept from an earlier relay would be a secret nobody can see or use.
+        writer.delete("domain", dom.id.0, RELAY_PASSWORD_PURPOSE).await.map_err(|e| map_error(&e, "relay password"))?;
+    }
+    relays.set(dom.id, &relay, spf_include).await.map_err(|e| map_error(&e, "relay"))?;
+    let login = relay.username.as_deref().map_or_else(|| "no login".to_owned(), |u| format!("login {u}, password sealed"));
+    Ok(Outcome::new(
+        format!("relay of {} set: {}:{} ({}, {login}); mail sent from this domain now leaves through it", dom.name, relay.host, relay.port, rusty_store::tls_text(relay.tls)),
+        json!({ "domain": dom.name, "host": relay.host, "port": relay.port, "tls": rusty_store::tls_text(relay.tls), "username": relay.username, "spf_include": spf_include, "password_set": password.is_some() }),
+    ))
+}
+
+/// `domain relay show`: everything except the password, which nothing here can read.
+async fn domain_relay_show(env: &mut CtlEnv<'_>, name: &str) -> Result<Outcome, CtlError> {
+    let (relays, writer) = relay_stores(env)?;
+    let dom = find_domain(env, name).await?;
+    let Some(r) = relays.get(dom.id).await.map_err(|e| map_error(&e, "relay"))? else {
+        return Ok(Outcome::new(
+            format!("{} has no relay of its own (the platform route is used)", dom.name),
+            json!({ "domain": dom.name, "relay": null }),
+        ));
+    };
+    let has_password = writer.meta("domain", dom.id.0).await.map_err(|e| map_error(&e, "relay password"))?.iter().any(|m| m.purpose == RELAY_PASSWORD_PURPOSE);
+    let check = match (&r.check_status, r.checked_at) {
+        (Some(s), Some(at)) => format!("last check: {s} (at {at})"),
+        _ => "never checked".to_owned(),
+    };
+    let text = format!(
+        "{}: {}:{} {}; login: {}; password: {}; SPF include: {}; {check}",
+        dom.name,
+        r.host,
+        r.port,
+        r.tls,
+        r.username.as_deref().unwrap_or("none"),
+        if has_password { "set (cannot be shown)" } else { "not set" },
+        r.spf_include.as_deref().unwrap_or("none"),
+    );
+    Ok(Outcome::new(
+        text,
+        json!({ "domain": dom.name, "relay": {
+            "host": r.host, "port": r.port, "tls": r.tls, "username": r.username, "spf_include": r.spf_include,
+            "password_set": has_password, "check_status": r.check_status, "checked_at": r.checked_at,
+        } }),
+    ))
+}
+
+/// `domain relay remove`: the domain goes back to the platform route and its sealed password goes with the relay.
+async fn domain_relay_remove(env: &mut CtlEnv<'_>, name: &str) -> Result<Outcome, CtlError> {
+    let (relays, writer) = relay_stores(env)?;
+    let dom = find_domain(env, name).await?;
+    let removed = relays.remove(dom.id).await.map_err(|e| map_error(&e, "relay"))?;
+    writer.delete("domain", dom.id.0, RELAY_PASSWORD_PURPOSE).await.map_err(|e| map_error(&e, "relay password"))?;
+    Ok(Outcome::new(
+        if removed { format!("relay of {} removed (the platform route is used)", dom.name) } else { format!("{} had no relay of its own", dom.name) },
+        json!({ "domain": dom.name, "removed": removed }),
+    ))
 }
 
 fn read_password(env: &mut CtlEnv<'_>, source: PasswordSource) -> Result<Option<Secret>, CtlError> {
@@ -421,6 +528,14 @@ pub async fn execute(command: &Command, env: &mut CtlEnv<'_>) -> Result<Outcome,
         Command::DkimGenerateSealed { domain, selector } => dkim_generate_sealed(env, domain, selector).await,
 
         Command::DkimImport { domain, selector, key_file } => dkim_import(env, domain, selector, key_file).await,
+
+        Command::DomainRelaySet { name, host, port, tls, user, spf_include, password } => {
+            domain_relay_set(env, name, host, *port, *tls, user.as_deref(), spf_include.as_deref(), *password).await
+        }
+
+        Command::DomainRelayShow { name } => domain_relay_show(env, name).await,
+
+        Command::DomainRelayRemove { name } => domain_relay_remove(env, name).await,
 
         Command::SealKeygen { file } => seal_keygen(file),
 
