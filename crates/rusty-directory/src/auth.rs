@@ -1,7 +1,7 @@
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::password_hash::phc::PasswordHash;
+use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use argon2::Argon2;
 use async_trait::async_trait;
-use rand_core::OsRng;
 use rusty_core::{AccountId, Error, Result};
 use rusty_store::repo::AuthRow;
 
@@ -25,9 +25,9 @@ pub(crate) async fn hash_password(password: &str) -> Result<String> {
 }
 
 fn hash_blocking(password: &str) -> Result<String> {
-    let salt = SaltString::generate(&mut OsRng);
+    // argon2 0.6 draws a fresh random salt itself (getrandom), no RNG is passed in.
     Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password(password.as_bytes())
         .map(|h| h.to_string())
         .map_err(|_| Error::storage("password hashing failed"))
 }
@@ -112,5 +112,41 @@ impl Authenticator for LocalAuthenticator {
                 Ok(None)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Produced by argon2 0.5.3 with `Argon2::default()`. Hashes already stored in the database
+    /// must keep verifying after the crate is upgraded; if this fails, users are locked out.
+    const GOLDEN_FROM_0_5: &str =
+        "$argon2id$v=19$m=19456,t=2,p=1$TlqsjKgyrt1jew18nQqtxw$739NvvgRWiK1bUJ8ytixD04G+WmAjJz0UlggXSfaVI8";
+
+    #[test]
+    fn a_hash_made_by_argon2_0_5_still_verifies() {
+        assert!(verify_blocking(GOLDEN_FROM_0_5, "correct horse battery staple"));
+        assert!(!verify_blocking(GOLDEN_FROM_0_5, "correct horse battery stapl"));
+        assert!(!verify_blocking(GOLDEN_FROM_0_5, ""));
+    }
+
+    #[test]
+    fn new_hashes_keep_the_same_parameters_and_round_trip() {
+        let h = hash_blocking("another password").unwrap();
+        assert!(
+            h.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"),
+            "default parameters changed: {h}"
+        );
+        assert!(verify_blocking(&h, "another password"));
+        assert!(!verify_blocking(&h, "Another password"));
+        let other = hash_blocking("another password").unwrap();
+        assert_ne!(h, other, "salts must be random");
+    }
+
+    #[test]
+    fn garbage_hashes_never_verify() {
+        assert!(!verify_blocking("not a phc string", "x"));
+        assert!(!verify_blocking("", "x"));
     }
 }
