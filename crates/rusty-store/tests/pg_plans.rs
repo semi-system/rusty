@@ -14,7 +14,7 @@ use sqlx::{Connection, PgConnection};
 /// The text of `EXPLAIN <sql>` with sequential scans disabled.
 async fn plan_without_seqscan(conn: &mut PgConnection, sql: &str) -> String {
     sqlx::query("SET enable_seqscan = off").execute(&mut *conn).await.unwrap();
-    let rows: Vec<String> = sqlx::query_scalar(&format!("EXPLAIN {sql}"))
+    let rows: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("EXPLAIN {sql}")))
         .fetch_all(&mut *conn)
         .await
         .unwrap();
@@ -99,7 +99,7 @@ async fn claim_probes_use_index_scans_at_scale() {
         .replace("$3", "-9223372036854775807")
         .replace("$4", "-9223372036854775807");
     let concrete: Vec<String> =
-        sqlx::query_scalar(&format!("EXPLAIN (ANALYZE, BUFFERS OFF, TIMING OFF) {concrete_sql}"))
+        sqlx::query_scalar(sqlx::AssertSqlSafe(format!("EXPLAIN (ANALYZE, BUFFERS OFF, TIMING OFF) {concrete_sql}")))
             .fetch_all(&mut conn)
             .await
             .unwrap();
@@ -129,7 +129,7 @@ async fn claim_probes_use_index_scans_at_scale() {
 /// `EXPLAIN` through the simple query protocol (a generic plan takes no bind values).
 async fn explain_raw(conn: &mut PgConnection, sql: &str) -> String {
     use sqlx::{Executor, Row};
-    let rows = (&mut *conn).fetch_all(sqlx::raw_sql(sql)).await.unwrap();
+    let rows = (&mut *conn).fetch_all(sqlx::raw_sql(sqlx::AssertSqlSafe(sql))).await.unwrap();
     rows.iter().map(|r| r.get::<String, _>(0)).collect::<Vec<_>>().join("\n")
 }
 
@@ -174,13 +174,13 @@ async fn seed_scale(conn: &mut PgConnection) {
                 '{}', 0, 5, i, 0, 0 FROM generate_series(1, 100000) i",
         "ANALYZE",
     ] {
-        sqlx::query(sql).execute(&mut *conn).await.unwrap_or_else(|e| panic!("{sql}: {e}"));
+        sqlx::query(sqlx::AssertSqlSafe(sql)).execute(&mut *conn).await.unwrap_or_else(|e| panic!("{sql}: {e}"));
     }
 }
 
 /// `EXPLAIN` of `sql` with the planner left alone, statistics from `seed_scale`.
 async fn plan(conn: &mut PgConnection, sql: &str) -> String {
-    let rows: Vec<String> = sqlx::query_scalar(&format!("EXPLAIN {sql}"))
+    let rows: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("EXPLAIN {sql}")))
         .fetch_all(&mut *conn)
         .await
         .unwrap_or_else(|e| panic!("{sql}: {e}"));

@@ -206,7 +206,7 @@ async fn list_mutations() {
 
 async fn sqlx_rows(store: &rusty_store::PgStore, sql: &str) -> Vec<(String, String, String)> {
     use sqlx::Row;
-    sqlx::query(sql)
+    sqlx::query(sqlx::AssertSqlSafe(sql))
         .fetch_all(store.pool())
         .await
         .unwrap()

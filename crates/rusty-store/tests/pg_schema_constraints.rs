@@ -101,7 +101,7 @@ async fn pg_bytea_blob_hash_round_trips_without_changing_public_hex_type() {
 }
 
 async fn bad(pool: &PgPool, sql: &str) -> sqlx::Error {
-    sqlx::query(sql).execute(pool).await.unwrap_err()
+    sqlx::query(sqlx::AssertSqlSafe(sql)).execute(pool).await.unwrap_err()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -339,7 +339,7 @@ fn code_and_constraint(e: &sqlx::Error) -> (Option<String>, Option<String>) {
 }
 
 async fn without_trigger(pool: &PgPool, table: &str, trigger: &str) {
-    sqlx::query(&format!("ALTER TABLE {table} DISABLE TRIGGER {trigger}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("ALTER TABLE {table} DISABLE TRIGGER {trigger}")))
         .execute(pool)
         .await
         .unwrap();

@@ -113,8 +113,9 @@ macro_rules! on_backend {
     ($self:ident, $sql:ident, |$pool:ident, $s:ident| $body:expr) => {{
         let store = $self.admin.as_ref().unwrap_or(&$self.pg);
         let $pool = store.pool();
-        let converted = to_dollar_placeholders($sql);
-        let $s: &str = &converted;
+        // Raw SQL of a test, by design: `Fixtures` is test support and is never part of a production
+        // binary (the symbols gate checks the release binary for its markers).
+        let $s = sqlx::AssertSqlSafe(to_dollar_placeholders($sql));
         return $body;
     }};
 }
@@ -251,7 +252,7 @@ impl Fixtures {
     pub async fn hold_write_lock(&self, table: &str) -> WriteLock {
         assert!(table.bytes().all(|c| c.is_ascii_lowercase() || c == b'_'));
         let mut tx = self.pg.begin_write().await.expect("begin");
-        sqlx::query(&format!("LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE")))
             .execute(&mut *tx)
             .await
             .expect("lock table");

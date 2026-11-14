@@ -677,7 +677,7 @@ pub(crate) fn summary_from_row(row: SummaryRow) -> Result<MessageSummary> {
 /// of primitive columns; see the PG2 report for why writes are not generalised).
 pub(crate) async fn changes_since_generic<'e, DB, E>(
     ex: E,
-    sql: &str,
+    sql: impl sqlx::SqlSafeStr,
     mb: MailboxId,
     seq: i64,
     limit: i64,
@@ -685,7 +685,7 @@ pub(crate) async fn changes_since_generic<'e, DB, E>(
 where
     DB: sqlx::Database,
     E: sqlx::Executor<'e, Database = DB>,
-    for<'q> <DB as sqlx::Database>::Arguments<'q>: sqlx::IntoArguments<'q, DB>,
+    <DB as sqlx::Database>::Arguments: sqlx::IntoArguments<DB>,
     i64: sqlx::Type<DB> + for<'q> sqlx::Encode<'q, DB>,
     (i64, String, i64, String): for<'r> sqlx::FromRow<'r, DB::Row>,
 {

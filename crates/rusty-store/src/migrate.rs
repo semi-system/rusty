@@ -269,7 +269,9 @@ async fn migrate_on(pool: &PgPool, require_roles: bool) -> Result<MigrationRepor
     MIGRATOR.run(pool).await.map_err(|_| Error::storage("Postgres migration failed"))?;
     #[cfg(feature = "mutation-testing")]
     for stmt in crate::mutation::post_migrate(crate::mutation::Dialect::Postgres) {
-        sqlx::query(&stmt).execute(pool).await.map_err(|_| Error::storage("mutation statement failed"))?;
+        // Mutation testing only (the feature is never enabled in a release build): the statements come
+        // from the checked-in mutation table (src/mutation.rs), not from any runtime input.
+        sqlx::query(sqlx::AssertSqlSafe(stmt)).execute(pool).await.map_err(|_| Error::storage("mutation statement failed"))?;
     }
     sqlx::raw_sql(GRANTS_SQL).execute(pool).await.map_err(|_| Error::storage("applying the privilege matrix failed"))?;
     let after = schema_status_of(pool).await?;

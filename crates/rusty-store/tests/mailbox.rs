@@ -1039,20 +1039,32 @@ async fn cross_mailbox_ids_are_not_found() {
 
 // ---------- concurrency / cancellation ----------
 
-/// Poll `fut` at most `n` times, sleeping briefly after each pending poll, then drop it.
-/// Returns true if it completed.
+/// Run `fut` for exactly `n` polls and then drop it, wherever it is: the cancellation point is
+/// picked by poll count, not by time, so it is the same on every machine. The runtime keeps
+/// driving the future (wake-ups reach the outer task), which a hand-rolled "poll, sleep 1 ms,
+/// poll" loop does not guarantee: with sqlx 0.9 on a multi-connection pool that loop never got
+/// an append to the end, so the "some appends completed" check below could not hold.
+/// Returns true if `fut` completed within the `n` polls.
 async fn poll_n_then_drop<F: std::future::Future>(fut: F, n: usize) -> bool {
-    let mut fut = std::pin::pin!(fut);
-    for _ in 0..n {
-        let ready =
-            std::future::poll_fn(|cx| std::task::Poll::Ready(fut.as_mut().poll(cx).is_ready()))
-                .await;
-        if ready {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(1)).await;
+    struct StopAfter<F> {
+        inner: std::pin::Pin<Box<F>>,
+        left: usize,
     }
-    false
+    impl<F: std::future::Future> std::future::Future for StopAfter<F> {
+        type Output = bool;
+        fn poll(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<bool> {
+            self.left = self.left.saturating_sub(1);
+            match self.inner.as_mut().poll(cx) {
+                std::task::Poll::Ready(_) => std::task::Poll::Ready(true),
+                std::task::Poll::Pending if self.left == 0 => std::task::Poll::Ready(false),
+                std::task::Poll::Pending => std::task::Poll::Pending,
+            }
+        }
+    }
+    StopAfter { inner: Box::pin(fut), left: n }.await
 }
 
 /// Drop appends at every await point (pool acquire, blob write, BEGIN, each statement,
@@ -1066,6 +1078,17 @@ async fn cancel_appends_then_check(e: &Env) {
         if poll_n_then_drop(fut, n).await {
             completed += 1;
         }
+        // sqlx 0.9 recycles a connection that was dropped mid-statement in a background task, and an
+        // `acquire` that finds the pool at its limit meanwhile retries in a yield loop (sqlx-core
+        // pool/inner.rs, "woke but was unable to acquire idle connection"). That loop burns polls,
+        // so the next cancelled append would never get to run to completion. A normal append here
+        // lets the pool settle, and proves that it is usable after a cancellation at every point.
+        let settle = tokio::time::timeout(
+            Duration::from_secs(10),
+            e.mb.append(INBOX, raw(&format!("s{n}"), None), Flags::empty()),
+        )
+        .await;
+        assert!(matches!(settle, Ok(Ok(_))), "n={n}: {settle:?}");
     }
     assert!(completed > 0, "some appends must have run to completion");
     for k in 0..200u64 {

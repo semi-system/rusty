@@ -151,7 +151,7 @@ impl PgRepo {
         c: &mut PgConnection,
         mb: MailboxId,
     ) -> TxResult<()> {
-        sqlx::query_scalar::<_, i64>(&crate::repo::pg_lit("SELECT id FROM mailboxes WHERE id = $1 FOR UPDATE"))
+        sqlx::query_scalar::<_, i64>(crate::repo::pg_lit("SELECT id FROM mailboxes WHERE id = $1 FOR UPDATE"))
             .bind(mb.0)
             .fetch_optional(&mut *c)
             .await?
@@ -180,7 +180,7 @@ impl PgRepo {
         }
         if armed {
             sqlx::query(
-                &crate::repo::pg_lit("DO $$ BEGIN RAISE EXCEPTION 'injected' USING ERRCODE = '40P01'; END $$"),
+                crate::repo::pg_lit("DO $$ BEGIN RAISE EXCEPTION 'injected' USING ERRCODE = '40P01'; END $$"),
             )
             .execute(&mut *c)
             .await?;

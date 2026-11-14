@@ -107,12 +107,12 @@ async fn lock_existing_blobs(
         }
         let mut first = true;
         for h in order {
-            sqlx::query(&crate::repo::pg_lit("SELECT hash FROM blobs WHERE hash = $1 FOR NO KEY UPDATE"))
+            sqlx::query(crate::repo::pg_lit("SELECT hash FROM blobs WHERE hash = $1 FOR NO KEY UPDATE"))
                 .bind(h)
                 .fetch_all(&mut *c)
                 .await?;
             if first && knobs.hold_after_first_blob_ms > 0 {
-                sqlx::query(&crate::repo::pg_lit("SELECT pg_sleep($1)"))
+                sqlx::query(crate::repo::pg_lit("SELECT pg_sleep($1)"))
                     .bind(f64::from(knobs.hold_after_first_blob_ms) / 1000.0)
                     .execute(&mut *c)
                     .await?;
@@ -126,7 +126,7 @@ async fn lock_existing_blobs(
     asc.sort_unstable();
     asc.dedup();
     sqlx::query_scalar::<_, Vec<u8>>(
-        &crate::repo::pg_lit("SELECT hash FROM blobs WHERE hash = ANY($1) ORDER BY hash FOR NO KEY UPDATE"),
+        crate::repo::pg_lit("SELECT hash FROM blobs WHERE hash = ANY($1) ORDER BY hash FOR NO KEY UPDATE"),
     )
     .bind(&asc)
     .fetch_all(&mut *c)
@@ -162,17 +162,17 @@ async fn lock_blobs(
         let mut first = true;
         for m in order {
             let h = hash_bytes(&m.hash)?;
-            sqlx::query(&crate::repo::pg_lit("INSERT INTO blobs (hash, size) VALUES ($1, $2) ON CONFLICT (hash) DO NOTHING"))
+            sqlx::query(crate::repo::pg_lit("INSERT INTO blobs (hash, size) VALUES ($1, $2) ON CONFLICT (hash) DO NOTHING"))
                 .bind(&h)
                 .bind(m.size)
                 .execute(&mut *c)
                 .await?;
-            sqlx::query(&crate::repo::pg_lit("SELECT hash FROM blobs WHERE hash = $1 FOR NO KEY UPDATE"))
+            sqlx::query(crate::repo::pg_lit("SELECT hash FROM blobs WHERE hash = $1 FOR NO KEY UPDATE"))
                 .bind(&h)
                 .fetch_all(&mut *c)
                 .await?;
             if first && knobs.hold_after_first_blob_ms > 0 {
-                sqlx::query(&crate::repo::pg_lit("SELECT pg_sleep($1)"))
+                sqlx::query(crate::repo::pg_lit("SELECT pg_sleep($1)"))
                     .bind(f64::from(knobs.hold_after_first_blob_ms) / 1000.0)
                     .execute(&mut *c)
                     .await?;
@@ -186,7 +186,7 @@ async fn lock_blobs(
     let sizes: Vec<i64> = blobs.values().copied().collect();
     for _ in 0..3 {
         sqlx::query(
-            &crate::repo::pg_lit("INSERT INTO blobs (hash, size) \
+            crate::repo::pg_lit("INSERT INTO blobs (hash, size) \
              SELECT t.h, t.s FROM unnest($1::bytea[], $2::bigint[]) AS t(h, s) ORDER BY t.h \
              ON CONFLICT (hash) DO NOTHING"),
         )
@@ -196,20 +196,20 @@ async fn lock_blobs(
         .await?;
         #[cfg(feature = "test-knobs")]
         if knobs.pause_after_blob_insert_ms > 0 {
-            sqlx::query(&crate::repo::pg_lit("SELECT pg_sleep($1)"))
+            sqlx::query(crate::repo::pg_lit("SELECT pg_sleep($1)"))
                 .bind(f64::from(knobs.pause_after_blob_insert_ms) / 1000.0)
                 .execute(&mut *c)
                 .await?;
         }
         #[cfg(feature = "test-knobs")]
         if knobs.drop_blob_rows_after_insert {
-            sqlx::query(&crate::repo::pg_lit("DELETE FROM blobs WHERE hash = ANY($1)"))
+            sqlx::query(crate::repo::pg_lit("DELETE FROM blobs WHERE hash = ANY($1)"))
                 .bind(&hashes)
                 .execute(&mut *c)
                 .await?;
         }
         let locked: Vec<Vec<u8>> = sqlx::query_scalar(
-            &crate::repo::pg_lit("SELECT hash FROM blobs WHERE hash = ANY($1) ORDER BY hash FOR NO KEY UPDATE"),
+            crate::repo::pg_lit("SELECT hash FROM blobs WHERE hash = ANY($1) ORDER BY hash FOR NO KEY UPDATE"),
         )
         .bind(&hashes)
         .fetch_all(&mut *c)

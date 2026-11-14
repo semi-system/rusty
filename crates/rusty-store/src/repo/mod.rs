@@ -59,19 +59,28 @@ pub(crate) fn hash_bytes(h: &rusty_core::BlobHash) -> rusty_core::Result<Vec<u8>
     hex::decode(h.as_str()).map_err(|_| rusty_core::Error::Invalid("invalid blob hash".into()))
 }
 
-/// Postgres text: the database clock is `rs_now()` (`statement_timestamp()`).
-pub(crate) fn render_pg(sql: &str) -> String {
+/// The text of a Postgres statement: the database clock is `rs_now()` (`statement_timestamp()`).
+pub(crate) fn render_text(sql: &str) -> String {
     let s = sql.replace("{NOW}", "rs_now()").replace("{JSONB}", "::jsonb");
     #[cfg(feature = "mutation-testing")]
     let s = crate::mutation::rendered(crate::mutation::Dialect::Postgres, s);
     s
 }
 
+/// A Postgres statement for sqlx. sqlx 0.9 refuses any SQL that is not a `'static` literal unless it is
+/// wrapped in `AssertSqlSafe`; this is the single place where that assertion is made for rendered
+/// text, and the `&'static str` parameter is what makes it true: only a literal in the source can
+/// be passed in, so no runtime value can reach the statement text (values go through `bind`).
+pub(crate) fn render_pg(sql: &'static str) -> sqlx::AssertSqlSafe<String> {
+    sqlx::AssertSqlSafe(render_text(sql))
+}
+
 /// A Postgres-only statement literal. Identity in every build except `mutation-testing`, where
 /// the active text mutation (src/mutation.rs) may rewrite it.
 #[cfg(feature = "mutation-testing")]
-pub(crate) fn pg_lit(sql: &'static str) -> std::borrow::Cow<'static, str> {
-    crate::mutation::statement(crate::mutation::Dialect::Postgres, sql)
+pub(crate) fn pg_lit(sql: &'static str) -> sqlx::AssertSqlSafe<std::borrow::Cow<'static, str>> {
+    // Same argument as `render_pg`: the input is a literal of the source, the mutation only rewrites it.
+    sqlx::AssertSqlSafe(crate::mutation::statement(crate::mutation::Dialect::Postgres, sql))
 }
 #[cfg(not(feature = "mutation-testing"))]
 #[allow(dead_code)]
@@ -87,7 +96,7 @@ mod tests {
     #[test]
     fn render_replaces_only_the_clock_token() {
         assert_eq!(
-            render_pg("SELECT 1 WHERE a = $1 AND t = {NOW}"),
+            render_text("SELECT 1 WHERE a = $1 AND t = {NOW}"),
             "SELECT 1 WHERE a = $1 AND t = rs_now()"
         );
         for s in [
@@ -104,7 +113,7 @@ mod tests {
             directory::sql::INSERT_ACCOUNT,
         ] {
             assert!(!s.contains('?'), "{s}");
-            assert!(!render_pg(s).contains("{NOW}") && !render_pg(s).contains("{JSONB}"), "{s}");
+            assert!(!render_text(s).contains("{NOW}") && !render_text(s).contains("{JSONB}"), "{s}");
         }
     }
 }

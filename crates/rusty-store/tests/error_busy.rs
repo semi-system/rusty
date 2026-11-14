@@ -249,9 +249,9 @@ mod pg {
 
     async fn raise(pool: &sqlx::PgPool, code: &str) -> sqlx::Error {
         // `code` is a test constant (5 characters of [A-Z0-9]).
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "DO $$ BEGIN RAISE EXCEPTION 'boom' USING ERRCODE = '{code}'; END $$"
-        ))
+        )))
         .execute(pool)
         .await
         .unwrap_err()

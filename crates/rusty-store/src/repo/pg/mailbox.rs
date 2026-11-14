@@ -37,7 +37,7 @@ use crate::map_db_error;
 /// that has a domain may only act on a mailbox of that domain (`Invalid` otherwise, review PG5
 /// M-c); a stale epoch or lapsed lease is `Conflict`.
 async fn complete_job(c: &mut PgConnection, f: JobFence, mailbox: i64) -> TxResult<()> {
-    let n = sqlx::query(&r(q::COMPLETE_JOB))
+    let n = sqlx::query(r(q::COMPLETE_JOB))
         .bind(f.id.0)
         .bind(f.epoch)
         .bind(mailbox)
@@ -47,7 +47,7 @@ async fn complete_job(c: &mut PgConnection, f: JobFence, mailbox: i64) -> TxResu
     if n == 1 {
         return Ok(());
     }
-    let owned: Option<i64> = sqlx::query_scalar(&r(q::JOB_STILL_OWNED))
+    let owned: Option<i64> = sqlx::query_scalar(r(q::JOB_STILL_OWNED))
         .bind(f.id.0)
         .bind(f.epoch)
         .fetch_optional(&mut *c)
@@ -67,12 +67,12 @@ async fn log_change(
     op: ChangeOp,
 ) -> TxResult<i64> {
     let (kind, item_id) = item.to_row();
-    let seq: i64 = sqlx::query_scalar(&r(q::TAKE_SEQ))
+    let seq: i64 = sqlx::query_scalar(r(q::TAKE_SEQ))
         .bind(mb)
         .fetch_optional(&mut *c)
         .await?
         .ok_or_else(not_found_mailbox)?;
-    sqlx::query(&r(q::INSERT_CHANGE))
+    sqlx::query(r(q::INSERT_CHANGE))
         .bind(mb)
         .bind(seq)
         .bind(kind)
@@ -95,7 +95,7 @@ async fn log_message_changes(
         return Ok(None);
     }
     let n = ids.len() as i64;
-    let first: i64 = sqlx::query_scalar(&r(q::TAKE_SEQS))
+    let first: i64 = sqlx::query_scalar(r(q::TAKE_SEQS))
         .bind(mb)
         .bind(n)
         .fetch_optional(&mut *c)
@@ -103,7 +103,7 @@ async fn log_message_changes(
         .ok_or_else(not_found_mailbox)?;
     let seqs: Vec<i64> = (0..n).map(|i| first + i).collect();
     sqlx::query(
-        &crate::repo::pg_lit("INSERT INTO change_log (mailbox_id, seq, kind, item_id, op) \
+        crate::repo::pg_lit("INSERT INTO change_log (mailbox_id, seq, kind, item_id, op) \
          SELECT $1, t.seq, 'message', t.item, $4 \
          FROM unnest($2::bigint[], $3::bigint[]) AS t(seq, item) ORDER BY t.seq"),
     )
@@ -121,7 +121,7 @@ async fn folder_row(
     mb: i64,
     id: i64,
 ) -> TxResult<(Option<i64>, String)> {
-    Ok(sqlx::query_as(&r(q::FOLDER_ROW))
+    Ok(sqlx::query_as(r(q::FOLDER_ROW))
         .bind(mb)
         .bind(id)
         .fetch_optional(&mut *c)
@@ -144,7 +144,7 @@ async fn ancestor_depth(
     start: i64,
     forbidden: Option<i64>,
 ) -> TxResult<usize> {
-    let rows: Vec<(i64, Option<i64>)> = sqlx::query_as(&r(q::ANCESTORS))
+    let rows: Vec<(i64, Option<i64>)> = sqlx::query_as(r(q::ANCESTORS))
         .bind(mb)
         .bind(start)
         .bind(MAX_FOLDER_DEPTH as i64)
@@ -154,7 +154,7 @@ async fn ancestor_depth(
 }
 
 async fn subtree_height(c: &mut PgConnection, mb: i64, id: i64) -> TxResult<usize> {
-    let h: i64 = sqlx::query_scalar(&r(q::SUBTREE_HEIGHT))
+    let h: i64 = sqlx::query_scalar(r(q::SUBTREE_HEIGHT))
         .bind(id)
         .bind(mb)
         .bind(MAX_FOLDER_DEPTH as i64)
@@ -164,7 +164,7 @@ async fn subtree_height(c: &mut PgConnection, mb: i64, id: i64) -> TxResult<usiz
 }
 
 async fn live_message(c: &mut PgConnection, mb: i64, id: i64) -> TxResult<(i64, i64)> {
-    Ok(sqlx::query_as(&r(q::LIVE_MESSAGE))
+    Ok(sqlx::query_as(r(q::LIVE_MESSAGE))
         .bind(mb)
         .bind(id)
         .fetch_optional(&mut *c)
@@ -189,7 +189,7 @@ async fn insert_messages(
     lock_blobs(c, msgs, knobs).await?;
     let n = msgs.len() as i64;
 
-    let (first_id, first_seq): (i64, i64) = sqlx::query_as(&r(q::TAKE_MSG_IDS_AND_SEQS))
+    let (first_id, first_seq): (i64, i64) = sqlx::query_as(r(q::TAKE_MSG_IDS_AND_SEQS))
         .bind(mb)
         .bind(n)
         .fetch_optional(&mut *c)
@@ -203,7 +203,7 @@ async fn insert_messages(
         *per_folder.entry(m.folder.0).or_default() += 1;
     }
     for (folder, count) in &per_folder {
-        let first: i64 = sqlx::query_scalar(&r(q::TAKE_UIDS))
+        let first: i64 = sqlx::query_scalar(r(q::TAKE_UIDS))
             .bind(mb)
             .bind(folder)
             .bind(count)
@@ -219,7 +219,7 @@ async fn insert_messages(
     let mut known: HashMap<String, i64> = HashMap::new();
     if !all.is_empty() {
         let rows: Vec<(String, i64)> = sqlx::query_as(
-            &crate::repo::pg_lit("SELECT message_id_hdr, thread_id FROM messages WHERE mailbox_id = $1 AND id IN ( \
+            crate::repo::pg_lit("SELECT message_id_hdr, thread_id FROM messages WHERE mailbox_id = $1 AND id IN ( \
                SELECT MIN(id) FROM messages WHERE mailbox_id = $1 \
                AND message_id_hdr = ANY($2) GROUP BY message_id_hdr)"),
         )
@@ -264,7 +264,7 @@ async fn insert_messages(
         });
     }
     sqlx::query(
-        &crate::repo::pg_lit("INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, size, internal_date, \
+        crate::repo::pg_lit("INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, size, internal_date, \
          subject, from_addr, to_addrs, message_id_hdr, thread_id, flags) \
          SELECT $1, t.id, t.folder_id, t.uid, t.blob_hash, t.size, COALESCE($13::bigint, rs_now()), \
                 t.subject, t.from_addr, t.to_addrs, t.hdr, t.thread_id, t.flags \
@@ -291,7 +291,7 @@ async fn insert_messages(
     .await?;
     if !delivery_ids.is_empty() {
         sqlx::query(
-            &crate::repo::pg_lit("INSERT INTO deliveries (mailbox_id, delivery_id, message_id, blob_hash, created_at) \
+            crate::repo::pg_lit("INSERT INTO deliveries (mailbox_id, delivery_id, message_id, blob_hash, created_at) \
              SELECT $1, t.did, t.mid, t.h, COALESCE($5::bigint, rs_now()) \
              FROM unnest($2::bytea[], $3::bigint[], $4::bytea[]) AS t(did, mid, h) ORDER BY t.mid"),
         )
@@ -305,7 +305,7 @@ async fn insert_messages(
     }
     let seqs: Vec<i64> = (0..n).map(|i| first_seq + i).collect();
     sqlx::query(
-        &crate::repo::pg_lit("INSERT INTO change_log (mailbox_id, seq, kind, item_id, op) \
+        crate::repo::pg_lit("INSERT INTO change_log (mailbox_id, seq, kind, item_id, op) \
          SELECT $1, t.seq, 'message', t.item, 'create' FROM unnest($2::bigint[], $3::bigint[]) \
          AS t(seq, item) ORDER BY t.seq"),
     )
@@ -322,7 +322,7 @@ type DetailRow = (i64, i64, i64, i64, String, String, i64, i64, i64, Vec<u8>, Op
 #[async_trait]
 impl MailboxRepo for PgRepo {
     async fn mailbox_for_account(&self, account: AccountId) -> Result<MailboxId> {
-        sqlx::query_scalar::<_, i64>(&r(q::MAILBOX_FOR_ACCOUNT))
+        sqlx::query_scalar::<_, i64>(r(q::MAILBOX_FOR_ACCOUNT))
             .bind(account.0)
             .fetch_optional(self.store.pool())
             .await
@@ -332,7 +332,7 @@ impl MailboxRepo for PgRepo {
     }
 
     async fn folder_exists(&self, mb: MailboxId, folder: FolderId) -> Result<()> {
-        sqlx::query_scalar::<_, i64>(&r(q::FOLDER_EXISTS))
+        sqlx::query_scalar::<_, i64>(r(q::FOLDER_EXISTS))
             .bind(mb.0)
             .bind(folder.0)
             .fetch_optional(self.store.pool())
@@ -343,7 +343,7 @@ impl MailboxRepo for PgRepo {
     }
 
     async fn list_folders(&self, mb: MailboxId) -> Result<Vec<FolderInfo>> {
-        let rows: Vec<FolderRow> = sqlx::query_as(&r(q::LIST_FOLDERS))
+        let rows: Vec<FolderRow> = sqlx::query_as(r(q::LIST_FOLDERS))
             .bind(mb.0)
             .fetch_all(self.store.pool())
             .await
@@ -353,7 +353,7 @@ impl MailboxRepo for PgRepo {
 
     async fn folder_counts(&self, mb: MailboxId, folder: FolderId) -> Result<FolderCounts> {
         self.folder_exists(mb, folder).await?;
-        let row: (i64, i64) = sqlx::query_as(&r(q::FOLDER_COUNTS))
+        let row: (i64, i64) = sqlx::query_as(r(q::FOLDER_COUNTS))
             .bind(mb.0)
             .bind(folder.0)
             .fetch_one(self.store.pool())
@@ -370,7 +370,7 @@ impl MailboxRepo for PgRepo {
     ) -> Result<Committed<()>> {
         let seq = tx_retry!(self, Some(mb), |c| {
             {
-                let n = sqlx::query(&r(q::SET_SUBSCRIBED))
+                let n = sqlx::query(r(q::SET_SUBSCRIBED))
                     .bind(mb.0)
                     .bind(id.0)
                     .bind(i64::from(subscribed))
@@ -401,7 +401,7 @@ impl MailboxRepo for PgRepo {
                     }
                 }
                 let uv: i64 = sqlx::query_scalar(
-                    &crate::repo::pg_lit("UPDATE mailboxes SET uid_validity = GREATEST(rs_now(), uid_validity + 1) \
+                    crate::repo::pg_lit("UPDATE mailboxes SET uid_validity = GREATEST(rs_now(), uid_validity + 1) \
                      WHERE id = $1 RETURNING uid_validity"),
                 )
                 .bind(mb.0)
@@ -410,11 +410,11 @@ impl MailboxRepo for PgRepo {
                 if uv > i64::from(u32::MAX) {
                     return Err(Error::Quota("folder UIDVALIDITY space exhausted".into()).into());
                 }
-                let id: i64 = sqlx::query_scalar(&r(q::TAKE_FOLDER_ID))
+                let id: i64 = sqlx::query_scalar(r(q::TAKE_FOLDER_ID))
                     .bind(mb.0)
                     .fetch_one(&mut *c)
                     .await?;
-                sqlx::query(&r(q::INSERT_FOLDER))
+                sqlx::query(r(q::INSERT_FOLDER))
                     .bind(mb.0)
                     .bind(id)
                     .bind(parent.map(|p| p.0))
@@ -439,7 +439,7 @@ impl MailboxRepo for PgRepo {
         let seq = tx_retry!(self, Some(mb), |c| {
             {
                 custom_folder(c, mb.0, id.0).await?;
-                sqlx::query(&r(q::RENAME_FOLDER))
+                sqlx::query(r(q::RENAME_FOLDER))
                     .bind(mb.0)
                     .bind(id.0)
                     .bind(name)
@@ -470,7 +470,7 @@ impl MailboxRepo for PgRepo {
                         return Err(Error::Invalid("folder tree too deep".into()).into());
                     }
                 }
-                sqlx::query(&r(q::REPARENT_FOLDER))
+                sqlx::query(r(q::REPARENT_FOLDER))
                     .bind(mb.0)
                     .bind(id.0)
                     .bind(new_parent.map(|p| p.0))
@@ -489,7 +489,7 @@ impl MailboxRepo for PgRepo {
         let seq = tx_retry!(self, Some(mb), |c| {
             {
                 custom_folder(c, mb.0, id.0).await?;
-                let children: i64 = sqlx::query_scalar(&r(q::CHILD_COUNT))
+                let children: i64 = sqlx::query_scalar(r(q::CHILD_COUNT))
                     .bind(mb.0)
                     .bind(id.0)
                     .fetch_one(&mut *c)
@@ -497,7 +497,7 @@ impl MailboxRepo for PgRepo {
                 if children > 0 {
                     return Err(Error::Conflict("folder has subfolders".into()).into());
                 }
-                let live: i64 = sqlx::query_scalar(&r(q::LIVE_COUNT))
+                let live: i64 = sqlx::query_scalar(r(q::LIVE_COUNT))
                     .bind(mb.0)
                     .bind(id.0)
                     .fetch_one(&mut *c)
@@ -508,7 +508,7 @@ impl MailboxRepo for PgRepo {
                 // The deletes below fire the refcount trigger on these blobs: lock them first,
                 // in ascending hash order (message order is NOT hash order).
                 let hashes: Vec<Vec<u8>> = sqlx::query_scalar(
-                    &crate::repo::pg_lit("SELECT blob_hash FROM messages \
+                    crate::repo::pg_lit("SELECT blob_hash FROM messages \
                      WHERE mailbox_id = $1 AND folder_id = $2 AND deleted_at IS NOT NULL \
                      ORDER BY id"),
                 )
@@ -517,12 +517,12 @@ impl MailboxRepo for PgRepo {
                 .fetch_all(&mut *c)
                 .await?;
                 lock_existing_blobs(c, &hashes, knobs).await?;
-                sqlx::query(&r(q::DELETE_FOLDER_MESSAGES))
+                sqlx::query(r(q::DELETE_FOLDER_MESSAGES))
                     .bind(mb.0)
                     .bind(id.0)
                     .execute(&mut *c)
                     .await?;
-                sqlx::query(&r(q::DELETE_FOLDER))
+                sqlx::query(r(q::DELETE_FOLDER))
                     .bind(mb.0)
                     .bind(id.0)
                     .execute(&mut *c)
@@ -548,7 +548,7 @@ impl MailboxRepo for PgRepo {
                     // The mailbox row is locked: no concurrent delivery of this mailbox can
                     // slip in between this lookup and the insert below. READ COMMITTED gives
                     // this statement a fresh snapshot after the lock wait.
-                    let hit: Option<(i64, Vec<u8>)> = sqlx::query_as(&r(q::DELIVERY_LOOKUP))
+                    let hit: Option<(i64, Vec<u8>)> = sqlx::query_as(r(q::DELIVERY_LOOKUP))
                         .bind(mb.0)
                         .bind(&d.id.0[..])
                         .fetch_optional(&mut *c)
@@ -560,7 +560,7 @@ impl MailboxRepo for PgRepo {
                             )
                             .into());
                         }
-                        let uid: i64 = sqlx::query_scalar(&r(q::MESSAGE_UID))
+                        let uid: i64 = sqlx::query_scalar(r(q::MESSAGE_UID))
                             .bind(mb.0)
                             .bind(msg_id)
                             .fetch_optional(&mut *c)
@@ -630,7 +630,7 @@ impl MailboxRepo for PgRepo {
                     .map(|i| &i.delivery_id.0[..])
                     .collect();
                 let rows: Vec<(Vec<u8>, i64, Vec<u8>)> = sqlx::query_as(
-                    &crate::repo::pg_lit("SELECT delivery_id, message_id, blob_hash FROM deliveries \
+                    crate::repo::pg_lit("SELECT delivery_id, message_id, blob_hash FROM deliveries \
                      WHERE mailbox_id = $1 AND delivery_id = ANY($2)"),
                 )
                 .bind(mb.0)
@@ -657,7 +657,7 @@ impl MailboxRepo for PgRepo {
                     HashMap::new()
                 } else {
                     sqlx::query_as::<_, (i64, i64)>(
-                        &crate::repo::pg_lit("SELECT id, uid FROM messages WHERE mailbox_id = $1 AND id = ANY($2)"),
+                        crate::repo::pg_lit("SELECT id, uid FROM messages WHERE mailbox_id = $1 AND id = ANY($2)"),
                     )
                     .bind(mb.0)
                     .bind(&old_ids)
@@ -708,7 +708,7 @@ impl MailboxRepo for PgRepo {
     async fn set_flags(&self, mb: MailboxId, id: MessageId, flags: Flags) -> Result<Committed<()>> {
         let seq = tx_retry!(self, Some(mb), |c| {
             {
-                let n = sqlx::query(&r(q::SET_FLAGS))
+                let n = sqlx::query(r(q::SET_FLAGS))
                     .bind(mb.0)
                     .bind(id.0)
                     .bind(i64::from(flags.bits()))
@@ -734,7 +734,7 @@ impl MailboxRepo for PgRepo {
         let (out, seq) = tx_retry!(self, Some(mb), |c| {
             {
                 let hit: HashSet<i64> = sqlx::query_scalar::<_, i64>(
-                    &crate::repo::pg_lit("UPDATE messages SET flags = $3 WHERE mailbox_id = $1 \
+                    crate::repo::pg_lit("UPDATE messages SET flags = $3 WHERE mailbox_id = $1 \
                      AND deleted_at IS NULL AND id = ANY($2) RETURNING id"),
                 )
                 .bind(mb.0)
@@ -770,7 +770,7 @@ impl MailboxRepo for PgRepo {
         let (out, seq) = tx_retry!(self, Some(mb), |c| {
             {
                 let now: HashMap<i64, i64> = sqlx::query_as::<_, (i64, i64)>(
-                    &crate::repo::pg_lit("UPDATE messages SET flags = (flags | $3) & ~$4 WHERE mailbox_id = $1 \
+                    crate::repo::pg_lit("UPDATE messages SET flags = (flags | $3) & ~$4 WHERE mailbox_id = $1 \
                      AND deleted_at IS NULL AND id = ANY($2) RETURNING id, flags"),
                 )
                 .bind(mb.0)
@@ -796,7 +796,7 @@ impl MailboxRepo for PgRepo {
         let (out, seq) = tx_retry!(self, Some(mb), |c| {
             {
                 let hit: HashSet<i64> = sqlx::query_scalar::<_, i64>(
-                    &crate::repo::pg_lit("UPDATE messages SET deleted_at = rs_now() \
+                    crate::repo::pg_lit("UPDATE messages SET deleted_at = rs_now() \
                      WHERE mailbox_id = $1 AND deleted_at IS NULL AND (flags & 16) <> 0 AND id = ANY($2) RETURNING id"),
                 )
                 .bind(mb.0)
@@ -822,7 +822,7 @@ impl MailboxRepo for PgRepo {
         let seq = tx_retry!(self, Some(mb), |c| {
             {
                 live_message(c, mb.0, id.0).await?;
-                let present: Option<i64> = sqlx::query_scalar(&r(q::KEYWORD_PRESENT))
+                let present: Option<i64> = sqlx::query_scalar(r(q::KEYWORD_PRESENT))
                     .bind(mb.0)
                     .bind(id.0)
                     .bind(keyword)
@@ -831,7 +831,7 @@ impl MailboxRepo for PgRepo {
                 if present.is_some() {
                     return Ok(None);
                 }
-                let count: i64 = sqlx::query_scalar(&r(q::KEYWORD_COUNT))
+                let count: i64 = sqlx::query_scalar(r(q::KEYWORD_COUNT))
                     .bind(mb.0)
                     .bind(id.0)
                     .fetch_one(&mut *c)
@@ -839,7 +839,7 @@ impl MailboxRepo for PgRepo {
                 if usize::try_from(count).map_or(true, |n| n >= MAX_KEYWORDS_PER_MESSAGE) {
                     return Err(Error::Quota("too many keywords on message".into()).into());
                 }
-                sqlx::query(&r(q::KEYWORD_INSERT))
+                sqlx::query(r(q::KEYWORD_INSERT))
                     .bind(mb.0)
                     .bind(id.0)
                     .bind(keyword)
@@ -862,7 +862,7 @@ impl MailboxRepo for PgRepo {
         let seq = tx_retry!(self, Some(mb), |c| {
             {
                 live_message(c, mb.0, id.0).await?;
-                let n = sqlx::query(&r(q::KEYWORD_DELETE))
+                let n = sqlx::query(r(q::KEYWORD_DELETE))
                     .bind(mb.0)
                     .bind(id.0)
                     .bind(keyword)
@@ -898,7 +898,7 @@ impl MailboxRepo for PgRepo {
                         None,
                     ));
                 }
-                let first: i64 = sqlx::query_scalar(&r(q::TAKE_UIDS))
+                let first: i64 = sqlx::query_scalar(r(q::TAKE_UIDS))
                     .bind(mb.0)
                     .bind(to.0)
                     .bind(1i64)
@@ -906,7 +906,7 @@ impl MailboxRepo for PgRepo {
                     .await?
                     .ok_or_else(not_found_folder)?;
                 let new_uid = to_uid(first)?;
-                sqlx::query(&r(q::MOVE_MESSAGE))
+                sqlx::query(r(q::MOVE_MESSAGE))
                     .bind(mb.0)
                     .bind(id.0)
                     .bind(to.0)
@@ -933,7 +933,7 @@ impl MailboxRepo for PgRepo {
                 folder_row(c, mb.0, to.0).await?;
                 let live: HashMap<i64, (i64, i64)> =
                     sqlx::query_as::<_, (i64, i64, i64)>(
-                        &crate::repo::pg_lit("SELECT id, folder_id, uid FROM messages \
+                        crate::repo::pg_lit("SELECT id, folder_id, uid FROM messages \
                          WHERE mailbox_id = $1 AND deleted_at IS NULL AND id = ANY($2)"),
                     )
                     .bind(mb.0)
@@ -947,7 +947,7 @@ impl MailboxRepo for PgRepo {
                 let mut first_uid = 0i64;
                 if !p.to_move.is_empty() {
                     let n = p.to_move.len() as i64;
-                    first_uid = sqlx::query_scalar(&r(q::TAKE_UIDS))
+                    first_uid = sqlx::query_scalar(r(q::TAKE_UIDS))
                         .bind(mb.0)
                         .bind(to.0)
                         .bind(n)
@@ -957,7 +957,7 @@ impl MailboxRepo for PgRepo {
                     to_uid(first_uid + n - 1)?; // the last uid must still fit
                     let uids: Vec<i64> = (0..n).map(|k| first_uid + k).collect();
                     sqlx::query(
-                        &crate::repo::pg_lit("UPDATE messages m SET folder_id = $2, uid = t.uid \
+                        crate::repo::pg_lit("UPDATE messages m SET folder_id = $2, uid = t.uid \
                          FROM unnest($3::bigint[], $4::bigint[]) AS t(id, uid) \
                          WHERE m.mailbox_id = $1 AND m.id = t.id AND m.deleted_at IS NULL"),
                     )
@@ -995,7 +995,7 @@ impl MailboxRepo for PgRepo {
             {
                 folder_row(c, mb.0, to.0).await?;
                 let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as(
-                    &crate::repo::pg_lit("SELECT id, blob_hash FROM messages \
+                    crate::repo::pg_lit("SELECT id, blob_hash FROM messages \
                      WHERE mailbox_id = $1 AND deleted_at IS NULL AND id = ANY($2)"),
                 )
                 .bind(mb.0)
@@ -1012,7 +1012,7 @@ impl MailboxRepo for PgRepo {
                 let hashes: Vec<Vec<u8>> = src.iter().filter_map(|id| live.get(id).cloned()).collect();
                 lock_existing_blobs(c, &hashes, knobs).await?;
                 let n = src.len() as i64;
-                let first_uid: i64 = sqlx::query_scalar(&r(q::TAKE_UIDS))
+                let first_uid: i64 = sqlx::query_scalar(r(q::TAKE_UIDS))
                     .bind(mb.0)
                     .bind(to.0)
                     .bind(n)
@@ -1020,7 +1020,7 @@ impl MailboxRepo for PgRepo {
                     .await?
                     .ok_or_else(not_found_folder)?;
                 to_uid(first_uid + n - 1)?; // the last uid must still fit
-                let (first_id, first_seq): (i64, i64) = sqlx::query_as(&r(q::TAKE_MSG_IDS_AND_SEQS))
+                let (first_id, first_seq): (i64, i64) = sqlx::query_as(r(q::TAKE_MSG_IDS_AND_SEQS))
                     .bind(mb.0)
                     .bind(n)
                     .fetch_optional(&mut *c)
@@ -1030,7 +1030,7 @@ impl MailboxRepo for PgRepo {
                 let uids: Vec<i64> = (0..n).map(|k| first_uid + k).collect();
                 let seqs: Vec<i64> = (0..n).map(|k| first_seq + k).collect();
                 sqlx::query(
-                    &crate::repo::pg_lit("INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, size, \
+                    crate::repo::pg_lit("INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, size, \
                      internal_date, subject, from_addr, to_addrs, message_id_hdr, thread_id, flags) \
                      SELECT m.mailbox_id, t.new_id, $2, t.uid, m.blob_hash, m.size, m.internal_date, \
                             m.subject, m.from_addr, m.to_addrs, m.message_id_hdr, m.thread_id, m.flags \
@@ -1046,7 +1046,7 @@ impl MailboxRepo for PgRepo {
                 .execute(&mut *c)
                 .await?;
                 sqlx::query(
-                    &crate::repo::pg_lit("INSERT INTO keywords (mailbox_id, message_id, keyword) \
+                    crate::repo::pg_lit("INSERT INTO keywords (mailbox_id, message_id, keyword) \
                      SELECT k.mailbox_id, t.new_id, k.keyword \
                      FROM unnest($2::bigint[], $3::bigint[]) AS t(src, new_id) \
                      JOIN keywords k ON k.mailbox_id = $1 AND k.message_id = t.src \
@@ -1058,7 +1058,7 @@ impl MailboxRepo for PgRepo {
                 .execute(&mut *c)
                 .await?;
                 sqlx::query(
-                    &crate::repo::pg_lit("INSERT INTO change_log (mailbox_id, seq, kind, item_id, op) \
+                    crate::repo::pg_lit("INSERT INTO change_log (mailbox_id, seq, kind, item_id, op) \
                      SELECT $1, t.seq, 'message', t.item, 'create' \
                      FROM unnest($2::bigint[], $3::bigint[]) AS t(seq, item) ORDER BY t.seq"),
                 )
@@ -1083,7 +1083,7 @@ impl MailboxRepo for PgRepo {
     async fn expunge(&self, mb: MailboxId, id: MessageId) -> Result<Committed<()>> {
         let seq = tx_retry!(self, Some(mb), |c| {
             {
-                let n = sqlx::query(&r(q::EXPUNGE))
+                let n = sqlx::query(r(q::EXPUNGE))
                     .bind(mb.0)
                     .bind(id.0)
                     .execute(&mut *c)
@@ -1108,7 +1108,7 @@ impl MailboxRepo for PgRepo {
         let (out, seq) = tx_retry!(self, Some(mb), |c| {
             {
                 let hit: HashSet<i64> = sqlx::query_scalar::<_, i64>(
-                    &crate::repo::pg_lit("UPDATE messages SET deleted_at = COALESCE($3::bigint, rs_now()) \
+                    crate::repo::pg_lit("UPDATE messages SET deleted_at = COALESCE($3::bigint, rs_now()) \
                      WHERE mailbox_id = $1 AND deleted_at IS NULL AND id = ANY($2) RETURNING id"),
                 )
                 .bind(mb.0)
@@ -1143,7 +1143,7 @@ impl MailboxRepo for PgRepo {
         let n = tx_retry!(self, Some(mb), |c| {
             {
                 let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as(
-                    &crate::repo::pg_lit("SELECT id, blob_hash FROM messages \
+                    crate::repo::pg_lit("SELECT id, blob_hash FROM messages \
                      WHERE mailbox_id = $1 AND deleted_at IS NOT NULL AND deleted_at < $2 \
                      AND NOT EXISTS (SELECT 1 FROM deliveries d \
                        WHERE d.mailbox_id = messages.mailbox_id AND d.message_id = messages.id) \
@@ -1162,7 +1162,7 @@ impl MailboxRepo for PgRepo {
                 // The delete fires the refcount trigger: lock the blobs first, ascending.
                 lock_existing_blobs(c, &hashes, knobs).await?;
                 let n = sqlx::query(
-                    &crate::repo::pg_lit("DELETE FROM messages WHERE mailbox_id = $1 AND id = ANY($2)"),
+                    crate::repo::pg_lit("DELETE FROM messages WHERE mailbox_id = $1 AND id = ANY($2)"),
                 )
                 .bind(mb.0)
                 .bind(&ids)
@@ -1178,7 +1178,7 @@ impl MailboxRepo for PgRepo {
     async fn get_message(&self, mb: MailboxId, id: MessageId) -> Result<MessageDetail> {
         let (mid, uid, size, internal_date, subject, from_addr, flags, thread, folder, hash, deleted): DetailRow =
             sqlx::query_as(
-                &crate::repo::pg_lit("SELECT id, uid, size, internal_date, subject, from_addr, flags, thread_id, \
+                crate::repo::pg_lit("SELECT id, uid, size, internal_date, subject, from_addr, flags, thread_id, \
                  folder_id, blob_hash, deleted_at FROM messages WHERE mailbox_id = $1 AND id = $2"),
             )
             .bind(mb.0)
@@ -1206,7 +1206,7 @@ impl MailboxRepo for PgRepo {
 
     async fn get_raw_ref(&self, mb: MailboxId, id: MessageId) -> Result<RawRef> {
         let (hash, size): (Vec<u8>, i64) = sqlx::query_as(
-            &crate::repo::pg_lit("SELECT blob_hash, size FROM messages \
+            crate::repo::pg_lit("SELECT blob_hash, size FROM messages \
              WHERE mailbox_id = $1 AND id = $2 AND deleted_at IS NULL"),
         )
         .bind(mb.0)
@@ -1222,7 +1222,7 @@ impl MailboxRepo for PgRepo {
     }
 
     async fn keywords(&self, mb: MailboxId, id: MessageId) -> Result<Vec<String>> {
-        let live = sqlx::query_as::<_, (i64, i64)>(&r(q::LIVE_MESSAGE))
+        let live = sqlx::query_as::<_, (i64, i64)>(r(q::LIVE_MESSAGE))
             .bind(mb.0)
             .bind(id.0)
             .fetch_optional(self.store.pool())
@@ -1231,7 +1231,7 @@ impl MailboxRepo for PgRepo {
         if live.is_none() {
             return Err(not_found_message());
         }
-        sqlx::query_scalar(&r(q::KEYWORDS_OF))
+        sqlx::query_scalar(r(q::KEYWORDS_OF))
             .bind(mb.0)
             .bind(id.0)
             .fetch_all(self.store.pool())
@@ -1243,7 +1243,7 @@ impl MailboxRepo for PgRepo {
         check_batch_len(ids.len())?;
         check_distinct_ids(ids)?;
         sqlx::query_as::<_, (i64, String)>(
-            &crate::repo::pg_lit("SELECT k.message_id, k.keyword FROM keywords k JOIN messages m \
+            crate::repo::pg_lit("SELECT k.message_id, k.keyword FROM keywords k JOIN messages m \
              ON m.mailbox_id = k.mailbox_id AND m.id = k.message_id \
              WHERE k.mailbox_id = $1 AND m.deleted_at IS NULL AND k.message_id = ANY($2) \
              ORDER BY k.message_id, k.keyword COLLATE \"C\""),
@@ -1256,7 +1256,7 @@ impl MailboxRepo for PgRepo {
     }
 
     async fn latest_change_seq(&self, mb: MailboxId) -> Result<i64> {
-        sqlx::query_scalar(&r(q::LATEST_SEQ))
+        sqlx::query_scalar(r(q::LATEST_SEQ))
             .bind(mb.0)
             .fetch_optional(self.store.pool())
             .await
@@ -1272,7 +1272,7 @@ impl MailboxRepo for PgRepo {
         limit: i64,
     ) -> Result<Vec<MessageSummary>> {
         self.folder_exists(mb, folder).await?;
-        let rows: Vec<SummaryRow> = sqlx::query_as(&r(q::LIST_FOLDER))
+        let rows: Vec<SummaryRow> = sqlx::query_as(r(q::LIST_FOLDER))
             .bind(mb.0)
             .bind(folder.0)
             .bind(i64::from(after_uid))
@@ -1284,6 +1284,6 @@ impl MailboxRepo for PgRepo {
     }
 
     async fn changes_since(&self, mb: MailboxId, seq: i64, limit: i64) -> Result<ChangePage> {
-        changes_since_generic(self.store.pool(), &r(q::CHANGES), mb, seq, limit).await
+        changes_since_generic(self.store.pool(), r(q::CHANGES), mb, seq, limit).await
     }
 }

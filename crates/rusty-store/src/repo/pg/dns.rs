@@ -14,7 +14,7 @@ use crate::repo::dns::{plan, sql, validate_observations, DnsConfig, DnsConfigRow
 use crate::repo::render_pg as r;
 
 async fn lock_domain(c: &mut PgConnection, d: DomainId) -> TxResult<()> {
-    sqlx::query_scalar::<_, i64>(&crate::repo::pg_lit("SELECT id FROM domains WHERE id = $1 FOR NO KEY UPDATE"))
+    sqlx::query_scalar::<_, i64>(crate::repo::pg_lit("SELECT id FROM domains WHERE id = $1 FOR NO KEY UPDATE"))
         .bind(d.0)
         .fetch_optional(&mut *c)
         .await?
@@ -23,7 +23,7 @@ async fn lock_domain(c: &mut PgConnection, d: DomainId) -> TxResult<()> {
 }
 
 async fn load_states(c: &mut PgConnection, d: DomainId) -> TxResult<Vec<StateRow>> {
-    let rows = sqlx::query(&r(sql::STATES)).bind(d.0).fetch_all(&mut *c).await?;
+    let rows = sqlx::query(r(sql::STATES)).bind(d.0).fetch_all(&mut *c).await?;
     let mut out = Vec::with_capacity(rows.len());
     for x in &rows {
         out.push(
@@ -56,14 +56,14 @@ fn plain(e: TxError) -> Error {
 #[async_trait]
 impl DnsRepo for PgRepo {
     async fn db_now(&self) -> Result<i64> {
-        sqlx::query_scalar(&r("SELECT {NOW}"))
+        sqlx::query_scalar(r("SELECT {NOW}"))
             .fetch_one(self.store.pool())
             .await
             .map_err(map_db_error)
     }
 
     async fn config(&self, domain: DomainId) -> Result<Option<DnsConfigRow>> {
-        let row = sqlx::query(&r(sql::CONFIG))
+        let row = sqlx::query(r(sql::CONFIG))
             .bind(domain.0)
             .fetch_optional(self.store.pool())
             .await
@@ -92,7 +92,7 @@ impl DnsRepo for PgRepo {
         tx_retry!(self, None, |c| {
             {
                 lock_domain(&mut *c, domain).await?;
-                sqlx::query(&r(sql::PUT_CONFIG))
+                sqlx::query(r(sql::PUT_CONFIG))
                     .bind(domain.0)
                     .bind(&config.dkim_selector)
                     .bind(&config.dkim_algorithm)
@@ -111,7 +111,7 @@ impl DnsRepo for PgRepo {
         tx_retry!(self, None, |c| {
             {
                 lock_domain(&mut *c, domain).await?;
-                sqlx::query(&r(sql::SET_TOKEN))
+                sqlx::query(r(sql::SET_TOKEN))
                     .bind(domain.0)
                     .bind(hash)
                     .bind(now)
@@ -123,7 +123,7 @@ impl DnsRepo for PgRepo {
     }
 
     async fn ownership_token_hash(&self, domain: DomainId) -> Result<Option<String>> {
-        let v: Option<Option<String>> = sqlx::query_scalar(&r(sql::GET_TOKEN))
+        let v: Option<Option<String>> = sqlx::query_scalar(r(sql::GET_TOKEN))
             .bind(domain.0)
             .fetch_optional(self.store.pool())
             .await
@@ -135,7 +135,7 @@ impl DnsRepo for PgRepo {
         tx_retry!(self, None, |c| {
             {
                 lock_domain(&mut *c, domain).await?;
-                sqlx::query(&r(sql::SET_EXPECTED))
+                sqlx::query(r(sql::SET_EXPECTED))
                     .bind(domain.0)
                     .bind(hash)
                     .bind(now)
@@ -163,7 +163,7 @@ impl DnsRepo for PgRepo {
         tx_retry!(self, None, |c| {
             {
                 lock_domain(&mut *c, domain).await?;
-                let now: i64 = sqlx::query_scalar(&r("SELECT COALESCE($1, {NOW})"))
+                let now: i64 = sqlx::query_scalar(r("SELECT COALESCE($1, {NOW})"))
                     .bind(now)
                     .fetch_one(&mut *c)
                     .await?;
@@ -171,7 +171,7 @@ impl DnsRepo for PgRepo {
                 let plan = plan(existing, observations, alert_after, now);
                 for s in &plan.steps {
                     let row = &s.row;
-                    sqlx::query(&r(sql::UPSERT_STATE))
+                    sqlx::query(r(sql::UPSERT_STATE))
                         .bind(domain.0)
                         .bind(&row.key.name)
                         .bind(&row.key.rtype)
@@ -187,7 +187,7 @@ impl DnsRepo for PgRepo {
                         .execute(&mut *c)
                         .await?;
                     if let Some(ch) = &s.change {
-                        sqlx::query(&r(sql::INSERT_EVENT))
+                        sqlx::query(r(sql::INSERT_EVENT))
                             .bind(domain.0)
                             .bind(&ch.key.name)
                             .bind(&ch.key.rtype)
@@ -200,7 +200,7 @@ impl DnsRepo for PgRepo {
                     }
                 }
                 for k in &plan.delete {
-                    sqlx::query(&r(sql::DELETE_STATE))
+                    sqlx::query(r(sql::DELETE_STATE))
                         .bind(domain.0)
                         .bind(&k.name)
                         .bind(&k.rtype)
@@ -208,7 +208,7 @@ impl DnsRepo for PgRepo {
                         .execute(&mut *c)
                         .await?;
                 }
-                sqlx::query(&r(sql::TRIM_EVENTS))
+                sqlx::query(r(sql::TRIM_EVENTS))
                     .bind(domain.0)
                     .bind(i64::from(event_cap))
                     .execute(&mut *c)
@@ -219,7 +219,7 @@ impl DnsRepo for PgRepo {
     }
 
     async fn events(&self, domain: DomainId, since: i64, limit: u32) -> Result<Vec<DnsEventRow>> {
-        let rows = sqlx::query(&r(sql::EVENTS))
+        let rows = sqlx::query(r(sql::EVENTS))
             .bind(domain.0)
             .bind(since)
             .bind(i64::from(limit))
