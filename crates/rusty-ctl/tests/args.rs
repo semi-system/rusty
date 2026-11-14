@@ -102,6 +102,18 @@ fn dkim_and_check() {
 }
 
 #[test]
+fn relay_check_takes_no_arguments_or_options_that_belong_elsewhere() {
+    assert_eq!(cmd(&["relay", "check"]), Command::RelayCheck);
+    assert!(p(&["relay"]).is_err(), "a subcommand is required");
+    assert!(p(&["relay", "check", "extra"]).is_err());
+    assert!(p(&["relay", "send"]).is_err());
+    assert!(p(&["relay", "check", "--prompt"]).is_err(), "a relay check reads no password from the terminal");
+    assert!(p(&["relay", "check", "--selector", "s"]).is_err());
+    assert!(p(&["relay", "check", "--without-roles"]).is_err());
+    assert!(p(&["--json", "relay", "check"]).unwrap().json);
+}
+
+#[test]
 fn global_options_anywhere() {
     let a = p(&["--json", "domain", "list"]).unwrap();
     let b = p(&["domain", "list", "--json"]).unwrap();

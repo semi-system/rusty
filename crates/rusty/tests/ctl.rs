@@ -272,3 +272,17 @@ fn the_dev_profile_without_a_database_says_what_to_set() {
     assert_eq!(o.code, Some(1), "{}", o.stderr);
     assert!(!o.stderr.contains("hunter2-secret") && !o.stdout.contains("hunter2-secret"));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn relay_check_without_a_relay_exits_one_and_says_so_without_opening_the_database() {
+    let tmp = private_tmp();
+    let data = tmp.path().join("data");
+    let pg = pg_dev().await;
+    let o = ctl(&pg, &data, &["relay", "check"], "");
+    assert_eq!(o.code, Some(1), "{}", o.stderr);
+    assert!(o.stderr.contains("no relay is configured"), "{}", o.stderr);
+    assert!(o.stdout.is_empty(), "{}", o.stdout);
+    let o = ctl(&pg, &data, &["--json", "relay", "check"], "");
+    assert_eq!(o.code, Some(1));
+    assert!(o.stderr.contains("\"ok\":false"), "{}", o.stderr);
+}

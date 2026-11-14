@@ -45,6 +45,8 @@ pub enum Command {
     Check,
     /// `db migrate`: apply pending Postgres migrations with the migrator role (never the daemon).
     DbMigrate { require_roles: bool },
+    /// `relay check`: log in to the configured relay and stop (no mail is sent). Run by the composition root.
+    RelayCheck,
     /// `db status`: the schema state of the configured database.
     DbStatus,
     Help,
@@ -90,6 +92,7 @@ pub const USAGE: &str = "usage: rustyctl [--config FILE | --dev [--data-dir DIR]
                                              keep an RSA (2048-4096 bit) or ed25519 private key (0600)\n\
                                              and print its DNS record; make an RSA key with\n\
                                              openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048\n\
+  relay check                                log in to the configured relay (resolve, TLS, AUTH) without sending mail
   check                                      configuration summary and DNS records to publish\n\
 \n\
 Passwords are read from standard input or the terminal, never from the command line.";
@@ -266,13 +269,17 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             no_without_roles()?;
             done(Command::DbStatus)
         }
+        ["relay", "check"] => {
+            plain()?;
+            done(Command::RelayCheck)
+        }
         ["check"] => {
             plain()?;
             done(Command::Check)
         }
         [] => Err(err("a command is required")),
-        ["domain" | "account" | "alias" | "dkim" | "db"] => Err(err("a subcommand is required")),
-        ["domain" | "account" | "alias" | "dkim" | "db", _, ..] | ["check", ..] => {
+        ["domain" | "account" | "alias" | "dkim" | "db" | "relay"] => Err(err("a subcommand is required")),
+        ["domain" | "account" | "alias" | "dkim" | "db" | "relay", _, ..] | ["check", ..] => {
             Err(err("unknown subcommand or wrong number of arguments"))
         }
         _ => Err(err("unknown command")),

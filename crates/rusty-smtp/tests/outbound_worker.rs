@@ -759,6 +759,86 @@ async fn relay_credentials_are_never_sent_without_tls() {
 }
 
 #[tokio::test]
+async fn a_relay_that_offers_only_login_gets_the_mail() {
+    // Several providers (and most Exchange setups) advertise LOGIN, some only LOGIN.
+    for_each_backend(|b| async move {
+        let pki = TestPki::new("relay.fake.test");
+        let dir = tempfile::tempdir().unwrap();
+        let sel = pki.server.clone();
+        let relay = FakeMta::start(move |_| Script {
+            tls: Some(sel.clone()),
+            require_auth: Some(("mailer".into(), "s3cret".into())),
+            auth_mechanisms: vec!["LOGIN".into()],
+            ..Script::default()
+        })
+        .await;
+        let dialer = MapDialer::new(&[("192.0.2.50", relay.addr)]);
+        let mut dns = StaticDns::default();
+        dns.addrs.insert("relay.fake.test".into(), vec!["192.0.2.50".parse().unwrap()]);
+        let mut r = rig(b, dialer, dns, relay_cfg(&dir, &pki, RelayTls::Starttls)).await;
+        r.start();
+        r.submit("alice@example.net", &["bob@anywhere.test"], MSG).await;
+        r.wait_done(1).await;
+        let got = relay.messages();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].auth.as_deref(), Some("|mailer|s3cret"));
+        r.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_relay_with_tls_from_the_first_byte_gets_the_mail() {
+    // Port 465 ("SSL"): the handshake comes before the greeting, the login follows over it.
+    for_each_backend(|b| async move {
+        let pki = TestPki::new("relay.fake.test");
+        let dir = tempfile::tempdir().unwrap();
+        let sel = pki.server.clone();
+        let relay = FakeMta::start(move |_| Script { tls: Some(sel.clone()), implicit_tls: true, require_auth: Some(("mailer".into(), "s3cret".into())), ..Script::default() }).await;
+        let dialer = MapDialer::new(&[("192.0.2.50", relay.addr)]);
+        let mut dns = StaticDns::default();
+        dns.addrs.insert("relay.fake.test".into(), vec!["192.0.2.50".parse().unwrap()]);
+        let mut r = rig(b, dialer, dns, relay_cfg(&dir, &pki, RelayTls::Implicit)).await;
+        r.start();
+        r.submit("alice@example.net", &["bob@anywhere.test"], MSG).await;
+        r.wait_done(1).await;
+        let got = relay.messages();
+        assert_eq!(got.len(), 1);
+        assert!(got[0].tls);
+        assert_eq!(got[0].auth.as_deref(), Some("|mailer|s3cret"));
+        r.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn refused_relay_credentials_keep_the_mail_queued_and_never_bounce_it() {
+    for_each_backend(|b| async move {
+        let pki = TestPki::new("relay.fake.test");
+        let dir = tempfile::tempdir().unwrap();
+        let sel = pki.server.clone();
+        let relay = FakeMta::start(move |_| Script { tls: Some(sel.clone()), require_auth: Some(("mailer".into(), "another".into())), ..Script::default() }).await;
+        let dialer = MapDialer::new(&[("192.0.2.50", relay.addr)]);
+        let mut dns = StaticDns::default();
+        dns.addrs.insert("relay.fake.test".into(), vec!["192.0.2.50".parse().unwrap()]);
+        let mut r = rig(b, dialer, dns, relay_cfg(&dir, &pki, RelayTls::Starttls)).await;
+        r.start();
+        r.submit("alice@example.net", &["bob@anywhere.test"], MSG).await;
+        for _ in 0..100 {
+            if r.jobs("queued").await == 1 && relay.connection_count() >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(relay.messages().is_empty());
+        assert_eq!(r.jobs("queued").await, 1, "a login that is wrong today is fixed tomorrow: the mail waits");
+        r.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn the_body_of_a_retrying_job_survives_the_blob_gc_after_the_default_grace() {
     for_each_backend(|b| async move {
         let mta = FakeMta::start(|_| {

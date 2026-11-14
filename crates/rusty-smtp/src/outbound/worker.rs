@@ -456,7 +456,18 @@ impl Inner {
                             last_temp = Some(format!("TLS to {} failed: {why}", target.host));
                             break;
                         }
-                        Err(HostFailure::Temporary(why)) => {
+                        Err(HostFailure::AuthRejected) => {
+                            // Every message waits in the queue until this is fixed: say so where the operator looks.
+                            tracing::warn!(host = %target.host, "the relay refused the configured credentials; mail stays queued (check them with `rustyctl relay check`)");
+                            last_temp = Some(format!("{}: the relay refused the credentials", target.host));
+                            break;
+                        }
+                        Err(HostFailure::NoAuthMechanism { offered }) => {
+                            tracing::warn!(host = %target.host, ?offered, "the relay offers no login mechanism this server speaks (PLAIN, LOGIN); mail stays queued");
+                            last_temp = Some(format!("{}: the relay offers no supported login mechanism", target.host));
+                            break;
+                        }
+                        Err(HostFailure::Temporary(why) | HostFailure::TlsRequired(why)) => {
                             tracing::info!(host = %target.host, %ip, reason = %why, "delivery attempt deferred");
                             last_temp = Some(format!("{}: {why}", target.host));
                             break;

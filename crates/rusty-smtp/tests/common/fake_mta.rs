@@ -46,6 +46,10 @@ pub struct Script {
     /// Advertise STARTTLS but make the handshake fail (garbage instead of a TLS answer).
     pub break_tls: bool,
     pub require_auth: Option<(String, String)>,
+    /// TLS from the first byte (port 465 style): the handshake happens before the greeting. Needs `tls`.
+    pub implicit_tls: bool,
+    /// SASL mechanisms advertised after TLS when `require_auth` is set (default: PLAIN).
+    pub auth_mechanisms: Vec<String>,
     pub mail: Box<dyn Fn(&str) -> String + Send + Sync>,
     pub rcpt: Box<dyn Fn(&str) -> String + Send + Sync>,
     pub data_end: Box<dyn Fn(&Received) -> DataEnd + Send + Sync>,
@@ -62,6 +66,8 @@ impl Default for Script {
             tls: None,
             break_tls: false,
             require_auth: None,
+            implicit_tls: false,
+            auth_mechanisms: vec!["PLAIN".into()],
             mail: Box::new(|_| "250 2.1.0 sender ok".into()),
             rcpt: Box::new(|_| "250 2.1.5 recipient ok".into()),
             data_end: Box::new(|_| DataEnd::Reply("250 2.0.0 queued as FAKE".into())),
@@ -127,14 +133,21 @@ async fn say(w: &mut BufReader<BoxedStream>, text: &str) {
 }
 
 async fn session(tcp: TcpStream, script: Script, n: usize, received: Arc<Mutex<Vec<Received>>>) {
-    let mut io = BufReader::new(Box::new(tcp) as BoxedStream);
+    let implicit = script.implicit_tls && script.tls.is_some();
+    let mut io = match (&script.tls, implicit) {
+        (Some(cfg), true) => match TlsAcceptor::from(cfg.clone()).accept(tcp).await {
+            Ok(t) => BufReader::new(Box::new(t) as BoxedStream),
+            Err(_) => return,
+        },
+        _ => BufReader::new(Box::new(tcp) as BoxedStream),
+    };
     if script.silent {
         tokio::time::sleep(Duration::from_secs(3600)).await;
         return;
     }
     say(&mut io, &script.greeting).await;
-    let mut cur = Received { helo: String::new(), mail_from_line: String::new(), from: String::new(), rcpts: vec![], rcpt_lines: vec![], data: vec![], tls: false, auth: None, connection: n };
-    let mut tls_on = false;
+    let mut cur = Received { helo: String::new(), mail_from_line: String::new(), from: String::new(), rcpts: vec![], rcpt_lines: vec![], data: vec![], tls: implicit, auth: None, connection: n };
+    let mut tls_on = implicit;
     let mut authed = script.require_auth.is_none();
     loop {
         let mut line = String::new();
@@ -151,7 +164,7 @@ async fn session(tcp: TcpStream, script: Script, n: usize, received: Arc<Mutex<V
                 ext.push("STARTTLS".into());
             }
             if script.require_auth.is_some() && tls_on {
-                ext.push("AUTH PLAIN".into());
+                ext.push(format!("AUTH {}", script.auth_mechanisms.join(" ")));
             }
             let mut out = String::from("250-mx.fake.test greets you\r\n");
             for (i, e) in ext.iter().enumerate() {
@@ -184,7 +197,29 @@ async fn session(tcp: TcpStream, script: Script, n: usize, received: Arc<Mutex<V
                 }
                 Err(_) => return,
             }
-        } else if upper.starts_with("AUTH PLAIN") {
+        } else if upper == "AUTH LOGIN" && script.auth_mechanisms.iter().any(|m| m == "LOGIN") {
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD;
+            say(&mut io, &format!("334 {}", b64.encode("Username:"))).await;
+            let mut user = String::new();
+            if io.read_line(&mut user).await.unwrap_or(0) == 0 {
+                return;
+            }
+            say(&mut io, &format!("334 {}", b64.encode("Password:"))).await;
+            let mut pass = String::new();
+            if io.read_line(&mut pass).await.unwrap_or(0) == 0 {
+                return;
+            }
+            let u = String::from_utf8_lossy(&b64.decode(user.trim()).unwrap_or_default()).into_owned();
+            let p = String::from_utf8_lossy(&b64.decode(pass.trim()).unwrap_or_default()).into_owned();
+            cur.auth = Some(format!("|{u}|{p}"));
+            if script.require_auth.as_ref().is_some_and(|(wu, wp)| *wu == u && *wp == p) {
+                authed = true;
+                say(&mut io, "235 2.7.0 authenticated").await;
+            } else {
+                say(&mut io, "535 5.7.8 bad credentials").await;
+            }
+        } else if upper.starts_with("AUTH PLAIN") && script.auth_mechanisms.iter().any(|m| m == "PLAIN") {
             let blob = line.get(11..).unwrap_or_default().trim().to_owned();
             use base64::Engine;
             let decoded = base64::engine::general_purpose::STANDARD.decode(blob.as_bytes()).unwrap_or_default();

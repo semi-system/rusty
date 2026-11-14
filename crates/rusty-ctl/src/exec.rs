@@ -388,8 +388,8 @@ pub async fn execute(command: &Command, env: &mut CtlEnv<'_>) -> Result<Outcome,
         Command::DkimImport { domain, selector, key_file } => dkim_import(env, domain, selector, key_file).await,
 
         Command::Check => check(env).await,
-        Command::DbMigrate { .. } | Command::DbStatus => {
-            Err(CtlError::runtime("db commands are run by the composition root, not against the directory"))
+        Command::DbMigrate { .. } | Command::DbStatus | Command::RelayCheck => {
+            Err(CtlError::runtime("db and relay commands are run by the composition root, not against the directory"))
         }
     }
 }
