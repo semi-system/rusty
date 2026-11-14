@@ -8,7 +8,7 @@
 --                solely by the SECURITY DEFINER trigger functions rs_address_unique and
 --                rs_address_truncate (migration 0016), which the migrator owns.
 --                _sqlx_migrations is SELECT only (the daemon reads the schema version, never writes it).
---   rusty_ro   : SELECT on every table except accounts.password_hash.
+--   rusty_ro   : SELECT on every table except accounts.password_hash and sealed_secrets (sealed ciphertext).
 DO $grants$
 DECLARE
   cols text;
@@ -25,6 +25,7 @@ BEGIN
     REVOKE ALL ON ALL TABLES IN SCHEMA public FROM rusty_ro;
     GRANT SELECT ON ALL TABLES IN SCHEMA public TO rusty_ro;
     REVOKE SELECT ON accounts FROM rusty_ro;
+    REVOKE SELECT ON sealed_secrets FROM rusty_ro;
     SELECT string_agg(quote_ident(column_name), ', ' ORDER BY ordinal_position) INTO cols
       FROM information_schema.columns
       WHERE table_schema = 'public' AND table_name = 'accounts' AND column_name <> 'password_hash';

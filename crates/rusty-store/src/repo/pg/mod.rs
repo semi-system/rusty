@@ -6,6 +6,7 @@ mod dns;
 mod gc;
 mod jobs;
 mod mailbox;
+mod sealed;
 pub mod tx;
 
 use std::collections::BTreeMap;

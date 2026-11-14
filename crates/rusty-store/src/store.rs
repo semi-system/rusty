@@ -53,6 +53,7 @@ pub struct Repos {
     pub jobs: Arc<dyn JobRepo>,
     pub gc: Arc<dyn GcRepo>,
     pub dns: Arc<dyn DnsRepo>,
+    pub sealed: Arc<dyn crate::repo::SealedRepo>,
 }
 
 /// An opened store: the repositories plus the Postgres handle.
@@ -76,7 +77,8 @@ impl Store {
                         mailbox: repo.clone(),
                         jobs: repo.clone(),
                         gc: repo.clone(),
-                        dns: repo,
+                        dns: repo.clone(),
+                        sealed: repo,
                     },
                     pg: store,
                 })
