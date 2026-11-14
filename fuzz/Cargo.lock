@@ -1176,8 +1176,6 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 [[package]]
 name = "mail-auth"
 version = "0.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3a38e106bc724fb87601fce70bef65c12498b19cdb320994330eae1080d035f"
 dependencies = [
  "ed25519-dalek",
  "encodify",
@@ -1190,7 +1188,7 @@ dependencies = [
  "memchr",
  "ml-dsa",
  "rand 0.10.3",
- "rsa",
+ "ring",
  "rustls-pki-types",
  "serde",
  "serde_json",
