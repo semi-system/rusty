@@ -796,6 +796,98 @@ fn health_check_removes_a_broken_backend(edge: &EdgeUnderTest, _: &mut Vec<Row>)
     pass(format!("mute backend (accepts TCP, speaks nothing) removed after {took:.1?}; banner check re-admitted the repaired one"))
 }
 
+/// The container's address on the `app` network (what the edge has to find again).
+fn app_ip(edge: &EdgeUnderTest, service: &str) -> Result<String, String> {
+    let id = edge.container(service)?;
+    let fmt = format!("{{{{(index .NetworkSettings.Networks \"{}_app\").IPAddress}}}}", edge.project);
+    let ip = run(Command::new("docker").args(["inspect", "-f", &fmt, &id])).stdout.trim().to_owned();
+    if ip.is_empty() {
+        Err(format!("no address of {service} on the app network"))
+    } else {
+        Ok(ip)
+    }
+}
+
+/// The banner the edge relays from the SMTP backend, or `None` when the edge could not relay one.
+fn smtp_banner(edge: &EdgeUnderTest) -> Option<String> {
+    smtp_banner_or_why(edge).ok()
+}
+
+/// Like [`smtp_banner`], with the reason when there is none (for the failure message).
+fn smtp_banner_or_why(edge: &EdgeUnderTest) -> Result<String, String> {
+    let mut s = edge.connect(edge.ports.smtp).map_err(|e| format!("connect: {e}"))?;
+    let _ = s.set_read_timeout(Some(Duration::from_millis(1500)));
+    match read_line(&mut s) {
+        Ok(l) if !l.is_empty() => Ok(l),
+        Ok(_) => Err("the edge closed the connection without a banner".to_owned()),
+        Err(e) => Err(format!("read: {e}")),
+    }
+}
+
+/// A backend that is restarted and comes back under ANOTHER address (a container recreated, a pod replaced)
+/// must be found again through its name, without anybody reloading the edge. HAProxy resolves a server name
+/// once at start-up unless the configuration has a `resolvers` section and the server uses it.
+fn backend_that_changes_address_is_followed(edge: &EdgeUnderTest, _: &mut Vec<Row>) -> Outcome {
+    ensure(smtp_banner(edge).is_some_and(|b| b.starts_with("220 fake SMTP ready")), || "control banner".to_owned())?;
+    let before = app_ip(edge, "be-smtp")?;
+
+    // Docker hands a recreated container the lowest free address, i.e. the one it just left. So: stop the backend,
+    // let throw-away containers take the freed address, then recreate it; it has to take another one. The new
+    // instance speaks a different banner, so that the answer names the instance.
+    let net = format!("{}_app", edge.project);
+    let squats: Vec<String> = (0..3).map(|i| format!("{}-squat{i}", edge.project)).collect();
+    let cleanup = |squats: &[String]| {
+        for s in squats {
+            let _ = run(Command::new("docker").args(["rm", "-f", s]));
+        }
+    };
+    let old = edge.container("be-smtp")?;
+    run(Command::new("docker").args(["stop", "-t", "2", &old])).require("stop the backend")?;
+    let mut taken = false;
+    for s in &squats {
+        run(Command::new("docker").args([
+            "run", "-d", "--name", s, "--network", &net, "rusty-fake-backend:h1", "serve", "silent", "0.0.0.0:9",
+        ]))
+        .require("start a squatter")?;
+        let fmt = format!("{{{{(index .NetworkSettings.Networks \"{net}\").IPAddress}}}}");
+        let ip = run(Command::new("docker").args(["inspect", "-f", &fmt, s])).stdout.trim().to_owned();
+        if ip == before {
+            taken = true;
+            break;
+        }
+    }
+    let replacement = "services:\n  be-smtp:\n    command: [serve, starttls, \"0.0.0.0:1025\", \"220 replacement SMTP ready {src}\\r\\n\"]\n";
+    let recreated = edge.recreate_backend("be-smtp", replacement);
+    let after = if recreated.is_ok() { app_ip(edge, "be-smtp")? } else { before.clone() };
+    cleanup(&squats);
+    recreated?;
+    ensure(taken, || format!("a squatter could not take the freed address {before}: inconclusive"))?;
+    ensure(after != before, || format!("could not make Docker give the backend another address (still {before}): inconclusive"))?;
+
+    let started = Instant::now();
+    let mut last_seen = String::from("(nothing yet)");
+    let followed = poll(Duration::from_secs(45), || {
+        let b = smtp_banner_or_why(edge);
+        last_seen = format!("{b:?}");
+        b.is_ok_and(|b| b.starts_with("220 replacement SMTP ready"))
+    });
+    let took = started.elapsed();
+    let logs = edge.edge_logs();
+
+    // And back to the original instance (another address change), so that the next case sees the normal stack.
+    edge.restore_backend("be-smtp")?;
+    let back = poll(Duration::from_secs(45), || smtp_banner(edge).is_some_and(|b| b.starts_with("220 fake SMTP ready")));
+
+    ensure(followed, || {
+        format!(
+            "the edge kept the old address {before} after the backend moved to {after} and never reached the new instance within 45 s (a name is resolved only once without `resolvers`); last banner seen: {last_seen}; DOWN lines: {}",
+            logs.lines().filter(|l| l.contains("is DOWN")).count()
+        )
+    })?;
+    ensure(back, || "the edge did not follow the backend back to the restored instance".to_owned())?;
+    pass(format!("backend moved {before} -> {after}: the edge reached the new instance after {took:.1?} without a reload, and followed it back"))
+}
+
 // ---------------------------------------------------------------------------------------
 // Certificates
 // ---------------------------------------------------------------------------------------
@@ -1210,6 +1302,7 @@ fn cases() -> Vec<(&'static str, CaseFn)> {
         ("backend_link_is_verified_mtls", backend_link_is_verified_mtls),
         ("http_tls_reencrypted_with_mtls", http_tls_reencrypted_with_mtls),
         ("health_check_removes_a_broken_backend", health_check_removes_a_broken_backend),
+        ("backend_that_changes_address_is_followed", backend_that_changes_address_is_followed),
         ("cert_replacement_does_not_drop_connections", cert_replacement_does_not_drop_connections),
         ("per_ip_connection_limit_caps_one_ip_not_another", per_ip_connection_limit_caps_one_ip_not_another),
         ("per_ip_connection_rate_limit", per_ip_connection_rate_limit),
