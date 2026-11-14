@@ -392,3 +392,60 @@ async fn the_dns_hints_list_every_stored_key_with_the_k_tag_of_its_algorithm() {
     })
     .await;
 }
+
+// ---- seal keygen / seal show ----
+
+#[tokio::test]
+async fn seal_keygen_makes_a_private_key_file_and_prints_only_the_public_half() {
+    use std::os::unix::fs::PermissionsExt;
+    for_each_backend(|b| async move {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("unseal.key");
+        let out = b.run(Command::SealKeygen { file: file.clone() }, &[]).await.unwrap();
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600, "{}", b.name);
+        let secret = std::fs::read_to_string(&file).unwrap();
+        assert!(secret.trim().starts_with("rusty-unseal-v1:"), "{}", b.name);
+        let hex_secret = secret.trim().strip_prefix("rusty-unseal-v1:").unwrap().to_owned();
+        assert!(!out.text.contains(&hex_secret) && !out.json.to_string().contains(&hex_secret), "the private key is never printed");
+        let public = out.json["public_key"].as_str().unwrap().to_owned();
+        assert!(public.starts_with("rusty-seal-v1:") && out.text.contains(&public), "{}", out.text);
+        assert_eq!(out.json["key_id"].as_str().unwrap().len(), 16);
+        assert!(out.text.contains("[sealing]") && out.text.contains("[unsealing]"), "the configuration to add is shown: {}", out.text);
+        // Never replaces a key (everything sealed to it would be lost).
+        let before = std::fs::read(&file).unwrap();
+        assert!(b.run(Command::SealKeygen { file: file.clone() }, &[]).await.is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), before, "{}", b.name);
+        // Not a relative path, not in a directory that does not exist.
+        assert!(b.run(Command::SealKeygen { file: "unseal.key".into() }, &[]).await.is_err());
+        assert!(b.run(Command::SealKeygen { file: dir.path().join("no/such/dir/k") }, &[]).await.is_err());
+        // `show` prints the same public key from the file.
+        let shown = b.run(Command::SealShow { file: file.clone() }, &[]).await.unwrap();
+        assert_eq!(shown.json["public_key"].as_str().unwrap(), public, "{}", b.name);
+        assert!(!shown.text.contains(&hex_secret));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn seal_show_refuses_a_loose_file_a_symlink_and_something_that_is_not_a_key() {
+    use std::os::unix::fs::PermissionsExt;
+    for_each_backend(|b| async move {
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("k");
+        b.run(Command::SealKeygen { file: good.clone() }, &[]).await.unwrap();
+        std::fs::set_permissions(&good, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(b.run(Command::SealShow { file: good.clone() }, &[]).await.is_err(), "{}: a key file others can read is refused", b.name);
+        std::fs::set_permissions(&good, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&good, &link).unwrap();
+        assert!(b.run(Command::SealShow { file: link }, &[]).await.is_err(), "{}: a symlink is not followed", b.name);
+        let junk = dir.path().join("junk");
+        std::fs::write(&junk, "not a key\n").unwrap();
+        std::fs::set_permissions(&junk, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let err = b.run(Command::SealShow { file: junk }, &[]).await.unwrap_err();
+        assert!(!err.to_string().contains("not a key"), "{err}");
+        assert!(b.run(Command::SealShow { file: dir.path().join("missing") }, &[]).await.is_err());
+        assert!(b.run(Command::SealShow { file: dir.path().to_owned() }, &[]).await.is_err(), "a directory");
+    })
+    .await;
+}

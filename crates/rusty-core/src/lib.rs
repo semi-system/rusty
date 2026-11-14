@@ -5,6 +5,7 @@ pub mod dns;
 pub mod dns_check;
 pub mod dns_state;
 mod config_role;
+mod config_sealing;
 mod config_sections;
 mod config_store;
 mod config_valkey;

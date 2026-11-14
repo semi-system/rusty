@@ -196,6 +196,18 @@ fn db_commands() {
 }
 
 #[test]
+fn seal_keygen_and_seal_show_take_one_file() {
+    assert_eq!(cmd(&["seal", "keygen", "/etc/rusty/unseal.key"]), Command::SealKeygen { file: "/etc/rusty/unseal.key".into() });
+    assert_eq!(cmd(&["seal", "show", "/etc/rusty/unseal.key"]), Command::SealShow { file: "/etc/rusty/unseal.key".into() });
+    assert!(p(&["seal"]).is_err());
+    assert!(p(&["seal", "keygen"]).is_err());
+    assert!(p(&["seal", "keygen", "a", "b"]).is_err());
+    assert!(p(&["seal", "rotate", "a"]).is_err());
+    assert!(p(&["seal", "keygen", "a", "--prompt"]).is_err());
+    assert!(p(&["--json", "seal", "show", "/k"]).unwrap().json);
+}
+
+#[test]
 fn domain_dns_and_domain_check_take_one_domain() {
     assert_eq!(cmd(&["domain", "dns", "example.com"]), Command::DomainDns { name: "example.com".into() });
     assert_eq!(cmd(&["domain", "check", "example.com"]), Command::DomainCheck { name: "example.com".into() });

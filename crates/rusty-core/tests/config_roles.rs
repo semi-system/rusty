@@ -22,6 +22,8 @@ const SECTIONS: &[(&str, &str)] = &[
     ("limits", "[limits]\nshutdown_grace_secs = 20\n"),
     ("dns_check", "[dns_check]\nenabled = true\n"),
     ("valkey", "[valkey]\nhost = \"kv.internal\"\nport = 6379\ntls = true\nusername = \"rusty\"\npassword_file = \"/run/secrets/kv\"\n"),
+    ("sealing", "[sealing]\npublic_key = \"rusty-seal-v1:0000000000000000000000000000000000000000000000000000000000000001\"\n"),
+    ("unsealing", "[unsealing]\nkey_files = [\"/etc/rusty/unseal.key\"]\n"),
 ];
 
 fn allowed(role: Role) -> &'static [&'static str] {
@@ -30,9 +32,9 @@ fn allowed(role: Role) -> &'static [&'static str] {
         Role::SmtpIn => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "max_message_bytes", "tls", "smtp"],
         Role::Submission => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "max_message_bytes", "tls", "smtp", "outbound", "valkey"],
         Role::Imap => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "max_message_bytes", "tls", "imap", "valkey"],
-        Role::Outbound => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "outbound"],
+        Role::Outbound => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "outbound", "unsealing"],
         Role::Gc => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "gc_grace_seconds", "dns_check"],
-        Role::Admin => &["hostname", "log_level", "log_format", "store", "limits", "tls", "valkey"],
+        Role::Admin => &["hostname", "log_level", "log_format", "store", "limits", "tls", "valkey", "sealing"],
     }
 }
 

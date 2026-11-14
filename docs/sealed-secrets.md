@@ -35,6 +35,41 @@ domain (`owner_kind = 'domain'`); another kind with the same id is another owner
   **no `SELECT`**, the outbound role gets `SELECT`. That is a grants block to add with those roles, and a test that connects as each of them;
   it is not done yet and nothing here pretends it is.
 
+## The key pair, and how the outbound service uses sealed DKIM keys
+
+```
+rustyctl seal keygen /etc/rusty/unseal.key     # makes the pair: the private half to the file (0600, never replaced), the public half printed
+rustyctl seal show   /etc/rusty/unseal.key     # prints the public half and the key id of an existing file
+```
+
+The output shows the two configuration sections to add:
+
+```toml
+# on whatever seals (the admin service, rustyctl): the public key, not a secret
+[sealing]
+public_key = "rusty-seal-v1:<64 hex digits>"
+
+# on the outbound service only: where the private key is; the first file is the current key, up to four, the others only open what an
+# earlier key sealed (rotation)
+[unsealing]
+key_files = ["/etc/rusty/unseal.key"]
+```
+
+**Keep the key file backed up.** Without it nothing sealed to it can be opened, and `keygen` refuses to replace an existing file for that reason.
+
+With `[unsealing]` set, the outbound service signs with the **sealed** DKIM keys of the database:
+
+* a key is one row of `domain_dkim_keys` (the public half) and one sealed secret whose `purpose` is `dkim-` and 24 hex digits of the SHA-256 of the
+  lower-cased selector (`rusty_smtp::dkim::sealed_purpose`: a selector may hold dots and capitals, a purpose may not);
+* every key of a domain that has its private half sealed here signs (an ed25519 and an RSA key sign together, as with key files);
+* a public row **without** a sealed private half (made elsewhere) is not signed with;
+* a sealed key that **cannot be opened** (the wrong unsealing key, a blob moved to another domain, a damaged blob) is an error: the worker
+  **defers the mail** and records the reason on the job, it never sends the message unsigned;
+* loaded keys are kept for 60 seconds, so a removed or replaced secret is noticed within a minute;
+* a domain with no sealed key keeps signing with its key files in `[outbound] dkim_dir`: an installation that does not use sealed keys changes
+  nothing, and when a domain has both, **the sealed keys win** (one selector never signs twice).
+
 ## Not in this change
 
-Nothing reads or writes a secret yet: the outbound service reading sealed DKIM keys, the per-tenant relay route and the admin endpoints are the next steps.
+Nothing writes a sealed DKIM key yet: sealing a key (the admin endpoint, `rustyctl dkim generate` in sealed mode), the per-tenant relay route and its
+SSRF policy come next.

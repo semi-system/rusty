@@ -229,3 +229,15 @@ fn a_sealed_blob_made_by_an_earlier_build_still_opens() {
 
 const GOLDEN_KEY: &str = "rusty-unseal-v1:d01d9f9675d30b7ce72a6647d37e30ff8465935b6abaf09c9fe7d7f6d92d5656";
 const GOLDEN_SEALED: &str = "010dd97b8dd4e6970787efe5b364a144b7578b1863d79b0520cada97af57c395ed0e49229a74f34364645f88be6363f1515a6026efa0dc0bb3194b5d5e79aa4ff6fa65a8d5c190820672b859408fa8cb82ab04423f";
+
+#[test]
+fn a_key_file_is_read_from_its_bytes_and_bad_bytes_are_refused() {
+    let (sk, pk) = pair();
+    let mut file = sk.to_text().as_str().as_bytes().to_vec();
+    file.push(b'\n');
+    let back = UnsealingKey::from_file_bytes(file).unwrap();
+    assert_eq!(back.public().to_bytes(), pk.to_bytes());
+    assert!(UnsealingKey::from_file_bytes(vec![0xff, 0xfe, 0x00]).is_err(), "not UTF-8");
+    assert!(UnsealingKey::from_file_bytes(Vec::new()).is_err());
+    assert!(UnsealingKey::from_file_bytes(b"rusty-unseal-v1:nothex".to_vec()).is_err());
+}

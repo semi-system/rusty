@@ -48,7 +48,7 @@ use super::payload::OutboundPayload;
 use super::policy::{expired, next_step, Next, Outcome};
 use super::route::{OutboundRoute, RelaySpec, Route};
 use super::tls::TlsUpgrader;
-use crate::dkim::DkimSigner;
+use crate::dkim::MessageSigner;
 use crate::outbound_queue::OUTBOUND_JOB_KIND;
 use crate::resolve::{plan_for, to_ascii_domain, MxResolver, Plan, Target};
 
@@ -67,7 +67,7 @@ pub struct WorkerDeps {
     pub tls: Arc<dyn TlsUpgrader>,
     pub route: Arc<dyn OutboundRoute>,
     /// `None`: mail goes unsigned.
-    pub signer: Option<Arc<dyn DkimSigner>>,
+    pub signer: Option<Arc<dyn MessageSigner>>,
 }
 
 #[derive(Debug, Clone)]
@@ -295,7 +295,7 @@ impl Inner {
             return ctx.jobs.reschedule(job.id, job.epoch, &payload.encode(), "destination busy", BUSY_RETRY_SECS).await;
         };
 
-        let message = match self.signed(&payload, &original) {
+        let message = match self.signed(&payload, &original).await {
             Ok(m) => m,
             Err(e) => {
                 tracing::error!(job = job.id.0, error = %e, "DKIM signing failed; deferring the message");
@@ -355,7 +355,7 @@ impl Inner {
 
     /// DKIM-sign when a key exists for the domain of the header `From` (alignment) and it is the
     /// sender's tenant; otherwise the message goes unsigned.
-    fn signed(&self, payload: &OutboundPayload, stored: &Bytes) -> Result<Bytes> {
+    async fn signed(&self, payload: &OutboundPayload, stored: &Bytes) -> Result<Bytes> {
         let original = &Bytes::from(crate::message::outbound_copy(stored));
         let Some(signer) = &self.deps.signer else { return Ok(original.clone()) };
         let from_domain = crate::message::from_addresses(original)
@@ -367,7 +367,7 @@ impl Inner {
             tracing::warn!("the From domain is not the sender's tenant domain; sending unsigned");
             return Ok(original.clone());
         }
-        let sig = signer.sign(&domain, original)?;
+        let sig = signer.sign(&domain, original).await?;
         if sig.is_empty() {
             return Ok(original.clone());
         }

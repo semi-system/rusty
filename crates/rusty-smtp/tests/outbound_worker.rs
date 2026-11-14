@@ -66,7 +66,7 @@ async fn rig(b: Backend, dialer: Arc<MapDialer>, dns: StaticDns, cfg: OutboundCo
     let stack = DnsStack::with_static(dns, HOST).unwrap();
     let route = ConfigRoute::from_config(&cfg, &FileSecretSource::new()).unwrap();
     let tls = RustlsUpgrader::new(cfg.ca_bundle.as_deref()).unwrap();
-    let signer = keyring(&cfg, Arc::new(FileSecretSource::new()));
+    let signer = keyring(&cfg, Arc::new(FileSecretSource::new())).map(rusty_smtp::dkim::message_signer);
     let deps = WorkerDeps {
         resolver: stack.resolver.clone(),
         dialer: dialer.clone() as Arc<dyn Dialer>,
@@ -629,6 +629,90 @@ async fn outgoing_mail_is_dkim_signed_for_the_sender_domain_and_verifies() {
             .await;
         assert_eq!(v.dkim, "pass", "{v:?}");
         assert!(v.header_value.contains("header.d=example.net"), "d= is the From domain: {}", v.header_value);
+        r.stop().await;
+    })
+    .await;
+}
+
+/// Make an ed25519 key for `example.net`, keep only its public row and its sealed private key in the database, and return the
+/// record a receiver publishes. The private key exists as a file only for the moment it takes to read it.
+async fn sealed_key_for_example_net(b: &Backend, seal_to: &rusty_seal::SealingKey) -> rusty_smtp::dkim::GeneratedKey {
+    let tmp = tempfile::tempdir().unwrap();
+    let k = rusty_smtp::dkim::generate_key(tmp.path(), "example.net", "rusty").unwrap();
+    let pem = std::fs::read(&k.key_file).unwrap();
+    let dom = b.dir.find_domain("example.net").await.unwrap().unwrap();
+    let dns = rusty_store::DnsStore::with_repo(b.store.repos().dns.clone());
+    dns.add_dkim_key(dom.id, &k.selector, "ed25519", &k.public_key_b64).await.unwrap();
+    let purpose = rusty_smtp::dkim::sealed_purpose(&k.selector);
+    let sealed = seal_to.seal(&rusty_seal::Context::new("domain", dom.id.0, &purpose).unwrap(), &pem).unwrap();
+    rusty_store::SealedWriter::with_repo(b.store.repos().sealed.clone()).put("domain", dom.id.0, &purpose, &seal_to.id().to_hex(), &sealed).await.unwrap();
+    k
+}
+
+fn sealed_signer(b: &Backend, unseal_with: rusty_seal::UnsealingKey) -> Arc<dyn rusty_smtp::dkim::MessageSigner> {
+    let ring = rusty_smtp::dkim::SealedKeyring::new(
+        b.dir.clone(),
+        rusty_store::DnsStore::with_repo(b.store.repos().dns.clone()),
+        rusty_store::SealedReader::with_repo(b.store.repos().sealed.clone()),
+        rusty_seal::Unsealer::new(vec![unseal_with]).unwrap(),
+    );
+    rusty_smtp::dkim::chain(Some(Arc::new(ring)), None)
+}
+
+#[tokio::test]
+async fn outgoing_mail_is_signed_with_a_sealed_key_that_exists_in_no_file_and_verifies() {
+    for_each_backend(|b| async move {
+        let (sk, pk) = rusty_seal::generate();
+        let mta = FakeMta::start(|_| Script::default()).await;
+        let dialer = MapDialer::new(&[("192.0.2.10", mta.addr)]);
+        let dns = dns_one("mx.fake.test", "192.0.2.10");
+        let mut r = rig(b, dialer, dns.clone(), fast_cfg()).await;
+        let k = sealed_key_for_example_net(&r.b, &pk).await;
+        r.deps.signer = Some(sealed_signer(&r.b, sk));
+        r.start();
+        r.submit("alice@example.net", &["bob@remote.test"], MSG).await;
+        r.wait_done(1).await;
+        let sent = mta.messages().remove(0);
+        let text = lines(&sent);
+        assert!(text.starts_with("DKIM-Signature: ") && text.contains("s=rusty-ed25519"), "{text}");
+        assert!(text.ends_with(MSG), "the original follows the signature unchanged");
+        let mut remote_dns = dns;
+        remote_dns.txt.insert("rusty-ed25519._domainkey.example.net".into(), k.txt_value());
+        let stack = DnsStack::with_static(remote_dns, "mx.fake.test").unwrap();
+        let v = stack
+            .checker
+            .check(&rusty_smtp::authres::AuthInput { peer: "192.0.2.1".parse().unwrap(), helo: HOST, mail_from: "alice@example.net", message: &sent.data })
+            .await;
+        assert_eq!(v.dkim, "pass", "{v:?}");
+        r.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_sealed_key_that_cannot_be_opened_defers_the_mail_instead_of_sending_it_unsigned() {
+    for_each_backend(|b| async move {
+        let (_sk, pk) = rusty_seal::generate();
+        let (wrong, _) = rusty_seal::generate();
+        let mta = FakeMta::start(|_| Script::default()).await;
+        let dialer = MapDialer::new(&[("192.0.2.10", mta.addr)]);
+        let mut cfg = fast_cfg();
+        cfg.backoff_secs = vec![3600];
+        let mut r = rig(b, dialer, dns_one("mx.fake.test", "192.0.2.10"), cfg).await;
+        sealed_key_for_example_net(&r.b, &pk).await;
+        r.deps.signer = Some(sealed_signer(&r.b, wrong));
+        r.start();
+        r.submit("alice@example.net", &["bob@remote.test"], MSG).await;
+        for _ in 0..60 {
+            if r.b.fx.scalar("SELECT count(*) FROM jobs WHERE state = 'queued' AND last_error LIKE '%DKIM%'", &[]).await == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(mta.messages().is_empty(), "never delivered unsigned");
+        assert_eq!(r.jobs("queued").await, 1, "the mail waits until the key can be used");
+        assert_eq!(r.b.fx.scalar("SELECT count(*) FROM jobs WHERE last_error LIKE '%DKIM%'", &[]).await, 1, "and the reason is on the job");
         r.stop().await;
     })
     .await;

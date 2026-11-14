@@ -416,6 +416,9 @@ pub async fn execute(command: &Command, env: &mut CtlEnv<'_>) -> Result<Outcome,
 
         Command::DkimImport { domain, selector, key_file } => dkim_import(env, domain, selector, key_file).await,
 
+        Command::SealKeygen { file } => seal_keygen(file),
+
+        Command::SealShow { file } => seal_show(file),
         Command::DomainDns { name } => domain_dns(env, name).await,
 
         Command::DomainCheck { name } => match env.live_dns {
@@ -538,6 +541,69 @@ async fn dkim_import(env: &mut CtlEnv<'_>, domain: &str, selector: &str, key_fil
     let key = rusty_smtp::dkim::import_key(dir, &dom.name, selector, &pem).map_err(|e| map_error(&e, "dkim key"))?;
     keep_public_half(env, &dom, &key).await?;
     Ok(dkim_outcome(&dom, &key, true, "The source key file is no longer needed by Rusty; delete it or keep it offline."))
+}
+
+/// `seal keygen <file>`: make the key pair that seals and opens secrets (admin web design, section 14.1). The private half is written to
+/// `file` (an absolute path in a directory that exists), mode 0600, **never replacing** a file (everything sealed to the old key would be
+/// lost); it is never printed. The public half and its id are printed with the two configuration sections to add.
+fn seal_keygen(file: &std::path::Path) -> Result<Outcome, CtlError> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    if !file.is_absolute() {
+        return Err(CtlError::runtime("the key file must be an absolute path (the configuration names it the same way)"));
+    }
+    let (secret, public) = rusty_seal::generate();
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(file).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => CtlError::runtime("the key file already exists; it is never replaced (sealed secrets would become unreadable)"),
+        std::io::ErrorKind::NotFound => CtlError::runtime("the directory of the key file does not exist"),
+        _ => CtlError::runtime("cannot create the key file"),
+    })?;
+    let mut text = secret.to_text().as_str().to_owned();
+    text.push('\n');
+    let wrote = f.write_all(text.as_bytes()).and_then(|()| f.sync_all());
+    zeroize_string(&mut text);
+    if wrote.is_err() {
+        let _ = std::fs::remove_file(file);
+        return Err(CtlError::runtime("cannot write the key file"));
+    }
+    Ok(seal_outcome(file, &public, true))
+}
+
+/// `seal show <file>`: the public half and id of the key in `file`. The file must be a regular file (never a symlink) that only its owner
+/// can read, like every key file.
+fn seal_show(file: &std::path::Path) -> Result<Outcome, CtlError> {
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::symlink_metadata(file).map_err(|_| CtlError::runtime("cannot read the key file"))?;
+    if !meta.is_file() {
+        return Err(CtlError::runtime("the key file is not a regular file"));
+    }
+    if meta.mode() & 0o077 != 0 {
+        return Err(CtlError::runtime("the key file must be readable by its owner only (mode 0600)"));
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(file).and_then(|f| f.take(4096).read_to_end(&mut bytes)).map_err(|_| CtlError::runtime("cannot read the key file"))?;
+    let key = rusty_seal::UnsealingKey::from_file_bytes(bytes).map_err(|_| CtlError::runtime("the file does not hold an unsealing key"))?;
+    Ok(seal_outcome(file, &key.public(), false))
+}
+
+fn zeroize_string(s: &mut String) {
+    // Overwrite the text before it is freed (best effort: the allocator may still hold copies, see rusty-seal).
+    let mut bytes = std::mem::take(s).into_bytes();
+    bytes.fill(0);
+}
+
+fn seal_outcome(file: &std::path::Path, public: &rusty_seal::SealingKey, created: bool) -> Outcome {
+    let key_id = public.id().to_hex();
+    let text = format!(
+        "{} {}\nkey id: {key_id}\npublic key: {}\n\nAdd to the configuration of the service that SEALS (the admin service, rustyctl):\n[sealing]\npublic_key = \"{}\"\n\nAdd to the configuration of the OUTBOUND service (it opens what was sealed):\n[unsealing]\nkey_files = [\"{}\"]\n\nKeep the key file safe and backed up: without it, what was sealed to it cannot be opened.",
+        if created { "private key written to" } else { "key file:" },
+        file.display(),
+        public.to_text(),
+        public.to_text(),
+        file.display(),
+    );
+    Outcome::new(text, json!({ "key_file": file.display().to_string(), "key_id": key_id, "public_key": public.to_text(), "created": created }))
 }
 
 /// `check`: the configuration that was read and the DNS records each active domain needs.

@@ -203,7 +203,7 @@ async fn build(
             dialer: Arc::new(TcpDialer),
             tls: Arc::new(RustlsUpgrader::new(cfg.outbound.ca_bundle.as_deref())?),
             route: Arc::new(ConfigRoute::from_config(&cfg.outbound, secrets.as_ref())?),
-            signer: keyring(&cfg.outbound, secrets.clone()),
+            signer: signer_of(&cfg, store, &ctx, secrets.as_ref())?,
         };
         services.push(Box::new(OutboundWorker::new(deps, WorkerOptions::new(cfg.outbound.clone(), hostname)).with_wake(wake)));
     }
@@ -212,6 +212,34 @@ async fn build(
     }
     let task = tokio::spawn(run_services(services, ctx, shutdown));
     Ok((addrs, task))
+}
+
+/// The worker's DKIM signer: the sealed keys of the database when `[unsealing]` names this service's private key files, the key files of
+/// `[outbound] dkim_dir` for domains that have no sealed key; none when neither is configured (mail goes unsigned).
+fn signer_of(
+    cfg: &StartupConfig,
+    store: &Store,
+    ctx: &Context,
+    secrets: &dyn rusty_svc::SecretSource,
+) -> Result<Option<Arc<dyn rusty_smtp::dkim::MessageSigner>>> {
+    let files = keyring(&cfg.outbound, Arc::new(FileSecretSource::new()));
+    let sealed = match &cfg.unsealing {
+        None => None,
+        Some(u) => {
+            let mut keys = Vec::new();
+            for path in &u.key_files {
+                keys.push(rusty_seal::UnsealingKey::from_file_bytes(secrets.read(path)?)?);
+            }
+            let repos = store.repos();
+            Some(Arc::new(rusty_smtp::dkim::SealedKeyring::new(
+                ctx.directory.clone(),
+                rusty_store::DnsStore::with_repo(repos.dns.clone()),
+                rusty_store::SealedReader::with_repo(repos.sealed.clone()),
+                rusty_seal::Unsealer::new(keys)?,
+            )))
+        }
+    };
+    Ok((sealed.is_some() || files.is_some()).then(|| rusty_smtp::dkim::chain(sealed, files)))
 }
 
 /// Move every dev listener by `offset` ports (several dev instances, tests).

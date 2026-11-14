@@ -12,6 +12,7 @@ use serde::Deserialize;
 use crate::{Error, Result};
 
 pub use crate::config_role::{Role, UNUSED_BLOB_DIR};
+pub use crate::config_sealing::{SealingConfig, UnsealingConfig, MAX_UNSEALING_KEYS};
 pub use crate::config_valkey::ValkeyConfig;
 pub use crate::config_store::{
     is_loopback_host, parse_pg_url, PgEndpoint, SslMode, StoreSection, DEFAULT_POOL_SIZE, MAX_POOL_SIZE,
@@ -88,6 +89,12 @@ pub struct StartupConfig {
     /// its own in-process state.
     #[serde(default)]
     pub valkey: Option<ValkeyConfig>,
+    /// `[sealing]`: the public key secrets are sealed to (held by whatever seals: the admin service, `rustyctl`).
+    #[serde(default)]
+    pub sealing: Option<SealingConfig>,
+    /// `[unsealing]`: the files holding the private keys that open sealed secrets (the outbound service only).
+    #[serde(default)]
+    pub unsealing: Option<UnsealingConfig>,
 }
 
 /// Which start-up rules apply (see [`StartupConfig::check_startup`]).
@@ -191,6 +198,12 @@ impl StartupConfig {
         }
         if let Some(v) = &self.valkey {
             v.validate()?;
+        }
+        if let Some(s) = &self.sealing {
+            s.validate()?;
+        }
+        if let Some(u) = &self.unsealing {
+            u.validate()?;
         }
         self.limits.validate()
     }
@@ -310,6 +323,8 @@ impl StartupConfig {
                 ..StoreSection::default()
             },
             valkey: None,
+            sealing: None,
+            unsealing: None,
         }
     }
 }

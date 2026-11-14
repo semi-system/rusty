@@ -11,6 +11,7 @@ rusty-core = { path = "../rusty-core" }
 rusty-directory = { path = "../rusty-directory" }
 rusty-mime = { path = "../rusty-mime" }
 rusty-store = { path = "../rusty-store" }
+rusty-seal = { path = "../rusty-seal" }
 rusty-svc = { path = "../rusty-svc", default-features = false }
 smtp-proto.workspace = true
 async-trait.workspace = true
