@@ -121,7 +121,7 @@ pub async fn start(cfg: StartupConfig, profile: Profile, shutdown: CancellationT
     for w in cfg.startup_warnings(profile) {
         tracing::warn!("{w}");
     }
-    let store = Store::open(crate::storecfg::store_config(&cfg, profile)?).await?;
+    let store = Store::open(rusty_runtime::store::store_config(&cfg, profile)?).await?;
     match build(&cfg, &store, tls.clone(), shutdown.clone()).await {
         Ok((addrs, task)) => Ok(Running { addrs, shutdown, tls, store, task }),
         Err(e) => {

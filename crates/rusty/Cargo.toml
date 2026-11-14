@@ -16,6 +16,7 @@ rusty-core = { path = "../rusty-core" }
 rusty-store = { path = "../rusty-store" }
 rusty-directory = { path = "../rusty-directory" }
 rusty-ctl = { path = "../rusty-ctl" }
+rusty-runtime = { path = "../rusty-runtime" }
 rusty-smtp = { path = "../rusty-smtp" }
 rusty-svc = { path = "../rusty-svc", default-features = false }
 rusty-imap = { path = "../rusty-imap" }

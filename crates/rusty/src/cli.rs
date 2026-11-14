@@ -7,11 +7,11 @@ use std::process::ExitCode;
 
 use rusty_core::config::{LogFormat, Profile, SslMode, StartupConfig};
 use rusty_svc::init_logging;
-use tokio::signal::unix::{signal, SignalKind};
+use rusty_runtime::process::{exit_code, Signals};
 use tokio_util::sync::CancellationToken;
 
 use crate::daemon::{start, with_bind, with_port_offset};
-use crate::storecfg::DEV_PG_PASSWORD_ENV;
+use rusty_runtime::store::DEV_PG_PASSWORD_ENV;
 
 /// The Postgres server of the dev profile (`postgres://user@host:port/database`, no password).
 pub(crate) const DEV_PG_URL_ENV: &str = "RUSTY_DEV_PG_URL";
@@ -230,16 +230,9 @@ fn load_config(args: &DaemonArgs, with_store: bool) -> Result<(StartupConfig, Pr
 async fn run_daemon(prog: &str, args: DaemonArgs) -> u8 {
     // Signals are claimed before anything starts, so one that arrives early is not lost to the
     // default action (which would kill the process without closing the store).
-    let (mut term, mut int, mut hup) = match (
-        signal(SignalKind::terminate()),
-        signal(SignalKind::interrupt()),
-        signal(SignalKind::hangup()),
-    ) {
-        (Ok(a), Ok(b), Ok(c)) => (a, b, c),
-        _ => {
-            eprintln!("{prog}: cannot install signal handlers");
-            return 1;
-        }
+    let Ok(signals) = Signals::claim() else {
+        eprintln!("{prog}: cannot install signal handlers");
+        return 1;
     };
     let (mut cfg, profile) = match load_config(&args, true) {
         Ok(x) => x,
@@ -265,29 +258,7 @@ async fn run_daemon(prog: &str, args: DaemonArgs) -> u8 {
     };
 
     let tls = running.tls().clone();
-    let stop = token.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = term.recv() => { tracing::info!("SIGTERM: shutting down"); stop.cancel(); return; }
-                _ = int.recv() => { tracing::info!("SIGINT: shutting down"); stop.cancel(); return; }
-                _ = hup.recv() => match tls.reload() {
-                    Ok(()) => tracing::info!("SIGHUP: TLS certificate reloaded"),
-                    Err(e) => tracing::error!(error = %e, "SIGHUP: TLS reload failed; keeping the previous certificate"),
-                },
-                _ = stop.cancelled() => return,
-            }
-        }
-    });
+    signals.spawn(token.clone(), Some(Box::new(move || tls.reload())));
 
-    match running.wait().await {
-        Ok(()) => {
-            tracing::info!("stopped");
-            0
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "stopped with an error");
-            1
-        }
-    }
+    exit_code(running.wait().await)
 }
