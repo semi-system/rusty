@@ -56,18 +56,37 @@ pid=""
 cleanup() { [ -z "$pid" ] || kill -KILL "$pid" 2>/dev/null || true; rm -rf "$tmp"; }
 trap cleanup EXIT
 "$BIN" ctl --dev --data-dir "$tmp/data" db migrate --without-roles >/dev/null || { echo "quickstart smoke: db migrate failed" >&2; exit 1; }
-off=$((20000 + RANDOM % 20000))
-"$BIN" d --dev --data-dir "$tmp/data" --port-offset "$off" 2>"$log" &
-pid=$!
+# The five listeners sit at the dev ports plus an offset (SMTP 2525 ... IMAPS 9993). The offset keeps every one of them below the
+# kernel's ephemeral port range (32768 and up), where an outgoing connection of this very job (Postgres, curl, the runner's own)
+# may be holding the port: 10000..21999 puts them at 11143..31992. A port can still be taken by anything, so a start that cannot
+# bind is retried with another offset. RUSTY_SMOKE_PORT_OFFSET is the offset of the FIRST attempt (a test occupies a port and
+# checks that the retry gets past it).
 banner=""
-for _ in $(seq 1 100); do
-  if { exec 3<>"/dev/tcp/127.0.0.1/$((2525 + off))"; } 2>/dev/null; then
-    read -r -t 5 banner <&3 || true
-    exec 3>&- 3<&-
+for attempt in 1 2 3 4 5; do
+  if [ "$attempt" -eq 1 ] && [ -n "${RUSTY_SMOKE_PORT_OFFSET:-}" ]; then off="$RUSTY_SMOKE_PORT_OFFSET"; else off=$((10000 + RANDOM % 12000)); fi
+  "$BIN" d --dev --data-dir "$tmp/data" --port-offset "$off" 2>"$log" &
+  pid=$!
+  banner=""
+  taken=0
+  for _ in $(seq 1 100); do
+    if { exec 3<>"/dev/tcp/127.0.0.1/$((2525 + off))"; } 2>/dev/null; then
+      read -r -t 5 banner <&3 || true
+      exec 3>&- 3<&-
+      # Something else may be listening on that port while our daemon failed to bind it: the daemon must still be there.
+      kill -0 "$pid" 2>/dev/null || banner=""
+      break
+    fi
+    sleep 0.1
+    kill -0 "$pid" 2>/dev/null && continue
     break
+  done
+  if ! kill -0 "$pid" 2>/dev/null; then
+    wait "$pid" 2>/dev/null || true
+    pid=""
+    if grep -q "cannot bind listener" "$log"; then taken=1; else echo "quickstart smoke: process exited early" >&2; cat "$log" >&2; exit 1; fi
   fi
-  kill -0 "$pid" 2>/dev/null || { echo "quickstart smoke: process exited early" >&2; cat "$log" >&2; exit 1; }
-  sleep 0.1
+  [ "$taken" -eq 1 ] || break
+  echo "quickstart smoke: port offset $off was taken (attempt $attempt), trying another" >&2
 done
 case "$banner" in
   "220 "*) ;;

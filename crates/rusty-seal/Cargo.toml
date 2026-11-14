@@ -1,0 +1,19 @@
+[package]
+name = "rusty-seal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+rusty-core = { path = "../rusty-core" }
+sha2.workspace = true
+hex.workspace = true
+zeroize = "1"
+# HPKE (RFC 9180), named only inside src/adapter (scripts/wrapped-libs.txt). Exact pin: its `danger` API may change in a patch release.
+# DHKEM(X25519, HKDF-SHA256) / HKDF-SHA256 / ChaCha20-Poly1305: no post-quantum KEM, no AES, nothing else compiled in.
+hpke = { version = "=0.15.1", default-features = false, features = ["alloc", "getrandom", "x25519", "chacha"] }
+
+[dev-dependencies]
+proptest.workspace = true
