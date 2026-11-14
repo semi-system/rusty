@@ -83,3 +83,17 @@ certificate bundle.
 The tests run against loopback fake relays with real TLS (rustls) for STARTTLS, implicit TLS, wrong certificates and host
 names, broken handshakes, `PLAIN` and `LOGIN`. They have **not** been run against a real provider (SES, SendGrid, Mailgun):
 try `relay check` with your account before relying on it.
+
+## Per-domain relays: the rules and the storage (first part)
+
+A tenant administrator will be able to enter the relay of **its own domain** in the web admin (design section 14.4). This change adds the rules and the
+storage; the outbound service does not use them yet, and nothing in the web or `rustyctl` writes them yet.
+
+* `rusty_core::relay_policy`: what a tenant may choose. The port is one of 25, 465, 587, 2525; the host is a DNS name of two or more labels (no
+  `localhost`, `.local`, `.internal`, numeric last label) or a **public** IP literal; a login is refused over `tls = none`; implicit TLS only on 465.
+  `is_public_address` is the check the outbound service will apply to every **resolved** address at every connection (private ranges, loopback, link-local
+  including the cloud metadata address, CGNAT, documentation, benchmarking, reserved, multicast; IPv4 inside mapped, NAT64 and 6to4 addresses is judged as IPv4).
+  Refusal texts never echo what was entered.
+* Table `domain_relays` (migration 0020): host, port, TLS mode, user name, SPF include and the fixed category of the last connection check. The table
+  repeats the port, TLS and login rules. The **password is not in it**: it is a sealed secret (`docs/sealed-secrets.md`, purpose `relay-password`).
+* `RelayStore` validates, stores, replaces (a replaced relay forgets its last check) and removes; a relay goes with its domain.

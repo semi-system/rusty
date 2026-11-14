@@ -72,6 +72,16 @@ COLUMN domain_dns_state.last_ok_at bigint nullable=YES identity=NO/ collation= d
 COLUMN domain_dns_state.last_checked_at bigint nullable=NO identity=NO/ collation= default=
 COLUMN domain_dns_state.status_since bigint nullable=NO identity=NO/ collation= default=
 COLUMN domain_dns_state.consecutive_failures bigint nullable=NO identity=NO/ collation= default=0
+COLUMN domain_relays.domain_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN domain_relays.host text nullable=NO identity=NO/ collation=C default=
+COLUMN domain_relays.port integer nullable=NO identity=NO/ collation= default=
+COLUMN domain_relays.tls text nullable=NO identity=NO/ collation=C default=
+COLUMN domain_relays.username text nullable=YES identity=NO/ collation=C default=
+COLUMN domain_relays.spf_include text nullable=YES identity=NO/ collation=C default=
+COLUMN domain_relays.check_status text nullable=YES identity=NO/ collation=C default=
+COLUMN domain_relays.checked_at bigint nullable=YES identity=NO/ collation= default=
+COLUMN domain_relays.created_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN domain_relays.updated_at bigint nullable=NO identity=NO/ collation= default=
 COLUMN domains.id bigint nullable=NO identity=YES/ALWAYS collation= default=
 COLUMN domains.name text nullable=NO identity=NO/ collation=C default=
 COLUMN domains.config jsonb nullable=NO identity=NO/ collation= default='{}'::jsonb
@@ -268,6 +278,23 @@ CONSTRAINT domain_dns_state.domain_dns_state_seen_valid CHECK (last_seen_value I
 CONSTRAINT domain_dns_state.domain_dns_state_status_since_not_null NOT NULL status_since
 CONSTRAINT domain_dns_state.domain_dns_state_status_valid CHECK (last_status = ANY (ARRAY['ok'::text, 'missing'::text, 'mismatch'::text, 'warning'::text, 'pending'::text]))
 CONSTRAINT domain_dns_state.domain_dns_state_type_valid CHECK (record_type = ANY (ARRAY['MX'::text, 'A'::text, 'AAAA'::text, 'TXT'::text, 'SRV'::text, 'PTR'::text, 'CNAME'::text]))
+CONSTRAINT domain_relays.domain_relays_check_pair CHECK ((check_status IS NULL) = (checked_at IS NULL))
+CONSTRAINT domain_relays.domain_relays_created_at_not_null NOT NULL created_at
+CONSTRAINT domain_relays.domain_relays_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+CONSTRAINT domain_relays.domain_relays_domain_id_not_null NOT NULL domain_id
+CONSTRAINT domain_relays.domain_relays_host_not_null NOT NULL host
+CONSTRAINT domain_relays.domain_relays_host_valid CHECK (length(host) >= 3 AND length(host) <= 253 AND host ~ '^[a-z0-9.:-]+$'::text)
+CONSTRAINT domain_relays.domain_relays_implicit_port CHECK (tls <> 'implicit'::text OR port = 465)
+CONSTRAINT domain_relays.domain_relays_login_needs_tls CHECK (username IS NULL OR tls <> 'none'::text)
+CONSTRAINT domain_relays.domain_relays_pkey PRIMARY KEY (domain_id)
+CONSTRAINT domain_relays.domain_relays_port_not_null NOT NULL port
+CONSTRAINT domain_relays.domain_relays_port_valid CHECK (port = ANY (ARRAY[25, 465, 587, 2525]))
+CONSTRAINT domain_relays.domain_relays_spf_valid CHECK (spf_include IS NULL OR length(spf_include) >= 1 AND length(spf_include) <= 253 AND spf_include ~ '^[A-Za-z0-9._-]+$'::text)
+CONSTRAINT domain_relays.domain_relays_status_valid CHECK (check_status IS NULL OR (check_status = ANY (ARRAY['ok'::text, 'auth_failed'::text, 'tls_failed'::text, 'unreachable'::text, 'refused_address'::text, 'no_login_mechanism'::text, 'unsealable'::text])))
+CONSTRAINT domain_relays.domain_relays_tls_not_null NOT NULL tls
+CONSTRAINT domain_relays.domain_relays_tls_valid CHECK (tls = ANY (ARRAY['starttls'::text, 'implicit'::text, 'none'::text]))
+CONSTRAINT domain_relays.domain_relays_updated_at_not_null NOT NULL updated_at
+CONSTRAINT domain_relays.domain_relays_username_valid CHECK (username IS NULL OR length(username) >= 1 AND length(username) <= 256 AND username !~ '[[:cntrl:]]'::text)
 CONSTRAINT domains.domains_config_not_null NOT NULL config
 CONSTRAINT domains.domains_created_at_not_null NOT NULL created_at
 CONSTRAINT domains.domains_id_not_null NOT NULL id
@@ -414,6 +441,7 @@ INDEX domain_dns_config.domain_dns_config_pkey CREATE UNIQUE INDEX domain_dns_co
 INDEX domain_dns_event.domain_dns_event_by_domain CREATE INDEX domain_dns_event_by_domain ON public.domain_dns_event USING btree (domain_id, id)
 INDEX domain_dns_event.domain_dns_event_pkey CREATE UNIQUE INDEX domain_dns_event_pkey ON public.domain_dns_event USING btree (id)
 INDEX domain_dns_state.domain_dns_state_pkey CREATE UNIQUE INDEX domain_dns_state_pkey ON public.domain_dns_state USING btree (domain_id, record_name, record_type, purpose)
+INDEX domain_relays.domain_relays_pkey CREATE UNIQUE INDEX domain_relays_pkey ON public.domain_relays USING btree (domain_id)
 INDEX domains.domains_name_key CREATE UNIQUE INDEX domains_name_key ON public.domains USING btree (name)
 INDEX domains.domains_pkey CREATE UNIQUE INDEX domains_pkey ON public.domains USING btree (id)
 INDEX folders.folders_pkey CREATE UNIQUE INDEX folders_pkey ON public.folders USING btree (mailbox_id, id)

@@ -7,6 +7,7 @@ mod gc;
 mod jobs;
 mod mailbox;
 mod sealed;
+mod relay;
 pub mod tx;
 
 use std::collections::BTreeMap;
