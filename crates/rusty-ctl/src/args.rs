@@ -32,6 +32,10 @@ pub enum Command {
     DomainList,
     DomainDisable { name: String },
     DomainEnable { name: String },
+    /// `domain dns`: the DNS records to publish for the domain (configuration and stored keys); nothing is queried.
+    DomainDns { name: String },
+    /// `domain check`: those records against what DNS publishes, recorded as drift state. Needs the live resolver.
+    DomainCheck { name: String },
     AccountAdd { addr: String, password: PasswordSource },
     AccountList { domain: Option<String> },
     AccountSetPassword { addr: String, password: PasswordSource },
@@ -82,6 +86,8 @@ pub const DEFAULT_SELECTOR: &str = "rusty";
 pub const USAGE: &str = "usage: rustyctl [--config FILE | --dev [--data-dir DIR]] [--json] <command>\n\
 \n\
   domain add <name> | list | disable <name> | enable <name>\n\
+  domain dns <name>                          the DNS records to publish (addresses, SPF, DKIM, DMARC, SRV)\n\
+  domain check <name>                        check them against live DNS and record the result (exit 1 if a required one is wrong)\n\
   account add <addr> [--password-stdin | --prompt]\n\
   account list [domain]\n\
   account set-password <addr> (--password-stdin | --prompt)\n\
@@ -204,6 +210,14 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         ["domain", "enable", name] => {
             plain()?;
             done(Command::DomainEnable { name: (*name).to_owned() })
+        }
+        ["domain", "dns", name] => {
+            plain()?;
+            done(Command::DomainDns { name: (*name).to_owned() })
+        }
+        ["domain", "check", name] => {
+            plain()?;
+            done(Command::DomainCheck { name: (*name).to_owned() })
         }
         ["account", "add", addr] => {
             no_selector()?;

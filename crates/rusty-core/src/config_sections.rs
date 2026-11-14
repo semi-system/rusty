@@ -131,6 +131,10 @@ pub struct RelayConfig {
     pub username: Option<String>,
     /// File holding the password (mode 0600, read through `SecretSource`); never inline.
     pub password_file: Option<PathBuf>,
+    /// The provider's SPF include (`amazonses.com`, `_spf.example.org`): the generated SPF record names it, because mail
+    /// then leaves from the provider's addresses, not ours.
+    #[serde(default)]
+    pub spf_include: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
@@ -194,6 +198,10 @@ pub struct OutboundConfig {
     #[serde(default = "d_true")]
     pub dkim_ed25519: bool,
     pub relay: Option<RelayConfig>,
+    /// The public addresses mail leaves from (and the mail host resolves to): what the DNS page and `rustyctl domain check`
+    /// write into the SPF and the address records. At most 8, each a unicast address that can be published.
+    #[serde(default)]
+    pub public_ips: Vec<IpAddr>,
     /// Run the outbound worker and accept mail for remote recipients on submission. When `false`,
     /// submission refuses remote recipients with a temporary status (it never accepts mail that no
     /// worker will send).
@@ -282,6 +290,7 @@ impl Default for OutboundConfig {
             dkim_selector: d_selector(),
             dkim_ed25519: true,
             relay: None,
+            public_ips: Vec::new(),
             enabled: true,
             max_pending_per_account: d_pending_account(),
             submit_window_secs: d_window(),
@@ -352,6 +361,14 @@ impl OutboundConfig {
             norm.insert(d, p);
         }
         self.tls_policy = norm;
+        if self.public_ips.len() > 8 {
+            return Err(bad("outbound.public_ips has at most 8 addresses"));
+        }
+        for (n, ip) in self.public_ips.iter().enumerate() {
+            if !crate::dns::publishable_address(*ip) || self.public_ips.iter().take(n).any(|o| o == ip) {
+                return Err(bad("outbound.public_ips must be distinct unicast addresses that can be published"));
+            }
+        }
         if let Some(r) = &self.relay {
             if !valid_hostname(&r.host) && r.host.parse::<IpAddr>().is_err() {
                 return Err(bad("outbound.relay.host is not a host name or address"));
@@ -361,6 +378,9 @@ impl OutboundConfig {
             }
             if r.tls == RelayTls::None && r.username.is_some() {
                 return Err(bad("outbound.relay credentials need TLS (tls = starttls or implicit)"));
+            }
+            if r.spf_include.as_deref().is_some_and(|d| !crate::dns::valid_spf_domain(d)) {
+                return Err(bad("outbound.relay.spf_include must be a domain name (no \"include:\", no trailing dot)"));
             }
             match (&r.username, &r.password_file) {
                 (None, None) => {}
