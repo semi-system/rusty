@@ -235,16 +235,11 @@ fn relay_stores<'a>(env: &CtlEnv<'a>) -> Result<(&'a rusty_store::RelayStore, &'
 /// `domain relay set`: validate what was typed with the same rules the web will apply, seal the password, store both.
 ///
 /// A login **always** needs its password in the same command: a new host must never inherit the password that was given for the old one.
-async fn domain_relay_set(
-    env: &mut CtlEnv<'_>,
-    name: &str,
-    host: &str,
-    port: u16,
-    tls: rusty_core::config::RelayTls,
-    user: Option<&str>,
-    spf_include: Option<&str>,
-    source: PasswordSource,
-) -> Result<Outcome, CtlError> {
+async fn domain_relay_set(env: &mut CtlEnv<'_>, command: &Command) -> Result<Outcome, CtlError> {
+    let Command::DomainRelaySet { name, host, port, tls, user, spf_include, password: source } = command else {
+        return Err(CtlError::runtime("not a relay command"));
+    };
+    let (port, tls, source, user, spf_include) = (*port, *tls, *source, user.as_deref(), spf_include.as_deref());
     let relay = rusty_core::relay_policy::validate_tenant_relay(host, port, tls, user).map_err(|e| map_error(&e, "relay"))?;
     // The password is read before any database work, so a refused one changes nothing.
     let password = match (user, source) {
@@ -529,9 +524,7 @@ pub async fn execute(command: &Command, env: &mut CtlEnv<'_>) -> Result<Outcome,
 
         Command::DkimImport { domain, selector, key_file } => dkim_import(env, domain, selector, key_file).await,
 
-        Command::DomainRelaySet { name, host, port, tls, user, spf_include, password } => {
-            domain_relay_set(env, name, host, *port, *tls, user.as_deref(), spf_include.as_deref(), *password).await
-        }
+        Command::DomainRelaySet { .. } => domain_relay_set(env, command).await,
 
         Command::DomainRelayShow { name } => domain_relay_show(env, name).await,
 
