@@ -8,7 +8,7 @@ use rusty_core::dns::{
 };
 
 fn inputs<'a>(ips: &'a [IpAddr], dkim: &'a [DkimPublic<'a>], rua: Option<&'a str>) -> DnsInputs<'a> {
-    DnsInputs { domain: "example.com", mail_host: "mail.example.com", outbound_ips: ips, dkim, dmarc_rua: rua }
+    DnsInputs { domain: "example.com", mail_host: "mail.example.com", outbound_ips: ips, dkim, spf_includes: &[], dmarc_rua: rua }
 }
 
 fn find<'a>(recs: &'a [rusty_core::dns::DnsRecord], t: RecordType, name_prefix: &str) -> Vec<&'a rusty_core::dns::DnsRecord> {
@@ -99,7 +99,7 @@ proptest! {
         let ips: Vec<IpAddr> = v4.into_iter().map(IpAddr::from).chain(v6.into_iter().map(IpAddr::from)).collect();
         let keys: Vec<DkimPublic> = if with_key { vec![DkimPublic { selector: &sel, kind: DkimKind::Rsa, public_key_b64: &key }] } else { vec![] };
         let recs = records_for_domain(&DnsInputs {
-            domain: &domain, mail_host: &host, outbound_ips: &ips, dkim: &keys, dmarc_rua: Some("rua@example.org"),
+            domain: &domain, mail_host: &host, outbound_ips: &ips, dkim: &keys, spf_includes: &[], dmarc_rua: Some("rua@example.org"),
         }).unwrap();
         for r in &recs {
             let line = zone_line(r);
@@ -121,7 +121,7 @@ fn trailing_dot_inputs_are_refused_instead_of_producing_double_dot_names() {
     // `example.com..` (review U4 minor).
     let ips: Vec<IpAddr> = vec!["192.0.2.10".parse().unwrap()];
     for (domain, host) in [("example.com.", "mail.example.com"), ("example.com", "mail.example.com."), ("example.com.", "mail.example.com.")] {
-        let i = DnsInputs { domain, mail_host: host, outbound_ips: &ips, dkim: &[], dmarc_rua: None };
+        let i = DnsInputs { domain, mail_host: host, outbound_ips: &ips, dkim: &[], spf_includes: &[], dmarc_rua: None };
         assert!(records_for_domain(&i).is_err(), "{domain:?} {host:?}");
     }
     let ok = records_for_domain(&inputs(&ips, &[], None)).unwrap();
@@ -165,4 +165,37 @@ fn duplicate_selectors_and_too_many_keys_are_refused() {
     let five = [k("a"), k("b"), k("c"), k("d"), k("e")];
     assert!(records_for_domain(&inputs(&[], &five, None)).is_err());
     assert!(records_for_domain(&inputs(&[], &five[..4], None)).is_ok());
+}
+
+#[test]
+fn a_relay_providers_spf_include_goes_before_the_all() {
+    let ips: Vec<IpAddr> = vec!["192.0.2.10".parse().unwrap()];
+    let mut i = inputs(&ips, &[], None);
+    let inc = ["amazonses.com", "_spf.example.org"];
+    i.spf_includes = &inc;
+    let recs = records_for_domain(&i).unwrap();
+    let spf = find(&recs, RecordType::Txt, "example.com.").into_iter().find(|r| r.value.starts_with("v=spf1")).unwrap();
+    assert_eq!(spf.value, "v=spf1 mx ip4:192.0.2.10 include:amazonses.com include:_spf.example.org -all");
+    // Without any: as before.
+    let plain = records_for_domain(&inputs(&ips, &[], None)).unwrap();
+    let spf = find(&plain, RecordType::Txt, "example.com.").into_iter().find(|r| r.value.starts_with("v=spf1")).unwrap();
+    assert_eq!(spf.value, "v=spf1 mx ip4:192.0.2.10 -all");
+}
+
+#[test]
+fn bad_or_too_many_spf_includes_are_refused() {
+    let ips: Vec<IpAddr> = vec!["192.0.2.10".parse().unwrap()];
+    for bad in ["", "a b", "x;y", "include:x.example", "x.example.", "-bad.example"] {
+        let mut i = inputs(&ips, &[], None);
+        let one = [bad];
+        i.spf_includes = &one;
+        assert!(records_for_domain(&i).is_err(), "{bad:?}");
+    }
+    let mut i = inputs(&ips, &[], None);
+    let dup = ["x.example", "X.EXAMPLE"];
+    i.spf_includes = &dup;
+    assert!(records_for_domain(&i).is_err(), "the same include twice");
+    let many = ["a.example", "b.example", "c.example", "d.example", "e.example", "f.example"];
+    i.spf_includes = &many;
+    assert!(records_for_domain(&i).is_err(), "at most five: each one costs a DNS lookup of the ten SPF allows");
 }

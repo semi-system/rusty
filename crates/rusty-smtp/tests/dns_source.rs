@@ -207,7 +207,7 @@ async fn the_engine_over_real_dns_messages_finds_a_correct_publication_all_ok() 
     let key = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxIDAQAB";
     let ips = [ip];
     let keys = [DkimPublic { selector: "rusty", kind: DkimKind::Rsa, public_key_b64: key }];
-    let expected = records_for_domain(&DnsInputs { domain: "example.test", mail_host: "mx.example.test", outbound_ips: &ips, dkim: &keys, dmarc_rua: Some("dmarc@example.test") }).unwrap();
+    let expected = records_for_domain(&DnsInputs { domain: "example.test", mail_host: "mx.example.test", outbound_ips: &ips, dkim: &keys, spf_includes: &[], dmarc_rua: Some("dmarc@example.test") }).unwrap();
     let mut z = Zone::default();
     z.add("example.test", MX, mx(10, "mx.example.test"));
     z.add("mx.example.test", A, vec![192, 0, 2, 10]);

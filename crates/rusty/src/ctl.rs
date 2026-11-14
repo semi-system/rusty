@@ -167,6 +167,20 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         };
         let dns = rusty_store::DnsStore::with_repo(store.repos().dns.clone());
         let mut passwords = TerminalPasswords;
+        // The live resolver is built only for the command that asks DNS; it reads the system resolver configuration.
+        let live = if matches!(parsed.command, rusty_ctl::Command::DomainCheck { .. }) {
+            match rusty_smtp::stack::LiveDns::from_config(&cfg.outbound) {
+                Ok(l) => Some(l),
+                Err(e) => {
+                    eprintln!("{prog}: cannot set up the DNS resolver: {e}");
+                    let _ = store.close().await;
+                    return 1;
+                }
+            }
+        } else {
+            None
+        };
+        let relay = cfg.outbound.relay.as_ref();
         let mut env = CtlEnv {
             directory: &directory,
             passwords: &mut passwords,
@@ -174,6 +188,12 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
             config_note: &note,
             dkim_dir: cfg.outbound.dkim_dir.as_deref(),
             dns: &dns,
+            outbound: rusty_ctl::OutboundFacts {
+                public_ips: &cfg.outbound.public_ips,
+                via_relay: relay.is_some(),
+                spf_include: relay.and_then(|r| r.spf_include.as_deref()),
+            },
+            live_dns: live.as_ref(),
         };
         let code = match execute(&parsed.command, &mut env).await {
             Ok(outcome) => {
@@ -181,7 +201,8 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
                 if !text.is_empty() {
                     println!("{text}");
                 }
-                0
+                // A check that found a wrong required record printed its report and exits 1, like any failed gate.
+                u8::from(outcome.failed)
             }
             Err(e) => {
                 if parsed.json {

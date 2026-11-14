@@ -36,7 +36,7 @@ fn rig(tls: RelayTls, relay: &FakeMta, pki: TestPki) -> Rig {
     cfg.ca_bundle = Some(bundle);
     cfg.connect_timeout_secs = 2;
     cfg.command_timeout_secs = 2;
-    cfg.relay = Some(RelayConfig { host: HOST.into(), port: 587, tls, username: Some("mailer".into()), password_file: Some(pw) });
+    cfg.relay = Some(RelayConfig { host: HOST.into(), port: 587, tls, username: Some("mailer".into()), password_file: Some(pw), spf_include: None });
     let mut dns = StaticDns::default();
     dns.addrs.insert(HOST.into(), vec!["192.0.2.50".parse().unwrap()]);
     let dialer = MapDialer::new(&[("192.0.2.50", relay.addr)]);
