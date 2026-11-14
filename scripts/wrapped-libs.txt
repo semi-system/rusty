@@ -7,3 +7,6 @@ hickory-resolver crates/rusty-smtp/src/adapter
 imap-codec crates/rusty-imap/src/adapter
 imap-types crates/rusty-imap/src/adapter
 fred crates/rusty-valkey/src/adapter
+hyper crates/rusty-http/src/adapter
+hyper-util crates/rusty-http/src/adapter
+http-body-util crates/rusty-http/src/adapter
