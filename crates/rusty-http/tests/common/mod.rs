@@ -69,7 +69,11 @@ pub fn router(calls: Arc<AtomicUsize>) -> Router {
 
 pub async fn start(limits: Limits) -> Server {
     let calls = Arc::new(AtomicUsize::new(0));
-    let h = HttpHandler::new(router(calls.clone()), HttpConfig { limits });
+    start_router(router(calls.clone()), limits, calls).await
+}
+
+pub async fn start_router(router: Router, limits: Limits, calls: Arc<AtomicUsize>) -> Server {
+    let h = HttpHandler::new(router, HttpConfig { limits });
     let spec = ListenerSpec { name: "http-test", addr: "127.0.0.1:0".parse().unwrap(), max_connections: 64, max_per_ip: 64 };
     let bound = BoundListener::bind(spec).await.unwrap();
     let addr = bound.local_addr();

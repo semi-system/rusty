@@ -39,6 +39,16 @@ impl Headers {
         self.0.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
     }
 
+    /// Headers from `(name, value)` pairs (names are lower-cased): for tests and for handlers that build requests.
+    pub fn from_pairs<'a>(pairs: impl IntoIterator<Item = (&'a str, &'a str)>) -> Headers {
+        Headers(pairs.into_iter().map(|(n, v)| (n.to_ascii_lowercase(), v.to_owned())).collect())
+    }
+
+    /// Every value of `name` (case-insensitive), in the order sent.
+    pub fn get_all<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a str> {
+        self.0.iter().filter(move |(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+    }
+
     /// How many headers named `name` were sent.
     pub fn count(&self, name: &str) -> usize {
         self.0.iter().filter(|(n, _)| n.eq_ignore_ascii_case(name)).count()
@@ -74,5 +84,22 @@ pub struct Request {
 impl Request {
     pub fn param(&self, name: &str) -> Option<&str> {
         self.params.get(name)
+    }
+
+    /// The value of cookie `name`, only when it is unambiguous: absent, malformed or sent twice (a planted
+    /// second cookie of the same name, in one header or two) is `None`, never a guess.
+    pub fn cookie(&self, name: &str) -> Option<&str> {
+        let mut found = None;
+        for header in self.headers.get_all("cookie") {
+            for (n, v) in crate::cookie::parse_cookies(header) {
+                if n == name {
+                    if found.is_some() {
+                        return None;
+                    }
+                    found = Some(v);
+                }
+            }
+        }
+        found
     }
 }
