@@ -24,6 +24,7 @@ use mail_auth::{AuthenticatedMessage, AuthenticationResults, DkimResult, DmarcRe
 use crate::authres::{AuthInput, AuthResults, InboundAuthChecker};
 
 use crate::resolve::{DnsError, MxAnswer, MxHost, MxResolver, StaticDns};
+use rusty_core::dns_check::{DnsFail, MxEntry, SrvEntry};
 
 /// The verifier/resolver stack: system resolver configuration, or one explicit nameserver
 /// (`[outbound] nameserver`, an operator setting read from the configuration file only).
@@ -319,4 +320,129 @@ pub(crate) fn static_checker(dns: &StaticDns, hostname: &str) -> rusty_core::Res
         hostname: hostname.to_owned(),
         cache: Some(Arc::new(StaticCache::from_static(dns))),
     }))
+}
+
+// ------------------------------------------------------------------ the DNS validation engine's source
+
+/// The live `DnsSource` of the validation engine (`rusty_core::dns_check`): the same resolver stack as delivery and
+/// inbound checking, so "what DNS says" is asked the same way everywhere. TXT records stay separate (their
+/// character-strings joined), "no such name" and "no data" are empty answers, any other failure is temporary.
+pub(crate) struct LiveSource {
+    authenticator: MessageAuthenticator,
+    mx: LibMx,
+}
+
+/// Most TXT records and bytes taken from one answer (the engine reads fewer still): an answer cannot make us buffer more.
+const MAX_TXT_ANSWERS: usize = 64;
+const MAX_TXT_JOINED: usize = 16 * 1024;
+
+impl LiveSource {
+    pub(crate) fn new(nameserver: Option<SocketAddr>) -> rusty_core::Result<LiveSource> {
+        let authenticator = authenticator(nameserver)?;
+        Ok(LiveSource { mx: LibMx { authenticator: authenticator.clone() }, authenticator })
+    }
+
+    /// A name that cannot be a DNS name has no records: not an error, and nothing is sent for it.
+    fn parse(name: &str) -> Option<mail_auth::hickory_resolver::proto::rr::Name> {
+        if name.len() > 253 || name.chars().any(|c| c.is_control() || c.is_whitespace()) {
+            return None;
+        }
+        mail_auth::hickory_resolver::proto::rr::Name::from_str_relaxed::<&str>(name).ok()
+    }
+
+    pub(crate) async fn txt(&self, name: &str) -> Result<Vec<String>, DnsFail> {
+        use mail_auth::hickory_resolver::proto::rr::RData;
+        let Some(n) = Self::parse(name) else { return Ok(Vec::new()) };
+        match self.authenticator.resolver().txt_lookup(n).await {
+            Ok(lookup) => {
+                let mut out = Vec::new();
+                for r in lookup.answers().iter().take(MAX_TXT_ANSWERS) {
+                    let RData::TXT(txt) = &r.data else { continue };
+                    let mut joined = Vec::new();
+                    for chunk in txt.txt_data.iter() {
+                        joined.extend_from_slice(chunk);
+                        if joined.len() > MAX_TXT_JOINED {
+                            joined.truncate(MAX_TXT_JOINED);
+                            break;
+                        }
+                    }
+                    out.push(String::from_utf8_lossy(&joined).into_owned());
+                }
+                Ok(out)
+            }
+            Err(e) if e.is_no_records_found() => Ok(Vec::new()),
+            Err(_) => Err(DnsFail::Temporary),
+        }
+    }
+
+    pub(crate) async fn mx(&self, name: &str) -> Result<Vec<MxEntry>, DnsFail> {
+        if Self::parse(name).is_none() {
+            return Ok(Vec::new());
+        }
+        match self.mx.mx(name).await {
+            Ok(MxAnswer::Hosts(hosts)) => Ok(hosts.into_iter().map(|h| MxEntry { preference: h.preference, host: h.host }).collect()),
+            Ok(_) => Ok(Vec::new()),
+            Err(_) => Err(DnsFail::Temporary),
+        }
+    }
+
+    /// A **and** AAAA of `name`. (Delivery asks "IPv4, else IPv6" through `MxResolver`; validation must see both
+    /// families, because a record can be right for one and wrong for the other.) If either lookup fails, the answer is
+    /// unknown: temporary.
+    pub(crate) async fn addresses(&self, name: &str) -> Result<Vec<IpAddr>, DnsFail> {
+        if Self::parse(name).is_none() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for strategy in [mail_auth::IpLookupStrategy::Ipv4Only, mail_auth::IpLookupStrategy::Ipv6Only] {
+            let c4: Option<&mail_auth::NoCache> = None;
+            let c6: Option<&mail_auth::NoCache> = None;
+            match self.authenticator.ip_lookup(name, strategy, 16, c4, c6).await {
+                Ok(found) => out.extend(found),
+                Err(e) if not_found(&e) => {}
+                Err(_) => return Err(DnsFail::Temporary),
+            }
+        }
+        Ok(out)
+    }
+
+    pub(crate) async fn ptr(&self, ip: IpAddr) -> Result<Vec<String>, DnsFail> {
+        use mail_auth::hickory_resolver::proto::rr::RData;
+        match self.authenticator.resolver().reverse_lookup(ip).await {
+            Ok(lookup) => Ok(lookup
+                .answers()
+                .iter()
+                .take(MAX_TXT_ANSWERS)
+                .filter_map(|r| match &r.data {
+                    RData::PTR(p) if !p.is_empty() => Some(p.to_lowercase().to_ascii().trim_end_matches('.').to_owned()),
+                    _ => None,
+                })
+                .collect()),
+            Err(e) if e.is_no_records_found() => Ok(Vec::new()),
+            Err(_) => Err(DnsFail::Temporary),
+        }
+    }
+
+    pub(crate) async fn srv(&self, name: &str) -> Result<Vec<SrvEntry>, DnsFail> {
+        use mail_auth::hickory_resolver::proto::rr::{RData, RecordType};
+        let Some(n) = Self::parse(name) else { return Ok(Vec::new()) };
+        match self.authenticator.resolver().lookup(n, RecordType::SRV).await {
+            Ok(lookup) => Ok(lookup
+                .answers()
+                .iter()
+                .take(MAX_TXT_ANSWERS)
+                .filter_map(|r| match &r.data {
+                    RData::SRV(s) => Some(SrvEntry {
+                        priority: s.priority,
+                        weight: s.weight,
+                        port: s.port,
+                        target: s.target.to_lowercase().to_ascii().trim_end_matches('.').to_owned(),
+                    }),
+                    _ => None,
+                })
+                .collect()),
+            Err(e) if e.is_no_records_found() => Ok(Vec::new()),
+            Err(_) => Err(DnsFail::Temporary),
+        }
+    }
 }
