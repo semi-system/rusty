@@ -67,6 +67,10 @@ pub struct CtlEnv<'a> {
     pub outbound: OutboundFacts<'a>,
     /// The live DNS source of `domain check` (the composition root builds it only for that command).
     pub live_dns: Option<&'a rusty_smtp::stack::LiveDns>,
+    /// `[sealing] public_key`: the key secrets are sealed to (`dkim generate --sealed`).
+    pub sealing: Option<&'a rusty_seal::SealingKey>,
+    /// Where sealed secrets are written.
+    pub sealed: Option<&'a rusty_store::SealedWriter>,
 }
 
 /// The parts of `[outbound]` the DNS records depend on.
@@ -414,6 +418,8 @@ pub async fn execute(command: &Command, env: &mut CtlEnv<'_>) -> Result<Outcome,
 
         Command::DkimGenerate { domain, selector } => dkim_generate(env, domain, selector).await,
 
+        Command::DkimGenerateSealed { domain, selector } => dkim_generate_sealed(env, domain, selector).await,
+
         Command::DkimImport { domain, selector, key_file } => dkim_import(env, domain, selector, key_file).await,
 
         Command::SealKeygen { file } => seal_keygen(file),
@@ -513,6 +519,49 @@ async fn dkim_generate(env: &mut CtlEnv<'_>, domain: &str, selector: &str) -> Re
         )
     };
     Ok(dkim_outcome(&dom, &key, created, &note))
+}
+
+/// `dkim generate --sealed`: an ed25519 key for an existing domain whose private half is **sealed** to `[sealing] public_key` and stored in the
+/// database; no file is made and no key directory is needed. The public half goes to `domain_dkim_keys`. Like the file command it never replaces a
+/// key: run again with the same selector it succeeds, changes nothing and shows the record of the key that is there. A key of this selector that
+/// was made as a **file** (public row only) cannot be sealed from here: the private key is somewhere else.
+async fn dkim_generate_sealed(env: &mut CtlEnv<'_>, domain: &str, selector: &str) -> Result<Outcome, CtlError> {
+    let Some(seal) = env.sealing else {
+        return Err(CtlError::runtime("set [sealing] public_key in the configuration: that is the key the private key is sealed to (`rustyctl seal keygen` makes one)"));
+    };
+    let Some(writer) = env.sealed else {
+        return Err(CtlError::runtime("sealed secrets are not available here"));
+    };
+    let dom = find_domain(env, domain).await?;
+    let published = format!("{selector}-ed25519");
+    let existing = env.dns.dkim_keys(dom.id).await.map_err(|e| map_error(&e, "dkim keys"))?.into_iter().find(|k| k.selector.eq_ignore_ascii_case(&published));
+    let purpose = rusty_smtp::dkim::sealed_purpose(&published);
+    let has_sealed = writer.meta("domain", dom.id.0).await.map_err(|e| map_error(&e, "sealed secrets"))?.iter().any(|m| m.purpose == purpose);
+    if let Some(k) = existing {
+        if !has_sealed {
+            return Err(CtlError::runtime("a key with this selector exists but is not sealed here (its private key was made as a file); use another --selector"));
+        }
+        return Ok(sealed_outcome(&dom, &k.selector, &k.algorithm, &k.public_key_b64, false));
+    }
+    // No public row yet: nothing was ever published for this selector, so a sealed secret left by an interrupted run is safely replaced.
+    let key = rusty_smtp::dkim::generate_sealed(dom.id.0, selector, seal).map_err(|e| map_error(&e, "dkim key"))?;
+    writer.put("domain", dom.id.0, &key.purpose, &key.key_id, &key.sealed).await.map_err(|e| map_error(&e, "sealed secrets"))?;
+    env.dns.add_dkim_key(dom.id, &key.selector, "ed25519", &key.public_key_b64).await.map_err(|e| map_error(&e, "dkim key"))?;
+    Ok(sealed_outcome(&dom, &key.selector, "ed25519", &key.public_key_b64, true))
+}
+
+fn sealed_outcome(dom: &DomainInfo, selector: &str, algorithm: &str, public_key_b64: &str, created: bool) -> Outcome {
+    let name = format!("{selector}._domainkey.{}", dom.name);
+    let value = format!("v=DKIM1; k={algorithm}; p={public_key_b64}");
+    let text = if created {
+        format!("key made and sealed in the database (no file); the private key was never shown\nPublish this TXT record:\n{name}. IN TXT \"{value}\"")
+    } else {
+        format!("a sealed key already exists (nothing was changed; a published key is never replaced, a new key needs a new --selector)\nIts TXT record:\n{name}. IN TXT \"{value}\"")
+    };
+    Outcome::new(
+        text,
+        json!({ "domain": dom.name, "algorithm": algorithm, "selector": selector, "record_name": name, "record_value": value, "created": created, "sealed": true }),
+    )
 }
 
 /// The largest key file `dkim import` reads.

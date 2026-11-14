@@ -220,6 +220,16 @@ pub(crate) fn existing(dir: &std::path::Path, domain: &str, selector: &str, algo
     }))
 }
 
+/// A new Ed25519 key as PEM text (checked like an imported one) and the base64 of its public key. Nothing is written anywhere: the caller
+/// seals the PEM and drops it (it is wiped when dropped).
+pub(crate) fn generate_ed25519_pem() -> Result<(zeroize::Zeroizing<String>, String)> {
+    use base64::Engine;
+    let pair = DkimKeyPair::generate_ed25519().map_err(lib_err)?;
+    let der = rustls_pki_types::PrivatePkcs8KeyDer::from(pair.private_key());
+    let key = check_key(PrivateKeyDer::Pkcs8(der))?;
+    Ok((zeroize::Zeroizing::new(key.pem), base64::engine::general_purpose::STANDARD.encode(key.public)))
+}
+
 /// A new Ed25519 key, checked like an imported one, then written.
 pub(crate) fn generate_ed25519(dir: &std::path::Path, domain: &str, selector: &str) -> Result<GeneratedKey> {
     let pair = DkimKeyPair::generate_ed25519().map_err(lib_err)?;

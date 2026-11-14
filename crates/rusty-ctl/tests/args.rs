@@ -218,3 +218,19 @@ fn domain_dns_and_domain_check_take_one_domain() {
     assert!(p(&["domain", "check", "example.com", "--selector", "s"]).is_err());
     assert!(p(&["--json", "domain", "check", "example.com"]).unwrap().json);
 }
+
+#[test]
+fn dkim_generate_sealed_is_a_flag_of_dkim_generate_only() {
+    assert_eq!(
+        cmd(&["dkim", "generate", "example.com", "--sealed"]),
+        Command::DkimGenerateSealed { domain: "example.com".into(), selector: "rusty".into() }
+    );
+    assert_eq!(
+        cmd(&["dkim", "generate", "example.com", "--sealed", "--selector", "s1"]),
+        Command::DkimGenerateSealed { domain: "example.com".into(), selector: "s1".into() }
+    );
+    assert!(matches!(cmd(&["dkim", "generate", "example.com"]), Command::DkimGenerate { .. }), "without the flag it is the file command");
+    for bad in [&["dkim", "import", "example.com", "k.pem", "--sealed"][..], &["domain", "list", "--sealed"], &["check", "--sealed"], &["seal", "keygen", "/k", "--sealed"]] {
+        assert!(p(bad).is_err(), "{bad:?}");
+    }
+}

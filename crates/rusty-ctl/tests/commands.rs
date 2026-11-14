@@ -449,3 +449,69 @@ async fn seal_show_refuses_a_loose_file_a_symlink_and_something_that_is_not_a_ke
     })
     .await;
 }
+
+// ---- dkim generate --sealed ----
+
+#[tokio::test]
+async fn dkim_generate_sealed_keeps_no_file_and_seals_the_private_key_in_the_database() {
+    use rusty_smtp::dkim::{sealed_purpose, MessageSigner, SealedKeyring};
+    for_each_backend(|b| async move {
+        let n = b.name;
+        b.run(Command::DomainAdd { name: "example.org".into() }, &[]).await.unwrap();
+        let dom = b.dir.find_domain("example.org").await.unwrap().unwrap();
+        let (unseal, seal) = rusty_seal::generate();
+        let cmd = Command::DkimGenerateSealed { domain: "example.org".into(), selector: "rusty".into() };
+        let out = b.run_sealed(cmd.clone(), Some(&seal)).await.unwrap();
+        // The record to publish is printed; nothing secret is.
+        assert!(out.text.contains("rusty-ed25519._domainkey.example.org") && out.text.contains("v=DKIM1; k=ed25519; p="), "{n}: {}", out.text);
+        assert_eq!(out.json["created"], true);
+        assert_eq!(out.json["sealed"], true);
+        assert!(!out.text.contains("PRIVATE") && !out.json.to_string().contains("PRIVATE") && !out.json.to_string().contains("key_file"), "{n}");
+        // The public half and the sealed private half are in the database, and nothing else was made.
+        let keys = b.dns.dkim_keys(dom.id).await.unwrap();
+        assert_eq!((keys.len(), keys[0].selector.as_str(), keys[0].algorithm.as_str()), (1, "rusty-ed25519", "ed25519"), "{n}");
+        let meta = b.sealed.meta("domain", dom.id.0).await.unwrap();
+        assert_eq!(meta.len(), 1, "{n}");
+        assert_eq!(meta[0].purpose, sealed_purpose("rusty-ed25519"), "{n}");
+        assert_eq!(meta[0].key_id, seal.id().to_hex(), "{n}");
+        // The outbound service can use it: it opens the secret and signs.
+        let repos = b.store.repos();
+        let ring = SealedKeyring::new(
+            b.dir.clone(),
+            rusty_store::DnsStore::with_repo(repos.dns.clone()),
+            rusty_store::SealedReader::with_repo(repos.sealed.clone()),
+            rusty_seal::Unsealer::new(vec![unseal]).unwrap(),
+        );
+        let msg = b"From: a@example.org\r\nTo: b@remote.test\r\nSubject: s\r\nDate: Mon, 09 Nov 2026 10:00:00 +0000\r\nMessage-ID: <1@example.org>\r\n\r\nx\r\n";
+        assert!(String::from_utf8_lossy(&ring.sign("example.org", msg).await.unwrap()).starts_with("DKIM-Signature: "), "{n}");
+        // Run again: the key is never replaced; the same record is shown and nothing changes.
+        let before = b.sealed.meta("domain", dom.id.0).await.unwrap();
+        let again = b.run_sealed(cmd, Some(&seal)).await.unwrap();
+        assert_eq!(again.json["created"], false, "{n}");
+        assert_eq!(again.json["record_value"], out.json["record_value"], "{n}");
+        assert!(again.text.contains("already exists"), "{n}: {}", again.text);
+        assert_eq!(b.sealed.meta("domain", dom.id.0).await.unwrap(), before, "{n}: the sealed secret is untouched");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn dkim_generate_sealed_refuses_without_a_sealing_key_for_an_unknown_domain_and_over_a_key_it_cannot_seal() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        b.run(Command::DomainAdd { name: "example.org".into() }, &[]).await.unwrap();
+        let (_unseal, seal) = rusty_seal::generate();
+        let cmd = |d: &str| Command::DkimGenerateSealed { domain: d.into(), selector: "rusty".into() };
+        let err = b.run_sealed(cmd("example.org"), None).await.unwrap_err();
+        assert!(err.to_string().contains("[sealing]"), "{n}: say which configuration is missing: {err}");
+        assert!(b.run_sealed(cmd("nope.test"), Some(&seal)).await.is_err(), "{n}");
+        // A key of this selector that was made as a FILE (public row only, the private key is elsewhere) cannot be sealed from here.
+        let keys = tempfile::tempdir().unwrap();
+        b.run_with_dkim(Command::DkimGenerate { domain: "example.org".into(), selector: "rusty".into() }, keys.path()).await.unwrap();
+        let err = b.run_sealed(cmd("example.org"), Some(&seal)).await.unwrap_err();
+        assert!(err.to_string().contains("not sealed"), "{n}: {err}");
+        let dom = b.dir.find_domain("example.org").await.unwrap().unwrap();
+        assert!(b.sealed.meta("domain", dom.id.0).await.unwrap().is_empty(), "{n}: nothing was sealed");
+    })
+    .await;
+}

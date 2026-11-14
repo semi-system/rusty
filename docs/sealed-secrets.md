@@ -69,7 +69,17 @@ With `[unsealing]` set, the outbound service signs with the **sealed** DKIM keys
 * a domain with no sealed key keeps signing with its key files in `[outbound] dkim_dir`: an installation that does not use sealed keys changes
   nothing, and when a domain has both, **the sealed keys win** (one selector never signs twice).
 
+## Making a sealed DKIM key
+
+```
+rustyctl dkim generate example.org --sealed [--selector S]
+```
+
+Needs `[sealing] public_key` in the configuration. It makes an ed25519 key, seals the private half to that public key, stores it in
+`sealed_secrets` and the public half in `domain_dkim_keys`, and prints the TXT record. **No file is written and the private key is never
+shown**: only the outbound service, holding the unsealing key, can open it. Like the file command it never replaces a key: the same selector
+again changes nothing and shows the record; a selector whose key was made as a file is refused (use another selector).
+
 ## Not in this change
 
-Nothing writes a sealed DKIM key yet: sealing a key (the admin endpoint, `rustyctl dkim generate` in sealed mode), the per-tenant relay route and its
-SSRF policy come next.
+The admin endpoint that does the same from the web, the per-tenant relay route and its SSRF policy come next.
