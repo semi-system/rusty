@@ -10,7 +10,21 @@ const SEED_FULL: &str = include_str!("../../../fuzz/seeds/fuzz_config/full");
 const SEED_PG: &str = include_str!("../../../fuzz/seeds/fuzz_config/postgres");
 const SEED_EXAMPLE: &str = include_str!("../../../rusty.example.toml");
 
+/// Role files: an accepted one is a valid configuration, and a role without blobs always has the stand-in directory.
+fn check_roles(text: &str) {
+    use rusty_core::config::{Role, UNUSED_BLOB_DIR};
+    for role in [Role::SmtpIn, Role::Submission, Role::Imap, Role::Outbound, Role::Gc, Role::Admin] {
+        if let Ok(c) = StartupConfig::from_toml_str_for(role, text) {
+            assert!(c.blob_dir.is_absolute());
+            if !role.uses_blobs() {
+                assert_eq!(c.blob_dir, std::path::Path::new(UNUSED_BLOB_DIR));
+            }
+        }
+    }
+}
+
 fn check(text: &str) {
+    check_roles(text);
     let Ok(c) = StartupConfig::from_toml_str(text) else {
         return;
     };
