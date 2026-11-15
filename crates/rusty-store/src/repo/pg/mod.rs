@@ -165,7 +165,7 @@ async fn lock_blobs(
         let mut first = true;
         for m in order {
             let h = hash_bytes(&m.hash)?;
-            sqlx::query(crate::repo::pg_lit("INSERT INTO blobs (hash, size) VALUES ($1, $2) ON CONFLICT (hash) DO NOTHING"))
+            sqlx::query(crate::repo::pg_lit("INSERT INTO blobs (hash, size) VALUES ($1, $2) ON CONFLICT (store_id, hash) DO NOTHING"))
                 .bind(&h)
                 .bind(m.size)
                 .execute(&mut *c)
@@ -191,7 +191,7 @@ async fn lock_blobs(
         sqlx::query(
             crate::repo::pg_lit("INSERT INTO blobs (hash, size) \
              SELECT t.h, t.s FROM unnest($1::bytea[], $2::bigint[]) AS t(h, s) ORDER BY t.h \
-             ON CONFLICT (hash) DO NOTHING"),
+             ON CONFLICT (store_id, hash) DO NOTHING"),
         )
         .bind(&hashes)
         .bind(&sizes)

@@ -284,11 +284,11 @@ fn cases() -> Vec<Case> {
     v.push(case("message folder missing", &msg(1, 1, 7, 1, A, 10, 0), Err(FK, Some("messages_mailbox_id_folder_id_fkey"))));
     v.push(with("message folder of another mailbox", &[&fol(2, 7, "NULL", "O", "custom")], &msg(1, 1, 7, 1, A, 10, 0), Err(FK, Some("messages_mailbox_id_folder_id_fkey"))));
     v.push(case("message missing mailbox", &msg(99, 1, 1, 1, A, 10, 0), Err(FK, Some("messages_mailbox_id_fkey"))));
-    v.push(case("message missing blob", &msg(1, 1, 1, 1, "decode(repeat('dd',32),'hex')", 10, 0), Err(FK, Some("messages_blob_hash_fkey"))));
+    v.push(case("message missing blob", &msg(1, 1, 1, 1, "decode(repeat('dd',32),'hex')", 10, 0), Err(FK, Some("messages_blob_fkey"))));
     v.push(with("message duplicate uid in folder", &[&msg(1, 1, 1, 1, A, 10, 0)], &msg(1, 2, 1, 1, A, 10, 0), Err(UNIQUE, Some("messages_mailbox_id_folder_id_uid_key"))));
     v.push(with("message duplicate id", &[&msg(1, 1, 1, 1, A, 10, 0)], &msg(1, 1, 1, 2, A, 10, 0), Err(UNIQUE, Some("messages_pkey"))));
     v.push(case("message null subject", "INSERT INTO messages(mailbox_id,id,folder_id,uid,blob_hash,size,internal_date,thread_id,subject) VALUES (1,1,1,1,decode(repeat('aa',32),'hex'),1,0,1,NULL)", Err(NOTNULL, None)));
-    v.push(with("blob delete while referenced", &[&msg(1, 1, 1, 1, A, 10, 0)], &format!("DELETE FROM blobs WHERE hash={A}"), Err(RESTRICT, Some("messages_blob_hash_fkey"))));
+    v.push(with("blob delete while referenced", &[&msg(1, 1, 1, 1, A, 10, 0)], &format!("DELETE FROM blobs WHERE hash={A}"), Err(RESTRICT, Some("messages_blob_fkey"))));
     v.push(with("blob delete once unreferenced", &[&msg(1, 1, 1, 1, A, 10, 0), "DELETE FROM messages"], &format!("DELETE FROM blobs WHERE hash={A}"), Pass));
 
     // ---- keywords
