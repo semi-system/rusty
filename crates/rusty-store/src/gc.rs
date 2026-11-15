@@ -66,6 +66,33 @@ pub const DELIVERY_RETENTION_SECS: i64 = 7 * 86400;
 /// How long a dead (expired or revoked) capability row is kept by default.
 pub const CAPABILITY_RETENTION_SECS: i64 = 86400;
 
+/// Most missing blob hashes a [`VerifyReport`] lists (the total is always counted).
+pub const MAX_VERIFY_LISTED: usize = 100;
+
+/// Outcome of [`Gc::verify_blobs`]: does every blob the database still references exist in the blob store?
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VerifyReport {
+    /// Blob rows that something references (`refcount > 0`).
+    pub referenced: u64,
+    /// Blob files found in the store.
+    pub stored: u64,
+    /// Referenced blobs with **no file**: data that is gone (a restore that is missing blobs, a damaged volume). The first [`MAX_VERIFY_LISTED`] hashes.
+    pub missing: Vec<String>,
+    /// How many referenced blobs have no file.
+    pub missing_total: u64,
+    /// Files no row references (harmless: garbage collection removes them after its grace period).
+    pub unreferenced_files: u64,
+    /// Shards that could not be read (each named by its two hex digits): the result is incomplete for them.
+    pub errors: Vec<String>,
+}
+
+impl VerifyReport {
+    /// Nothing referenced is missing and every shard was read.
+    pub fn is_clean(&self) -> bool {
+        self.missing_total == 0 && self.errors.is_empty()
+    }
+}
+
 /// Outcome of one [`Gc::collect_blobs`] run.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GcReport {
@@ -140,6 +167,39 @@ impl Gc {
         Gc {
             repo,
         }
+    }
+
+    /// Check that every blob the database references exists in `blobs`, shard by shard (memory bounded by one shard). A read only: nothing is
+    /// changed. Run after a restore, and before trusting a copied or migrated blob store.
+    pub async fn verify_blobs(&self, blobs: &dyn BlobStore) -> Result<VerifyReport> {
+        let mut report = VerifyReport::default();
+        for shard in 0..=u8::MAX {
+            let files: HashSet<String> = match blobs.list_shard(shard).await {
+                Ok(v) => v.into_iter().map(|e| e.hash.as_str().to_owned()).collect(),
+                Err(_) => {
+                    report.errors.push(format!("{shard:02x}: blob store not readable"));
+                    continue;
+                }
+            };
+            let rows = match self.repo.blob_rows_in_use_in_shard(shard).await {
+                Ok(v) => v,
+                Err(e) => {
+                    report.errors.push(format!("{shard:02x}: rows not readable: {}", describe(&e)));
+                    continue;
+                }
+            };
+            report.stored += files.len() as u64;
+            report.referenced += rows.len() as u64;
+            let row_set: HashSet<&str> = rows.iter().map(String::as_str).collect();
+            report.unreferenced_files += files.iter().filter(|f| !row_set.contains(f.as_str())).count() as u64;
+            for hash in rows.iter().filter(|h| !files.contains(h.as_str())) {
+                report.missing_total += 1;
+                if report.missing.len() < MAX_VERIFY_LISTED {
+                    report.missing.push(hash.clone());
+                }
+            }
+        }
+        Ok(report)
     }
 
     /// Hard-delete soft-deleted messages with `deleted_at < older_than` (unix seconds), in

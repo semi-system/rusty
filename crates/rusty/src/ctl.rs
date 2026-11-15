@@ -180,6 +180,20 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         } else {
             None
         };
+        // The blob store is opened only for the command that reads it (the other commands need no blob directory).
+        let blob_store = if parsed.command == rusty_ctl::Command::BlobsVerify {
+            match rusty_store::FsBlobStore::open(&cfg.blob_dir).await {
+                Ok(b) => Some(b),
+                Err(e) => {
+                    eprintln!("{prog}: cannot open the blob store: {e}");
+                    let _ = store.close().await;
+                    return 1;
+                }
+            }
+        } else {
+            None
+        };
+        let gc = rusty_store::Gc::new(store.repos().gc.clone());
         let relay = cfg.outbound.relay.as_ref();
         // The configuration was validated, so a present `[sealing]` holds a well-formed key.
         let sealing = cfg.sealing.as_ref().and_then(|s| rusty_seal::SealingKey::from_text(&s.public_key).ok());
@@ -203,6 +217,8 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
             sealing: sealing.as_ref(),
             sealed: Some(&sealed),
             relays: Some(&relays),
+            blobs: blob_store.as_ref().map(|b| b as &dyn rusty_store::BlobStore),
+            gc: Some(&gc),
             jobs: Some(&jobs),
             admins: Some(&admins),
         };

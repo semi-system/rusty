@@ -28,6 +28,7 @@ case "${1:-}" in
     bash scripts/check-test-knobs.sh static
     bash scripts/tests/docker-pins-gate.sh
     bash scripts/check-docker-pins.sh
+    bash scripts/tests/backup-restore.sh
     ;;
   symbols)
     target="${2:?usage: ci-gates.sh symbols TARGET}"

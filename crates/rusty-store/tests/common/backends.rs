@@ -553,6 +553,9 @@ impl GcRepo for SkewedGc {
     async fn blob_rows_in_shard(&self, shard: u8) -> Result<Vec<String>, Error> {
         self.inner.blob_rows_in_shard(shard).await
     }
+    async fn blob_rows_in_use_in_shard(&self, shard: u8) -> Result<Vec<String>, Error> {
+        self.inner.blob_rows_in_use_in_shard(shard).await
+    }
     async fn blob_row_exists(&self, hash: &rusty_core::BlobHash) -> Result<bool, Error> {
         self.inner.blob_row_exists(hash).await
     }
