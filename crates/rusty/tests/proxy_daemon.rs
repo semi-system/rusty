@@ -62,6 +62,34 @@ async fn behind_the_edge_the_header_names_the_client_and_strangers_are_dropped()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_container_health_probe_gets_through_the_proxy_header_rule_and_a_trusted_loopback_is_required() {
+    use rusty::health::probe;
+    let tmp = private_tmp();
+    let pg = pg_dev().await;
+    let mut cfg = pg.config(&tmp.path().join("data"));
+    cfg.imap.proxy_protocol = true;
+    cfg.imap.trusted_proxies = vec!["127.0.0.1/32".parse().unwrap()];
+    cfg.smtp.proxy_protocol = true;
+    cfg.smtp.trusted_proxies = vec!["10.77.0.2/32".parse().unwrap()];
+    let token = CancellationToken::new();
+    let run = start(cfg, Profile::Dev, token.clone()).await.unwrap();
+    let (imap, imaps, smtp) = (addr_of(&run, ListenerKind::Imap143), addr_of(&run, ListenerKind::Imaps993), addr_of(&run, ListenerKind::Smtp25));
+    tokio::task::spawn_blocking(move || {
+        // IMAP trusts loopback: the probe sends a LOCAL header and reads the greeting, on the STARTTLS port and on the implicit-TLS port (plain behind the edge).
+        probe(ListenerKind::Imap143, imap, true).unwrap();
+        probe(ListenerKind::Imaps993, imaps, true).unwrap();
+        // Without the header the same service refuses the connection: the old probe would have failed.
+        assert!(probe(ListenerKind::Imap143, imap, false).is_err());
+        // SMTP trusts only 10.77.0.2: the probe from loopback is refused, so a configuration that forgot to trust loopback shows as unhealthy.
+        assert!(probe(ListenerKind::Smtp25, smtp, true).is_err());
+    })
+    .await
+    .unwrap();
+    token.cancel();
+    run.wait().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn implicit_tls_ports_behind_the_edge_start_without_a_certificate_but_starttls_ports_do_not() {
     let tmp = private_tmp();
     let pg = pg_dev().await;

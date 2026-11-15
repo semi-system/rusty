@@ -4,6 +4,11 @@
 //! (25, 587, 143) the greeting line (`220 ` for SMTP, `* OK` for IMAP). Implicit-TLS listeners
 //! (465, 993) are connect-only, so the probe needs no TLS stack, no credentials and creates no
 //! session state. Exit code 0 when every listener answers, 1 otherwise.
+//!
+//! Behind the edge (`proxy_protocol`) a service refuses a connection that does not start with a PROXY header from a trusted address, and its implicit-TLS ports speak
+//! plain text (TLS ended at the edge). The probe then sends a PROXY v2 `LOCAL` header first (what a proxy's own health check sends) and reads the greeting on every
+//! listener, the implicit-TLS ones included. The probe connects from loopback, so `127.0.0.1/32` has to be in `trusted_proxies`: only a process inside the container's own
+//! network namespace can connect from there.
 
 use std::io::{BufRead, BufReader};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
@@ -24,18 +29,27 @@ fn probe_addr(bound: SocketAddr) -> SocketAddr {
     SocketAddr::new(ip, bound.port())
 }
 
-fn expected_greeting(kind: ListenerKind) -> Option<&'static str> {
+fn expected_greeting(kind: ListenerKind, proxied: bool) -> Option<&'static str> {
     match kind {
         ListenerKind::Smtp25 | ListenerKind::Submission587 => Some("220 "),
         ListenerKind::Imap143 => Some("* OK"),
-        ListenerKind::Submissions465 | ListenerKind::Imaps993 => None,
+        // TLS ends at the edge when proxied: the service itself speaks plain text on these ports.
+        ListenerKind::Submissions465 => proxied.then_some("220 "),
+        ListenerKind::Imaps993 => proxied.then_some("* OK"),
     }
 }
 
-fn probe(kind: ListenerKind, bound: SocketAddr) -> Result<(), String> {
+/// Probe one listener at `bound`; `proxied` when the service expects a PROXY header first (see the module docs).
+pub fn probe(kind: ListenerKind, bound: SocketAddr, proxied: bool) -> Result<(), String> {
     let addr = probe_addr(bound);
-    let stream = TcpStream::connect_timeout(&addr, TIMEOUT).map_err(|e| format!("{}: connect {addr}: {e}", kind.name()))?;
-    let Some(want) = expected_greeting(kind) else {
+    let mut stream = TcpStream::connect_timeout(&addr, TIMEOUT).map_err(|e| format!("{}: connect {addr}: {e}", kind.name()))?;
+    if proxied {
+        // PROXY v2, command LOCAL, no address family, no payload: the proxy's own health check.
+        let mut header = rusty_svc::proxy::SIGNATURE.to_vec();
+        header.extend_from_slice(&[0x20, 0x00, 0x00, 0x00]);
+        std::io::Write::write_all(&mut stream, &header).map_err(|e| format!("{}: {e}", kind.name()))?;
+    }
+    let Some(want) = expected_greeting(kind, proxied) else {
         return Ok(());
     };
     stream.set_read_timeout(Some(TIMEOUT)).map_err(|e| format!("{}: {e}", kind.name()))?;
@@ -56,7 +70,8 @@ pub fn check(cfg: &StartupConfig) -> Result<usize, String> {
     if plan.is_empty() {
         return Err("no listener is enabled".to_owned());
     }
-    let failures: Vec<String> = plan.iter().filter_map(|p| probe(p.kind, p.spec.addr).err()).collect();
+    let proxied = |kind: ListenerKind| if kind.is_imap() { cfg.imap.proxy_protocol } else { cfg.smtp.proxy_protocol };
+    let failures: Vec<String> = plan.iter().filter_map(|p| probe(p.kind, p.spec.addr, proxied(p.kind)).err()).collect();
     if failures.is_empty() {
         Ok(plan.len())
     } else {
