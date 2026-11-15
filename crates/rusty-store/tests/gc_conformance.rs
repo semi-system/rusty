@@ -375,3 +375,83 @@ async fn gc_report_errors_carry_no_database_detail() {
     })
     .await;
 }
+
+// ------------------------------------------------------------------------------------------------ verify_blobs
+
+/// A blob that something references (`refcount = 1`): the row, and the file when `with_file`.
+async fn referenced(b: &Backend, name: &str, with_file: bool) -> BlobHash {
+    let bytes = Bytes::from(format!("referenced {name}"));
+    let h = BlobHash::of(&bytes);
+    if with_file {
+        b.blobs.put(bytes).await.unwrap();
+    }
+    insert_blob_row(b, h.as_str(), 10).await;
+    run(b, &format!("UPDATE blobs SET refcount = 1, zero_since = NULL WHERE hash = {}", hash_lit(b, h.as_str()))).await;
+    h
+}
+
+#[tokio::test]
+async fn verify_finds_every_referenced_blob_and_counts_the_files_nothing_references() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        for i in 0..3 {
+            referenced(&b, &format!("ok{i}"), true).await;
+        }
+        b.blobs.put(Bytes::from("an orphan file")).await.unwrap();
+        let r = b.gc().verify_blobs(b.blobs.as_ref()).await.unwrap();
+        assert_eq!((r.referenced, r.stored, r.unreferenced_files, r.missing_total), (3, 4, 1, 0), "{n}: {r:?}");
+        assert!(r.is_clean(), "{n}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn verify_reports_a_referenced_blob_whose_file_is_gone_and_ignores_unreferenced_rows() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        referenced(&b, "kept", true).await;
+        let lost = referenced(&b, "lost", true).await;
+        // The file of one referenced blob disappears (a restore without its blobs, a damaged volume).
+        assert!(b.blobs.delete_if_older(&lost, SystemTime::now() + HOUR).await.unwrap(), "{n}");
+        // A row nothing references and with no file is garbage waiting for the GC: not a loss.
+        let garbage = BlobHash::of(b"garbage");
+        insert_blob_row(&b, garbage.as_str(), 7).await;
+        let r = b.gc().verify_blobs(b.blobs.as_ref()).await.unwrap();
+        assert_eq!((r.referenced, r.missing_total), (2, 1), "{n}: {r:?}");
+        assert_eq!(r.missing, vec![lost.as_str().to_owned()], "{n}");
+        assert!(!r.is_clean(), "{n}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn verify_counts_every_missing_blob_and_lists_only_the_first_hundred() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        for i in 0..130 {
+            referenced(&b, &format!("gone{i}"), false).await;
+        }
+        let r = b.gc().verify_blobs(b.blobs.as_ref()).await.unwrap();
+        assert_eq!((r.missing_total, r.missing.len()), (130, rusty_store::MAX_VERIFY_LISTED), "{n}");
+        let mut sorted = r.missing.clone();
+        sorted.dedup();
+        assert_eq!(sorted.len(), r.missing.len(), "{n}: no hash twice");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn verify_changes_nothing() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let kept = referenced(&b, "kept", true).await;
+        let _ = referenced(&b, "lost", false).await;
+        b.blobs.put(Bytes::from("orphan")).await.unwrap();
+        let before = (b.blobs.list().await.unwrap().len(), scalar(&b, "SELECT count(*) FROM blobs").await);
+        b.gc().verify_blobs(b.blobs.as_ref()).await.unwrap();
+        let after = (b.blobs.list().await.unwrap().len(), scalar(&b, "SELECT count(*) FROM blobs").await);
+        assert_eq!(before, after, "{n}: a read only");
+        assert!(b.blobs.get(&kept).await.is_ok(), "{n}");
+    })
+    .await;
+}

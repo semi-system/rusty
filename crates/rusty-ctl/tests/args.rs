@@ -295,3 +295,11 @@ fn admin_commands_parse() {
         assert!(p(bad).is_err(), "{bad:?}");
     }
 }
+
+#[test]
+fn blobs_verify_takes_nothing_else() {
+    assert_eq!(cmd(&["blobs", "verify"]), Command::BlobsVerify);
+    for bad in [&["blobs"][..], &["blobs", "verify", "x"], &["blobs", "fix"], &["blobs", "verify", "--prompt"], &["blobs", "verify", "--selector", "s"]] {
+        assert!(p(bad).is_err(), "{bad:?}");
+    }
+}

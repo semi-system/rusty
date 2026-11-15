@@ -684,3 +684,44 @@ async fn admin_grant_revoke_and_list_work_per_domain_and_for_the_platform() {
     })
     .await;
 }
+
+// ------------------------------------------------------------------------------------------------ blobs verify
+
+#[tokio::test]
+async fn blobs_verify_passes_for_a_complete_store_and_fails_naming_what_is_missing() {
+    use bytes::Bytes;
+    use rusty_store::{BlobStore, FsBlobStore};
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let root = b.tmp.path().join("blobs");
+        FsBlobStore::init(&root).await.unwrap();
+        let blobs = FsBlobStore::open(&root).await.unwrap();
+        let mut hashes = Vec::new();
+        for i in 0..3 {
+            let h = blobs.put(Bytes::from(format!("message {i}"))).await.unwrap();
+            b.fx.run(&format!("INSERT INTO blobs (hash, size) VALUES (decode('{}', 'hex'), 9)", h.as_str()), &[]).await;
+            b.fx.run(&format!("UPDATE blobs SET refcount = 1, zero_since = NULL WHERE hash = decode('{}', 'hex')", h.as_str()), &[]).await;
+            hashes.push(h);
+        }
+        let ok = b.run_blobs_verify(&blobs).await.unwrap();
+        assert!(ok.text.contains("every referenced blob exists") && !ok.failed, "{n}: {}", ok.text);
+        assert_eq!((ok.json["referenced"].as_u64(), ok.json["missing_total"].as_u64(), ok.json["ok"].as_bool()), (Some(3), Some(0), Some(true)), "{n}");
+        // One file is lost: the command fails, names the hash, and changes nothing.
+        assert!(blobs.delete_if_older(&hashes[1], std::time::SystemTime::now() + std::time::Duration::from_secs(3600)).await.unwrap(), "{n}");
+        let bad = b.run_blobs_verify(&blobs).await.unwrap();
+        assert!(bad.failed, "{n}: exit status 1 when data is missing");
+        assert!(bad.text.contains("MISSING: 1") && bad.text.contains(hashes[1].as_str()), "{n}: {}", bad.text);
+        assert_eq!(bad.json["ok"], false, "{n}");
+        assert_eq!(b.count("blobs").await, 3, "{n}: a read only");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn blobs_verify_needs_the_blob_store() {
+    for_each_backend(|b| async move {
+        let e = b.run(Command::BlobsVerify, &[]).await.unwrap_err();
+        assert!(e.to_string().contains("blob store"), "{}: {e}", b.name);
+    })
+    .await;
+}

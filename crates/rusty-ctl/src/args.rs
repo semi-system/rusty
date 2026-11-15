@@ -58,6 +58,8 @@ pub enum Command {
     DomainRelayShow { name: String },
     /// `domain relay check`: ask the outbound service to test the relay (a `relay.check` job); the result shows in `domain relay show`.
     DomainRelayCheck { name: String },
+    /// `blobs verify`: check that every blob the database references exists in the blob store (after a restore); exit 1 when one is missing.
+    BlobsVerify,
     /// `admin grant`: let an account use the admin web (every domain, or the one named).
     AdminGrant { addr: String, domain: Option<String> },
     /// `admin revoke`: the account stays, it is no longer an administrator.
@@ -125,6 +127,7 @@ pub const USAGE: &str = "usage: rustyctl [--config FILE | --dev [--data-dir DIR]
   domain relay show <domain> | remove <domain> | check <domain>
   admin grant <addr> [domain]                let an account use the admin web (all domains, or one); also the recovery path
   admin revoke <addr> | list
+  blobs verify                               check that every blob the database references exists in the blob store (use after a restore; exit 1 if one is missing)
   relay check                                log in to the configured relay (resolve, TLS, AUTH) without sending mail
   seal keygen <file>                         make the key that opens sealed secrets (private half to <file>, 0600), print the public half
   seal show <file>                           print the public half and the id of the key in <file>
@@ -365,6 +368,10 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             plain()?;
             done(Command::AdminRevoke { addr: (*addr).to_owned() })
         }
+        ["blobs", "verify"] => {
+            plain()?;
+            done(Command::BlobsVerify)
+        }
         ["admin", "list"] => {
             plain()?;
             done(Command::AdminList)
@@ -397,8 +404,8 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             done(Command::Check)
         }
         [] => Err(err("a command is required")),
-        ["domain" | "account" | "alias" | "dkim" | "db" | "relay" | "seal" | "admin"] => Err(err("a subcommand is required")),
-        ["domain" | "account" | "alias" | "dkim" | "db" | "relay" | "seal" | "admin", _, ..] | ["check", ..] => {
+        ["domain" | "account" | "alias" | "dkim" | "db" | "relay" | "seal" | "admin" | "blobs"] => Err(err("a subcommand is required")),
+        ["domain" | "account" | "alias" | "dkim" | "db" | "relay" | "seal" | "admin" | "blobs", _, ..] | ["check", ..] => {
             Err(err("unknown subcommand or wrong number of arguments"))
         }
         _ => Err(err("unknown command")),

@@ -77,6 +77,8 @@ pub trait GcRepo: Send + Sync {
     async fn delete_blob_rows(&self, hashes: &[BlobHash], cutoff_secs: i64) -> Result<Vec<BlobHash>>;
     /// All row hashes whose first byte is `shard` (a read).
     async fn blob_rows_in_shard(&self, shard: u8) -> Result<Vec<String>>;
+    /// Like `blob_rows_in_shard`, but only the rows that something still references (`refcount > 0`): the blobs a restore must find (a read).
+    async fn blob_rows_in_use_in_shard(&self, shard: u8) -> Result<Vec<String>>;
     /// Whether a row exists for `hash` (a read).
     async fn blob_row_exists(&self, hash: &BlobHash) -> Result<bool>;
     /// Hard-delete up to about `limit` soft-deleted messages per mailbox with `deleted_at <

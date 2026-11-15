@@ -176,7 +176,7 @@ A new migration takes the next number.
 ## 7. Operations
 
 * Backup: `pg_dump`/`pg_basebackup` first, then the blob directory (blobs are content-addressed and immutable, so a
-  blob newer than the dump is harmless; the reverse is not). `rustyctl backup` learns this in U9.
+  blob newer than the dump is harmless; the reverse is not). `scripts/backup.sh`, `scripts/restore.sh` and `rustyctl blobs verify` do this: see `docs/backup.md`.
 * GC singleton is still a local-volume file lock (one GC host per blob volume). The lease-row design is backlog.
 * PgBouncer (transaction pooling) is supported by construction (no session state) and tested in plan task PG8a, not
   here. `db migrate` must connect directly.

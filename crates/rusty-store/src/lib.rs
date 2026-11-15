@@ -25,7 +25,7 @@ pub use blob::{
     QUARANTINE_SUFFIX,
 };
 pub use gc::{
-    Gc, GcReport, PurgeReport, CAPABILITY_RETENTION_SECS, DEFAULT_GC_GRACE,
+    Gc, GcReport, PurgeReport, VerifyReport, CAPABILITY_RETENTION_SECS, DEFAULT_GC_GRACE, MAX_VERIFY_LISTED,
     DELIVERY_RETENTION_SECS, GC_BATCH, MAX_GC_ERRORS, MIN_GC_GRACE, PURGE_BATCH,
 };
 pub use dns::{
