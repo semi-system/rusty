@@ -48,11 +48,14 @@ fn url_for(admin_db_url: &str, user: &str, password: &str) -> String {
 async fn apply_roles(admin_db_url: &str) {
     let admin = PgPoolOptions::new().max_connections(1).connect(admin_db_url).await.expect("connect to the test database");
     // The three passwords are constants of this test-support module, nothing from outside reaches it.
-    let logins = format!(
-        "ALTER ROLE rusty_migrator LOGIN PASSWORD '{TEST_MIGRATOR_PASSWORD}'; \
-         ALTER ROLE rusty_app LOGIN PASSWORD '{TEST_APP_PASSWORD}'; \
-         ALTER ROLE rusty_ro LOGIN PASSWORD '{TEST_RO_PASSWORD}'; \n         ALTER ROLE rusty_admin LOGIN PASSWORD '{TEST_ADMIN_PASSWORD}';"
-    );
+    // The password of a role is set only while it has none: the roles are shared by every test database of the server, and a password set again is a new verifier (a new
+    // salt) that a connection pooler in front of the server (RUSTY_TEST_PG_POOLED) would still hold the old one of.
+    let mut logins = String::new();
+    for (role, password) in [("rusty_migrator", TEST_MIGRATOR_PASSWORD), ("rusty_app", TEST_APP_PASSWORD), ("rusty_ro", TEST_RO_PASSWORD), ("rusty_admin", TEST_ADMIN_PASSWORD)] {
+        logins.push_str(&format!(
+            "DO $login$ BEGIN IF (SELECT rolpassword IS NULL FROM pg_authid WHERE rolname = '{role}') THEN ALTER ROLE {role} PASSWORD '{password}'; END IF; END $login$; ALTER ROLE {role} LOGIN; "
+        ));
+    }
     let mut last = None;
     for attempt in 0..40u64 {
         let first = sqlx::raw_sql(ROLES_SQL).execute(&admin).await;
@@ -93,6 +96,22 @@ pub fn admin_url_from(url: Option<String>, require: Option<&str>) -> Option<Stri
         _ => panic!(
             "RUSTY_TEST_PG_URL is not set: the tests need a Postgres server (bash scripts/pg-up.sh starts one)"
         ),
+    }
+}
+
+/// `RUSTY_TEST_PG_POOLED=host:port`: the address of a connection pooler (PgBouncer, `scripts/pgb-up.sh`) in front of the test server. The code under test (`url()` and the
+/// role URLs other than the migrator's) then connects through it, while the fixtures (CREATE DATABASE, roles, migrations, the superuser URL) stay direct: the whole suite runs
+/// the way a deployment behind a transaction pooler does.
+fn through_pooler(url: String) -> String {
+    match std::env::var("RUSTY_TEST_PG_POOLED") {
+        Ok(addr) if !addr.is_empty() => {
+            let (host, port) = addr.rsplit_once(':').expect("RUSTY_TEST_PG_POOLED is host:port");
+            let mut u = Url::parse(&url).expect("the test database URL parses");
+            u.set_host(Some(host)).expect("the pooler host");
+            u.set_port(Some(port.parse().expect("the pooler port"))).expect("the pooler port");
+            u.into()
+        }
+        _ => url,
     }
 }
 
@@ -165,9 +184,7 @@ impl PgTestDb {
                 .await
                 .expect("migrate the isolated Postgres test database");
         }
-        if roles {
-            db.url = url_for(&admin_db_url, "rusty_app", TEST_APP_PASSWORD);
-        }
+        db.url = through_pooler(if roles { url_for(&admin_db_url, "rusty_app", TEST_APP_PASSWORD) } else { admin_db_url.clone() });
         db
     }
 
@@ -185,7 +202,8 @@ impl PgTestDb {
             "rusty_admin" => TEST_ADMIN_PASSWORD,
             _ => panic!("unknown test role"),
         };
-        url_for(&self.admin_db_url, role, pw)
+        let url = url_for(&self.admin_db_url, role, pw);
+        if role == "rusty_migrator" { url } else { through_pooler(url) }
     }
 
     /// `ALTER DATABASE .. SET name = value` (a superuser statement): a setting every NEW session of this
@@ -231,8 +249,21 @@ impl PgTestDb {
         (u.to_string(), password)
     }
 
+    /// The `rusty_app` login of this database reached DIRECTLY (not through a pooler), in the form of the configuration: `(url without password, password)`. What `[store] direct_url`
+    /// holds in a test that runs the daemon behind the pooler.
+    pub fn direct_split_url(&self) -> (String, String) {
+        let mut u = Url::parse(&url_for(&self.admin_db_url, "rusty_app", TEST_APP_PASSWORD)).expect("the test database URL parses");
+        let password = u.password().unwrap_or_default().to_owned();
+        u.set_password(None).expect("the URL can carry a user name");
+        u.set_query(None);
+        (u.to_string(), password)
+    }
+
     pub async fn connect(&self) -> PgStore {
-        PgStore::connect(&self.url)
+        // Through a pooler (RUSTY_TEST_PG_POOLED) the store is configured the way a deployment behind one is: the pooler flag, and the database itself for the change feed.
+        let pooled = std::env::var("RUSTY_TEST_PG_POOLED").is_ok_and(|v| !v.is_empty());
+        let security = crate::PgSecurity { pooler: pooled, direct_url: pooled.then(|| self.admin_db_url.clone()), ..crate::PgSecurity::default() };
+        PgStore::connect_with(&self.url, crate::PgLimits::default(), &security)
             .await
             .expect("connect to isolated Postgres test database")
     }

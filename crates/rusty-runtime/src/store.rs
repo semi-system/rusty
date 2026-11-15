@@ -68,6 +68,8 @@ fn security(cfg: &StartupConfig, password_file: Option<&Path>, verify_role: bool
         allow_unverified_tls: s.insecure_allow_unverified_tls,
         password,
         verify_role,
+        pooler: s.pooler,
+        direct_url: s.direct_url.clone(),
     })
 }
 
@@ -100,7 +102,8 @@ pub fn store_config(cfg: &StartupConfig, profile: Profile) -> Result<StoreConfig
 /// URL and credentials of the migrator role (DDL), for `rustyctl db migrate` / `db status`.
 pub fn migrator_target(cfg: &StartupConfig) -> Result<(String, PgSecurity)> {
     let s = &cfg.store;
-    let ep = parse_pg_url(s.url.as_deref().unwrap_or_default())?;
+    // Migrations are DDL and need a session: behind a pooler they go to the database itself.
+    let ep = parse_pg_url(if s.pooler { s.direct_url.as_deref() } else { s.url.as_deref() }.unwrap_or_default())?;
     // The dev profile has one database role: it migrates with the role it runs as (`db migrate --without-roles`).
     let user = match s.migrator_user.as_deref() {
         Some(u) => u.to_owned(),
@@ -132,6 +135,51 @@ url = \"postgres://rusty_app@db.internal:5433/rusty\"\n{extra}"
         assert_eq!(url, "postgres://rusty_migrator@db.internal:5433/rusty");
         assert!(!sec.verify_role && sec.password.is_none());
         assert!(migrator_target(&cfg("")).is_err());
+    }
+
+    #[test]
+    fn behind_a_pooler_the_migrations_and_the_change_feed_go_to_the_database_itself() {
+        let pooled = cfg("migrator_user = \"rusty_migrator\"
+pooler = true
+direct_url = \"postgres://rusty_app@db.internal:5432/rusty\"
+");
+        // The main url names the pooler (port 5433 in these tests); migrations are DDL and need a session: they use the direct endpoint.
+        let (url, _) = migrator_target(&pooled).unwrap();
+        assert_eq!(url, "postgres://rusty_migrator@db.internal:5432/rusty");
+        let StoreConfig::Postgres { security, .. } = store_config(&pooled, Profile::Dev).unwrap();
+        assert!(security.pooler, "the pooler flag reaches the store");
+        assert_eq!(security.direct_url.as_deref(), Some("postgres://rusty_app@db.internal:5432/rusty"));
+        // Without a pooler nothing changes.
+        let plain = cfg("migrator_user = \"rusty_migrator\"
+");
+        assert_eq!(migrator_target(&plain).unwrap().0, "postgres://rusty_migrator@db.internal:5433/rusty");
+        let StoreConfig::Postgres { security, .. } = store_config(&plain, Profile::Dev).unwrap();
+        assert!(!security.pooler && security.direct_url.is_none());
+    }
+
+    #[test]
+    fn the_pooler_settings_must_come_as_a_pair_and_name_two_different_endpoints() {
+        let parse = |extra: &str| StartupConfig::from_toml_str(&format!("blob_dir = \"/b\"
+hostname = \"m.example.test\"
+[store]
+url = \"postgres://rusty_app@pool.internal:6432/rusty\"
+{extra}"));
+        assert!(parse("pooler = true
+direct_url = \"postgres://rusty_app@db.internal:5432/rusty\"
+").is_ok());
+        assert!(parse("pooler = true
+").is_err(), "a pooler without the direct endpoint");
+        assert!(parse("direct_url = \"postgres://rusty_app@db.internal:5432/rusty\"
+").is_err(), "a direct endpoint without a pooler");
+        assert!(parse("pooler = true
+direct_url = \"postgres://rusty_app@pool.internal:6432/rusty\"
+").is_err(), "the same endpoint twice");
+        assert!(parse("pooler = true
+direct_url = \"postgres://u:pw@db.internal/rusty\"
+").is_err(), "a password in the url");
+        assert!(parse("pooler = true
+direct_url = \"mysql://db.internal/rusty\"
+").is_err());
     }
 
     #[test]

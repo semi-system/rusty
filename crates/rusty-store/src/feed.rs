@@ -62,8 +62,7 @@ pub struct PgChangeFeed {
 }
 
 impl PgChangeFeed {
-    pub(crate) fn new(store_pool: &PgPool) -> PgChangeFeed {
-        let options = (*store_pool.connect_options()).clone();
+    pub(crate) fn new(options: sqlx::postgres::PgConnectOptions) -> PgChangeFeed {
         let pool = PgPoolOptions::new()
             .max_connections(1)
             .max_lifetime(None)

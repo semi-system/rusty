@@ -43,6 +43,7 @@
     "Queue": { "queued": "integer", "running": "integer", "failed": "integer", "dead": "integer" }
   },
   "endpoints": [
+    { "method": "GET", "path": "/mail/config-v1.1.xml", "auth": "none", "request": { "emailaddress": "string (query, optional)" }, "response": null, "status": 200, "note": "Mozilla autoconfig XML for mail clients (the platform's IMAP and submission servers), whatever the domain; served on port 80 for hosts autoconfig.*; 404 when no mail host is configured" },
     { "method": "POST", "path": "/api/v1/session", "auth": "none", "request": { "address": "string", "password": "string" }, "response": "Me", "status": 200 },
     { "method": "GET", "path": "/api/v1/session", "auth": "admin", "request": null, "response": "Me", "status": 200 },
     { "method": "DELETE", "path": "/api/v1/session", "auth": "admin", "request": null, "response": "Empty", "status": 200 },

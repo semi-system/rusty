@@ -250,13 +250,18 @@ async fn build(
             )));
         }
         // The check of a domain's DNS records (`dns.check`, queued by the admin web): it queries DNS, so it runs where the resolver settings are.
-        services.push(Box::new(rusty_smtp::outbound::dns_job::DnsCheckWorker::new(
+        let mut dns_checks = rusty_smtp::outbound::dns_job::DnsCheckWorker::new(
             rusty_store::DnsStore::with_repo(store.repos().dns.clone()),
             cfg.outbound.clone(),
             hostname,
             // `[dns_check] nameserver` (the operator's choice for these checks) wins over the outbound resolver.
             Arc::new(rusty_smtp::stack::LiveDns::with_nameserver(cfg.dns_check.nameserver.map(|n| n.addr()).or(cfg.outbound.nameserver))?),
-        )));
+        );
+        // `[dns_check] second_nameserver`: every check is made against both resolvers and a disagreement is propagation lag (`pending`), not a fault.
+        if let Some(second) = cfg.dns_check.second_nameserver {
+            dns_checks = dns_checks.with_second(Arc::new(rusty_smtp::stack::LiveDns::with_nameserver(Some(second.addr()))?));
+        }
+        services.push(Box::new(dns_checks));
         if cfg.dns_check.enabled {
             services.push(Box::new(rusty_smtp::outbound::dns_job::DnsCheckScheduler::new(
                 rusty_store::DnsStore::with_repo(store.repos().dns.clone()),

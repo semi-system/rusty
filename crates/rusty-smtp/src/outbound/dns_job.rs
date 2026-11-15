@@ -33,12 +33,20 @@ pub struct DnsCheckWorker<S: DnsSource> {
     cfg: OutboundConfig,
     mail_host: String,
     source: Arc<S>,
+    /// A second resolver to compare with (`[dns_check] second_nameserver`): a record the two see differently is `pending`, not a fault.
+    second: Option<Arc<S>>,
     poll: Duration,
 }
 
 impl<S: DnsSource + 'static> DnsCheckWorker<S> {
     pub fn new(dns: rusty_store::DnsStore, cfg: OutboundConfig, mail_host: &str, source: Arc<S>) -> DnsCheckWorker<S> {
-        DnsCheckWorker { dns, cfg, mail_host: mail_host.to_owned(), source, poll: Duration::from_secs(2) }
+        DnsCheckWorker { dns, cfg, mail_host: mail_host.to_owned(), source, second: None, poll: Duration::from_secs(2) }
+    }
+
+    /// Compare every check with a second resolver.
+    pub fn with_second(mut self, second: Arc<S>) -> DnsCheckWorker<S> {
+        self.second = Some(second);
+        self
     }
 
     pub fn with_poll(mut self, poll: Duration) -> DnsCheckWorker<S> {
@@ -53,7 +61,10 @@ impl<S: DnsSource + 'static> DnsCheckWorker<S> {
         let facts = MailFacts { mail_host: &self.mail_host, public_ips: &self.cfg.public_ips, spf_include: relay.and_then(|r| r.spf_include.as_deref()) };
         let (records, _warnings) = records_with_facts(domain, &facts, &keys)?;
         let opts = CheckOptions { via_relay: relay.is_some(), ..CheckOptions::default() };
-        let checks = check_records(self.source.as_ref(), &records, &opts).await;
+        let checks = match &self.second {
+            Some(second) => rusty_core::dns_check::check_records_compared(self.source.as_ref(), second.as_ref(), &records, &opts).await,
+            None => check_records(self.source.as_ref(), &records, &opts).await,
+        };
         // The placeholder for a key that was not generated yet is shown but is no DNS record: it is not recorded.
         let observed: Vec<_> = checks.iter().filter(|c| !c.record.name.starts_with('<')).map(|c| c.observation()).collect();
         self.dns.record_check(id, &observed, ALERT_AFTER).await?;
