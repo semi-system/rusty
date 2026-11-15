@@ -1,6 +1,6 @@
 //! Which listeners a configuration asks for, and how each one accepts connections.
 
-use rusty_core::config::StartupConfig;
+use rusty_core::config::{Role, StartupConfig};
 
 use crate::listener::ListenerSpec;
 
@@ -42,6 +42,15 @@ impl ListenerKind {
 
     pub fn is_imap(self) -> bool {
         matches!(self, ListenerKind::Imap143 | ListenerKind::Imaps993)
+    }
+
+    /// The service (role) that owns this port: smtp-in has 25, submission 587 and 465, imap 143 and 993. Outbound and gc have no port.
+    pub fn role(self) -> Role {
+        match self {
+            ListenerKind::Smtp25 => Role::SmtpIn,
+            ListenerKind::Submission587 | ListenerKind::Submissions465 => Role::Submission,
+            ListenerKind::Imap143 | ListenerKind::Imaps993 => Role::Imap,
+        }
     }
 }
 
@@ -85,4 +94,9 @@ pub fn listener_plan(cfg: &StartupConfig) -> Vec<PlannedListener> {
     .into_iter()
     .flatten()
     .collect()
+}
+
+/// The listeners one service starts: those of `role`, or all of them for `None` (the all-in-one daemon).
+pub fn listener_plan_for(cfg: &StartupConfig, role: Option<Role>) -> Vec<PlannedListener> {
+    listener_plan(cfg).into_iter().filter(|p| role.is_none_or(|r| p.kind.role() == r)).collect()
 }

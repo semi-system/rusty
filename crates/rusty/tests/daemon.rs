@@ -346,3 +346,48 @@ async fn the_dev_certificate_is_kept_in_the_data_dir_across_restarts() {
     assert_eq!(leaves[0], leaves[1], "the same certificate after a restart");
     assert_eq!(mode_of(&data.join("dev-tls-key.pem")), 0o600);
 }
+
+#[tokio::test]
+async fn a_service_started_for_its_role_binds_only_its_own_ports_and_the_others_bind_none() {
+    use rusty_core::config::Role;
+    use rusty_svc::ListenerKind::*;
+    let pg = pg_dev().await;
+    let cases: [(Role, Vec<rusty_svc::ListenerKind>); 5] = [
+        (Role::SmtpIn, vec![Smtp25]),
+        (Role::Submission, vec![Submission587, Submissions465]),
+        (Role::Imap, vec![Imap143, Imaps993]),
+        (Role::Outbound, vec![]),
+        (Role::Gc, vec![]),
+    ];
+    for (role, want) in cases {
+        let tmp = private_tmp();
+        let cfg = pg.config(&tmp.path().join("data"));
+        let token = CancellationToken::new();
+        let run = rusty::daemon::start_role(cfg, Profile::Dev, Some(role), token.clone()).await.unwrap();
+        let mut got: Vec<_> = run.addrs.iter().map(|(k, _)| k.name()).collect();
+        let mut want: Vec<_> = want.iter().map(|k| k.name()).collect();
+        got.sort_unstable();
+        want.sort_unstable();
+        assert_eq!(got, want, "{}", role.name());
+        token.cancel();
+        run.wait().await.unwrap();
+    }
+}
+
+#[test]
+fn only_the_listeners_of_a_role_need_tls_and_count_as_services() {
+    use rusty_core::config::Role;
+    let mut cfg = StartupConfig::dev(std::path::Path::new("/tmp/rusty-roles"));
+    cfg.tls.dev_self_signed = false;
+    assert!(cfg.check_startup_for(Profile::Dev, Some(Role::SmtpIn)).is_ok(), "port 25 offers STARTTLS only when it can; it needs no certificate");
+    assert!(cfg.check_startup_for(Profile::Dev, Some(Role::Gc)).is_ok(), "a service with no port needs no certificate");
+    assert!(cfg.check_startup_for(Profile::Dev, Some(Role::Outbound)).is_ok());
+    assert!(cfg.check_startup_for(Profile::Dev, Some(Role::Imap)).is_err(), "imap has authenticated listeners and no certificate");
+    assert!(cfg.check_startup_for(Profile::Dev, Some(Role::Submission)).is_err());
+    assert!(cfg.check_startup_for(Profile::Dev, None).is_err());
+    assert_eq!(cfg.tls_required_listeners_for(Some(Role::Imap)), 2);
+    assert_eq!(cfg.tls_required_listeners_for(Some(Role::SmtpIn)), 0);
+    assert_eq!(cfg.service_count_for(Some(Role::Gc)), 2);
+    assert_eq!(cfg.service_count_for(Some(Role::Imap)), 4);
+    assert_eq!(cfg.service_count_for(None), 7);
+}

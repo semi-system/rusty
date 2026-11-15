@@ -239,14 +239,19 @@ impl StartupConfig {
     /// at the edge (`proxy_protocol`): the edge holds that key and the stream arrives already protected. STARTTLS ports (587, 143) still need one:
     /// the edge passes those through and the service upgrades the connection itself.
     pub fn tls_required_listeners(&self) -> usize {
+        self.tls_required_listeners_for(None)
+    }
+
+    /// [`tls_required_listeners`](Self::tls_required_listeners) of one service: only the listeners of `role` count (`None`: all of them).
+    pub fn tls_required_listeners_for(&self, role: Option<Role>) -> usize {
         [
-            (self.smtp.listen_587, true),
-            (self.smtp.listen_465, !self.smtp.proxy_protocol),
-            (self.imap.listen_143, true),
-            (self.imap.listen_993, !self.imap.proxy_protocol),
+            (Role::Submission, self.smtp.listen_587, true),
+            (Role::Submission, self.smtp.listen_465, !self.smtp.proxy_protocol),
+            (Role::Imap, self.imap.listen_143, true),
+            (Role::Imap, self.imap.listen_993, !self.imap.proxy_protocol),
         ]
         .iter()
-        .filter(|(l, needs)| *needs && l.addr().is_some())
+        .filter(|(r, l, needs)| *needs && l.addr().is_some() && role.is_none_or(|x| x == *r))
         .count()
     }
 
@@ -254,17 +259,22 @@ impl StartupConfig {
     /// enabled listener that accepts authentication needs a TLS source (a certificate pair or
     /// the explicit `dev_self_signed`). There is no plaintext fallback: the start is refused.
     pub fn check_startup(&self, profile: Profile) -> Result<()> {
+        self.check_startup_for(profile, None)
+    }
+
+    /// [`check_startup`](Self::check_startup) for one service (`Some(role)`): only its listeners need TLS and count as services.
+    pub fn check_startup_for(&self, profile: Profile, role: Option<Role>) -> Result<()> {
         if profile == Profile::Production && self.hostname.is_none() {
             return Err(Error::Invalid("hostname is required".into()));
         }
-        if self.tls_required_listeners() > 0 && !self.tls.has_cert() && !self.tls.dev_self_signed {
+        if self.tls_required_listeners_for(role) > 0 && !self.tls.has_cert() && !self.tls.dev_self_signed {
             return Err(Error::Invalid(
                 "listeners that accept authentication need TLS: set [tls] cert_file and key_file, \
                  or disable those listeners"
                     .into(),
             ));
         }
-        self.store.check_startup(profile, self.service_count())?;
+        self.store.check_startup(profile, self.service_count_for(role))?;
         if let Some(v) = &self.valkey {
             v.check_startup(profile)?;
         }
@@ -273,15 +283,20 @@ impl StartupConfig {
 
     /// Services the process runs: every enabled listener, the GC ticker and the outbound worker.
     pub fn service_count(&self) -> usize {
+        self.service_count_for(None)
+    }
+
+    /// The services one process runs: the enabled listeners of `role` (all of them for `None`) and its background services.
+    pub fn service_count_for(&self, role: Option<Role>) -> usize {
         let listeners = [
-            self.smtp.listen_25,
-            self.smtp.listen_587,
-            self.smtp.listen_465,
-            self.imap.listen_143,
-            self.imap.listen_993,
+            (Role::SmtpIn, self.smtp.listen_25),
+            (Role::Submission, self.smtp.listen_587),
+            (Role::Submission, self.smtp.listen_465),
+            (Role::Imap, self.imap.listen_143),
+            (Role::Imap, self.imap.listen_993),
         ]
         .iter()
-        .filter(|l| l.addr().is_some())
+        .filter(|(r, l)| l.addr().is_some() && role.is_none_or(|x| x == *r))
         .count();
         listeners + 2
     }
