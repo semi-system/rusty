@@ -56,3 +56,17 @@ fn the_dns_facts_are_optional_and_checked() {
         assert!(admin(&format!("[admin]\npublic_origin = \"https://admin.example.org\"\n{bad}\n")).is_err(), "{bad}");
     }
 }
+
+#[test]
+fn the_example_file_is_a_valid_admin_configuration() {
+    let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../admin.example.toml")).unwrap();
+    let c = StartupConfig::from_toml_str_for(Role::Admin, &text).unwrap();
+    let a = c.admin.unwrap();
+    assert_eq!(a.public_origin, "https://admin.example.org");
+    assert_eq!(a.public_ips.len(), 1);
+    assert!(c.sealing.is_some());
+    // The same file is refused by every other role: it carries sections they do not accept.
+    for role in [Role::SmtpIn, Role::Imap, Role::Outbound, Role::Gc] {
+        assert!(StartupConfig::from_toml_str_for(role, &text).is_err(), "{role:?}");
+    }
+}
