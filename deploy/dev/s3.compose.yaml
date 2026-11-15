@@ -1,0 +1,32 @@
+# Throw-away RustFS (an S3-compatible object store) for tests and local development ONLY: the S3 blob store tests run against it (crates/rusty-s3/tests/rustfs.rs). Never use this file or its
+# settings for anything holding real data.
+#
+# Nothing persists: the data and log directories are tmpfs. Hardening as for the test Valkey (deploy/dev/valkey.compose.yaml): published on 127.0.0.1 only on a port Docker chooses,
+# the key pair supplied per run through the environment (scripts/s3-up.sh generates it; it is never committed), all capabilities dropped, no-new-privileges, read-only root filesystem,
+# memory and pids limits. The image reference is pinned by digest (deploy/images.lock).
+name: rusty-s3-test
+services:
+  rustfs:
+    image: rustfs/rustfs@sha256:b81d16a90ee25bd9511280127ca1471788c6e874cf0f0da759645f46b2dc1d74 # RustFS, pulled 2026-11-15
+    container_name: ${RUSTY_S3_NAME:-rusty-s3-test-dev}
+    labels:
+      # Ownership marker: s3-down removes a container only if it carries its own run id.
+      rusty.test-s3-run: "${RUSTY_S3_RUN_ID:-dev}"
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTY_S3_KEY:?set by scripts/s3-up.sh}
+      RUSTFS_SECRET_KEY: ${RUSTY_S3_SECRET:?set by scripts/s3-up.sh}
+    command: ["/data"]
+    ports:
+      # Omit `published`: Docker chooses an unused host port, avoiding a bind/launch race.
+      - target: 9000
+        host_ip: 127.0.0.1
+        protocol: tcp
+    read_only: true
+    tmpfs:
+      - /data:mode=1777,size=512m
+      - /logs:mode=1777,size=64m
+      - /tmp:mode=1777,size=64m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1g
+    pids_limit: 512

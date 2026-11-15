@@ -1,0 +1,29 @@
+[package]
+name = "rusty-s3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The S3 blob store (docs/design-s3-per-tenant.md): request signing (AWS Signature V4), a small HTTP/1.1 client with hard limits, and `S3BlobStore`, an implementation of
+# `rusty_store::BlobStore` over one bucket. No SDK: four calls (put, get, head/delete, list) do not need a dependency tree of a few hundred crates.
+
+[dependencies]
+rusty-core = { path = "../rusty-core" }
+rusty-store = { path = "../rusty-store" }
+async-trait.workspace = true
+bytes.workspace = true
+hex.workspace = true
+sha2.workspace = true
+hmac = "0.13"
+tokio = { workspace = true, features = ["rt", "net", "io-util", "time", "sync"] }
+tokio-rustls.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
+rustls-native-certs.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
+tempfile.workspace = true

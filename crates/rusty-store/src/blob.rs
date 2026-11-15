@@ -84,6 +84,11 @@ pub struct GcLock {
 }
 
 impl GcLock {
+    /// Proof of a lock held by `held` (whatever keeps it: a file lock, a mutex guard); the lock is released when this is dropped. For `BlobStore` implementations in other crates.
+    pub fn held(held: impl Any + Send + Sync) -> GcLock {
+        GcLock::new(held)
+    }
+
     pub(crate) fn new(held: impl Any + Send + Sync) -> GcLock {
         GcLock {
             _held: Box::new(held),

@@ -171,6 +171,18 @@ jobs:
           echo "::add-mask::$url"
           echo "RUSTY_TEST_VALKEY_URL=$url" >> "$GITHUB_ENV"
           echo "RUSTY_REQUIRE_VALKEY=1" >> "$GITHUB_ENV"
+      - name: S3 test server
+        # A throw-away RustFS on the runner (scripts/s3-up.sh, digest-pinned in deploy/images.lock). The key pair is random:
+        # it is masked before it reaches the environment.
+        run: |
+          bash scripts/s3-up.sh
+          while IFS= read -r line; do
+            case "$line" in
+              RUSTY_TEST_S3_KEY=*|RUSTY_TEST_S3_SECRET=*) echo "::add-mask::${line#*=}" ;;
+            esac
+            echo "$line" >> "$GITHUB_ENV"
+          done < "$HOME/.rusty-s3-test-env.dev"
+          echo "RUSTY_REQUIRE_S3=1" >> "$GITHUB_ENV"
       - name: Rust toolchain (minimal profile, no rust-docs download)
         run: rustup set profile minimal
       - name: Restore the cargo registry and git cache
@@ -355,6 +367,18 @@ jobs:
           echo "::add-mask::$url"
           echo "RUSTY_TEST_VALKEY_URL=$url" >> "$GITHUB_ENV"
           echo "RUSTY_REQUIRE_VALKEY=1" >> "$GITHUB_ENV"
+      - name: S3 test server
+        # A throw-away RustFS on the runner (scripts/s3-up.sh, digest-pinned in deploy/images.lock). The key pair is random:
+        # it is masked before it reaches the environment.
+        run: |
+          bash scripts/s3-up.sh
+          while IFS= read -r line; do
+            case "$line" in
+              RUSTY_TEST_S3_KEY=*|RUSTY_TEST_S3_SECRET=*) echo "::add-mask::${line#*=}" ;;
+            esac
+            echo "$line" >> "$GITHUB_ENV"
+          done < "$HOME/.rusty-s3-test-env.dev"
+          echo "RUSTY_REQUIRE_S3=1" >> "$GITHUB_ENV"
       - run: bash scripts/ci-apt-install.sh musl-tools
       - name: Rust toolchain (minimal profile, no rust-docs download)
         run: rustup set profile minimal
