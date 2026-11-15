@@ -446,8 +446,10 @@ impl InboundHandler {
         };
         match self.directory.resolve(&format!("{local}@{domain}")).await {
             Ok(Resolved::Account(id)) if id == identity.account => {
-                if self.submission.as_ref().is_some_and(|d| !d.limiter.allow(identity.account)) {
-                    return Err(Reply::new(451, "4.7.1", "Sending limit reached, try again later"));
+                if let Some(d) = self.submission.as_ref() {
+                    if !d.limiter.allow(identity.account).await {
+                        return Err(Reply::new(451, "4.7.1", "Sending limit reached, try again later"));
+                    }
                 }
                 Ok(())
             }
@@ -503,7 +505,7 @@ impl InboundHandler {
         let stored = Bytes::from(prepare_message_with(&t.data, &trace, &extra));
         // The sending budget: counted atomically BEFORE any effect (parallel connections cannot all
         // pass a separate check), restart-safe for remote mail through the queue's own accounting.
-        if !deps.limiter.try_record(identity.account) {
+        if !deps.limiter.try_record(identity.account).await {
             return Reply::new(451, "4.7.1", "Sending limit reached, try again later");
         }
         let mut seen = HashSet::new();

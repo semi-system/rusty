@@ -154,8 +154,9 @@ async fn build(
     let (opener, s3_opener, backend_opener) = tenant_store_opener(&cfg, store)?;
     let mut ctx = Context::new_with_opener(store.repos(), blobs, cfg.clone(), tls.clone(), opener).await?;
     // The services that check passwords count failures in the shared store (every replica, and submission with IMAP, against one counter); the in-memory throttle stays under it.
-    if let Some(kv) = rusty_runtime::kv::connect_kv(&cfg, "auth").await? {
-        ctx = ctx.with_rate(Arc::new(rusty_svc::ValkeyThrottle::from_limits(kv, &cfg.limits)));
+    let auth_kv = rusty_runtime::kv::connect_kv(&cfg, "auth").await?;
+    if let Some(kv) = &auth_kv {
+        ctx = ctx.with_rate(Arc::new(rusty_svc::ValkeyThrottle::from_limits(kv.clone(), &cfg.limits)));
     }
 
     // Bind everything before serving anything: a clash fails the whole start.
@@ -200,7 +201,11 @@ async fn build(
                             .with_limits(SubmitLimits::from_config(&cfg.outbound))
                             .with_wake(wake.clone()),
                     ),
-                    limiter: Arc::new(MemorySubmissionLimiter::new(SUBMISSIONS_PER_HOUR, Arc::new(SystemClock::new()))),
+                    // With `[valkey]` the sending budget of an account is one for every replica of the service; without it, per process.
+                    limiter: match &auth_kv {
+                        Some(kv) => Arc::new(rusty_smtp::limits::ValkeySubmissionLimiter::new(kv.clone(), SUBMISSIONS_PER_HOUR, Arc::new(SystemClock::new()))),
+                        None => Arc::new(MemorySubmissionLimiter::new(SUBMISSIONS_PER_HOUR, Arc::new(SystemClock::new()))),
+                    },
                     remote_enabled: cfg.outbound.enabled,
                 };
                 let options = InboundOptions {
