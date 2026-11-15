@@ -47,14 +47,19 @@ blob_dir = "/var/lib/rusty/blobs"
 # max_recipients = 100
 # max_connections = 1000
 # max_connections_per_ip = 20
-# proxy_protocol = false          # true is rejected until an edge proxy is supported
+# Behind the edge (HAProxy `send-proxy-v2`): every connection starts with a PROXY protocol v2 header; the client address in it is the peer (it is what
+# the per-address cap and the login throttle see). The header is read ONLY from the listed addresses; a connection from any other address is dropped.
+# On the implicit-TLS ports (465, 993) TLS ends at the edge, so they need no certificate of their own; the STARTTLS ports (587, 143) still do.
+# proxy_protocol = false
+# trusted_proxies = ["10.0.0.0/24"]   # required with proxy_protocol, at most 16 blocks, never 0.0.0.0/0
 
 # [imap]
 # listen_143 = "0.0.0.0:143"
 # listen_993 = "0.0.0.0:993"
 # max_connections = 1000
 # max_connections_per_ip = 50
-# proxy_protocol = false
+# proxy_protocol = false          # as in [smtp]: needs trusted_proxies
+# trusted_proxies = []
 
 # [outbound]            # keys arrive with the outbound queue
 

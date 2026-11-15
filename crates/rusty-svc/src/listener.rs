@@ -118,17 +118,35 @@ impl BoundListener {
                         events.emit(ServiceEvent::Rejected { service: name, peer: addr, reason: RejectReason::TotalLimit });
                         continue;
                     };
-                    let Some(guard) = IpGuard::take(&per_ip, addr.ip(), spec.max_per_ip) else {
-                        events.emit(ServiceEvent::Rejected { service: name, peer: addr, reason: RejectReason::PerIpLimit });
-                        continue;
+                    // The per-address cap counts the TCP peer, unless the accepter learns the real client first (an edge proxy): then it counts that
+                    // address after `accept`, so one proxy is not one "client" for everyone behind it.
+                    let after = accept.per_ip_after_accept();
+                    let guard = if after {
+                        None
+                    } else {
+                        let Some(g) = IpGuard::take(&per_ip, addr.ip(), spec.max_per_ip) else {
+                            events.emit(ServiceEvent::Rejected { service: name, peer: addr, reason: RejectReason::PerIpLimit });
+                            continue;
+                        };
+                        Some(g)
                     };
                     let (accept, handler, events, token) =
                         (accept.clone(), handler.clone(), events.clone(), shutdown.clone());
+                    let (per_ip, max_per_ip) = (per_ip.clone(), spec.max_per_ip);
                     tasks.spawn(async move {
                         let _permit = permit;
-                        let _guard = guard;
+                        let mut _guard = guard;
                         match accept.accept(tcp, addr).await {
                             Ok((stream, peer)) => {
+                                if after {
+                                    match IpGuard::take(&per_ip, peer.addr.ip(), max_per_ip) {
+                                        Some(g) => _guard = Some(g),
+                                        None => {
+                                            events.emit(ServiceEvent::Rejected { service: name, peer: peer.addr, reason: RejectReason::PerIpLimit });
+                                            return;
+                                        }
+                                    }
+                                }
                                 events.emit(ServiceEvent::Accepted { service: name, peer: peer.addr });
                                 handler.handle(stream, peer, token).await;
                                 events.emit(ServiceEvent::Closed { service: name, peer: peer.addr });

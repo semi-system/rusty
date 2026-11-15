@@ -111,7 +111,7 @@ pub async fn start(cfg: StartupConfig, profile: Profile, shutdown: CancellationT
     // TLS first: a bad certificate or key file must not get as far as opening the database.
     let tls = if cfg.tls.has_cert() || cfg.tls.dev_self_signed {
         TlsProvider::from_config_in(&cfg.tls, &hostname, Arc::new(FileSecretSource::new()), cfg.blob_dir.parent())?
-    } else if cfg.authenticated_listeners() == 0 {
+    } else if cfg.tls_required_listeners() == 0 {
         // check_startup already refused every configuration with an authenticated listener.
         tracing::warn!("no TLS configured: port 25 will not offer STARTTLS");
         TlsProvider::unavailable()?
@@ -156,7 +156,16 @@ async fn build(
     for planned in listener_plan(&cfg) {
         let bound = BoundListener::bind(planned.spec).await?;
         addrs.push((planned.kind, bound.local_addr()));
-        let accept: Arc<dyn Accept> = if planned.kind.implicit_tls() {
+        // Behind the edge (PROXY v2 from a trusted proxy) the client address comes from the header and, on an implicit-TLS port, TLS ended at the edge;
+        // otherwise the service accepts the connection itself.
+        let (proxied, trusted) = if planned.kind.is_imap() {
+            (cfg.imap.proxy_protocol, &cfg.imap.trusted_proxies)
+        } else {
+            (cfg.smtp.proxy_protocol, &cfg.smtp.trusted_proxies)
+        };
+        let accept: Arc<dyn Accept> = if proxied {
+            Arc::new(rusty_svc::proxy::EdgeAccept::new(trusted.clone(), planned.kind.implicit_tls()))
+        } else if planned.kind.implicit_tls() {
             Arc::new(DirectTls::new(tls.clone()))
         } else {
             Arc::new(DirectTcp)

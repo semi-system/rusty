@@ -220,3 +220,47 @@ fn outbound_submission_limits_and_the_enabled_switch() {
     // Relay credentials only over TLS.
     invalid(with("[outbound.relay]\nhost = \"smtp.example.net\"\nport = 25\ntls = \"none\"\nusername = \"u\"\npassword_file = \"/etc/rusty/pw\""));
 }
+
+// ------------------------------------------------------------------------------------------------ PROXY protocol settings
+
+mod proxy_settings {
+    use rusty_core::config::StartupConfig;
+
+    fn parse(extra: &str) -> rusty_core::Result<StartupConfig> {
+        StartupConfig::from_toml_str(&format!("blob_dir = \"/var/lib/rusty/blobs\"\n[store]\nurl = \"postgres://rusty_app@db.internal:5432/rusty\"\npassword_file = \"/run/secrets/pg\"\n{extra}"))
+    }
+
+    #[test]
+    fn the_proxy_protocol_needs_a_narrow_list_of_trusted_proxies() {
+        let c = parse("[smtp]\nproxy_protocol = true\ntrusted_proxies = [\"10.0.0.0/8\", \"192.0.2.7\"]\n[imap]\nproxy_protocol = true\ntrusted_proxies = [\"172.16.0.0/12\"]\n").unwrap();
+        assert_eq!(c.smtp.trusted_proxies.len(), 2);
+        assert_eq!(c.imap.trusted_proxies.len(), 1);
+        // Off by default, and the list means nothing without it.
+        let d = parse("").unwrap();
+        assert!(!d.smtp.proxy_protocol && d.smtp.trusted_proxies.is_empty() && !d.imap.proxy_protocol);
+        assert!(parse("[smtp]\ntrusted_proxies = [\"10.0.0.0/8\"]\n").is_err(), "a list without the switch");
+        assert!(parse("[imap]\ntrusted_proxies = [\"10.0.0.0/8\"]\n").is_err());
+    }
+
+    #[test]
+    fn trusting_everyone_or_nobody_is_refused() {
+        for bad in [
+            "[smtp]\nproxy_protocol = true\n",
+            "[smtp]\nproxy_protocol = true\ntrusted_proxies = []\n",
+            "[smtp]\nproxy_protocol = true\ntrusted_proxies = [\"0.0.0.0/0\"]\n",
+            "[imap]\nproxy_protocol = true\ntrusted_proxies = [\"::/0\"]\n",
+            "[imap]\nproxy_protocol = true\ntrusted_proxies = [\"10.0.0.0/8\", \"0.0.0.0/0\"]\n",
+            "[smtp]\nproxy_protocol = true\ntrusted_proxies = [\"1.1.1.1\",\"1.1.1.2\",\"1.1.1.3\",\"1.1.1.4\",\"1.1.1.5\",\"1.1.1.6\",\"1.1.1.7\",\"1.1.1.8\",\"1.1.1.9\",\"1.1.1.10\",\"1.1.1.11\",\"1.1.1.12\",\"1.1.1.13\",\"1.1.1.14\",\"1.1.1.15\",\"1.1.1.16\",\"1.1.1.17\"]\n",
+            "[smtp]\nproxy_protocol = true\ntrusted_proxies = [\"not a block\"]\n",
+            "[smtp]\nproxy_protocol = true\ntrusted_proxies = [\"10.0.0.0/33\"]\n",
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_refusal_never_echoes_the_value() {
+        let e = parse("[smtp]\nproxy_protocol = true\ntrusted_proxies = [\"TOPSECRET\"]\n").unwrap_err().to_string();
+        assert!(!e.contains("TOPSECRET"), "{e}");
+    }
+}

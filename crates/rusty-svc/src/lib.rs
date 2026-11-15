@@ -20,6 +20,7 @@ mod listener;
 mod logging;
 mod outbound;
 mod plan;
+pub mod proxy;
 mod quota;
 mod redact;
 mod secret;

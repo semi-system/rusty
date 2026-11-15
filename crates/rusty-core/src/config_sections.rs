@@ -82,9 +82,13 @@ pub struct SmtpConfig {
     pub max_connections: u32,
     #[serde(default = "d_per_ip_smtp")]
     pub max_connections_per_ip: u32,
-    /// Seam for an edge proxy (PROXY protocol); `true` is rejected until it is implemented.
+    /// Every connection starts with a PROXY protocol v2 header from the edge proxy (HAProxy `send-proxy-v2`); the client address in it is the peer.
+    /// Needs `trusted_proxies`: a connection from any other address is dropped without being read.
     #[serde(default)]
     pub proxy_protocol: bool,
+    /// The addresses (blocks) the proxy connects from. Required with `proxy_protocol`, refused without it, at most 16, never a block that holds every address.
+    #[serde(default)]
+    pub trusted_proxies: Vec<crate::cidr::Cidr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -98,8 +102,12 @@ pub struct ImapConfig {
     pub max_connections: u32,
     #[serde(default = "d_per_ip_imap")]
     pub max_connections_per_ip: u32,
+    /// As `[smtp] proxy_protocol`.
     #[serde(default)]
     pub proxy_protocol: bool,
+    /// As `[smtp] trusted_proxies`.
+    #[serde(default)]
+    pub trusted_proxies: Vec<crate::cidr::Cidr>,
 }
 
 /// How a destination domain's SMTP server is treated for TLS.
@@ -471,6 +479,7 @@ impl Default for SmtpConfig {
             max_connections: d_max_connections(),
             max_connections_per_ip: d_per_ip_smtp(),
             proxy_protocol: false,
+            trusted_proxies: Vec::new(),
         }
     }
 }
@@ -483,6 +492,7 @@ impl Default for ImapConfig {
             max_connections: d_max_connections(),
             max_connections_per_ip: d_per_ip_imap(),
             proxy_protocol: false,
+            trusted_proxies: Vec::new(),
         }
     }
 }
@@ -539,21 +549,32 @@ impl SmtpConfig {
         if self.max_connections == 0 || self.max_connections_per_ip == 0 {
             return Err(bad("smtp connection limits must be at least 1"));
         }
-        if self.proxy_protocol {
-            return Err(bad("smtp.proxy_protocol is not implemented yet"));
-        }
+        check_proxy("smtp", self.proxy_protocol, &self.trusted_proxies)?;
         Ok(())
     }
 }
 
+/// The rules of the PROXY protocol settings of a service: trusting a proxy is a security decision, so it is explicit and narrow.
+fn check_proxy(section: &str, proxy_protocol: bool, trusted: &[crate::cidr::Cidr]) -> Result<()> {
+    if !proxy_protocol {
+        return if trusted.is_empty() { Ok(()) } else { Err(Error::Invalid(format!("{section}.trusted_proxies needs {section}.proxy_protocol = true"))) };
+    }
+    if trusted.is_empty() || trusted.len() > 16 {
+        return Err(Error::Invalid(format!("{section}.trusted_proxies must name one to sixteen address blocks when {section}.proxy_protocol is true")));
+    }
+    if trusted.iter().any(|c| c.is_everything()) {
+        return Err(Error::Invalid(format!("{section}.trusted_proxies must not hold every address: anyone could then claim any client address")));
+    }
+    Ok(())
+}
+
 impl ImapConfig {
-    pub(crate) fn validate(&self) -> Result<()> {
+    pub(crate) fn validate
+(&self) -> Result<()> {
         if self.max_connections == 0 || self.max_connections_per_ip == 0 {
             return Err(bad("imap connection limits must be at least 1"));
         }
-        if self.proxy_protocol {
-            return Err(bad("imap.proxy_protocol is not implemented yet"));
-        }
+        check_proxy("imap", self.proxy_protocol, &self.trusted_proxies)?;
         Ok(())
     }
 }
