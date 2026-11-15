@@ -572,3 +572,67 @@ async fn with_neither_an_address_nor_an_include_the_spf_cannot_be_verified_and_d
     assert_eq!(spf(&c).status, RecordStatus::Warning);
     assert!(has(spf(&c), "spf.not_verifiable"), "{:?}", spf(&c).findings);
 }
+
+// ------------------------------------------------------------------------------------------ two resolvers
+
+use rusty_core::dns_check::check_records_compared;
+
+async fn compared(a: &Zone, b: &Zone) -> Vec<RecordCheck> {
+    check_records_compared(a, b, &expected(), &CheckOptions::default()).await
+}
+
+#[tokio::test]
+async fn two_resolvers_that_agree_give_the_verdict_they_agree_on() {
+    let (a, b) = (Zone::published(&expected()), Zone::published(&expected()));
+    let checks = compared(&a, &b).await;
+    assert!(checks.iter().all(|c| c.status == RecordStatus::Ok && !has(c, "resolvers.differ")), "{checks:?}");
+    // Both are missing the same record: still missing, with no word about the resolvers.
+    let (mut a, mut b) = (Zone::published(&expected()), Zone::published(&expected()));
+    a.txt.remove(&format!("_dmarc.{DOMAIN}"));
+    b.txt.remove(&format!("_dmarc.{DOMAIN}"));
+    let checks = compared(&a, &b).await;
+    let dmarc = checks.iter().find(|c| c.record.name.starts_with("_dmarc")).unwrap();
+    assert_eq!(dmarc.status, RecordStatus::Missing);
+    assert!(!has(dmarc, "resolvers.differ"));
+}
+
+#[tokio::test]
+async fn a_record_one_resolver_has_not_seen_yet_is_pending_with_both_pieces_of_evidence() {
+    let a = Zone::published(&expected());
+    let mut b = Zone::published(&expected());
+    b.txt.remove(&format!("_dmarc.{DOMAIN}"));
+    let checks = compared(&a, &b).await;
+    let dmarc = checks.iter().find(|c| c.record.name.starts_with("_dmarc")).unwrap();
+    assert_eq!(dmarc.status, RecordStatus::Pending, "propagation lag is not a fault");
+    assert!(has(dmarc, "resolvers.differ"));
+    assert!(dmarc.seen.as_deref().is_some_and(|s| s.contains("second resolver")), "{:?}", dmarc.seen);
+    // The other way round too, and every other record is untouched.
+    let checks = compared(&b, &a).await;
+    assert_eq!(checks.iter().find(|c| c.record.name.starts_with("_dmarc")).unwrap().status, RecordStatus::Pending);
+    assert_eq!(checks.iter().filter(|c| c.status == RecordStatus::Pending).count(), 1);
+}
+
+#[tokio::test]
+async fn a_resolver_that_could_not_answer_gives_way_to_the_one_that_could() {
+    let mut a = Zone::published(&expected());
+    let b = Zone::published(&expected());
+    a.fail.insert(format!("_dmarc.{DOMAIN}"));
+    let checks = compared(&a, &b).await;
+    let dmarc = checks.iter().find(|c| c.record.name.starts_with("_dmarc")).unwrap();
+    assert_eq!(dmarc.status, RecordStatus::Ok, "the second resolver decided");
+    let checks = compared(&b, &a).await;
+    assert_eq!(checks.iter().find(|c| c.record.name.starts_with("_dmarc")).unwrap().status, RecordStatus::Ok);
+}
+
+#[tokio::test]
+async fn two_different_faults_keep_the_first_verdict_and_name_the_disagreement() {
+    let mut a = Zone::published(&expected());
+    let mut b = Zone::published(&expected());
+    a.txt.remove(&format!("_dmarc.{DOMAIN}"));
+    b.txt.insert(format!("_dmarc.{DOMAIN}"), vec!["v=DMARC1; p=banana".to_owned()]);
+    let checks = compared(&a, &b).await;
+    let dmarc = checks.iter().find(|c| c.record.name.starts_with("_dmarc")).unwrap();
+    assert_ne!(dmarc.status, RecordStatus::Ok);
+    assert_ne!(dmarc.status, RecordStatus::Pending);
+    assert!(has(dmarc, "resolvers.differ"));
+}
