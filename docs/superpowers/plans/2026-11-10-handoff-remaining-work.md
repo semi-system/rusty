@@ -1,7 +1,7 @@
 # Rusty - hand-off: remaining work to a usable MVP (for Codex or any second implementer)
 
 Date: 2026-11-10. Owner/decider: the user (writes Vietnamese; answer them in Vietnamese; these docs are English where the code is). This file is self-contained: read it, then `2026-11-08-usable-mailserver.md` (the master plan, sections 1b, 4, 5) for the details of each task.
-**Newer status snapshot: `2026-11-13-status-and-next-steps.md` (read it first; where it differs from this file, it wins).**
+**This snapshot is dated (2026-11-10). The status notes that followed it were removed once they were out of date; the current state is in `docs/first-mail.md`, `docs/README.md`, the design documents and the git history. The working rules below still apply.**
 
 
 ## 1. What Rusty is, in five lines

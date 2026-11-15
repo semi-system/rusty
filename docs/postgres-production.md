@@ -181,9 +181,7 @@ A new migration takes the next number.
 * GC singleton is still a local-volume file lock (one GC host per blob volume). The lease-row design is backlog.
 * PgBouncer (transaction pooling) is supported by construction (no session state) and tested in plan task PG8a, not
   here. `db migrate` must connect directly.
-* The dev compose file (`deploy/dev/rusty.compose.yaml`) starts a digest-pinned Postgres 18, a one-shot `db-init`
-  (roles.sql and role logins), a one-shot `migrate` and then the daemon as `rusty_app`. Its database link is not
-  TLS-verified (marked, warned about at every start).
+* `deploy/standalone` (docs/first-mail.md) is the complete installation: a digest-pinned Postgres 18 with TLS verified by a private CA, a one-shot `db-init` (roles.sql and the logins of `rusty_app`, `rusty_admin` and `rusty_migrator`), a one-shot `migrate`, then the services each with its own role.
 
 ## 8. Known limits and deferred
 
