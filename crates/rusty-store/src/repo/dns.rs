@@ -122,6 +122,9 @@ pub trait DnsRepo: Send + Sync {
     ) -> Result<(DkimKeyRow, bool)>;
     /// The domain's DKIM public keys, ordered by selector.
     async fn dkim_keys(&self, domain: DomainId) -> Result<Vec<DkimKeyRow>>;
+    /// Active domains whose DNS records are due for a check: the newest check of any of their records is older than `interval_secs` plus a stable per-domain
+    /// offset in `0..jitter_secs` (so domains are not all queried in the same minute), or they were never checked. Oldest first, at most `limit`.
+    async fn due_for_check(&self, interval_secs: i64, jitter_secs: i64, limit: u32, now: Option<i64>) -> Result<Vec<(DomainId, String)>>;
     /// History rows with `at >= since`, newest first, at most `limit`.
     async fn events(&self, domain: DomainId, since: i64, limit: u32) -> Result<Vec<DnsEventRow>>;
 }
@@ -172,7 +175,12 @@ pub(crate) mod sql {
         WHERE domain_id = $1 AND selector = $2";
     pub const LIST_KEYS: &str = "SELECT selector, algorithm, public_key_b64, created_at FROM domain_dkim_keys \
         WHERE domain_id = $1 ORDER BY selector";
-    pub const EVENTS: &str = "SELECT id, record_name, record_type, purpose, from_status, to_status, at \
+    pub const DUE: &str = "SELECT d.id, d.name FROM domains d \
+        LEFT JOIN (SELECT domain_id, MAX(last_checked_at) AS newest FROM domain_dns_state GROUP BY domain_id) s ON s.domain_id = d.id \
+        WHERE d.status = 'active' AND COALESCE(s.newest, 0) + $1 + (CASE WHEN $2 > 0 THEN d.id % $2 ELSE 0 END) <= COALESCE($4, {NOW}) \
+        ORDER BY COALESCE(s.newest, 0), d.id LIMIT $3";
+    pub const EVENTS: &str =
+ "SELECT id, record_name, record_type, purpose, from_status, to_status, at \
         FROM domain_dns_event WHERE domain_id = $1 AND at >= $2 ORDER BY id DESC LIMIT $3";
 }
 

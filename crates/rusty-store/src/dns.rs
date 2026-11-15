@@ -154,6 +154,17 @@ impl DnsStore {
         self.repo.put_config(domain, c, now).await
     }
 
+    /// The active domains whose records are due for a check now (see `DnsRepo::due_for_check`).
+    pub async fn due_for_check(&self, interval_secs: u64, jitter_secs: u64, limit: u32) -> Result<Vec<(DomainId, String)>> {
+        let cap = i64::from(u32::MAX);
+        self.repo.due_for_check(i64::try_from(interval_secs).unwrap_or(cap), i64::try_from(jitter_secs).unwrap_or(0), limit.min(1000), None).await
+    }
+
+    #[doc(hidden)]
+    pub async fn due_for_check_at(&self, interval_secs: i64, jitter_secs: i64, limit: u32, now: i64) -> Result<Vec<(DomainId, String)>> {
+        self.repo.due_for_check(interval_secs, jitter_secs, limit, Some(now)).await
+    }
+
     /// The domain's DKIM public keys (one per published selector), ordered by selector.
     pub async fn dkim_keys(&self, domain: DomainId) -> Result<Vec<DkimKeyRow>> {
         self.repo.dkim_keys(domain).await

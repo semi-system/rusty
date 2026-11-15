@@ -41,7 +41,12 @@ pub struct LiveDns(adapter::dns::LiveSource);
 
 impl LiveDns {
     pub fn from_config(cfg: &OutboundConfig) -> Result<LiveDns> {
-        Ok(LiveDns(adapter::dns::LiveSource::new(cfg.nameserver)?))
+        Self::with_nameserver(cfg.nameserver)
+    }
+
+    /// A resolver at `nameserver`, or the system resolver.
+    pub fn with_nameserver(nameserver: Option<std::net::SocketAddr>) -> Result<LiveDns> {
+        Ok(LiveDns(adapter::dns::LiveSource::new(nameserver)?))
     }
 }
 

@@ -231,8 +231,16 @@ async fn build(
             rusty_store::DnsStore::with_repo(store.repos().dns.clone()),
             cfg.outbound.clone(),
             hostname,
-            Arc::new(rusty_smtp::stack::LiveDns::from_config(&cfg.outbound)?),
+            // `[dns_check] nameserver` (the operator's choice for these checks) wins over the outbound resolver.
+            Arc::new(rusty_smtp::stack::LiveDns::with_nameserver(cfg.dns_check.nameserver.map(|n| n.addr()).or(cfg.outbound.nameserver))?),
         )));
+        if cfg.dns_check.enabled {
+            services.push(Box::new(rusty_smtp::outbound::dns_job::DnsCheckScheduler::new(
+                rusty_store::DnsStore::with_repo(store.repos().dns.clone()),
+                cfg.dns_check.interval_secs,
+                cfg.dns_check.jitter_secs,
+            )));
+        }
         services.push(Box::new(OutboundWorker::new(deps, WorkerOptions::new(cfg.outbound.clone(), hostname)).with_wake(wake)));
     }
     for (kind, addr) in &addrs {

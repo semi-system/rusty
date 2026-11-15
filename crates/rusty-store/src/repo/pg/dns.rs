@@ -182,7 +182,23 @@ impl DnsRepo for PgRepo {
         })
     }
 
-    async fn dkim_keys(&self, domain: DomainId) -> Result<Vec<DkimKeyRow>> {
+    async fn due_for_check(&self, interval_secs: i64, jitter_secs: i64, limit: u32, now: Option<i64>) -> Result<Vec<(DomainId, String)>> {
+        let rows = sqlx::query(r(sql::DUE))
+            .bind(interval_secs)
+            .bind(jitter_secs)
+            .bind(i64::from(limit))
+            .bind(now)
+            .fetch_all(self.store.pool())
+            .await
+            .map_err(map_db_error)?;
+        rows.iter()
+            .map(|row| Ok((DomainId(row.try_get::<i64, _>(0)?), row.try_get::<String, _>(1)?)))
+            .collect::<std::result::Result<Vec<_>, sqlx::Error>>()
+            .map_err(map_db_error)
+    }
+
+    async fn dkim_keys(&self, domain: DomainId)
+ -> Result<Vec<DkimKeyRow>> {
         let rows = sqlx::query(r(sql::LIST_KEYS)).bind(domain.0).fetch_all(self.store.pool()).await.map_err(map_db_error)?;
         rows.iter().map(key_row).collect::<std::result::Result<Vec<_>, _>>().map_err(map_db_error)
     }

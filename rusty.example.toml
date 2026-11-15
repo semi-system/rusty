@@ -70,7 +70,7 @@ blob_dir = "/var/lib/rusty/blobs"
 # auth_concurrent_max = 16   # authentication attempts running at once, process-wide
 # inflight_message_mib = 1024  # memory all SMTP sessions together may hold for messages in flight (16..=1048576)
 
-# [dns_check]              # periodic DNS re-validation (needs the daemon wiring; off by default)
+# [dns_check]              # periodic DNS re-validation of every active domain (queues a dns.check job per due domain; off by default)
 # enabled = false
 # interval_secs = 86400      # per domain, 3600..=2592000
 # jitter_secs = 3600         # stable per-domain offset inside this window
