@@ -238,3 +238,41 @@ async fn a_tenants_s3_store_is_opened_only_after_a_check_recorded_ok() {
     assert!(router.store(fs_id).await.is_ok());
     assert!(router.store(PLATFORM_STORE).await.is_ok());
 }
+
+#[tokio::test]
+async fn a_collection_lease_keeps_a_second_collector_off_a_store_until_it_ends_or_expires() {
+    let Some(b) = pg_backend().await else { return };
+    let repo = Arc::new(b.pg.as_ref().unwrap().1.clone());
+    let tmp = tempfile::tempdir().unwrap();
+    let router: Arc<dyn BlobRouter> = Arc::new(BlobStores::new(b.blobs.clone(), repo.clone(), Arc::new(FsStoreOpener::new(tmp.path().join("stores")))));
+    let d = b.dir.create_domain("lease.test").await.unwrap();
+    let own = repo.create_for_domain(d, "fs", r#"{"dir":"lease"}"#).await.unwrap();
+    let store = router.store(own).await.unwrap();
+    let gc = Gc::new(b.grepo.clone());
+    let leases = || async { sqlx::query_scalar::<_, i64>("SELECT count(*) FROM blob_store_leases").fetch_one(b.fx()).await.unwrap() };
+
+    // Another process holds the lease of this store: a collection is refused, and nothing is touched.
+    assert!(b.grepo.acquire_gc_lease(own, "another-host-1", 3600).await.unwrap());
+    let refused = gc.for_store(own).collect_blobs_at(&*store, HOUR, SystemTime::now() + 2 * HOUR).await;
+    assert!(matches!(refused, Err(Error::Conflict(_))), "{refused:?}");
+    assert!(!b.grepo.acquire_gc_lease(own, "someone-else", 3600).await.unwrap(), "a lease is held by one");
+    assert!(b.grepo.acquire_gc_lease(own, "another-host-1", 3600).await.unwrap(), "the holder renews its own");
+    // The lease is per store: the platform store is free for this collector, and gives its lease back when the run ends.
+    gc.collect_blobs_at(&*b.blobs, HOUR, SystemTime::now() + 2 * HOUR).await.unwrap();
+    assert_eq!(leases().await, 1, "only the other host's lease is left");
+
+    // The other host lets go (or dies and the lease runs out): the collection goes ahead and leaves nothing behind.
+    b.grepo.release_gc_lease(own, "someone-else").await.unwrap();
+    assert!(matches!(gc.for_store(own).collect_blobs_at(&*store, HOUR, SystemTime::now() + 2 * HOUR).await, Err(Error::Conflict(_))), "releasing somebody else's lease does nothing");
+    b.grepo.release_gc_lease(own, "another-host-1").await.unwrap();
+    gc.for_store(own).collect_blobs_at(&*store, HOUR, SystemTime::now() + 2 * HOUR).await.unwrap();
+    assert_eq!(leases().await, 0, "the lease is given back when the run ends");
+    assert!(b.grepo.acquire_gc_lease(own, "dead-host", -10).await.unwrap(), "a lease that already ran out");
+    assert!(b.grepo.acquire_gc_lease(own, "new-host", 3600).await.unwrap(), "an expired lease is taken over");
+    assert!(!b.grepo.acquire_gc_lease(own, "dead-host", 3600).await.unwrap(), "and the old holder no longer has it");
+    b.grepo.release_gc_lease(own, "new-host").await.unwrap();
+    // A run that fails still gives the lease back.
+    let failed = gc.for_store(StoreId(9999)).collect_blobs_at(&*store, HOUR, SystemTime::now() + 2 * HOUR).await;
+    let _ = failed;
+    assert_eq!(leases().await, 0);
+}

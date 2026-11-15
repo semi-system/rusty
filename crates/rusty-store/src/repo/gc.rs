@@ -86,6 +86,16 @@ pub trait GcRepo: Send + Sync {
     async fn blob_row_exists(&self, store: StoreId, hash: &BlobHash) -> Result<bool>;
     /// Every blob store that exists (a read), the platform store first: garbage collection runs once for each.
     async fn blob_store_ids(&self) -> Result<Vec<StoreId>>;
+    /// Take (or renew, for the same `holder`) the collection lease of a store for `ttl_secs` of the database clock: `Ok(true)` when this holder has it, `Ok(false)` when another holder
+    /// does and it has not expired. The lease is what keeps two collectors, in this process or in others, off one store (the in-process and file locks of the stores cannot).
+    /// A repository without leases always grants it.
+    async fn acquire_gc_lease(&self, _store: StoreId, _holder: &str, _ttl_secs: i64) -> Result<bool> {
+        Ok(true)
+    }
+    /// Give the lease back (a no-op for a lease somebody else holds).
+    async fn release_gc_lease(&self, _store: StoreId, _holder: &str) -> Result<()> {
+        Ok(())
+    }
     /// Hard-delete up to about `limit` soft-deleted messages per mailbox with `deleted_at <
     /// older_than` (those kept by a `deliveries` row excepted), across several mailboxes.
     /// `purged == 0` means none are left that could be purged. A mailbox that is `Busy` (lock

@@ -18,6 +18,31 @@ fn hash_of(bytes: &[u8]) -> Option<BlobHash> {
 
 #[async_trait]
 impl GcRepo for PgRepo {
+    async fn acquire_gc_lease(&self, store: StoreId, holder: &str, ttl_secs: i64) -> Result<bool> {
+        let done = sqlx::query(crate::repo::render_pg(
+            "INSERT INTO blob_store_leases (store_id, holder, expires_at) VALUES ($1, $2, {NOW} + $3) \
+             ON CONFLICT (store_id) DO UPDATE SET holder = EXCLUDED.holder, expires_at = EXCLUDED.expires_at \
+             WHERE blob_store_leases.expires_at <= {NOW} OR blob_store_leases.holder = EXCLUDED.holder",
+        ))
+        .bind(store.0)
+        .bind(holder)
+        .bind(ttl_secs)
+        .execute(self.store.pool())
+        .await
+        .map_err(map_db_error)?;
+        Ok(done.rows_affected() == 1)
+    }
+
+    async fn release_gc_lease(&self, store: StoreId, holder: &str) -> Result<()> {
+        sqlx::query(crate::repo::render_pg("DELETE FROM blob_store_leases WHERE store_id = $1 AND holder = $2"))
+            .bind(store.0)
+            .bind(holder)
+            .execute(self.store.pool())
+            .await
+            .map_err(map_db_error)?;
+        Ok(())
+    }
+
     async fn db_now(&self) -> Result<i64> {
         sqlx::query_scalar(crate::repo::pg_lit("SELECT rs_now()"))
             .fetch_one(self.store.pool())
