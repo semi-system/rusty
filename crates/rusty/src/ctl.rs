@@ -186,6 +186,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         let sealed = rusty_store::SealedWriter::with_repo(store.repos().sealed.clone());
         let relays = rusty_store::RelayStore::with_repo(store.repos().relay.clone());
         let jobs = rusty_store::JobQueue::with_repo(store.repos().jobs.clone());
+        let admins = rusty_store::AdminStore::with_repo(store.repos().admin.clone());
         let mut env = CtlEnv {
             directory: &directory,
             passwords: &mut passwords,
@@ -203,6 +204,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
             sealed: Some(&sealed),
             relays: Some(&relays),
             jobs: Some(&jobs),
+            admins: Some(&admins),
         };
         let code = match execute(&parsed.command, &mut env).await {
             Ok(outcome) => {

@@ -284,3 +284,14 @@ fn domain_relay_commands_parse_with_defaults_and_refuse_their_options_elsewhere(
         assert!(p(bad).is_err(), "{bad:?}");
     }
 }
+
+#[test]
+fn admin_commands_parse() {
+    assert_eq!(cmd(&["admin", "grant", "a@example.com"]), Command::AdminGrant { addr: "a@example.com".into(), domain: None });
+    assert_eq!(cmd(&["admin", "grant", "a@example.com", "example.com"]), Command::AdminGrant { addr: "a@example.com".into(), domain: Some("example.com".into()) });
+    assert_eq!(cmd(&["admin", "revoke", "a@example.com"]), Command::AdminRevoke { addr: "a@example.com".into() });
+    assert_eq!(cmd(&["admin", "list"]), Command::AdminList);
+    for bad in [&["admin"][..], &["admin", "grant"], &["admin", "grant", "a@x.com", "x.com", "y.com"], &["admin", "list", "x"], &["admin", "grant", "a@x.com", "--prompt"], &["admin", "list", "--selector", "s"]] {
+        assert!(p(bad).is_err(), "{bad:?}");
+    }
+}

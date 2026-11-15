@@ -648,3 +648,39 @@ async fn domain_relay_check_queues_a_job_for_the_outbound_service_and_only_for_a
     })
     .await;
 }
+
+// ------------------------------------------------------------------------------------------------ admin grants
+
+#[tokio::test]
+async fn admin_grant_revoke_and_list_work_per_domain_and_for_the_platform() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        for d in ["one.test", "two.test"] {
+            b.run(Command::DomainAdd { name: d.into() }, &[]).await.unwrap();
+        }
+        b.run(Command::AccountAdd { addr: "root@one.test".into(), password: PasswordSource::Stdin }, &["root-password-1"]).await.unwrap();
+        b.run(Command::AccountAdd { addr: "boss@two.test".into(), password: PasswordSource::Stdin }, &["boss-password-1"]).await.unwrap();
+        b.run(Command::AccountAdd { addr: "nopass@two.test".into(), password: PasswordSource::None }, &[]).await.unwrap();
+        let grant = |a: &str, d: Option<&str>| Command::AdminGrant { addr: a.into(), domain: d.map(str::to_owned) };
+        let out = b.run(grant("root@one.test", None), &[]).await.unwrap();
+        assert!(out.text.contains("every domain"), "{n}: {}", out.text);
+        assert_eq!(out.json["scope"], "platform", "{n}");
+        b.run(grant("boss@two.test", Some("two.test")), &[]).await.unwrap();
+        let listed = b.run(Command::AdminList, &[]).await.unwrap();
+        assert!(listed.text.contains("root@one.test\t*") && listed.text.contains("boss@two.test\ttwo.test"), "{n}: {}", listed.text);
+        assert_eq!(listed.json["administrators"].as_array().unwrap().len(), 2, "{n}");
+        // A domain administrator must be an account of that domain; an account without a password cannot sign in; unknown names are errors.
+        assert!(b.run(grant("boss@two.test", Some("one.test")), &[]).await.is_err(), "{n}");
+        assert!(b.run(grant("nopass@two.test", None), &[]).await.unwrap_err().to_string().contains("no password"), "{n}");
+        assert!(b.run(grant("nobody@two.test", None), &[]).await.is_err(), "{n}");
+        assert!(b.run(grant("root@one.test", Some("nowhere.test")), &[]).await.is_err(), "{n}");
+        // Revoke: the account stays, the grant goes; twice is not an error.
+        let r = b.run(Command::AdminRevoke { addr: "root@one.test".into() }, &[]).await.unwrap();
+        assert_eq!(r.json["revoked"], true, "{n}");
+        assert_eq!(b.run(Command::AdminRevoke { addr: "root@one.test".into() }, &[]).await.unwrap().json["revoked"], false, "{n}");
+        assert!(b.dir.find_account("root@one.test").await.unwrap().is_some(), "{n}");
+        let listed = b.run(Command::AdminList, &[]).await.unwrap();
+        assert_eq!(listed.json["administrators"].as_array().unwrap().len(), 1, "{n}");
+    })
+    .await;
+}

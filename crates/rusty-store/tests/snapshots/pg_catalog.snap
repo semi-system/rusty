@@ -12,6 +12,9 @@ COLUMN address_owners.domain_id bigint nullable=NO identity=NO/ collation= defau
 COLUMN address_owners.local_part text nullable=NO identity=NO/ collation=C default=
 COLUMN address_owners.owner_kind text nullable=NO identity=NO/ collation= default=
 COLUMN address_owners.owner_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN admin_grants.account_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN admin_grants.domain_id bigint nullable=YES identity=NO/ collation= default=
+COLUMN admin_grants.created_at bigint nullable=NO identity=NO/ collation= default=
 COLUMN aliases.id bigint nullable=NO identity=YES/ALWAYS collation= default=
 COLUMN aliases.local_part text nullable=NO identity=NO/ collation=C default=
 COLUMN aliases.domain_id bigint nullable=NO identity=NO/ collation= default=
@@ -174,6 +177,11 @@ CONSTRAINT address_owners.address_owners_owner_kind_check CHECK (owner_kind = AN
 CONSTRAINT address_owners.address_owners_owner_kind_not_null NOT NULL owner_kind
 CONSTRAINT address_owners.address_owners_owner_kind_owner_id_key UNIQUE (owner_kind, owner_id)
 CONSTRAINT address_owners.address_owners_pkey PRIMARY KEY (domain_id, local_part)
+CONSTRAINT admin_grants.admin_grants_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+CONSTRAINT admin_grants.admin_grants_account_id_not_null NOT NULL account_id
+CONSTRAINT admin_grants.admin_grants_created_at_not_null NOT NULL created_at
+CONSTRAINT admin_grants.admin_grants_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+CONSTRAINT admin_grants.admin_grants_pkey PRIMARY KEY (account_id)
 CONSTRAINT aliases.aliases_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 CONSTRAINT aliases.aliases_account_id_not_null NOT NULL account_id
 CONSTRAINT aliases.aliases_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE RESTRICT
@@ -425,6 +433,8 @@ INDEX accounts.accounts_local_part_domain_id_key CREATE UNIQUE INDEX accounts_lo
 INDEX accounts.accounts_pkey CREATE UNIQUE INDEX accounts_pkey ON public.accounts USING btree (id)
 INDEX address_owners.address_owners_owner_kind_owner_id_key CREATE UNIQUE INDEX address_owners_owner_kind_owner_id_key ON public.address_owners USING btree (owner_kind, owner_id)
 INDEX address_owners.address_owners_pkey CREATE UNIQUE INDEX address_owners_pkey ON public.address_owners USING btree (domain_id, local_part)
+INDEX admin_grants.admin_grants_domain CREATE INDEX admin_grants_domain ON public.admin_grants USING btree (domain_id)
+INDEX admin_grants.admin_grants_pkey CREATE UNIQUE INDEX admin_grants_pkey ON public.admin_grants USING btree (account_id)
 INDEX aliases.aliases_local_part_domain_id_key CREATE UNIQUE INDEX aliases_local_part_domain_id_key ON public.aliases USING btree (local_part, domain_id)
 INDEX aliases.aliases_pkey CREATE UNIQUE INDEX aliases_pkey ON public.aliases USING btree (id)
 INDEX blobs.blobs_pkey CREATE UNIQUE INDEX blobs_pkey ON public.blobs USING btree (hash)
@@ -476,6 +486,8 @@ TRIGGER accounts.accounts_addr_unique_ins CREATE TRIGGER accounts_addr_unique_in
 TRIGGER accounts.accounts_addr_unique_upd CREATE TRIGGER accounts_addr_unique_upd BEFORE UPDATE OF local_part, domain_id ON accounts FOR EACH ROW EXECUTE FUNCTION rs_address_unique()
 TRIGGER address_owners.address_owners_guard CREATE TRIGGER address_owners_guard BEFORE INSERT OR DELETE OR UPDATE ON address_owners FOR EACH ROW EXECUTE FUNCTION rs_address_owners_guard()
 TRIGGER address_owners.address_owners_truncate_guard CREATE TRIGGER address_owners_truncate_guard BEFORE TRUNCATE ON address_owners FOR EACH STATEMENT EXECUTE FUNCTION rs_address_owners_truncate_guard()
+TRIGGER admin_grants.admin_grants_same_domain_ins CREATE TRIGGER admin_grants_same_domain_ins BEFORE INSERT ON admin_grants FOR EACH ROW EXECUTE FUNCTION rs_admin_grant_same_domain()
+TRIGGER admin_grants.admin_grants_same_domain_upd CREATE TRIGGER admin_grants_same_domain_upd BEFORE UPDATE OF domain_id, account_id ON admin_grants FOR EACH ROW EXECUTE FUNCTION rs_admin_grant_same_domain()
 TRIGGER aliases.aliases_addr_truncate CREATE TRIGGER aliases_addr_truncate AFTER TRUNCATE ON aliases FOR EACH STATEMENT EXECUTE FUNCTION rs_address_truncate()
 TRIGGER aliases.aliases_addr_unique_del CREATE TRIGGER aliases_addr_unique_del BEFORE DELETE ON aliases FOR EACH ROW EXECUTE FUNCTION rs_address_unique()
 TRIGGER aliases.aliases_addr_unique_ins CREATE TRIGGER aliases_addr_unique_ins BEFORE INSERT ON aliases FOR EACH ROW EXECUTE FUNCTION rs_address_unique()
@@ -577,6 +589,19 @@ BEGIN
   EXCEPTION WHEN unique_violation THEN
     RAISE EXCEPTION 'address already used' USING ERRCODE = 'RS001';
   END;
+  RETURN NEW;
+END;
+$function$
+FUNCTION rs_admin_grant_same_domain
+CREATE OR REPLACE FUNCTION public.rs_admin_grant_same_domain()
+ RETURNS trigger
+ LANGUAGE plpgsql
+ SET search_path TO 'pg_catalog', 'public'
+AS $function$
+BEGIN
+  IF NEW.domain_id IS NOT NULL AND EXISTS (SELECT 1 FROM accounts WHERE id = NEW.account_id AND domain_id <> NEW.domain_id) THEN
+    RAISE EXCEPTION 'a domain administrator must be an account of that domain' USING ERRCODE = 'RS002';
+  END IF;
   RETURN NEW;
 END;
 $function$

@@ -25,6 +25,7 @@ pub struct Backend {
     pub nrepo: Arc<dyn DnsRepo>,
     pub srepo: Arc<dyn rusty_store::repo::SealedRepo>,
     pub rrepo: Arc<dyn rusty_store::repo::RelayRepo>,
+    pub arepo: Arc<dyn rusty_store::repo::AdminRepo>,
     pub grepo: Arc<dyn GcRepo>,
     pub blobs: Arc<dyn BlobStore>,
     pub pg: Option<(PgStore, PgRepo)>,
@@ -62,6 +63,7 @@ pub async fn pg_backend() -> Option<Backend> {
         nrepo: arc.clone(),
         srepo: arc.clone(),
         rrepo: arc.clone(),
+        arepo: arc.clone(),
         grepo: arc,
         blobs: blob_dir(&tmp).await,
         pg: Some((store, repo)),
@@ -422,6 +424,11 @@ impl Backend {
     /// The DNS validation store over this backend's repository.
     pub fn dns(&self) -> DnsStore {
         DnsStore::with_repo(self.nrepo.clone())
+    }
+
+    /// The administrator grants over this backend's repository.
+    pub fn admins(&self) -> rusty_store::AdminStore {
+        rusty_store::AdminStore::with_repo(self.arepo.clone())
     }
 
     /// The per-domain relay store over this backend's repository.
