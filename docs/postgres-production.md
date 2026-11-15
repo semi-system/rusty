@@ -41,6 +41,7 @@ Created by `deploy/db/roles.sql` (run once per database as a superuser, idempote
 | `rusty_migrator` | `rustyctl db migrate` only | owns the schema and every object; `CREATE` on schema `public`; the only role with DDL |
 | `rusty_app` | the daemon and `rustyctl` | `SELECT/INSERT/UPDATE/DELETE` on every table; **no** `TRUNCATE`, `TRIGGER`, `REFERENCES`, DDL, `TEMP`; `SELECT` only on `address_owners` and `_sqlx_migrations` |
 | `rusty_ro` | optional reporting | `SELECT` on every table except `accounts.password_hash`; nothing else |
+| `rusty_admin` | the admin web service (`rusty-admin`) | DML on the tenant tables only (domains, accounts, aliases, lists, plans, capabilities, mailbox rows and system folders, DKIM and DNS state, relays, admin grants, jobs); **no** access to messages, keywords, blobs, deliveries or the change log; on `sealed_secrets` it may write and may read every column **except** the ciphertext (`sealed`), so a compromised admin cannot read a DKIM key or relay password back. Timeouts as `rusty_app` |
 
 Roles are created `NOLOGIN`: the operator enables each login on purpose (`ALTER ROLE .. LOGIN PASSWORD ..`, or a
 certificate rule in `pg_hba.conf`). `PUBLIC` loses `CONNECT`/`TEMP` on the database and everything on schema `public`.

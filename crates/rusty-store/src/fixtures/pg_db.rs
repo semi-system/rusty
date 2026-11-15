@@ -20,6 +20,7 @@ pub const PG_SKIP_NOTICE: &str =
 pub const TEST_APP_PASSWORD: &str = "rusty-test-app";
 pub const TEST_MIGRATOR_PASSWORD: &str = "rusty-test-migrator";
 pub const TEST_RO_PASSWORD: &str = "rusty-test-ro";
+pub const TEST_ADMIN_PASSWORD: &str = "rusty-test-admin";
 
 /// deploy/db/roles.sql: the same file the operator runs.
 const ROLES_SQL: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/db/roles.sql"));
@@ -50,7 +51,7 @@ async fn apply_roles(admin_db_url: &str) {
     let logins = format!(
         "ALTER ROLE rusty_migrator LOGIN PASSWORD '{TEST_MIGRATOR_PASSWORD}'; \
          ALTER ROLE rusty_app LOGIN PASSWORD '{TEST_APP_PASSWORD}'; \
-         ALTER ROLE rusty_ro LOGIN PASSWORD '{TEST_RO_PASSWORD}';"
+         ALTER ROLE rusty_ro LOGIN PASSWORD '{TEST_RO_PASSWORD}'; \n         ALTER ROLE rusty_admin LOGIN PASSWORD '{TEST_ADMIN_PASSWORD}';"
     );
     let mut last = None;
     for attempt in 0..40u64 {
@@ -181,6 +182,7 @@ impl PgTestDb {
             "rusty_app" => TEST_APP_PASSWORD,
             "rusty_migrator" => TEST_MIGRATOR_PASSWORD,
             "rusty_ro" => TEST_RO_PASSWORD,
+            "rusty_admin" => TEST_ADMIN_PASSWORD,
             _ => panic!("unknown test role"),
         };
         url_for(&self.admin_db_url, role, pw)

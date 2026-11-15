@@ -156,6 +156,7 @@ COLUMN sealed_secrets.key_id text nullable=NO identity=NO/ collation=C default=
 COLUMN sealed_secrets.sealed bytea nullable=NO identity=NO/ collation= default=
 COLUMN sealed_secrets.created_at bigint nullable=NO identity=NO/ collation= default=
 COLUMN sealed_secrets.updated_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN sealed_secrets.sealed_len bigint nullable=YES identity=NO/ collation= default=
 CONSTRAINT accounts.accounts_config_not_null NOT NULL config
 CONSTRAINT accounts.accounts_created_at_not_null NOT NULL created_at
 CONSTRAINT accounts.accounts_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE RESTRICT
