@@ -139,3 +139,8 @@ Both are in `contract/v1.json` and follow the scope rules above (a domain admini
 * `POST .../dns/check` queues a **`dns.check` job**. The admin never resolves names; the all-in-one daemon (the outbound role) runs `DnsCheckWorker`, which checks the records against live
   DNS with the engine of `rustyctl domain check` and records the observations as drift state (an `ok` record that fails three checks in a row raises an alert).
 * Not yet: the **periodic** re-check of every active domain (the `[dns_check]` section exists; its scheduler does not).
+
+## Queue figures
+
+`GET /api/v1/domains/{d}/outbound` returns `{queued, running, failed, dead}`: the outgoing messages of this domain by state, from the queue's own table (a domain administrator sees its
+own domain only; another tenant's domain is the same `404` as a missing one). Mail waiting for a failing relay shows as `queued`; `rustyctl`-less diagnosis of *why* is the relay check.

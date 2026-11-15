@@ -352,6 +352,41 @@ async fn relay_check(app: &AdminApp, req: Request) -> Response {
     json(200, &serde_json::json!({ "queued": true }))
 }
 
+// ------------------------------------------------------------------------------------------------ queue figures
+
+#[derive(Serialize)]
+struct QueueJson {
+    queued: i64,
+    running: i64,
+    failed: i64,
+    dead: i64,
+}
+
+/// How many outgoing messages of the domain are waiting, being sent, failed or given up (the queue's own figures; nothing about other tenants).
+async fn queue_get(app: &AdminApp, req: Request) -> Response {
+    let (_, p) = match app.require(&req, false).await {
+        Ok(x) => x,
+        Err(r) => return r,
+    };
+    if let Err(r) = no_query(&req) {
+        return r;
+    }
+    let dom = match scoped(app, &p, req.param("d").unwrap_or_default()).await {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let s = match services(app) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let counts = match s.jobs.state_counts(rusty_smtp::outbound_queue::OUTBOUND_JOB_KIND, dom.id).await {
+        Ok(c) => c,
+        Err(e) => return fail(&e),
+    };
+    let of = |state: &str| counts.iter().find(|(s, _)| s == state).map_or(0, |(_, n)| *n);
+    json(200, &QueueJson { queued: of("queued"), running: of("running"), failed: of("failed"), dead: of("dead") })
+}
+
 // ------------------------------------------------------------------------------------------------ routes
 
 macro_rules! route {
@@ -371,7 +406,8 @@ pub fn routes(app: Arc<AdminApp>, router: Router) -> Router {
     let router = route!(router, app, Method::Get, "/api/v1/domains/{d}/relay", |a, r| relay_get(&a, r).await);
     let router = route!(router, app, Method::Put, "/api/v1/domains/{d}/relay", |a, r| relay_put(&a, r).await);
     let router = route!(router, app, Method::Delete, "/api/v1/domains/{d}/relay", |a, r| relay_delete(&a, r).await);
-    route!(router, app, Method::Post, "/api/v1/domains/{d}/relay/check", |a, r| relay_check(&a, r).await)
+    let router = route!(router, app, Method::Post, "/api/v1/domains/{d}/relay/check", |a, r| relay_check(&a, r).await);
+    route!(router, app, Method::Get, "/api/v1/domains/{d}/outbound", |a, r| queue_get(&a, r).await)
 }
 
 /// The TLS text stored for a mode (re-exported for the tests of the response shape).

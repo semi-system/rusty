@@ -642,6 +642,14 @@ impl JobQueue {
         self.repo.fence_check(fence, Some(now)).await
     }
 
+    /// How many jobs of `kind` for `domain` are in each state (a state without jobs is absent), ordered by state name. For the admin's queue figures.
+    pub async fn state_counts(&self, kind: &str, domain: DomainId) -> Result<Vec<(String, i64)>> {
+        if !valid_kind(kind) {
+            return Err(invalid("invalid job kind"));
+        }
+        self.repo.count_by_state(kind, domain.0).await
+    }
+
     /// Delete `done`, `failed` and `dead` jobs with `updated_at < older_than` (unix seconds),
     /// at most [`PURGE_BATCH`] per transaction, until none are left. Returns the rows removed.
     pub async fn purge_finished(&self, older_than: i64) -> Result<u64> {

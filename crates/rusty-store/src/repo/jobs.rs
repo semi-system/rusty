@@ -133,10 +133,13 @@ pub trait JobRepo: Send + Sync {
     /// Delete up to `limit` finished (`done`, `failed`, `dead`) jobs with `updated_at <
     /// older_than`; returns how many.
     async fn purge_finished_batch(&self, older_than: i64, limit: i64) -> Result<u64>;
+    /// How many jobs of `kind` for `domain` are in each state (only states that have jobs), ordered by state name.
+    async fn count_by_state(&self, kind: &str, domain: i64) -> Result<Vec<(String, i64)>>;
 }
 
 /// Statement text shared by both backends (`{NOW}` = database clock, `$N` placeholders).
 pub(crate) mod sql {
+    pub const COUNT_BY_STATE: &str = "SELECT state, CAST(count(*) AS BIGINT) FROM jobs WHERE kind = $1 AND domain_id = $2 GROUP BY state ORDER BY state";
     pub const HEARTBEAT: &str = "UPDATE jobs SET lease_expires_at = COALESCE($4, {NOW}) + $3, \
         updated_at = COALESCE($4, {NOW}) \
         WHERE id = $1 AND epoch = $2 AND state = 'running' AND lease_expires_at > COALESCE($4, {NOW})";

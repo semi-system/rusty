@@ -285,3 +285,27 @@ async fn concurrent_requests_for_one_selector_make_exactly_one_key() {
     assert_eq!(list["items"][0]["record_value"].as_str(), Some(won[0].as_str()));
     assert_eq!(list["items"][0]["sealed"], true);
 }
+
+#[tokio::test]
+async fn the_queue_figures_are_the_domains_own_and_another_tenant_sees_nothing_of_them() {
+    let r = rig().await;
+    make_admin(&r, "boss@one.test", true).await;
+    make_admin(&r, "boss@two.test", true).await;
+    let (one, two) = (domain_id(&r, "one.test").await, domain_id(&r, "two.test").await);
+    let jobs = rusty_store::JobQueue::with_repo(r.store.repos().jobs.clone());
+    for _ in 0..3 {
+        jobs.enqueue("outbound.send", Some(rusty_core::DomainId(one)), &json!({}), None).await.unwrap();
+    }
+    jobs.enqueue("outbound.send", Some(rusty_core::DomainId(two)), &json!({}), None).await.unwrap();
+    jobs.enqueue("relay.check", Some(rusty_core::DomainId(one)), &json!({}), None).await.unwrap();
+    let c = Client::sign_in(r.addr, "boss@one.test").await;
+    let q = c.get("/api/v1/domains/one.test/outbound").await;
+    assert_eq!(q.status, 200, "{}", q.body);
+    conforms(&q.json(), "Queue");
+    assert_eq!((q.json()["queued"].as_i64(), q.json()["running"].as_i64(), q.json()["dead"].as_i64()), (Some(3), Some(0), Some(0)), "only this domain's outgoing mail, not other job kinds");
+    let a = c.get("/api/v1/domains/two.test/outbound").await;
+    let z = c.get("/api/v1/domains/nowhere.test/outbound").await;
+    assert_eq!((a.status, &a.body), (z.status, &z.body), "the other tenant's queue is not found, like a missing domain");
+    assert_eq!(a.status, 404);
+    assert_eq!(send(r.addr, "GET", "/api/v1/domains/one.test/outbound", &[], "").await.status, 401);
+}
