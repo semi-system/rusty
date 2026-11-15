@@ -725,3 +725,70 @@ async fn blobs_verify_needs_the_blob_store() {
     })
     .await;
 }
+
+fn storage_set(domain: &str, endpoint: &str, bucket: &str) -> Command {
+    Command::StorageSet { name: domain.into(), endpoint: endpoint.into(), region: "eu-west-3".into(), bucket: bucket.into(), prefix: "mail/a".into(), path_style: true }
+}
+
+#[tokio::test]
+async fn storage_set_seals_both_keys_and_show_never_prints_them() {
+    use rusty_core::storage_policy::{ACCESS_KEY_PURPOSE, SECRET_KEY_PURPOSE, STORE_SECRET_OWNER};
+    for_each_backend(|b| async move {
+        let n = b.name;
+        b.run(Command::DomainAdd { name: "example.org".into() }, &[]).await.unwrap();
+        let dom = b.dir.find_domain("example.org").await.unwrap().unwrap();
+        let (unseal, seal) = rusty_seal::generate();
+        let out = b.run_relay(storage_set("example.org", "https://S3.Example-Cloud.com", "tenant-mail"), &["AKIAEXAMPLEKEY", "super-secret-key-material"], Some(&seal)).await.unwrap();
+        let printed = format!("{} {}", out.text, out.json);
+        assert!(!printed.contains("AKIAEXAMPLEKEY") && !printed.contains("super-secret-key-material"), "{n}: the keys never print");
+        assert_eq!((out.json["created"].as_bool(), out.json["endpoint"].as_str()), (Some(true), Some("https://s3.example-cloud.com")), "{n}");
+        // The row holds the non-secret settings; both keys are sealed to this tenant store and only the unsealing key opens them.
+        let row = b.store.repos().blob_stores.for_domain(dom.id).await.unwrap().unwrap();
+        assert_eq!((row.kind.as_str(), row.domain), ("s3", Some(dom.id)), "{n}");
+        assert!(row.config.contains("tenant-mail") && !row.config.contains("AKIA"), "{n}: {}", row.config);
+        let unsealer = rusty_seal::Unsealer::new(vec![unseal]).unwrap();
+        for (purpose, plain) in [(ACCESS_KEY_PURPOSE, "AKIAEXAMPLEKEY"), (SECRET_KEY_PURPOSE, "super-secret-key-material")] {
+            let sealed = b.store.repos().sealed.get(STORE_SECRET_OWNER, row.id.0, purpose).await.unwrap().unwrap();
+            assert!(!String::from_utf8_lossy(&sealed.sealed).contains(plain), "{n}");
+            let ctx = rusty_seal::Context::new(STORE_SECRET_OWNER, row.id.0, purpose).unwrap();
+            assert_eq!(&**unsealer.unseal(&ctx, &sealed.sealed).unwrap(), plain.as_bytes(), "{n}");
+            // Bound to this store: another store's context does not open it.
+            let other = rusty_seal::Context::new(STORE_SECRET_OWNER, row.id.0 + 1, purpose).unwrap();
+            assert!(unsealer.unseal(&other, &sealed.sealed).is_err(), "{n}");
+        }
+        let shown = b.run_relay(Command::StorageShow { name: "example.org".into() }, &[], None).await.unwrap();
+        assert!(shown.text.contains("bucket tenant-mail") && shown.text.contains("access key: sealed") && shown.text.contains("never checked"), "{n}: {}", shown.text);
+        assert!(!shown.text.contains("super-secret") && !shown.json.to_string().contains("super-secret"), "{n}");
+        // Rotating the keys with the same settings keeps the store and replaces the sealed secrets.
+        let again = b.run_relay(storage_set("example.org", "https://s3.example-cloud.com", "tenant-mail"), &["AKIANEWKEY", "another-secret"], Some(&seal)).await.unwrap();
+        assert_eq!(again.json["created"].as_bool(), Some(false), "{n}");
+        assert_eq!(b.store.repos().blob_stores.list().await.unwrap().len(), 2, "{n}: the platform store and this one");
+        // A domain without a store uses the platform one.
+        b.run(Command::DomainAdd { name: "plain.example".into() }, &[]).await.unwrap();
+        let none = b.run_relay(Command::StorageShow { name: "plain.example".into() }, &[], None).await.unwrap();
+        assert!(none.text.contains("platform blob store"), "{n}: {}", none.text);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn storage_set_refuses_what_a_tenant_may_not_choose_and_changes_nothing() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        b.run(Command::DomainAdd { name: "example.org".into() }, &[]).await.unwrap();
+        let (_unseal, seal) = rusty_seal::generate();
+        let keys = ["AKIAEXAMPLEKEY", "super-secret-key-material"];
+        for endpoint in ["http://s3.example-cloud.com", "https://127.0.0.1", "https://169.254.169.254", "https://s3.internal", "https://s3.example-cloud.com:22", "https://s3.example-cloud.com/x"] {
+            let r = b.run_relay(storage_set("example.org", endpoint, "tenant-mail"), &keys, Some(&seal)).await;
+            assert!(r.is_err(), "{n}: {endpoint}");
+        }
+        assert!(b.run_relay(storage_set("example.org", "https://s3.example-cloud.com", "UPPER"), &keys, Some(&seal)).await.is_err(), "{n}: a bad bucket name");
+        assert!(b.run_relay(storage_set("example.org", "https://s3.example-cloud.com", "tenant-mail"), &["", "x"], Some(&seal)).await.is_err(), "{n}: an empty access key");
+        assert!(b.run_relay(storage_set("example.org", "https://s3.example-cloud.com", "tenant-mail"), &keys, None).await.is_err(), "{n}: without [sealing] nothing can be sealed");
+        assert!(b.run_relay(storage_set("nosuch.example", "https://s3.example-cloud.com", "tenant-mail"), &keys, Some(&seal)).await.is_err(), "{n}: no such domain");
+        let dom = b.dir.find_domain("example.org").await.unwrap().unwrap();
+        assert!(b.store.repos().blob_stores.for_domain(dom.id).await.unwrap().is_none(), "{n}: nothing was stored");
+        assert_eq!(b.store.repos().sealed.meta("blobstore", 2).await.unwrap().len(), 0, "{n}: nothing was sealed");
+    })
+    .await;
+}

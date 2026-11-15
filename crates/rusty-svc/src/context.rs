@@ -7,7 +7,7 @@ use std::sync::Arc;
 use rusty_core::config::StartupConfig;
 use rusty_core::Result;
 use rusty_directory::{Authenticator, Directory, LocalAuthenticator};
-use rusty_store::{BlobRouter, BlobStore, BlobStores, FsStoreOpener, Gc, JobQueue, MailboxLimits, Repos};
+use rusty_store::{BlobRouter, BlobStore, BlobStores, FsStoreOpener, Gc, JobQueue, KindOpener, MailboxLimits, Repos, StoreOpener};
 
 use crate::events::{ServiceEvents, TracingEvents};
 use crate::hub::MailboxHub;
@@ -42,14 +42,26 @@ impl Context {
         cfg: Arc<StartupConfig>,
         tls: TlsProvider,
     ) -> Result<Context> {
+        // Stores of kind `fs` live next to the platform blob directory, in `<parent of blob_dir>/stores/<name>`; no other kind can be opened here.
+        let stores_dir = cfg.blob_dir.parent().map_or_else(|| std::path::PathBuf::from("stores"), |p| p.join("stores"));
+        let opener: Arc<dyn StoreOpener> = Arc::new(KindOpener::new().with_fs(Arc::new(FsStoreOpener::new(stores_dir))));
+        Context::new_with_opener(repos, blobs, cfg, tls, opener).await
+    }
+
+    /// Like [`Context::new`], with the opener of the tenants' blob stores (the composition root adds the S3 opener to the filesystem one).
+    pub async fn new_with_opener(
+        repos: &Repos,
+        blobs: Arc<dyn BlobStore>,
+        cfg: Arc<StartupConfig>,
+        tls: TlsProvider,
+        opener: Arc<dyn StoreOpener>,
+    ) -> Result<Context> {
         let directory = Directory::with_repo(repos.directory.clone());
         let auth: Arc<dyn Authenticator> = Arc::new(LocalAuthenticator::new(directory.clone()).await?);
         let limits = MailboxLimits {
             max_message_bytes: usize::try_from(cfg.max_message_bytes).unwrap_or(usize::MAX),
         };
-        // Stores of kind `fs` live next to the platform blob directory, in `<parent of blob_dir>/stores/<name>`.
-        let stores_dir = cfg.blob_dir.parent().map_or_else(|| std::path::PathBuf::from("stores"), |p| p.join("stores"));
-        let stores: Arc<dyn BlobRouter> = Arc::new(BlobStores::new(blobs.clone(), repos.blob_stores.clone(), Arc::new(FsStoreOpener::new(stores_dir))));
+        let stores: Arc<dyn BlobRouter> = Arc::new(BlobStores::new(blobs.clone(), repos.blob_stores.clone(), opener));
         Ok(Context {
             auth,
             hub: MailboxHub::new(repos.mailbox.clone(), stores.clone(), limits),

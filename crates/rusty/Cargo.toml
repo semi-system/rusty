@@ -19,6 +19,7 @@ rusty-ctl = { path = "../rusty-ctl" }
 rusty-seal = { path = "../rusty-seal" }
 rusty-runtime = { path = "../rusty-runtime" }
 rusty-smtp = { path = "../rusty-smtp" }
+rusty-s3 = { path = "../rusty-s3" }
 rusty-svc = { path = "../rusty-svc", default-features = false }
 rusty-imap = { path = "../rusty-imap" }
 async-trait.workspace = true

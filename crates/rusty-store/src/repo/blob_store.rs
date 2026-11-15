@@ -28,6 +28,13 @@ pub struct BlobStoreRow {
 #[async_trait]
 pub trait BlobStoreRepo: Send + Sync {
     async fn get(&self, id: StoreId) -> Result<Option<BlobStoreRow>>;
+    /// The store a domain owns, if it has one.
+    async fn for_domain(&self, domain: DomainId) -> Result<Option<BlobStoreRow>>;
+    /// Replace the settings of a store. `Conflict` while the store holds any blob row (the bodies would be left where the old settings point); `NotFound` for an unknown or
+    /// platform store. Credentials are not here: they are rotated through the sealed secrets at any time.
+    async fn update_config(&self, id: StoreId, config: &str) -> Result<()>;
+    /// Record the result of a check (`status` is a fixed category, `ok` or one of `S3Fail::name`), at `now` or the database clock.
+    async fn record_check(&self, id: StoreId, status: &str, now: Option<i64>) -> Result<()>;
     /// Every store, platform first.
     async fn list(&self) -> Result<Vec<BlobStoreRow>>;
     /// Give a domain a store of its own (`kind` `fs` or `s3`) and point it at the new store. `Conflict` when the domain already has one or already holds messages (version 1 does
@@ -38,6 +45,10 @@ pub trait BlobStoreRepo: Send + Sync {
 pub(crate) mod sql {
     pub const STORE_OF_MAILBOX: &str = "SELECT d.blob_store_id FROM mailboxes m JOIN accounts a ON a.id = m.account_id JOIN domains d ON d.id = a.domain_id WHERE m.id = $1";
     pub const GET: &str = "SELECT id, domain_id, kind, CAST(config AS TEXT), check_status, checked_at FROM blob_stores WHERE id = $1";
+    pub const FOR_DOMAIN: &str = "SELECT id, domain_id, kind, CAST(config AS TEXT), check_status, checked_at FROM blob_stores WHERE domain_id = $1";
+    pub const HAS_BLOBS: &str = "SELECT EXISTS (SELECT 1 FROM blobs WHERE store_id = $1)";
+    pub const UPDATE_CONFIG: &str = "UPDATE blob_stores SET config = CAST($2 AS JSONB), check_status = 'unchecked', checked_at = NULL WHERE id = $1 AND domain_id IS NOT NULL";
+    pub const RECORD_CHECK: &str = "UPDATE blob_stores SET check_status = $2, checked_at = COALESCE($3, {NOW}) WHERE id = $1";
     pub const LIST: &str = "SELECT id, domain_id, kind, CAST(config AS TEXT), check_status, checked_at FROM blob_stores ORDER BY id";
     pub const DOMAIN_LOCK: &str = "SELECT blob_store_id FROM domains WHERE id = $1 FOR UPDATE";
     pub const DOMAIN_HAS_MESSAGES: &str =

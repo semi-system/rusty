@@ -231,6 +231,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         let sealing = cfg.sealing.as_ref().and_then(|s| rusty_seal::SealingKey::from_text(&s.public_key).ok());
         let sealed = rusty_store::SealedWriter::with_repo(store.repos().sealed.clone());
         let relays = rusty_store::RelayStore::with_repo(store.repos().relay.clone());
+        let blob_stores = rusty_store::BlobStoreAdmin::with_repo(store.repos().blob_stores.clone());
         let jobs = rusty_store::JobQueue::with_repo(store.repos().jobs.clone());
         let admins = rusty_store::AdminStore::with_repo(store.repos().admin.clone());
         let mut env = CtlEnv {
@@ -249,6 +250,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
             sealing: sealing.as_ref(),
             sealed: Some(&sealed),
             relays: Some(&relays),
+            blob_stores: Some(&blob_stores),
             blobs: blob_store.as_ref().map(|b| b as &dyn rusty_store::BlobStore),
             gc: Some(&gc),
             jobs: Some(&jobs),
