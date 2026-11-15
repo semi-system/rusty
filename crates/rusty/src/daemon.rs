@@ -8,11 +8,11 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rusty_core::config::{Listen, Profile, StartupConfig};
+use rusty_core::config::{Listen, Profile, Role, StartupConfig};
 use rusty_core::{Error, Result};
 use rusty_store::{BlobStore, FsBlobStore, Store};
 use rusty_svc::{
-    listener_plan, run_services, Accept, BoundListener, Context, DirectTcp, DirectTls, FileSecretSource,
+    listener_plan_for, run_services, Accept, BoundListener, Context, DirectTcp, DirectTls, FileSecretSource,
     ChangeFanout, ChangeFeedService, GcService, ListenerKind, ListenerService, Service, SessionHandler, SystemClock,
     TlsProvider,
 };
@@ -104,7 +104,12 @@ pub(crate) async fn prepare_dev_dirs(cfg: &StartupConfig) -> Result<()> {
 /// Nothing is left half-started: on any error the store is closed and no listener runs. A refused
 /// configuration touches no file.
 pub async fn start(cfg: StartupConfig, profile: Profile, shutdown: CancellationToken) -> Result<Running> {
-    cfg.check_startup(profile)?;
+    start_role(cfg, profile, None, shutdown).await
+}
+
+/// [`start`] for one service of the platform (`Some(role)`: only its listeners and background services) or for the all-in-one daemon (`None`).
+pub async fn start_role(cfg: StartupConfig, profile: Profile, role: Option<Role>, shutdown: CancellationToken) -> Result<Running> {
+    cfg.check_startup_for(profile, role)?;
     let hostname = cfg.hostname.clone().unwrap_or_else(|| "localhost".to_owned());
     // Dev profile: the data directory first, because the dev certificate is kept in it.
     if profile == Profile::Dev {
@@ -113,7 +118,7 @@ pub async fn start(cfg: StartupConfig, profile: Profile, shutdown: CancellationT
     // TLS first: a bad certificate or key file must not get as far as opening the database.
     let tls = if cfg.tls.has_cert() || cfg.tls.dev_self_signed {
         TlsProvider::from_config_in(&cfg.tls, &hostname, Arc::new(FileSecretSource::new()), cfg.blob_dir.parent())?
-    } else if cfg.tls_required_listeners() == 0 {
+    } else if cfg.tls_required_listeners_for(role) == 0 {
         // check_startup already refused every configuration with an authenticated listener.
         tracing::warn!("no TLS configured: port 25 will not offer STARTTLS");
         TlsProvider::unavailable()?
@@ -124,7 +129,7 @@ pub async fn start(cfg: StartupConfig, profile: Profile, shutdown: CancellationT
         tracing::warn!("{w}");
     }
     let store = Store::open(rusty_runtime::store::store_config(&cfg, profile)?).await?;
-    match build(&cfg, &store, tls.clone(), shutdown.clone()).await {
+    match build(&cfg, &store, tls.clone(), role, shutdown.clone()).await {
         Ok((addrs, task)) => Ok(Running { addrs, shutdown, tls, store, task }),
         Err(e) => {
             let _ = store.close().await;
@@ -137,8 +142,11 @@ async fn build(
     cfg: &StartupConfig,
     store: &Store,
     tls: TlsProvider,
+    role: Option<Role>,
     shutdown: CancellationToken,
 ) -> Result<(Vec<(ListenerKind, SocketAddr)>, JoinHandle<Result<()>>)> {
+    // What this process runs: everything for the all-in-one daemon, else the one service.
+    let runs = |r: Role| role.is_none_or(|x| x == r);
     let hostname = cfg.hostname.clone().unwrap_or_else(|| "localhost".to_owned());
     let hostname = hostname.as_str();
     let blobs = platform_blobs(cfg).await?;
@@ -154,9 +162,10 @@ async fn build(
     // The outbound side: the DNS stack (MX lookups and inbound SPF/DKIM/DMARC), the worker and the wake-up
     // that lets a fresh submission skip the poll delay. Without it, submission refuses remote recipients.
     let wake = Wake::default();
-    let dns = if cfg.outbound.enabled { Some(DnsStack::from_config(&cfg.outbound, hostname)?) } else { None };
+    // The resolver stack serves the inbound checks (smtp-in) and the worker (outbound); no other service needs it.
+    let dns = if cfg.outbound.enabled && (runs(Role::SmtpIn) || runs(Role::Outbound)) { Some(DnsStack::from_config(&cfg.outbound, hostname)?) } else { None };
     let secrets = Arc::new(FileSecretSource::new());
-    for planned in listener_plan(&cfg) {
+    for planned in listener_plan_for(&cfg, role) {
         let bound = BoundListener::bind(planned.spec).await?;
         addrs.push((planned.kind, bound.local_addr()));
         // Behind the edge (PROXY v2 from a trusted proxy) the client address comes from the header and, on an implicit-TLS port, TLS ended at the edge;
@@ -201,16 +210,22 @@ async fn build(
         };
         services.push(Box::new(ListenerService::new(bound, accept, handler)));
     }
-    services.push(Box::new(GcService::new(GC_EVERY)));
-    services.push(Box::new(rusty_svc::MaintainService::new(MAINTAIN_EVERY)));
+    if runs(Role::Gc) {
+        services.push(Box::new(GcService::new(GC_EVERY)));
+        services.push(Box::new(rusty_svc::MaintainService::new(MAINTAIN_EVERY)));
+    }
     // Changes made by OTHER processes (a delivery by smtp-in, a job queued by submission): the database announces them
     // at commit (migration 0017) and this one LISTEN connection hands them to the hub (IMAP IDLE) and the outbound
     // worker. In this all-in-one process it only repeats what the in-memory path already did; it is here so that the
     // path every split deployment depends on runs in every start-up. Notifications are hints: IDLE and the worker
     // keep their timers.
-    let changes = ChangeFanout::new(ctx.hub.clone()).with_jobs(wake.0.clone());
-    services.push(Box::new(ChangeFeedService::new(store.change_feed(), Arc::new(changes))));
-    if let Some(dns) = dns {
+    // Only the services that wait for those changes listen: imap (IDLE) and outbound (the worker).
+    if runs(Role::Imap) || runs(Role::Outbound) {
+        let changes = ChangeFanout::new(ctx.hub.clone()).with_jobs(wake.0.clone());
+        services.push(Box::new(ChangeFeedService::new(store.change_feed(), Arc::new(changes))));
+    }
+    let outbound_dns = if runs(Role::Outbound) { dns } else { None };
+    if let Some(dns) = outbound_dns {
         let deps = WorkerDeps {
             resolver: dns.resolver.clone(),
             dialer: Arc::new(TcpDialer),
@@ -248,7 +263,7 @@ async fn build(
         services.push(Box::new(OutboundWorker::new(deps, WorkerOptions::new(cfg.outbound.clone(), hostname)).with_wake(wake)));
     }
     // The check of a tenant's S3 store (`storage.check`, queued by the admin web or `rustyctl`): it needs the unsealing key, so it runs only where the S3 opener exists.
-    if let Some(s3_opener) = s3_opener {
+    if let (true, Some(s3_opener)) = (runs(Role::Outbound), s3_opener) {
         services.push(Box::new(
             rusty_s3::StorageCheckWorker::new(
                 rusty_store::BlobStoreAdmin::with_repo(store.repos().blob_stores.clone()),

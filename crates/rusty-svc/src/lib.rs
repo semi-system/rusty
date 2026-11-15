@@ -40,7 +40,7 @@ pub use hub::MailboxHub;
 pub use listener::{BoundListener, ListenerSpec, SessionHandler};
 pub use logging::{init_logging, subscriber};
 pub use outbound::{OutboundEnqueue, OutboundMessage};
-pub use plan::{listener_plan, ListenerKind, PlannedListener};
+pub use plan::{listener_plan, listener_plan_for, ListenerKind, PlannedListener};
 pub use quota::{QuotaPolicy, SizeCap};
 pub use redact::{redact_command, Redacted};
 pub use secret::{FileSecretSource, SecretSource, MAX_SECRET_BYTES};

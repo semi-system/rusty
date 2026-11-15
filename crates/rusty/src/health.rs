@@ -14,8 +14,8 @@ use std::io::{BufRead, BufReader};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::time::Duration;
 
-use rusty_core::config::StartupConfig;
-use rusty_svc::{listener_plan, ListenerKind};
+use rusty_core::config::{Role, StartupConfig};
+use rusty_svc::{listener_plan_for, ListenerKind};
 
 const TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -66,9 +66,15 @@ pub fn probe(kind: ListenerKind, bound: SocketAddr, proxied: bool) -> Result<(),
 
 /// Probe every enabled listener of `cfg`; the error lists every failing one.
 pub fn check(cfg: &StartupConfig) -> Result<usize, String> {
-    let plan = listener_plan(cfg);
+    check_role(cfg, None)
+}
+
+/// [`check`] for one service: its listeners only. A service with no port (outbound, gc) has nothing to probe: its configuration loaded, which is all a probe from outside the
+/// process can tell; `Ok(0)`.
+pub fn check_role(cfg: &StartupConfig, role: Option<Role>) -> Result<usize, String> {
+    let plan = listener_plan_for(cfg, role);
     if plan.is_empty() {
-        return Err("no listener is enabled".to_owned());
+        return if matches!(role, Some(Role::Outbound | Role::Gc)) { Ok(0) } else { Err("no listener is enabled".to_owned()) };
     }
     let proxied = |kind: ListenerKind| if kind.is_imap() { cfg.imap.proxy_protocol } else { cfg.smtp.proxy_protocol };
     let failures: Vec<String> = plan.iter().filter_map(|p| probe(p.kind, p.spec.addr, proxied(p.kind)).err()).collect();

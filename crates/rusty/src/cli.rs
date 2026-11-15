@@ -5,12 +5,12 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use rusty_core::config::{LogFormat, Profile, SslMode, StartupConfig};
+use rusty_core::config::{LogFormat, Profile, Role, SslMode, StartupConfig};
 use rusty_svc::init_logging;
 use rusty_runtime::process::{exit_code, Signals};
 use tokio_util::sync::CancellationToken;
 
-use crate::daemon::{start, with_bind, with_port_offset};
+use crate::daemon::{with_bind, with_port_offset};
 use rusty_runtime::store::DEV_PG_PASSWORD_ENV;
 
 /// The Postgres server of the dev profile (`postgres://user@host:port/database`, no password).
@@ -42,6 +42,8 @@ pub struct DaemonArgs {
     pub port_offset: u16,
     pub bind: Option<std::net::IpAddr>,
     pub log_format: Option<LogFormat>,
+    /// `--role NAME` (or the binary of one service): run only that service, with its own configuration file (default `/etc/rusty/<name>.toml`).
+    pub role: Option<Role>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -79,6 +81,9 @@ fn parse_daemon(args: &[OsString]) -> Result<Invocation, String> {
                         .and_then(|s| s.parse().ok())
                         .ok_or_else(|| "--bind must be an IP address".to_owned())?,
                 );
+            }
+            Some("--role") => {
+                a.role = Some(value(&mut it, "--role")?.to_str().and_then(Role::from_name).filter(|r| *r != Role::Admin).ok_or_else(|| "--role must be smtp-in, submission, imap, outbound or gc".to_owned())?);
             }
             Some("--log-format") => {
                 a.log_format = match value(&mut it, "--log-format")?.to_str() {
@@ -127,6 +132,58 @@ pub fn parse_args(argv: &[OsString]) -> Result<Invocation, String> {
     }
 }
 
+/// The entry point of the binary of one service (`rusty-imap`, ...): `<binary> [--config FILE] [--log-format text|json]` runs the service, `<binary> healthcheck [--config FILE]` probes it,
+/// `--version` prints the version. The role is fixed by the binary, never by an argument.
+pub fn main_role(role: Role, argv: Vec<OsString>) -> ExitCode {
+    let prog = argv.first().and_then(|a| Path::new(a).file_name()).and_then(|n| n.to_str()).unwrap_or(role.name()).to_owned();
+    let rest = argv.get(1..).unwrap_or_default();
+    let (health, rest) = match rest.first().and_then(|s| s.to_str()) {
+        Some("healthcheck") => (true, rest.get(1..).unwrap_or_default()),
+        Some("--version") | Some("-V") => {
+            println!("{prog} {}", env!("CARGO_PKG_VERSION"));
+            return ExitCode::SUCCESS;
+        }
+        _ => (false, rest),
+    };
+    let mut args = match parse_daemon(rest) {
+        Ok(Invocation::Daemon(a)) => a,
+        Ok(_) => {
+            println!("usage: {prog} [--config FILE] [--log-format text|json]\n       {prog} healthcheck [--config FILE]");
+            return ExitCode::SUCCESS;
+        }
+        Err(msg) => {
+            eprintln!("{prog}: {msg}\nusage: {prog} [--config FILE] [--log-format text|json]\n       {prog} healthcheck [--config FILE]");
+            return ExitCode::from(2);
+        }
+    };
+    // A service binary is production only and never takes another service's role.
+    if args.dev || args.role.is_some_and(|r| r != role) {
+        eprintln!("{prog}: --dev and --role are not for a service binary");
+        return ExitCode::from(2);
+    }
+    args.role = Some(role);
+    if health {
+        return match load_config(&args, false).and_then(|(cfg, _)| crate::health::check_role(&cfg, Some(role))) {
+            Ok(n) => {
+                println!("healthy: {n} listeners answered");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{prog}: unhealthy: {e}");
+                ExitCode::from(1)
+            }
+        };
+    }
+    let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("{prog}: cannot start the runtime: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    ExitCode::from(rt.block_on(run_daemon(&prog, args)))
+}
+
 /// The process entry point: returns the exit code.
 pub fn main(argv: Vec<OsString>) -> ExitCode {
     let prog = argv
@@ -148,7 +205,7 @@ pub fn main(argv: Vec<OsString>) -> ExitCode {
             println!("rusty {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        Ok(Invocation::Healthcheck(args)) => match load_config(&args, false).and_then(|(cfg, _)| crate::health::check(&cfg)) {
+        Ok(Invocation::Healthcheck(args)) => match load_config(&args, false).and_then(|(cfg, _)| crate::health::check_role(&cfg, args.role)) {
             Ok(n) => {
                 println!("healthy: {n} listeners answered");
                 ExitCode::SUCCESS
@@ -221,8 +278,15 @@ fn load_config(args: &DaemonArgs, with_store: bool) -> Result<(StartupConfig, Pr
         }
         Ok((cfg, Profile::Dev))
     } else {
-        let path = args.config.clone().unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG));
-        let cfg = StartupConfig::load(&path).map_err(|e| format!("configuration: {e}"))?;
+        let cfg = match args.role {
+            // One service: its own file, which accepts only the sections that service uses.
+            Some(role) => {
+                let path = args.config.clone().unwrap_or_else(|| PathBuf::from(format!("/etc/rusty/{}.toml", role.name())));
+                StartupConfig::load_for(role, &path)
+            }
+            None => StartupConfig::load(&args.config.clone().unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG))),
+        }
+        .map_err(|e| format!("configuration: {e}"))?;
         Ok((cfg, Profile::Production))
     }
 }
@@ -284,7 +348,7 @@ prog: &str, args: DaemonArgs) -> u8 {
 
     let watched: Vec<std::path::PathBuf> = [cfg.tls.cert_file.clone(), cfg.tls.key_file.clone()].into_iter().flatten().collect();
     let token = CancellationToken::new();
-    let running = match start(cfg, profile, token.clone()).await {
+    let running = match crate::daemon::start_role(cfg, profile, args.role, token.clone()).await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "start-up failed");

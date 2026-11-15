@@ -375,3 +375,19 @@ fn version_prints_the_package_version() {
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), concat!("rusty ", env!("CARGO_PKG_VERSION")));
 }
+
+#[test]
+fn the_role_option_names_one_service_and_the_admin_web_is_not_one_of_them() {
+    let d = |a: &[&str]| match parse_args(&os(a)) {
+        Ok(Invocation::Daemon(d)) => Ok(d),
+        Ok(_) => panic!("not a daemon invocation"),
+        Err(e) => Err(e),
+    };
+    for (name, role) in [("smtp-in", rusty_core::config::Role::SmtpIn), ("submission", rusty_core::config::Role::Submission), ("imap", rusty_core::config::Role::Imap), ("outbound", rusty_core::config::Role::Outbound), ("gc", rusty_core::config::Role::Gc)] {
+        assert_eq!(d(&["rusty", "d", "--role", name]).unwrap().role, Some(role), "{name}");
+    }
+    assert_eq!(d(&["rusty", "d"]).unwrap().role, None);
+    assert!(d(&["rusty", "d", "--role", "admin"]).is_err(), "the admin web has its own binary");
+    assert!(d(&["rusty", "d", "--role", "nonsense"]).is_err());
+    assert!(d(&["rusty", "d", "--role"]).is_err());
+}
