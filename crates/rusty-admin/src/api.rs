@@ -30,6 +30,14 @@ const MAX_ADDRESS: usize = 320;
 const MAX_PASSWORD: usize = 1024;
 const MAX_TOKEN: usize = 128;
 
+/// The operator's facts the DNS page needs (from `[admin]` and the shared `hostname`).
+#[derive(Debug, Clone)]
+pub struct MailSettings {
+    pub host: String,
+    pub public_ips: Vec<std::net::IpAddr>,
+    pub spf_include: Option<String>,
+}
+
 /// The stores the outbound endpoints (DKIM, relay) need beyond the directory; absent in a deployment that only manages domains and accounts.
 pub struct Services {
     pub dns: rusty_store::DnsStore,
@@ -38,6 +46,8 @@ pub struct Services {
     pub jobs: rusty_store::JobQueue,
     /// `[sealing] public_key`: what secrets are sealed to. `None`: nothing can be sealed, the endpoints that need it answer `503 unavailable`.
     pub sealing: Option<rusty_seal::SealingKey>,
+    /// `None` (no host name configured): the DNS page answers `503 unavailable`.
+    pub mail: Option<MailSettings>,
 }
 
 pub struct AdminApp {

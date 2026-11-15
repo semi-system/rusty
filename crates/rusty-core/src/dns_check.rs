@@ -91,12 +91,7 @@ impl RecordCheck {
 
     /// A hash of what was expected: a changed record (a rotated key, a new address) starts its history over.
     pub fn expected_hash(&self) -> String {
-        let mut h = Sha256::new();
-        for part in [self.record.rtype.as_str(), &self.record.name.to_ascii_lowercase(), &self.record.value] {
-            h.update((part.len() as u64).to_be_bytes());
-            h.update(part.as_bytes());
-        }
-        hex::encode(h.finalize())
+        record_hash(&self.record)
     }
 
     pub fn observation(&self) -> Observation {
@@ -873,6 +868,17 @@ async fn check_spf<S: DnsSource>(net: &mut Net<'_, S>, r: &DnsRecord, name: &str
     v.finish(r)
 }
 
+/// The hash that identifies what was expected for `record` in the drift state: a changed record (a rotated key, a new address) has another hash, so
+/// its stored status no longer describes it.
+pub fn record_hash(record: &DnsRecord) -> String {
+    let mut h = Sha256::new();
+    for part in [record.rtype.as_str(), &record.name.to_ascii_lowercase(), &record.value] {
+        h.update((part.len() as u64).to_be_bytes());
+        h.update(part.as_bytes());
+    }
+    hex::encode(h.finalize())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -914,3 +920,4 @@ mod tests {
         }
     }
 }
+

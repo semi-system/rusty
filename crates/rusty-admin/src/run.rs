@@ -19,7 +19,7 @@ use rusty_valkey::MemoryKv;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::api::{routes, AdminApp, Services};
+use crate::api::{routes, AdminApp, MailSettings, Services};
 use crate::auth::AdminAuth;
 use crate::session::{SessionConfig, SessionStore, SystemNow};
 use crate::setup::SetupGate;
@@ -73,9 +73,10 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
         sealed: rusty_store::SealedWriter::with_repo(repos.sealed.clone()),
         jobs: rusty_store::JobQueue::with_repo(repos.jobs.clone()),
         sealing,
+        mail: cfg.hostname.clone().map(|host| MailSettings { host, public_ips: admin.public_ips.clone(), spf_include: admin.spf_include.clone() }),
     };
     let app = Arc::new(AdminApp::new(auth, directory, admins, gate, &admin.public_origin, SessionConfig::default()).with_services(services));
-    let router = crate::outbound::routes(app.clone(), crate::manage::routes(app.clone(), routes(app, Router::new())));
+    let router = crate::dns::routes(app.clone(), crate::outbound::routes(app.clone(), crate::manage::routes(app.clone(), routes(app, Router::new()))));
     let handler = Arc::new(HttpHandler::new(router, HttpConfig::default()));
 
     let (accept, tls): (Arc<dyn Accept>, Option<TlsProvider>) = if cfg.tls.has_cert() {

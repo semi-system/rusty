@@ -32,7 +32,9 @@
     "DkimList": { "items": "Dkim[]" },
     "Relay": { "host": "string", "port": "integer", "tls": "string", "username": "string|null", "spf_include": "string|null", "password_set": "boolean", "check_status": "string|null", "checked_at": "integer|null" },
     "RelayState": { "relay": "Relay|null" },
-    "Queued": { "queued": "boolean" }
+    "Queued": { "queued": "boolean" },
+    "DnsRecord": { "name": "string", "type": "string", "value": "string", "ttl": "integer", "purpose": "string", "required": "string", "status": "string", "seen": "string|null", "last_checked_at": "integer|null" },
+    "DnsRecords": { "records": "DnsRecord[]", "warnings": "string[]" }
   },
   "endpoints": [
     { "method": "POST", "path": "/api/v1/session", "auth": "none", "request": { "address": "string", "password": "string" }, "response": "Me", "status": 200 },
@@ -57,6 +59,8 @@
     { "method": "GET", "path": "/api/v1/domains/{d}/relay", "auth": "admin", "request": null, "response": "RelayState", "status": 200, "note": "never the password" },
     { "method": "PUT", "path": "/api/v1/domains/{d}/relay", "auth": "admin", "request": { "host": "string", "port": "integer", "tls": "string (starttls|implicit|none)", "username": "string|null (optional)", "spf_include": "string|null (optional)", "password": "string|null (required with username, refused without)" }, "response": "RelayState", "status": 200, "note": "ports 25, 465, 587, 2525; a public host; a login only over TLS; the password is sealed" },
     { "method": "DELETE", "path": "/api/v1/domains/{d}/relay", "auth": "admin", "request": null, "response": "Empty", "status": 200 },
-    { "method": "POST", "path": "/api/v1/domains/{d}/relay/check", "auth": "admin", "request": null, "response": "Queued", "status": 200, "note": "the outbound service runs it; the result shows in GET relay" }
+    { "method": "POST", "path": "/api/v1/domains/{d}/relay/check", "auth": "admin", "request": null, "response": "Queued", "status": 200, "note": "the outbound service runs it; the result shows in GET relay" },
+    { "method": "GET", "path": "/api/v1/domains/{d}/dns", "auth": "admin", "request": null, "response": "DnsRecords", "status": 200, "note": "status is the last check of the record as it is now, or unchecked; 503 unavailable when no host name is configured" },
+    { "method": "POST", "path": "/api/v1/domains/{d}/dns/check", "auth": "admin", "request": null, "response": "Queued", "status": 200, "note": "the service that can query DNS runs it; the result shows in GET dns" }
   ]
 }

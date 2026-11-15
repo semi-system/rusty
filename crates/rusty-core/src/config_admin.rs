@@ -5,7 +5,7 @@
 //! * `public_origin`: `https://host[:port]`, exactly what the browser sends in the `Origin` header of a state-changing request. It is compared byte for byte
 //!   (scheme, host and port), so it must be written the way the browser writes it: lower case, no trailing slash, no path.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use serde::Deserialize;
 
@@ -21,15 +21,29 @@ pub struct AdminConfig {
     #[serde(default = "d_listen")]
     pub listen: SocketAddr,
     pub public_origin: String,
+    /// The addresses mail leaves from, for the DNS page (the same as `[outbound] public_ips` of the outbound service). Optional: without them the page says so.
+    #[serde(default)]
+    pub public_ips: Vec<IpAddr>,
+    /// The relay provider's SPF `include:` name (as `[outbound.relay] spf_include`), when mail leaves through a relay.
+    #[serde(default)]
+    pub spf_include: Option<String>,
+    /// Mail leaves through a relay: the reverse records of our own addresses are not our business.
+    #[serde(default)]
+    pub via_relay: bool,
 }
 
 impl AdminConfig {
     pub(crate) fn validate(&self) -> Result<()> {
-        if valid_origin(&self.public_origin) {
-            Ok(())
-        } else {
-            Err(Error::Invalid("admin.public_origin must be https://host or https://host:port in lower case, with no path".into()))
+        if !valid_origin(&self.public_origin) {
+            return Err(Error::Invalid("admin.public_origin must be https://host or https://host:port in lower case, with no path".into()));
         }
+        if self.public_ips.len() > 8 || self.public_ips.iter().enumerate().any(|(i, a)| !crate::dns::publishable_address(*a) || self.public_ips.iter().take(i).any(|o| o == a)) {
+            return Err(Error::Invalid("admin.public_ips must be at most 8 distinct addresses that can be published (no loopback, link-local or multicast)".into()));
+        }
+        if self.spf_include.as_deref().is_some_and(|s| !crate::dns::valid_spf_domain(s)) {
+            return Err(Error::Invalid("admin.spf_include must be a DNS name".into()));
+        }
+        Ok(())
     }
 }
 

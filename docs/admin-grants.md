@@ -129,3 +129,13 @@ Both are in `contract/v1.json` and follow the scope rules above (a domain admini
   request, and a relay without a login deletes the old password. `check` queues a `relay.check` job; the outbound service records the fixed category shown by `GET`.
 * A deployment without `[sealing]` answers `503 unavailable` where a secret would be sealed (a relay without a login still works).
 * The admin binary currently links `rusty-smtp` (without its default features) for the key generation and the job names; the SMTP crate split of the image design removes that.
+
+## The DNS page: records, check, `dns.check`
+
+* `GET /api/v1/domains/{d}/dns` generates the records of the domain from the operator's facts and the stored DKIM keys with the same code as `rustyctl domain dns`
+  (`rusty_core::dns::records_with_facts`, now shared by the CLI, the web and the job) and joins them with the stored check state. A record whose expected value changed since its
+  last check shows as `unchecked`: the stored status described another record. The facts come from `[admin]`: `public_ips`, `spf_include`, `via_relay` (the same values as the
+  outbound service's `[outbound]`) and the shared `hostname`; without a `hostname` the page answers `503 unavailable`, without `public_ips` it warns (`no_public_ips`).
+* `POST .../dns/check` queues a **`dns.check` job**. The admin never resolves names; the all-in-one daemon (the outbound role) runs `DnsCheckWorker`, which checks the records against live
+  DNS with the engine of `rustyctl domain check` and records the observations as drift state (an `ok` record that fails three checks in a row raises an alert).
+* Not yet: the **periodic** re-check of every active domain (the `[dns_check]` section exists; its scheduler does not).

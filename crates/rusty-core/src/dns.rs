@@ -391,3 +391,29 @@ pub fn parse_zone_line(line: &str) -> Result<ZoneLine> {
     };
     Ok(ZoneLine { name, ttl, rtype, value })
 }
+
+/// What the generated records need to know about this installation (the operator's facts; the same for every domain).
+#[derive(Debug, Clone, Copy)]
+pub struct MailFacts<'a> {
+    /// The mail host name the MX records point at.
+    pub mail_host: &'a str,
+    /// The addresses mail leaves from.
+    pub public_ips: &'a [IpAddr],
+    /// The relay provider's SPF `include:` name, when mail leaves through a relay.
+    pub spf_include: Option<&'a str>,
+}
+
+/// The records of `domain` for `facts` and its stored DKIM keys `(selector, algorithm, public key base64)`, with the warnings an operator should see
+/// (`no_public_ips`). A key of an algorithm this generator does not know is left out. Shared by `rustyctl`, the admin web and the `dns.check` job, so the
+/// three never disagree about what should be published.
+pub fn records_with_facts(domain: &str, facts: &MailFacts<'_>, keys: &[(&str, &str, &str)]) -> Result<(Vec<DnsRecord>, Vec<&'static str>)> {
+    let dkim: Vec<DkimPublic<'_>> = keys.iter().filter_map(|(selector, algorithm, b64)| Some(DkimPublic { selector, kind: DkimKind::parse(algorithm)?, public_key_b64: b64 })).collect();
+    let includes: Vec<&str> = facts.spf_include.into_iter().collect();
+    let inputs = DnsInputs { domain, mail_host: facts.mail_host, outbound_ips: facts.public_ips, dkim: &dkim, spf_includes: &includes, dmarc_rua: None };
+    let records = records_for_domain(&inputs)?;
+    let mut warnings = Vec::new();
+    if facts.public_ips.is_empty() {
+        warnings.push("no_public_ips");
+    }
+    Ok((records, warnings))
+}
