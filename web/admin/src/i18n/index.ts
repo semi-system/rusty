@@ -27,6 +27,12 @@ export function t(key: MessageKey, params: Record<string, string | number> = {})
   });
 }
 
+/** The message for a key built from a value the server sent (`domain.status.` + status): `fallback` when the catalogue has no such key. */
+export function tFor(prefix: string, value: string, fallback: MessageKey, params: Record<string, string | number> = {}): string {
+  const key = `${prefix}${value}`;
+  return t(key in en ? (key as MessageKey) : fallback, params);
+}
+
 /** A pseudo-locale for the tests: every message is wrapped and lengthened, so a hard-coded string stands out and a truncated layout shows. */
 export function pseudo(c: Catalogue): Catalogue {
   const out = {} as Record<MessageKey, string>;

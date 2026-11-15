@@ -21,6 +21,10 @@ function server(routes: Record<string, Answer | Answer[]>): { client: Client; ca
     bodies.push(init?.body === undefined ? undefined : JSON.parse(String(init.body)));
     const r = routes[key];
     const a = Array.isArray(r) ? r.shift() : r;
+    if (a === undefined && key === 'GET /api/v1/domains') {
+      // The signed-in shell lists the domains: an empty list unless a test says otherwise.
+      return new Response(JSON.stringify({ items: [], next: null }), { status: 200 });
+    }
     if (a === undefined) {
       return new Response(JSON.stringify({ error: 'not_found' }), { status: 404 });
     }
@@ -36,9 +40,9 @@ describe('boot', () => {
   it('shows the application when a session exists', async () => {
     const s = server({ 'GET /api/v1/session': { status: 200, body: ME } });
     render(App, { app: new State(s.client) });
-    expect(await screen.findByText(t('home.signedInAs', { address: ME.address }))).toBeTruthy();
-    expect(screen.getByText(t('home.scopePlatform'))).toBeTruthy();
-    expect(s.calls).toEqual(['GET /api/v1/session']);
+    expect(await screen.findByText(t('home.signedInAs', { address: ME.address }), { exact: false })).toBeTruthy();
+    expect(screen.getByText(t('home.scopePlatform'), { exact: false })).toBeTruthy();
+    expect(s.calls).toEqual(['GET /api/v1/session', 'GET /api/v1/domains']);
   });
 
   it('shows sign-in when nobody is signed in and setup is closed', async () => {
@@ -83,8 +87,8 @@ describe('sign-in', () => {
     await fireEvent.input(screen.getByLabelText(t('login.address')), { target: { value: 'root@example.org' } });
     await fireEvent.input(screen.getByLabelText(t('login.password')), { target: { value: 'pw' } });
     await fireEvent.click(screen.getByRole('button', { name: t('login.submit') }));
-    expect(await screen.findByText(t('home.signedInAs', { address: ME.address }))).toBeTruthy();
-    expect(s.bodies.at(-1)).toEqual({ address: 'root@example.org', password: 'pw' });
+    expect(await screen.findByText(t('home.signedInAs', { address: ME.address }), { exact: false })).toBeTruthy();
+    expect(s.bodies.find((b) => b !== undefined)).toEqual({ address: 'root@example.org', password: 'pw' });
   });
 
   it('shows one fixed message for a refusal and clears the password field', async () => {
@@ -142,7 +146,7 @@ describe('setup', () => {
     const s = await setupPage({ 'POST /api/v1/setup': { status: 201, body: ME } });
     expect((screen.getByLabelText(t('setup.token')) as HTMLInputElement).type).toBe('password');
     await fill('  tok123  ', 'root@example.org', 'a-long-password-1', 'a-long-password-1');
-    expect(await screen.findByText(t('home.signedInAs', { address: ME.address }))).toBeTruthy();
+    expect(await screen.findByText(t('home.signedInAs', { address: ME.address }), { exact: false })).toBeTruthy();
     expect(s.bodies.find((b) => typeof b === 'object' && b !== null && 'token' in b)).toEqual({ token: 'tok123', address: 'root@example.org', password: 'a-long-password-1' });
   });
 

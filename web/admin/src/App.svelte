@@ -3,7 +3,7 @@
   import type { App } from './lib/app.svelte';
   import Login from './pages/Login.svelte';
   import Setup from './pages/Setup.svelte';
-  import Home from './pages/Home.svelte';
+  import Shell from './pages/Shell.svelte';
   import ErrorNote from './lib/ErrorNote.svelte';
   import { t } from './i18n';
 
@@ -24,5 +24,5 @@
 {:else if app.view.kind === 'signin'}
   <Login {app} />
 {:else}
-  <Home {app} me={app.view.me} />
+  <Shell {app} me={app.view.me} />
 {/if}
