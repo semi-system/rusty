@@ -12,6 +12,9 @@ publish.workspace = true
 [dependencies]
 rusty-core = { path = "../rusty-core" }
 rusty-store = { path = "../rusty-store" }
+rusty-seal = { path = "../rusty-seal" }
+serde.workspace = true
+serde_json.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 hex.workspace = true
@@ -27,3 +30,5 @@ tracing.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
 tempfile.workspace = true
+rusty-store = { path = "../rusty-store", features = ["test-fixtures"] }
+rusty-directory = { path = "../rusty-directory" }

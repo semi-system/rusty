@@ -3,6 +3,7 @@
 mod blob;
 mod dns;
 mod sealed;
+mod blob_store_admin;
 mod blob_stores;
 mod relay;
 mod admin;
@@ -34,7 +35,8 @@ pub use dns::{
 };
 pub use error_map::map_db_error;
 pub use sealed::{SealedReader, SealedWriter, MAX_SEALED_BYTES, MIN_SEALED_BYTES};
-pub use blob_stores::{BlobRouter, BlobStores, FsStoreOpener, IntoRouter, SingleStore, StoreOpener};
+pub use blob_store_admin::{BlobStoreAdmin, CHECK_STATUSES as BLOB_STORE_CHECK_STATUSES};
+pub use blob_stores::{BlobRouter, BlobStores, FsStoreOpener, IntoRouter, KindOpener, SingleStore, StoreOpener};
 pub use relay::{tls_of, tls_text, RelayStore, CHECK_STATUSES};
 pub use admin::{AdminStore, MAX_ADMIN_PAGE};
 pub use feed::{ChangeFeed, ChangeSink, PgChangeFeed, CHANNEL_JOBS, CHANNEL_MAILBOX};

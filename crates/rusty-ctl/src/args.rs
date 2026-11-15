@@ -56,6 +56,10 @@ pub enum Command {
     DomainRelaySet { name: String, host: String, port: u16, tls: rusty_core::config::RelayTls, user: Option<String>, spf_include: Option<String>, password: PasswordSource },
     /// `domain relay show`: the relay of the domain, without its password.
     DomainRelayShow { name: String },
+    /// `storage set`: the S3 store of one domain's bodies (settings here, the access key and secret key read from standard input, two lines, and sealed).
+    StorageSet { name: String, endpoint: String, region: String, bucket: String, prefix: String, path_style: bool },
+    /// `storage show`: the store of the domain, without its credentials.
+    StorageShow { name: String },
     /// `domain relay check`: ask the outbound service to test the relay (a `relay.check` job); the result shows in `domain relay show`.
     DomainRelayCheck { name: String },
     /// `blobs init`: make the blob directory of the configuration (mode 0700, with its marker) once, before the first start; it needs no database. Safe to repeat.
@@ -127,6 +131,10 @@ pub const USAGE: &str = "usage: rustyctl [--config FILE | --dev [--data-dir DIR]
   domain relay set <domain> --host H [--port P] [--tls starttls|implicit|none] [--user U] [--spf-include NAME] [--password-stdin | --prompt]
                                              the relay this domain's mail leaves through (a login needs the password, which is sealed)
   domain relay show <domain> | remove <domain> | check <domain>
+  storage set <domain> --endpoint https://HOST[:PORT] --region R --bucket B [--prefix P] [--path-style] --credentials-stdin
+                                             give the domain its own S3 store for message bodies (before it holds any message); the access key and the
+                                             secret key are read from standard input, one per line, and sealed
+  storage show <domain>                      the domain's store, without its credentials
   admin grant <addr> [domain]                let an account use the admin web (all domains, or one); also the recovery path
   admin revoke <addr> | list
   blobs init                                 make the blob directory (0700, with its marker) once, before the first start (no database needed)
@@ -159,6 +167,12 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
     let mut relay_tls: Option<String> = None;
     let mut relay_user: Option<String> = None;
     let mut relay_spf: Option<String> = None;
+    let mut s3_endpoint: Option<String> = None;
+    let mut s3_region: Option<String> = None;
+    let mut s3_bucket: Option<String> = None;
+    let mut s3_prefix: Option<String> = None;
+    let mut s3_path_style = false;
+    let mut s3_credentials_stdin = false;
     let mut words: Vec<&str> = Vec::new();
 
     let mut it = args.iter();
@@ -179,6 +193,12 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             "--tls" => relay_tls = Some(it.next().ok_or(err("--tls needs a value"))?.clone()),
             "--user" => relay_user = Some(it.next().ok_or(err("--user needs a value"))?.clone()),
             "--spf-include" => relay_spf = Some(it.next().ok_or(err("--spf-include needs a value"))?.clone()),
+            "--endpoint" => s3_endpoint = Some(it.next().ok_or(err("--endpoint needs a value"))?.clone()),
+            "--region" => s3_region = Some(it.next().ok_or(err("--region needs a value"))?.clone()),
+            "--bucket" => s3_bucket = Some(it.next().ok_or(err("--bucket needs a value"))?.clone()),
+            "--prefix" => s3_prefix = Some(it.next().ok_or(err("--prefix needs a value"))?.clone()),
+            "--path-style" => s3_path_style = true,
+            "--credentials-stdin" => s3_credentials_stdin = true,
             s if s == "-p" || s == "--password" || s.starts_with("--password=") => {
                 return Err(err(
                     "a password is never accepted on the command line; use --password-stdin or --prompt",
@@ -241,6 +261,10 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         }
     };
 
+    let s3_opts = s3_endpoint.is_some() || s3_region.is_some() || s3_bucket.is_some() || s3_prefix.is_some() || s3_path_style || s3_credentials_stdin;
+    if s3_opts && !matches!(words.as_slice(), ["storage", "set", _]) {
+        return Err(err("--endpoint, --region, --bucket, --prefix, --path-style and --credentials-stdin apply to storage set only"));
+    }
     let relay_opts = relay_host.is_some() || relay_port.is_some() || relay_tls.is_some() || relay_user.is_some() || relay_spf.is_some();
     if relay_opts && !matches!(words.as_slice(), ["domain", "relay", "set", _]) {
         return Err(err("--host, --port, --tls, --user and --spf-include apply to domain relay set only"));
@@ -346,6 +370,22 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
                 Some(p) => p.parse::<u16>().map_err(|_| err("--port must be a number"))?,
             };
             done(Command::DomainRelaySet { name: (*name).to_owned(), host, port, tls, user: relay_user.clone(), spf_include: relay_spf.clone(), password })
+        }
+        ["storage", "set", name] => {
+            no_selector()?;
+            no_without_roles()?;
+            no_password()?;
+            if !s3_credentials_stdin {
+                return Err(err("storage set reads the access key and the secret key from standard input (two lines): add --credentials-stdin"));
+            }
+            let endpoint = s3_endpoint.clone().ok_or(err("storage set needs --endpoint"))?;
+            let region = s3_region.clone().ok_or(err("storage set needs --region"))?;
+            let bucket = s3_bucket.clone().ok_or(err("storage set needs --bucket"))?;
+            done(Command::StorageSet { name: (*name).to_owned(), endpoint, region, bucket, prefix: s3_prefix.clone().unwrap_or_default(), path_style: s3_path_style })
+        }
+        ["storage", "show", name] => {
+            plain()?;
+            done(Command::StorageShow { name: (*name).to_owned() })
         }
         ["domain", "relay", "show", name] => {
             plain()?;

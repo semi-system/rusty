@@ -154,3 +154,45 @@ async fn collecting_one_store_leaves_the_same_unreferenced_content_of_another_st
     assert_eq!(r.rows_deleted, 1);
     assert!(platform.list().await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn the_s3_settings_of_a_domain_change_only_while_its_store_is_empty() {
+    use rusty_core::storage_policy::validate_tenant_s3;
+    use rusty_store::BlobStoreAdmin;
+    let Some(b) = pg_backend().await else { return };
+    let repo = Arc::new(b.pg.as_ref().unwrap().1.clone());
+    let admin = BlobStoreAdmin::with_repo(repo.clone());
+    let d = b.dir.create_domain("s3.test").await.unwrap();
+    let s3 = |bucket: &str| validate_tenant_s3("https://s3.example-cloud.com", "eu-west-3", bucket, "mail", true).unwrap();
+
+    let (row, created) = admin.set_s3(d, &s3("bucket-one")).await.unwrap();
+    assert!(created);
+    assert_eq!((row.kind.as_str(), row.domain, row.check_status.as_str()), ("s3", Some(d), "unchecked"));
+    // The same settings again: nothing changes (that is how credentials are rotated).
+    let (same, created) = admin.set_s3(d, &s3("bucket-one")).await.unwrap();
+    assert!((!created) && same.id == row.id);
+    // Other settings while the store is empty are fine, and forget the old check.
+    admin.record_check(row.id, "ok").await.unwrap();
+    let (changed, created) = admin.set_s3(d, &s3("bucket-two")).await.unwrap();
+    assert!(!created && changed.config.contains("bucket-two") && changed.check_status == "unchecked" && changed.checked_at.is_none(), "{changed:?}");
+    // A check records a fixed category and its time; anything else is refused.
+    admin.record_check_at(row.id, "auth", 1234).await.unwrap();
+    let r = admin.get(row.id).await.unwrap().unwrap();
+    assert_eq!((r.check_status.as_str(), r.checked_at), ("auth", Some(1234)));
+    assert!(matches!(admin.record_check(row.id, "whatever the server said").await, Err(Error::Invalid(_))));
+    assert!(matches!(admin.record_check(StoreId(9999), "ok").await, Err(Error::NotFound(_))));
+    // Once a body is stored the settings are frozen: they would leave the bodies behind.
+    sqlx::query("INSERT INTO blobs (store_id, hash, size) VALUES ($1, decode(repeat('ab',32),'hex'), 1)").bind(row.id.0).execute(b.fx()).await.unwrap();
+    assert!(matches!(admin.set_s3(d, &s3("bucket-three")).await, Err(Error::Conflict(_))));
+    assert!(admin.set_s3(d, &s3("bucket-two")).await.is_ok(), "the unchanged settings are still accepted");
+    // The platform store has no owner and is never changed through this; a store of another kind is not an S3 store.
+    assert!(matches!(repo.update_config(PLATFORM_STORE, "{}").await, Err(Error::NotFound(_))));
+    let fs_dom = b.dir.create_domain("fs.test").await.unwrap();
+    repo.create_for_domain(fs_dom, "fs", r#"{"dir":"x"}"#).await.unwrap();
+    assert!(matches!(admin.set_s3(fs_dom, &s3("bucket-one")).await, Err(Error::Conflict(_))));
+    // A domain that already holds messages on the platform store cannot get a store.
+    let other = b.dir.create_domain("held.test").await.unwrap();
+    let held = b.dir.create_account("h", other, None, None).await.unwrap();
+    Mailbox::open_with(b.mrepo.clone(), b.blobs.clone(), held).await.unwrap().append(INBOX, raw("x", None), Flags::default()).await.unwrap();
+    assert!(matches!(admin.set_s3(other, &s3("bucket-one")).await, Err(Error::Conflict(_))));
+}

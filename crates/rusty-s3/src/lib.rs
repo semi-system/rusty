@@ -10,6 +10,9 @@
 pub mod client;
 pub mod error;
 pub mod http;
+pub mod opener;
+pub mod policy;
+pub mod probe;
 pub mod sigv4;
 pub mod store;
 mod time;
@@ -18,4 +21,6 @@ mod xml;
 pub use client::{Credentials, ListPage, ObjectMeta, S3Client, S3Config};
 pub use error::S3Fail;
 pub use http::{Connector, DirectConnector};
+pub use opener::{S3StoreOpener, ACCESS_KEY_PURPOSE, OWNER_KIND, SECRET_KEY_PURPOSE};
+pub use policy::PolicyConnector;
 pub use store::S3BlobStore;

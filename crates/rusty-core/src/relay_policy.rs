@@ -104,7 +104,7 @@ pub fn validate_tenant_relay(host: &str, port: u16, tls: RelayTls, username: Opt
     Ok(TenantRelay { host, port, tls, username: username.map(str::to_owned) })
 }
 
-fn normalize_host(host: &str) -> Result<String> {
+pub(crate) fn normalize_host(host: &str) -> Result<String> {
     let host = host.strip_suffix('.').unwrap_or(host);
     if host.is_empty() || host.len() > 253 || !host.is_ascii() {
         return Err(invalid("the relay host must be an ASCII DNS name or a public IP address"));

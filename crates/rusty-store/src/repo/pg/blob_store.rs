@@ -28,6 +28,35 @@ impl BlobStoreRepo for PgRepo {
         x.as_ref().map(row).transpose().map_err(map_db_error)
     }
 
+    async fn for_domain(&self, domain: DomainId) -> Result<Option<BlobStoreRow>> {
+        let x = sqlx::query(r(sql::FOR_DOMAIN)).bind(domain.0).fetch_optional(self.store.pool()).await.map_err(map_db_error)?;
+        x.as_ref().map(row).transpose().map_err(map_db_error)
+    }
+
+    async fn update_config(&self, id: StoreId, config: &str) -> Result<()> {
+        let mut tx = self.store.pool().begin().await.map_err(map_db_error)?;
+        // The store row is locked: a first body cannot be written between the check and the change.
+        let found: Option<i64> = sqlx::query_scalar("SELECT id FROM blob_stores WHERE id = $1 AND domain_id IS NOT NULL FOR UPDATE").bind(id.0).fetch_optional(&mut *tx).await.map_err(map_db_error)?;
+        if found.is_none() {
+            return Err(Error::NotFound("blob store".into()));
+        }
+        let has: bool = sqlx::query_scalar(r(sql::HAS_BLOBS)).bind(id.0).fetch_one(&mut *tx).await.map_err(map_db_error)?;
+        if has {
+            return Err(Error::Conflict("the store already holds bodies: its settings cannot change".into()));
+        }
+        sqlx::query(r(sql::UPDATE_CONFIG)).bind(id.0).bind(config).execute(&mut *tx).await.map_err(map_db_error)?;
+        tx.commit().await.map_err(map_db_error)?;
+        Ok(())
+    }
+
+    async fn record_check(&self, id: StoreId, status: &str, now: Option<i64>) -> Result<()> {
+        let done = sqlx::query(r(sql::RECORD_CHECK)).bind(id.0).bind(status).bind(now).execute(self.store.pool()).await.map_err(map_db_error)?;
+        if done.rows_affected() == 0 {
+            return Err(Error::NotFound("blob store".into()));
+        }
+        Ok(())
+    }
+
     async fn list(&self) -> Result<Vec<BlobStoreRow>> {
         let rows = sqlx::query(r(sql::LIST)).fetch_all(self.store.pool()).await.map_err(map_db_error)?;
         rows.iter().map(row).collect::<std::result::Result<Vec<_>, _>>().map_err(map_db_error)

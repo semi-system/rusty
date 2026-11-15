@@ -100,6 +100,44 @@ impl BlobRouter for BlobStores {
     }
 }
 
+/// Sends a row to the opener of its kind; a kind this deployment has no opener for is refused (the platform may not be able to reach S3, or may not allow directories).
+#[derive(Default)]
+pub struct KindOpener {
+    fs: Option<Arc<dyn StoreOpener>>,
+    s3: Option<Arc<dyn StoreOpener>>,
+}
+
+impl KindOpener {
+    pub fn new() -> KindOpener {
+        KindOpener::default()
+    }
+
+    pub fn with_fs(mut self, opener: Arc<dyn StoreOpener>) -> KindOpener {
+        self.fs = Some(opener);
+        self
+    }
+
+    pub fn with_s3(mut self, opener: Arc<dyn StoreOpener>) -> KindOpener {
+        self.s3 = Some(opener);
+        self
+    }
+}
+
+#[async_trait]
+impl StoreOpener for KindOpener {
+    async fn open(&self, row: &BlobStoreRow) -> Result<Arc<dyn BlobStore>> {
+        let opener = match row.kind.as_str() {
+            "fs" => self.fs.as_ref(),
+            "s3" => self.s3.as_ref(),
+            _ => None,
+        };
+        match opener {
+            Some(o) => o.open(row).await,
+            None => Err(Error::Invalid("this deployment cannot open that kind of blob store".into())),
+        }
+    }
+}
+
 /// Stores of kind `fs`: a directory of its own under a base directory the operator names (`{"dir": "<name>"}`, one plain path component, created with the usual
 /// protections). Kind `s3` is opened by the S3 opener (a later step); this one refuses it.
 pub struct FsStoreOpener {

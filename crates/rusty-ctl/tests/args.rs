@@ -303,3 +303,24 @@ fn blobs_verify_takes_nothing_else() {
         assert!(p(bad).is_err(), "{bad:?}");
     }
 }
+
+#[test]
+fn storage_set_needs_its_settings_and_the_credentials_on_stdin_and_nothing_else_takes_them() {
+    let set = ["storage", "set", "example.org", "--endpoint", "https://s3.example-cloud.com", "--region", "eu-west-3", "--bucket", "tenant-mail", "--credentials-stdin"];
+    match cmd(&set) {
+        Command::StorageSet { name, endpoint, region, bucket, prefix, path_style } => {
+            assert_eq!((name.as_str(), endpoint.as_str(), region.as_str(), bucket.as_str(), prefix.as_str(), path_style), ("example.org", "https://s3.example-cloud.com", "eu-west-3", "tenant-mail", "", false));
+        }
+        other => panic!("{other:?}"),
+    }
+    let mut with_prefix = set.to_vec();
+    with_prefix.extend(["--prefix", "mail/a", "--path-style"]);
+    assert!(matches!(cmd(&with_prefix), Command::StorageSet { path_style: true, .. }));
+    assert!(matches!(cmd(&["storage", "show", "example.org"]), Command::StorageShow { .. }));
+    // A key never travels on the command line, and a missing setting is a usage error.
+    assert!(parse_args(&["storage", "set", "example.org", "--endpoint", "https://h.example.com", "--region", "r", "--bucket", "bbb"].map(String::from)).is_err(), "no --credentials-stdin");
+    assert!(parse_args(&["storage", "set", "example.org", "--region", "r", "--bucket", "bbb", "--credentials-stdin"].map(String::from)).is_err(), "no --endpoint");
+    assert!(parse_args(&["storage", "set", "example.org", "--endpoint", "https://h.example.com", "--region", "r", "--bucket", "bbb", "--credentials-stdin", "--prompt"].map(String::from)).is_err(), "--prompt does not apply");
+    assert!(parse_args(&["storage", "show", "example.org", "--bucket", "x"].map(String::from)).is_err(), "options of set on show");
+    assert!(parse_args(&["domain", "add", "example.org", "--credentials-stdin"].map(String::from)).is_err(), "options of set elsewhere");
+}

@@ -73,6 +73,8 @@ pub struct CtlEnv<'a> {
     pub sealed: Option<&'a rusty_store::SealedWriter>,
     /// The per-domain relay store (`domain relay`).
     pub relays: Option<&'a rusty_store::RelayStore>,
+    /// The blob stores of domains (`storage`).
+    pub blob_stores: Option<&'a rusty_store::BlobStoreAdmin>,
     /// The job queue (`domain relay check` enqueues a `relay.check` job for the outbound service).
     pub jobs: Option<&'a rusty_store::JobQueue>,
     /// Administrator grants (`admin grant`, `revoke`, `list`).
@@ -280,6 +282,90 @@ async fn domain_relay_set(env: &mut CtlEnv<'_>, command: &Command) -> Result<Out
     Ok(Outcome::new(
         format!("relay of {} set: {}:{} ({}, {login}); mail sent from this domain now leaves through it", dom.name, relay.host, relay.port, rusty_store::tls_text(relay.tls)),
         json!({ "domain": dom.name, "host": relay.host, "port": relay.port, "tls": rusty_store::tls_text(relay.tls), "username": relay.username, "spf_include": spf_include, "password_set": password.is_some() }),
+    ))
+}
+
+fn storage_stores<'a>(env: &CtlEnv<'a>) -> Result<(&'a rusty_store::BlobStoreAdmin, &'a rusty_store::SealedWriter), CtlError> {
+    match (env.blob_stores, env.sealed) {
+        (Some(a), Some(w)) => Ok((a, w)),
+        _ => Err(CtlError::runtime("blob stores are not available here")),
+    }
+}
+
+/// `storage set`: check the settings with the rules the web will apply, read the two credentials from standard input, seal them, store the settings.
+async fn storage_set(env: &mut CtlEnv<'_>, command: &Command) -> Result<Outcome, CtlError> {
+    use rusty_core::storage_policy::{validate_tenant_s3, ACCESS_KEY_PURPOSE, SECRET_KEY_PURPOSE, STORE_SECRET_OWNER};
+    let Command::StorageSet { name, endpoint, region, bucket, prefix, path_style } = command else {
+        return Err(CtlError::runtime("not a storage command"));
+    };
+    let s3 = validate_tenant_s3(endpoint, region, bucket, prefix, *path_style).map_err(|e| map_error(&e, "storage"))?;
+    // The credentials are read before any database work, so a refused one changes nothing.
+    let access = env.passwords.read(PasswordSource::Stdin)?;
+    let secret = env.passwords.read(PasswordSource::Stdin)?;
+    for (what, v) in [("access key", access.expose()), ("secret key", secret.expose())] {
+        if v.is_empty() || v.len() > 256 || v.chars().any(char::is_control) {
+            return Err(CtlError::runtime(match what {
+                "access key" => "the access key must be one printable line of at most 256 bytes",
+                _ => "the secret key must be one printable line of at most 256 bytes",
+            }));
+        }
+    }
+    let (admin, writer) = storage_stores(env)?;
+    let Some(seal) = env.sealing else {
+        return Err(CtlError::runtime("set [sealing] public_key in the configuration: the credentials are sealed to it (`rustyctl seal keygen` makes one)"));
+    };
+    let dom = find_domain(env, name).await?;
+    let (row, created) = admin.set_s3(dom.id, &s3).await.map_err(|e| map_error(&e, "storage"))?;
+    for (purpose, value) in [(ACCESS_KEY_PURPOSE, access.expose()), (SECRET_KEY_PURPOSE, secret.expose())] {
+        let context = rusty_seal::Context::new(STORE_SECRET_OWNER, row.id.0, purpose).map_err(|e| map_error(&e, "storage credentials"))?;
+        let sealed = seal.seal(&context, value.as_bytes()).map_err(|e| map_error(&e, "storage credentials"))?;
+        writer.put(STORE_SECRET_OWNER, row.id.0, purpose, &seal.id().to_hex(), &sealed).await.map_err(|e| map_error(&e, "storage credentials"))?;
+    }
+    Ok(Outcome::new(
+        format!(
+            "{} {} S3 store {}: {} bucket {} (credentials sealed); mail of this domain is stored there from now on once the services have it open (the first use opens it)",
+            if created { "made the" } else { "kept the" },
+            dom.name,
+            row.id.0,
+            s3.endpoint,
+            s3.bucket
+        ),
+        json!({ "domain": dom.name, "store": row.id.0, "created": created, "endpoint": s3.endpoint, "region": s3.region, "bucket": s3.bucket, "prefix": s3.prefix, "path_style": s3.path_style }),
+    ))
+}
+
+/// `storage show`: everything except the credentials, which nothing here can read.
+async fn storage_show(env: &mut CtlEnv<'_>, name: &str) -> Result<Outcome, CtlError> {
+    use rusty_core::storage_policy::{ACCESS_KEY_PURPOSE, SECRET_KEY_PURPOSE, STORE_SECRET_OWNER};
+    let (admin, writer) = storage_stores(env)?;
+    let dom = find_domain(env, name).await?;
+    let Some(row) = admin.for_domain(dom.id).await.map_err(|e| map_error(&e, "storage"))? else {
+        return Ok(Outcome::new(format!("{} uses the platform blob store", dom.name), json!({ "domain": dom.name, "store": null })));
+    };
+    let meta = writer.meta(STORE_SECRET_OWNER, row.id.0).await.map_err(|e| map_error(&e, "storage credentials"))?;
+    let has = |p: &str| meta.iter().any(|m| m.purpose == p);
+    let (access, secret) = (has(ACCESS_KEY_PURPOSE), has(SECRET_KEY_PURPOSE));
+    let settings: Value = serde_json::from_str(&row.config).unwrap_or(Value::Null);
+    let setting = |name: &str, default: &'static str| settings.get(name).and_then(Value::as_str).unwrap_or(default).to_owned();
+    let check = match row.checked_at {
+        Some(at) => format!("last check: {} (at {at})", row.check_status),
+        None => "never checked".to_owned(),
+    };
+    let text = format!(
+        "{}: {} store {}: {} bucket {} region {} prefix {:?}; access key: {}; secret key: {}; {check}",
+        dom.name,
+        row.kind,
+        row.id.0,
+        setting("endpoint", "?"),
+        setting("bucket", "?"),
+        setting("region", "?"),
+        setting("prefix", ""),
+        if access { "sealed" } else { "MISSING" },
+        if secret { "sealed" } else { "MISSING" },
+    );
+    Ok(Outcome::new(
+        text,
+        json!({ "domain": dom.name, "store": row.id.0, "kind": row.kind, "settings": settings, "access_key_set": access, "secret_key_set": secret, "check_status": row.check_status, "checked_at": row.checked_at }),
     ))
 }
 
@@ -642,6 +728,10 @@ pub async fn execute(command: &Command, env: &mut CtlEnv<'_>) -> Result<Outcome,
         Command::DomainRelaySet { .. } => domain_relay_set(env, command).await,
 
         Command::DomainRelayShow { name } => domain_relay_show(env, name).await,
+
+        Command::StorageSet { .. } => storage_set(env, command).await,
+
+        Command::StorageShow { name } => storage_show(env, name).await,
 
         Command::BlobsVerify => blobs_verify(env).await,
 
