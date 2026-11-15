@@ -30,7 +30,9 @@ only) or uses the platform store. Two domains never share a store row, so the se
 * A registry `BlobStores::for_store(id) -> Arc<dyn BlobStore>` builds a store lazily from its row, caches it and drops it when the row changes (the cross-process change feed that exists
   for IDLE carries a "store changed" event). Every place that today holds one `Arc<dyn BlobStore>` (SMTP inbound, outbound queue, IMAP, GC, `rustyctl`) asks the registry with the store id of
   the domain of the account (or of the sender's domain for the outbound queue; system mail and bounces use the platform store).
-* An outbound message waiting in the queue is stored in its **sender's** store.
+* **The outbound queue stays as it is** (decided 2026-11-15): the body of a message waiting in the queue is stored in the **platform** store and referenced by the job payload, protected by the
+  `gc_grace_seconds` rule (grace at least the queue's `max_age_secs` plus a day). Moving queue bodies to the sender's store, with a reference of their own (`job_blobs`), a memory budget
+  for the sending workers and a read cache, is left for later; nothing in this design depends on it.
 
 ## 5. The S3 adapter
 
@@ -86,13 +88,65 @@ Changing the store of a domain that has messages is **refused in v1** (it needs 
 ## 11. Order of work, each step with its tests (and a mutation check on every guard)
 
 1. **Schema and registry**, filesystem stores only: migration 0023, `BlobStores`, two filesystem stores proving that two domains never see each other's bodies, the platform store unchanged for existing data.
-2. **S3 adapter** against RustFS (pinned image, started by CI): put/get/range/list/delete, checksum mismatch, tampered object, large body, errors mapped to the categories.
+2. **S3 adapter** (one bucket) against RustFS (pinned image, started by CI): put/get/range/list/delete, checksum mismatch, tampered object, large body, errors mapped to the categories.
+   **2b. The pool** (section 12): migration 0024, the `blob_backends` and `blob_locations` tables, a pool store that implements `BlobStore` over several backends with the three presets, health and failover
+   (a backend stopped in the middle of reads and writes), location-aware GC, `storage.repair`; tested with several RustFS buckets (and with filesystem backends in unit tests).
 3. **Endpoint policy and credentials**: the connector enforcing section 6 (every refused class has a test), sealed credentials, `storage.check`, admin API, `rustyctl storage ...` and the page in the web admin.
 4. **GC per store and `blobs verify` on S3**, the lease, orphans report.
 5. **Breaker and limits**, status in the admin web, the failure behaviours of section 8 tested with a store that is stopped and one that hangs.
 6. Later: moving a domain between stores, a domain administrator binding their own bucket, per-store byte quotas, application-level envelope encryption.
 
-## 12. Points to confirm
+## 12. Several S3 backends for one tenant (failover, JBOD, load balancing)
+
+A tenant may set up **more than one S3 backend** (bucket, endpoint, credentials) under its store (decided 2026-11-15). A store of kind `s3` is then a small pool, at most 8 backends, and the
+store's policy says how objects are spread and read. The three behaviours the owner asked for are presets of four settings:
+
+| Behaviour | `copies` | `sync_copies` | `placement` | `read` | What it means |
+|---|---|---|---|---|---|
+| **JBOD** | 1 | 1 | `weighted` | `located` | Each object lives on exactly one backend, spread by weight (capacity adds up). No redundancy: a lost backend loses its objects. |
+| **Mirror** | N (2..=backends) | N | `weighted` or `ordered` | `round_robin` / `fastest` | N copies written before the message is acknowledged; reads are balanced over the holders; any one may fail. |
+| **Failover** | 2 (or more) | 1 | `ordered` | `ordered` | Written to the first healthy backend, copied to the others afterwards by the repair job; read from the first healthy holder. |
+
+* `copies`: how many backends should hold each object. `sync_copies`: how many must have it before the write succeeds (`1 <= sync_copies <= copies`); the rest are made by repair.
+* `placement`: `ordered` (the listed order, skipping unhealthy ones) or `weighted` (rendezvous hashing over weights and backend ids, so the choice is deterministic and spreads evenly).
+* `read`: `located` (the recorded location), `ordered`, `round_robin` or `fastest` (lowest recent latency) among the backends that hold the object and are healthy.
+
+### Data (migration 0024)
+
+* `blob_backends(id, store_id, name, kind, config, weight, state, check_status, checked_at)`: one row per backend. `state`: `active`, `readonly` (reads yes, no new writes), `draining` (the repair job
+  moves its objects away), `disabled`. Credentials are sealed secrets per backend (owner kind `blobbackend`). A store of kind `fs` or `platform` has no backend rows: the store is its own single backend.
+* `blob_locations(store_id, hash, backend_id, state)`: where each object is, with `state` `ok` or `pending_delete`. It is the authority; the placement function is only how a new location is chosen.
+* The store policy (`copies`, `sync_copies`, `placement`, `read`) lives in `blob_stores.config`.
+
+### Write, read, delete
+
+* **Write**: choose `copies` healthy writable backends by the placement rule, PUT to them (in parallel); the write succeeds when `sync_copies` have confirmed; the locations are recorded in the same
+  transaction as the blob row. If fewer than `sync_copies` backends are healthy the write fails (`451` on delivery: the sender retries, nothing is lost). A copy that is still missing is made by repair.
+* **Read**: candidates are the `ok` locations whose backend is healthy, ordered by the `read` rule; try the first, on an error or a timeout the next; every body is verified against its hash, and a
+  copy that fails verification is marked bad and left to repair. If no holder can be reached the read fails for that object only (`NO [UNAVAILABLE]`); objects held elsewhere are unaffected.
+* **Delete** (GC): the row goes, then every location's object is deleted; a backend that cannot be reached keeps its location as `pending_delete` and is retried, so a backend that was down when GC ran does
+  not keep garbage forever, and a backend that comes back never resurrects a deleted blob.
+
+### Health and failover
+
+Each backend has its own concurrency cap and circuit breaker (section 8); a breaker that is open takes the backend out of both writes and reads until a probe succeeds. Failover is therefore automatic
+and needs no operator: the pool simply stops choosing a backend that fails. The admin web shows each backend's state, check result, breaker and last error category.
+
+### Repair and rebalance (`storage.repair`, a job)
+
+* Objects with fewer `ok` locations than `copies` (a backend was down for a write, a copy failed verification, a backend was added) are copied from a healthy holder to a chosen backend.
+* Objects on a `draining` backend are copied away, then deleted there; a backend can be disabled and removed only when no location is left on it.
+* JBOD does not move existing objects when a backend is added (new objects use it); a `rebalance` option moves a share by weight, in the background, rate-limited.
+* A periodic scrub reads a sample of objects, verifies the hash and reports/queues repair for bad copies.
+
+### What it costs and what it does not give
+
+* Mirror writes are as slow as the slowest of the `sync_copies` backends and use `copies` times the storage; that is the price of surviving a backend.
+* JBOD gives capacity and spread, not durability. The admin web says so when a store is configured with `copies = 1` and more than one backend.
+* Consistency is simple because bodies are immutable and addressed by content: a copy is either the right bytes or it is detected on read.
+* The endpoint rules of section 6 apply to **every** backend; the check (section 7) runs against every backend and a store is usable only when each active backend passed.
+
+## 13. Points to confirm
 
 1. ~~A tenant is a group of domains~~ **Decided: tenant = domain** (section 2).
 2. Version 1: only the platform administrator binds a store (section 7). *Taken as the default unless the owner says otherwise.*
