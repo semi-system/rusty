@@ -183,3 +183,20 @@ async fn the_gc_lock_is_exclusive_and_the_store_clock_is_the_servers() {
     assert!(skew < Duration::from_secs(120), "the store clock is within two minutes of ours: {skew:?}");
     assert_eq!(st.sweep_temp_before(SystemTime::now()).await.unwrap(), 0);
 }
+
+#[tokio::test]
+async fn the_store_check_passes_on_a_working_bucket_leaves_nothing_behind_and_names_what_is_wrong() {
+    use rusty_s3::probe::probe;
+    let Some(s) = server() else { return };
+    let st = store(&s, "probe", "tenant/a").await;
+    let bucket = st.client().config().bucket.clone();
+    // A working bucket: the check passes twice (a second run does not trip over the first) and removes its probe object.
+    probe(st.client(), 1).await.unwrap();
+    probe(st.client(), 2).await.unwrap();
+    assert!(st.client().list(".rusty-probe/", None).await.unwrap().entries.is_empty(), "no probe object is left");
+    // What is wrong, as a category: the secret key, a bucket that does not exist.
+    let wrong = S3Client::new(config(&s, &bucket, "tenant/a"), Credentials { access_key: s.creds.access_key.clone(), secret_key: "not-the-secret".into() }, Arc::new(DirectConnector { timeout: Duration::from_secs(3) }), None).unwrap();
+    assert_eq!(probe(&wrong, 3).await.unwrap_err(), S3Fail::Auth);
+    let missing = client(&s, &unique("nobucket"), "tenant/a");
+    assert_eq!(probe(&missing, 4).await.unwrap_err(), S3Fail::NoBucket);
+}

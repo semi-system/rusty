@@ -792,3 +792,24 @@ async fn storage_set_refuses_what_a_tenant_may_not_choose_and_changes_nothing() 
     })
     .await;
 }
+
+#[tokio::test]
+async fn storage_check_queues_one_job_for_the_store_and_refuses_what_has_nothing_to_check() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        b.run(Command::DomainAdd { name: "example.org".into() }, &[]).await.unwrap();
+        b.run(Command::DomainAdd { name: "plain.example".into() }, &[]).await.unwrap();
+        // A domain on the platform store has nothing to check.
+        let e = b.run_relay(Command::StorageCheck { name: "plain.example".into() }, &[], None).await.unwrap_err();
+        assert!(e.to_string().contains("no store of its own"), "{n}: {e}");
+        let (_unseal, seal) = rusty_seal::generate();
+        b.run_relay(storage_set("example.org", "https://s3.example-cloud.com", "tenant-mail"), &["AKIAEXAMPLEKEY", "super-secret-key-material"], Some(&seal)).await.unwrap();
+        let out = b.run_relay(Command::StorageCheck { name: "example.org".into() }, &[], None).await.unwrap();
+        assert_eq!(out.json["queued"], true, "{n}");
+        let store = out.json["store"].as_i64().unwrap();
+        let sql = format!("SELECT count(*) FROM jobs WHERE kind = 'storage.check' AND state = 'queued' AND payload::jsonb = '{{\"store\": {store}}}'::jsonb");
+        assert_eq!(b.fx.scalar(&sql, &[]).await, 1, "{n}: the job names the store");
+        assert!(b.run_relay(Command::StorageCheck { name: "nosuch.example".into() }, &[], None).await.is_err(), "{n}");
+    })
+    .await;
+}

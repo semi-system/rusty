@@ -48,7 +48,7 @@ pub(crate) mod sql {
     pub const FOR_DOMAIN: &str = "SELECT id, domain_id, kind, CAST(config AS TEXT), check_status, checked_at FROM blob_stores WHERE domain_id = $1";
     pub const HAS_BLOBS: &str = "SELECT EXISTS (SELECT 1 FROM blobs WHERE store_id = $1)";
     pub const UPDATE_CONFIG: &str = "UPDATE blob_stores SET config = CAST($2 AS JSONB), check_status = 'unchecked', checked_at = NULL WHERE id = $1 AND domain_id IS NOT NULL";
-    pub const RECORD_CHECK: &str = "UPDATE blob_stores SET check_status = $2, checked_at = COALESCE($3, {NOW}) WHERE id = $1";
+    pub const RECORD_CHECK: &str = "UPDATE blob_stores SET check_status = $2, checked_at = CASE WHEN $2 = 'unchecked' THEN NULL ELSE COALESCE($3, {NOW}) END WHERE id = $1";
     pub const LIST: &str = "SELECT id, domain_id, kind, CAST(config AS TEXT), check_status, checked_at FROM blob_stores ORDER BY id";
     pub const DOMAIN_LOCK: &str = "SELECT blob_store_id FROM domains WHERE id = $1 FOR UPDATE";
     pub const DOMAIN_HAS_MESSAGES: &str =

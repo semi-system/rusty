@@ -2295,12 +2295,15 @@ dependencies = [
  "rusty-directory",
  "rusty-seal",
  "rusty-store",
+ "rusty-svc",
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "sqlx",
  "tempfile",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "tracing",
 ]
 

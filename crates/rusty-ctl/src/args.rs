@@ -60,6 +60,8 @@ pub enum Command {
     StorageSet { name: String, endpoint: String, region: String, bucket: String, prefix: String, path_style: bool },
     /// `storage show`: the store of the domain, without its credentials.
     StorageShow { name: String },
+    /// `storage check`: ask the mail service to test the store (a `storage.check` job); the result shows in `storage show`.
+    StorageCheck { name: String },
     /// `domain relay check`: ask the outbound service to test the relay (a `relay.check` job); the result shows in `domain relay show`.
     DomainRelayCheck { name: String },
     /// `blobs init`: make the blob directory of the configuration (mode 0700, with its marker) once, before the first start; it needs no database. Safe to repeat.
@@ -135,6 +137,8 @@ pub const USAGE: &str = "usage: rustyctl [--config FILE | --dev [--data-dir DIR]
                                              give the domain its own S3 store for message bodies (before it holds any message); the access key and the
                                              secret key are read from standard input, one per line, and sealed
   storage show <domain>                      the domain's store, without its credentials
+  storage check <domain>                     ask the mail service to test the store (write, read, list, delete a probe object); the result shows in storage show.
+                                             A store is used only after a check passed
   admin grant <addr> [domain]                let an account use the admin web (all domains, or one); also the recovery path
   admin revoke <addr> | list
   blobs init                                 make the blob directory (0700, with its marker) once, before the first start (no database needed)
@@ -386,6 +390,10 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         ["storage", "show", name] => {
             plain()?;
             done(Command::StorageShow { name: (*name).to_owned() })
+        }
+        ["storage", "check", name] => {
+            plain()?;
+            done(Command::StorageCheck { name: (*name).to_owned() })
         }
         ["domain", "relay", "show", name] => {
             plain()?;

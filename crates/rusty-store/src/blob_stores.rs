@@ -93,6 +93,11 @@ impl BlobRouter for BlobStores {
             return Ok(s.clone());
         }
         let row = self.repo.get(id).await?.ok_or_else(|| Error::NotFound("blob store".into()))?;
+        // A tenant's S3 store is used only after a check recorded `ok` (the settings were tried with the real keys, the bucket answered): until then, and after a check that failed,
+        // mail for the domain is refused with a temporary failure (the sender retries) instead of being sent to a bucket nobody has seen work.
+        if row.kind == "s3" && row.check_status != "ok" {
+            return Err(Error::Busy("blob store not ready".into()));
+        }
         let opened = self.opener.open(&row).await?;
         // Two tasks may have opened it at once: the first one in the map wins, the other is dropped.
         let mut map = self.open.write().unwrap_or_else(|e| e.into_inner());

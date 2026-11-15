@@ -169,8 +169,10 @@ async fn the_s3_settings_of_a_domain_change_only_while_its_store_is_empty() {
     assert!(created);
     assert_eq!((row.kind.as_str(), row.domain, row.check_status.as_str()), ("s3", Some(d), "unchecked"));
     // The same settings again: nothing changes (that is how credentials are rotated).
+    admin.record_check(row.id, "ok").await.unwrap();
     let (same, created) = admin.set_s3(d, &s3("bucket-one")).await.unwrap();
     assert!((!created) && same.id == row.id);
+    assert_eq!((same.check_status.as_str(), same.checked_at), ("unchecked", None), "new keys: the store has to pass a check again");
     // Other settings while the store is empty are fine, and forget the old check.
     admin.record_check(row.id, "ok").await.unwrap();
     let (changed, created) = admin.set_s3(d, &s3("bucket-two")).await.unwrap();
@@ -195,4 +197,44 @@ async fn the_s3_settings_of_a_domain_change_only_while_its_store_is_empty() {
     let held = b.dir.create_account("h", other, None, None).await.unwrap();
     Mailbox::open_with(b.mrepo.clone(), b.blobs.clone(), held).await.unwrap().append(INBOX, raw("x", None), Flags::default()).await.unwrap();
     assert!(matches!(admin.set_s3(other, &s3("bucket-one")).await, Err(Error::Conflict(_))));
+}
+
+/// An opener that hands out a filesystem store whatever the row says: the test is about when the registry opens a row, not about S3.
+struct AnyKindOpener(std::path::PathBuf);
+
+#[async_trait::async_trait]
+impl rusty_store::StoreOpener for AnyKindOpener {
+    async fn open(&self, _row: &rusty_store::BlobStoreRow) -> Result<Arc<dyn rusty_store::BlobStore>, Error> {
+        rusty_store::FsBlobStore::init(&self.0).await?;
+        Ok(Arc::new(rusty_store::FsBlobStore::open(&self.0).await?))
+    }
+}
+
+#[tokio::test]
+async fn a_tenants_s3_store_is_opened_only_after_a_check_recorded_ok() {
+    use rusty_core::storage_policy::validate_tenant_s3;
+    use rusty_store::BlobStoreAdmin;
+    let Some(b) = pg_backend().await else { return };
+    let repo = Arc::new(b.pg.as_ref().unwrap().1.clone());
+    let admin = BlobStoreAdmin::with_repo(repo.clone());
+    let tmp = tempfile::tempdir().unwrap();
+    let router = BlobStores::new(b.blobs.clone(), repo.clone(), Arc::new(AnyKindOpener(tmp.path().join("s3-stand-in"))));
+    let d = b.dir.create_domain("ready.test").await.unwrap();
+    let (row, _) = admin.set_s3(d, &validate_tenant_s3("https://s3.example-cloud.com", "eu-west-3", "tenant-mail", "", true).unwrap()).await.unwrap();
+
+    // Never checked, or a check that failed: the mail of the domain gets a temporary failure, the store is not touched.
+    assert!(matches!(router.store(row.id).await, Err(Error::Busy(_))), "unchecked");
+    admin.record_check(row.id, "auth").await.unwrap();
+    assert!(matches!(router.store(row.id).await, Err(Error::Busy(_))), "a failed check");
+    admin.record_check(row.id, "ok").await.unwrap();
+    assert!(router.store(row.id).await.is_ok(), "a passed check opens it");
+    // New keys (the same settings again) make it unchecked once more; a store that the registry already holds keeps working until the services restart (a later version drops it on the change).
+    admin.set_s3(d, &validate_tenant_s3("https://s3.example-cloud.com", "eu-west-3", "tenant-mail", "", true).unwrap()).await.unwrap();
+    router.forget(row.id);
+    assert!(matches!(router.store(row.id).await, Err(Error::Busy(_))), "unchecked again after a key change");
+    // A filesystem store never needs a check; the platform store neither.
+    let fs_dom = b.dir.create_domain("fsready.test").await.unwrap();
+    let fs_id = repo.create_for_domain(fs_dom, "fs", r#"{"dir":"x"}"#).await.unwrap();
+    assert!(router.store(fs_id).await.is_ok());
+    assert!(router.store(PLATFORM_STORE).await.is_ok());
 }

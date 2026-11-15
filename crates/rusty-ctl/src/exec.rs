@@ -334,6 +334,25 @@ async fn storage_set(env: &mut CtlEnv<'_>, command: &Command) -> Result<Outcome,
     ))
 }
 
+/// `storage check`: the mail service holds the unsealing key, so it is the one that can test the store; this queues the job.
+async fn storage_check(env: &mut CtlEnv<'_>, name: &str) -> Result<Outcome, CtlError> {
+    use rusty_core::storage_policy::STORAGE_CHECK_JOB_KIND;
+    let (admin, _) = storage_stores(env)?;
+    let Some(jobs) = env.jobs else { return Err(CtlError::runtime("the job queue is not available here")) };
+    let dom = find_domain(env, name).await?;
+    let Some(row) = admin.for_domain(dom.id).await.map_err(|e| map_error(&e, "storage"))? else {
+        return Err(CtlError::runtime("the domain has no store of its own to check"));
+    };
+    if row.kind != "s3" {
+        return Err(CtlError::runtime("only an S3 store is checked"));
+    }
+    jobs.enqueue(STORAGE_CHECK_JOB_KIND, Some(dom.id), &json!({ "store": row.id.0 }), None).await.map_err(|e| map_error(&e, "storage check"))?;
+    Ok(Outcome::new(
+        format!("a check of the store of {} was queued; the mail service runs it within seconds: see `rustyctl storage show {}`", dom.name, dom.name),
+        json!({ "domain": dom.name, "store": row.id.0, "queued": true }),
+    ))
+}
+
 /// `storage show`: everything except the credentials, which nothing here can read.
 async fn storage_show(env: &mut CtlEnv<'_>, name: &str) -> Result<Outcome, CtlError> {
     use rusty_core::storage_policy::{ACCESS_KEY_PURPOSE, SECRET_KEY_PURPOSE, STORE_SECRET_OWNER};
@@ -732,6 +751,8 @@ pub async fn execute(command: &Command, env: &mut CtlEnv<'_>) -> Result<Outcome,
         Command::StorageSet { .. } => storage_set(env, command).await,
 
         Command::StorageShow { name } => storage_show(env, name).await,
+
+        Command::StorageCheck { name } => storage_check(env, name).await,
 
         Command::BlobsVerify => blobs_verify(env).await,
 

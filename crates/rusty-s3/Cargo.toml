@@ -13,8 +13,10 @@ publish.workspace = true
 rusty-core = { path = "../rusty-core" }
 rusty-store = { path = "../rusty-store" }
 rusty-seal = { path = "../rusty-seal" }
-serde.workspace = true
+rusty-svc = { path = "../rusty-svc" }
+tokio-util.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 hex.workspace = true
@@ -32,3 +34,4 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "ne
 tempfile.workspace = true
 rusty-store = { path = "../rusty-store", features = ["test-fixtures"] }
 rusty-directory = { path = "../rusty-directory" }
+sqlx.workspace = true
