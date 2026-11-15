@@ -49,22 +49,25 @@ if [ ! -s state/pgtls/server.key ]; then
     openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-384 -nodes -subj "/CN=db" -keyout server.key -out server.csr
     printf "subjectAltName=DNS:db\nextendedKeyUsage=serverAuth\n" > ext.cnf
     openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 3650 -extfile ext.cnf -out server.crt
-    rm -f server.csr ext.cnf ca.srl'
+    rm -f server.csr ext.cnf ca.srl; chmod 0644 ca.pem server.crt'
 fi
 cp state/pgtls/ca.pem state/etc/db-ca.pem
-
-# The sealing key pair: the private half stays in state/keys (mail uid only); the public half goes to both configurations.
-mail_ctl() { docker run --rm --user 65532:65532 --entrypoint /usr/local/bin/rustyctl -v "$PWD/state/keys:/etc/rusty/keys" rusty-mail:local "$@"; }
-[ "${SKIP_BUILD:-0}" = 1 ] || docker compose build >/dev/null   # SKIP_BUILD=1: the images rusty-mail:local and rusty-admin:local already exist
-docker run --rm --user 0 --entrypoint sh -v "$PWD/state:/s" "$HA_IMG" -c 'chown 65532:65532 /s/keys /s/tls /s/secrets /s/secrets/* && chmod 0700 /s/keys /s/secrets && chmod 0600 /s/secrets/* && chmod 0755 /s/tls'
-if [ ! -e state/keys/unseal.key ]; then mail_ctl seal keygen /etc/rusty/keys/unseal.key >/dev/null; fi
-SEAL_PUBLIC="$(mail_ctl seal show /etc/rusty/keys/unseal.key | grep -o 'rusty-seal-v1:[0-9a-f]\{64\}' | head -1)"
-[ -n "$SEAL_PUBLIC" ] || die "could not read the sealing public key"
 
 render() { # template -> file: the values were validated above, none holds a character that matters to sed (| is never in them)
   sed -e "s|@MAIL_HOST@|$MAIL_HOST|g" -e "s|@ADMIN_HOST@|$ADMIN_HOST|g" -e "s|@CONTACT@|$CONTACT|g" -e "s|@PUBLIC_IP@|$PUBLIC_IP|g" \
       -e "s|@SEAL_PUBLIC@|$SEAL_PUBLIC|g" -e "s|@ACME_DIRECTORY@|$ACME_DIR|g" -e "s|@ADMIN_ALLOW@|${ALLOW[*]}|g" "templates/$1.in" > "state/etc/$1"
 }
+# The sealing key pair: the private half stays in state/keys (mail uid only); the public half goes to both configurations.
+mail_ctl() { docker run --rm --user 65532:65532 --entrypoint /usr/local/bin/rustyctl -v "$PWD/state/etc:/etc/rusty:ro" -v "$PWD/state/keys:/etc/rusty-keys" -v "$PWD/state/secrets/pg_app:/run/secrets/pg_app:ro" rusty-mail:local --config /etc/rusty/rusty.toml "$@"; }
+[ "${SKIP_BUILD:-0}" = 1 ] || docker compose build >/dev/null   # SKIP_BUILD=1: the images rusty-mail:local and rusty-admin:local already exist
+docker run --rm --user 0 --entrypoint sh -v "$PWD/state:/s" "$HA_IMG" -c 'chown 65532:65532 /s/keys /s/tls /s/secrets /s/secrets/* && chmod 0700 /s/keys /s/secrets && chmod 0600 /s/secrets/* && chmod 0755 /s/tls'
+# rustyctl always loads a configuration: a bootstrap one (the template with a placeholder key) lets it make and show the key; the real one is rendered after.
+SEAL_PUBLIC="rusty-seal-v1:0000000000000000000000000000000000000000000000000000000000000001"
+render rusty.toml
+if [ ! -e state/keys/unseal.key ]; then mail_ctl seal keygen /etc/rusty-keys/unseal.key >/dev/null; fi
+SEAL_PUBLIC="$(mail_ctl seal show /etc/rusty-keys/unseal.key | grep -o 'rusty-seal-v1:[0-9a-f]\{64\}' | head -1)"
+[ -n "$SEAL_PUBLIC" ] || die "could not read the sealing public key"
+
 render rusty.toml; render admin.toml; render haproxy.cfg
 # The migration run needs the migrator role; the daemon's file never names it.
 { cat state/etc/rusty.toml; echo 'migrator_user = "rusty_migrator"'; echo 'migrator_password_file = "/run/secrets/pg_migrator"'; } > state/etc/migrate.toml

@@ -6,8 +6,8 @@ gc_grace_seconds = 604800
 # The edge (HAProxy) terminates TLS on 465 and 993 and passes 25, 587 and 143 through; every connection starts with a PROXY v2 header from the edge only.
 # The STARTTLS ports use the certificate cert-sync copies from the edge (docs/acme.md); the service reloads it when the files change.
 [tls]
-cert_file = "/etc/rusty/tls/cert.pem"
-key_file = "/etc/rusty/tls/key.pem"
+cert_file = "/etc/rusty-tls/cert.pem"
+key_file = "/etc/rusty-tls/key.pem"
 
 [smtp]
 listen_25 = "0.0.0.0:2525"
@@ -34,7 +34,7 @@ enabled = true
 public_key = "@SEAL_PUBLIC@"
 
 [unsealing]
-key_files = ["/etc/rusty/keys/unseal.key"]
+key_files = ["/etc/rusty-keys/unseal.key"]
 
 [store]
 url = "postgres://rusty_app@db:5432/rusty"
