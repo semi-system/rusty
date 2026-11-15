@@ -35,6 +35,9 @@ BEGIN
     GRANT SELECT, INSERT, UPDATE ON blob_stores TO rusty_admin;
     GRANT SELECT (store_id) ON blobs TO rusty_admin;
     GRANT SELECT (mailbox_id) ON messages TO rusty_admin;
+    -- The backends of a pool are settings too; of where the objects are, the admin may know only which backend holds any (to refuse changing or removing one that does).
+    GRANT SELECT, INSERT, UPDATE, DELETE ON blob_backends TO rusty_admin;
+    GRANT SELECT (backend_id) ON blob_locations TO rusty_admin;
     GRANT INSERT, UPDATE, DELETE ON sealed_secrets TO rusty_admin;
     SELECT string_agg(quote_ident(column_name), ', ' ORDER BY ordinal_position) INTO cols
       FROM information_schema.columns

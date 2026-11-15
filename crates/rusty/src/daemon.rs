@@ -37,6 +37,8 @@ const SUBMISSION_TRANSACTIONS: u32 = 100;
 
 /// How often the GC pass runs.
 const GC_EVERY: Duration = Duration::from_secs(3600);
+/// How often every blob store gets its upkeep (a pool: missing copies, missed deletions, a draining backend).
+const MAINTAIN_EVERY: Duration = Duration::from_secs(60);
 
 /// A started daemon: listeners are bound and serving.
 pub struct Running {
@@ -141,7 +143,7 @@ async fn build(
     let hostname = hostname.as_str();
     let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::open(&cfg.blob_dir).await?);
     let cfg = Arc::new(cfg.clone());
-    let (opener, s3_opener) = tenant_store_opener(&cfg, store)?;
+    let (opener, s3_opener, backend_opener) = tenant_store_opener(&cfg, store)?;
     let ctx = Context::new_with_opener(store.repos(), blobs, cfg.clone(), tls.clone(), opener).await?;
 
     // Bind everything before serving anything: a clash fails the whole start.
@@ -200,6 +202,7 @@ async fn build(
         services.push(Box::new(ListenerService::new(bound, accept, handler)));
     }
     services.push(Box::new(GcService::new(GC_EVERY)));
+    services.push(Box::new(rusty_svc::MaintainService::new(MAINTAIN_EVERY)));
     // Changes made by OTHER processes (a delivery by smtp-in, a job queued by submission): the database announces them
     // at commit (migration 0017) and this one LISTEN connection hands them to the hub (IMAP IDLE) and the outbound
     // worker. In this all-in-one process it only repeats what the in-memory path already did; it is here so that the
@@ -246,10 +249,13 @@ async fn build(
     }
     // The check of a tenant's S3 store (`storage.check`, queued by the admin web or `rustyctl`): it needs the unsealing key, so it runs only where the S3 opener exists.
     if let Some(s3_opener) = s3_opener {
-        services.push(Box::new(rusty_s3::StorageCheckWorker::new(
-            rusty_store::BlobStoreAdmin::with_repo(store.repos().blob_stores.clone()),
-            Arc::new(rusty_s3::S3Prober::new(s3_opener)),
-        )));
+        services.push(Box::new(
+            rusty_s3::StorageCheckWorker::new(
+                rusty_store::BlobStoreAdmin::with_repo(store.repos().blob_stores.clone()),
+                Arc::new(rusty_s3::S3Prober::new(s3_opener).with_other_backends(backend_opener)),
+            )
+            .with_pools(rusty_store::BlobPoolAdmin::with_repos(store.repos().blob_stores.clone(), store.repos().blob_pool.clone())),
+        ));
     }
     for (kind, addr) in &addrs {
         tracing::info!(service = kind.name(), %addr, "listening");
@@ -261,20 +267,26 @@ async fn build(
 /// The opener of the blob stores of tenants: directories next to the platform's, and, when `[unsealing]` names this service's private key (the credentials of an S3 store are sealed
 /// to it), S3 buckets. Without the key a tenant's S3 store cannot be opened, so it is not offered.
 /// The openers of tenants' blob stores: all kinds served (for the registry), and the S3 one by itself (the store check needs it), present only with an unsealing key.
-type TenantOpeners = (Arc<dyn rusty_store::StoreOpener>, Option<Arc<rusty_s3::S3StoreOpener>>);
+type TenantOpeners = (Arc<dyn rusty_store::StoreOpener>, Option<Arc<rusty_s3::S3StoreOpener>>, Arc<dyn rusty_store::BackendOpener>);
 
 fn tenant_store_opener(cfg: &StartupConfig, store: &Store) -> Result<TenantOpeners> {
     let stores_dir = cfg.blob_dir.parent().map_or_else(|| std::path::PathBuf::from("stores"), |p| p.join("stores"));
-    let mut opener = rusty_store::KindOpener::new().with_fs(Arc::new(rusty_store::FsStoreOpener::new(stores_dir)));
+    let fs = Arc::new(rusty_store::FsStoreOpener::new(stores_dir));
+    let mut opener = rusty_store::KindOpener::new().with_fs(fs.clone());
+    let mut backends = rusty_store::KindBackendOpener::new().with_fs(fs);
     let mut s3 = None;
     if let Some(unsealer) = unsealer_of(cfg, &FileSecretSource::new())? {
         let tls = rusty_s3::client::tls_config(None)?;
         let reader = rusty_store::SealedReader::with_repo(store.repos().sealed.clone());
         let o = Arc::new(rusty_s3::S3StoreOpener::new(reader, Arc::new(unsealer), tls));
         opener = opener.with_s3(o.clone());
+        backends = backends.with_s3(o.clone());
         s3 = Some(o);
     }
-    Ok((Arc::new(opener), s3))
+    // A pool opens its backends with the backend opener (a bucket needs the unsealing key like a single S3 store does).
+    let backends: Arc<dyn rusty_store::BackendOpener> = Arc::new(backends);
+    opener = opener.with_pool(Arc::new(rusty_store::PoolOpener::new(store.repos().blob_pool.clone(), backends.clone())));
+    Ok((Arc::new(opener), s3, backends))
 }
 
 /// The private keys named by `[unsealing]` (none when the section is absent: this service opens no sealed secret).

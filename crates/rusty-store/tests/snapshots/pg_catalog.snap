@@ -19,6 +19,20 @@ COLUMN aliases.id bigint nullable=NO identity=YES/ALWAYS collation= default=
 COLUMN aliases.local_part text nullable=NO identity=NO/ collation=C default=
 COLUMN aliases.domain_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN aliases.account_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN blob_backends.id bigint nullable=NO identity=YES/ALWAYS collation= default=
+COLUMN blob_backends.store_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN blob_backends.name text nullable=NO identity=NO/ collation=C default=
+COLUMN blob_backends.kind text nullable=NO identity=NO/ collation=C default=
+COLUMN blob_backends.config jsonb nullable=NO identity=NO/ collation= default='{}'::jsonb
+COLUMN blob_backends.weight integer nullable=NO identity=NO/ collation= default=100
+COLUMN blob_backends.state text nullable=NO identity=NO/ collation=C default='active'::text
+COLUMN blob_backends.check_status text nullable=NO identity=NO/ collation=C default='unchecked'::text
+COLUMN blob_backends.checked_at bigint nullable=YES identity=NO/ collation= default=
+COLUMN blob_backends.created_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN blob_locations.store_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN blob_locations.hash bytea nullable=NO identity=NO/ collation= default=
+COLUMN blob_locations.backend_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN blob_locations.state text nullable=NO identity=NO/ collation=C default='ok'::text
 COLUMN blob_stores.id bigint nullable=NO identity=YES/ALWAYS collation= default=
 COLUMN blob_stores.domain_id bigint nullable=YES identity=NO/ collation= default=
 COLUMN blob_stores.kind text nullable=NO identity=NO/ collation=C default=
@@ -202,6 +216,32 @@ CONSTRAINT aliases.aliases_local_part_domain_id_key UNIQUE (local_part, domain_i
 CONSTRAINT aliases.aliases_local_part_not_null NOT NULL local_part
 CONSTRAINT aliases.aliases_local_part_valid CHECK (length(local_part) > 0 AND local_part = lower(local_part))
 CONSTRAINT aliases.aliases_pkey PRIMARY KEY (id)
+CONSTRAINT blob_backends.blob_backends_check_status_not_null NOT NULL check_status
+CONSTRAINT blob_backends.blob_backends_check_valid CHECK (length(check_status) >= 1 AND length(check_status) <= 64)
+CONSTRAINT blob_backends.blob_backends_config_not_null NOT NULL config
+CONSTRAINT blob_backends.blob_backends_created_at_not_null NOT NULL created_at
+CONSTRAINT blob_backends.blob_backends_id_not_null NOT NULL id
+CONSTRAINT blob_backends.blob_backends_kind_not_null NOT NULL kind
+CONSTRAINT blob_backends.blob_backends_kind_valid CHECK (kind = ANY (ARRAY['fs'::text, 's3'::text]))
+CONSTRAINT blob_backends.blob_backends_name_not_null NOT NULL name
+CONSTRAINT blob_backends.blob_backends_name_unique UNIQUE (store_id, name)
+CONSTRAINT blob_backends.blob_backends_name_valid CHECK (name ~ '^[a-z0-9][a-z0-9_-]{0,31}$'::text)
+CONSTRAINT blob_backends.blob_backends_pkey PRIMARY KEY (id)
+CONSTRAINT blob_backends.blob_backends_state_not_null NOT NULL state
+CONSTRAINT blob_backends.blob_backends_state_valid CHECK (state = ANY (ARRAY['active'::text, 'readonly'::text, 'draining'::text, 'disabled'::text]))
+CONSTRAINT blob_backends.blob_backends_store_id_fkey FOREIGN KEY (store_id) REFERENCES blob_stores(id) ON DELETE RESTRICT
+CONSTRAINT blob_backends.blob_backends_store_id_not_null NOT NULL store_id
+CONSTRAINT blob_backends.blob_backends_weight_not_null NOT NULL weight
+CONSTRAINT blob_backends.blob_backends_weight_valid CHECK (weight >= 1 AND weight <= 1000)
+CONSTRAINT blob_locations.blob_locations_backend_id_fkey FOREIGN KEY (backend_id) REFERENCES blob_backends(id) ON DELETE RESTRICT
+CONSTRAINT blob_locations.blob_locations_backend_id_not_null NOT NULL backend_id
+CONSTRAINT blob_locations.blob_locations_hash_len CHECK (length(hash) = 32)
+CONSTRAINT blob_locations.blob_locations_hash_not_null NOT NULL hash
+CONSTRAINT blob_locations.blob_locations_pkey PRIMARY KEY (store_id, hash, backend_id)
+CONSTRAINT blob_locations.blob_locations_state_not_null NOT NULL state
+CONSTRAINT blob_locations.blob_locations_state_valid CHECK (state = ANY (ARRAY['ok'::text, 'pending_delete'::text]))
+CONSTRAINT blob_locations.blob_locations_store_id_fkey FOREIGN KEY (store_id) REFERENCES blob_stores(id) ON DELETE RESTRICT
+CONSTRAINT blob_locations.blob_locations_store_id_not_null NOT NULL store_id
 CONSTRAINT blob_stores.blob_stores_check_status_not_null NOT NULL check_status
 CONSTRAINT blob_stores.blob_stores_check_valid CHECK (length(check_status) >= 1 AND length(check_status) <= 64)
 CONSTRAINT blob_stores.blob_stores_config_not_null NOT NULL config
@@ -210,7 +250,7 @@ CONSTRAINT blob_stores.blob_stores_domain_id_fkey FOREIGN KEY (domain_id) REFERE
 CONSTRAINT blob_stores.blob_stores_domain_id_key UNIQUE (domain_id)
 CONSTRAINT blob_stores.blob_stores_id_not_null NOT NULL id
 CONSTRAINT blob_stores.blob_stores_kind_not_null NOT NULL kind
-CONSTRAINT blob_stores.blob_stores_kind_valid CHECK (kind = ANY (ARRAY['platform'::text, 'fs'::text, 's3'::text]))
+CONSTRAINT blob_stores.blob_stores_kind_valid CHECK (kind = ANY (ARRAY['platform'::text, 'fs'::text, 's3'::text, 'pool'::text]))
 CONSTRAINT blob_stores.blob_stores_pkey PRIMARY KEY (id)
 CONSTRAINT blob_stores.blob_stores_platform_shape CHECK ((kind = 'platform'::text) = (domain_id IS NULL))
 CONSTRAINT blobs.blobs_hash_length CHECK (octet_length(hash) = 32)
@@ -464,6 +504,10 @@ INDEX admin_grants.admin_grants_domain CREATE INDEX admin_grants_domain ON publi
 INDEX admin_grants.admin_grants_pkey CREATE UNIQUE INDEX admin_grants_pkey ON public.admin_grants USING btree (account_id)
 INDEX aliases.aliases_local_part_domain_id_key CREATE UNIQUE INDEX aliases_local_part_domain_id_key ON public.aliases USING btree (local_part, domain_id)
 INDEX aliases.aliases_pkey CREATE UNIQUE INDEX aliases_pkey ON public.aliases USING btree (id)
+INDEX blob_backends.blob_backends_name_unique CREATE UNIQUE INDEX blob_backends_name_unique ON public.blob_backends USING btree (store_id, name)
+INDEX blob_backends.blob_backends_pkey CREATE UNIQUE INDEX blob_backends_pkey ON public.blob_backends USING btree (id)
+INDEX blob_locations.blob_locations_backend CREATE INDEX blob_locations_backend ON public.blob_locations USING btree (backend_id, state)
+INDEX blob_locations.blob_locations_pkey CREATE UNIQUE INDEX blob_locations_pkey ON public.blob_locations USING btree (store_id, hash, backend_id)
 INDEX blob_stores.blob_stores_domain_id_key CREATE UNIQUE INDEX blob_stores_domain_id_key ON public.blob_stores USING btree (domain_id)
 INDEX blob_stores.blob_stores_pkey CREATE UNIQUE INDEX blob_stores_pkey ON public.blob_stores USING btree (id)
 INDEX blobs.blobs_pkey CREATE UNIQUE INDEX blobs_pkey ON public.blobs USING btree (store_id, hash)

@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rusty_core::{DomainId, Result};
-use rusty_store::repo::{BlobStoreRow, StoreId};
-use rusty_store::BlobStoreAdmin;
+use rusty_store::repo::{BackendRow, BackendState, BlobStoreRow, StoreId};
+use rusty_store::{BackendOpener, BlobPoolAdmin, BlobStoreAdmin};
 use rusty_svc::{Context, Service};
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
@@ -31,16 +31,25 @@ pub async fn enqueue_storage_check(jobs: &rusty_store::JobQueue, domain: DomainI
 #[async_trait]
 pub trait Prober: Send + Sync {
     async fn probe(&self, row: &BlobStoreRow, nonce: u64) -> &'static str;
+    /// The same for one backend of a pool.
+    async fn probe_backend(&self, row: &BackendRow, nonce: u64) -> &'static str;
 }
 
 /// The real check: open the client of the row (settings re-validated, keys unsealed, addresses policed) and probe it.
 pub struct S3Prober {
     opener: Arc<S3StoreOpener>,
+    others: Option<Arc<dyn BackendOpener>>,
 }
 
 impl S3Prober {
     pub fn new(opener: Arc<S3StoreOpener>) -> S3Prober {
-        S3Prober { opener }
+        S3Prober { opener, others: None }
+    }
+
+    /// Also check backends that are not S3 (directories, in development): opened by `others` and tried with a put, a get and a delete.
+    pub fn with_other_backends(mut self, others: Arc<dyn BackendOpener>) -> S3Prober {
+        self.others = Some(others);
+        self
     }
 }
 
@@ -56,17 +65,47 @@ impl Prober for S3Prober {
             Err(f) => f.name(),
         }
     }
+
+    async fn probe_backend(&self, row: &BackendRow, nonce: u64) -> &'static str {
+        if row.kind == "s3" {
+            let client = match self.opener.backend_client(row).await {
+                Ok(c) => c,
+                Err(_) => return "config",
+            };
+            return match probe(&client, nonce).await {
+                Ok(()) => "ok",
+                Err(f) => f.name(),
+            };
+        }
+        let Some(others) = &self.others else { return "config" };
+        let Ok(store) = others.open(row).await else { return "config" };
+        let body = bytes::Bytes::from(format!("rusty backend check {nonce}").into_bytes());
+        let Ok(hash) = store.put(body.clone()).await else { return "server" };
+        let read = store.get(&hash).await;
+        let _ = store.delete_if_older(&hash, std::time::SystemTime::now() + Duration::from_secs(3600)).await;
+        match read {
+            Ok(b) if b == body => "ok",
+            _ => "protocol",
+        }
+    }
 }
 
 pub struct StorageCheckWorker {
     stores: BlobStoreAdmin,
+    pools: Option<BlobPoolAdmin>,
     prober: Arc<dyn Prober>,
     poll: Duration,
 }
 
 impl StorageCheckWorker {
     pub fn new(stores: BlobStoreAdmin, prober: Arc<dyn Prober>) -> StorageCheckWorker {
-        StorageCheckWorker { stores, prober, poll: Duration::from_secs(2) }
+        StorageCheckWorker { stores, pools: None, prober, poll: Duration::from_secs(2) }
+    }
+
+    /// Also check the backends of pools.
+    pub fn with_pools(mut self, pools: BlobPoolAdmin) -> StorageCheckWorker {
+        self.pools = Some(pools);
+        self
     }
 
     /// How long an idle worker sleeps between queue polls.
@@ -78,11 +117,22 @@ impl StorageCheckWorker {
     /// Run the check of one store and record its category. `Ok(())` also for a store that is gone or is not an S3 store (nothing to record).
     async fn check(&self, store: StoreId, nonce: u64) -> Result<()> {
         let Some(row) = self.stores.get(store).await? else { return Ok(()) };
-        if row.kind != "s3" {
-            return Ok(());
+        match row.kind.as_str() {
+            "s3" => {
+                let category = self.prober.probe(&row, nonce).await;
+                self.stores.record_check(store, category).await
+            }
+            // Every backend that is used is tried; the pool is ready when each of them passed.
+            "pool" => {
+                let Some(pools) = &self.pools else { return Ok(()) };
+                for b in pools.backends(store).await?.iter().filter(|b| b.state != BackendState::Disabled) {
+                    let category = self.prober.probe_backend(b, nonce).await;
+                    pools.record_check(b.id, category).await?;
+                }
+                pools.record_pool_check(store).await
+            }
+            _ => Ok(()),
         }
-        let category = self.prober.probe(&row, nonce).await;
-        self.stores.record_check(store, category).await
     }
 }
 

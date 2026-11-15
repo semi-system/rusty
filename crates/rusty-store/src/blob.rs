@@ -153,6 +153,12 @@ pub trait BlobStore: Send + Sync {
     /// if another holder (in this or another process) has it.
     async fn try_lock_gc(&self) -> Result<GcLock>;
 
+    /// Background upkeep a store may need between garbage collections, at most `batch` objects of each kind per call; the number of things done. A single store has none; a pool
+    /// makes missing copies, carries out deletions that could not be done and empties a draining backend.
+    async fn maintain(&self, _batch: u32) -> Result<u64> {
+        Ok(0)
+    }
+
     /// The clock that stamps this store's file modification times: the operating system clock of
     /// the host that owns the volume (`put` refreshes mtimes with it). GC compares it with the
     /// database clock before it judges any file (clock policy, rule 4).

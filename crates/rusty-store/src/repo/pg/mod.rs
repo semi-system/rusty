@@ -8,6 +8,7 @@ mod jobs;
 mod mailbox;
 mod sealed;
 mod blob_store;
+mod blob_pool;
 mod relay;
 mod admin;
 pub mod tx;

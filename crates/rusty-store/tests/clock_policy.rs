@@ -238,6 +238,8 @@ fn no_rust_clock_in_correctness_paths() {
     // them against the OS clock (temp-file sweep, quarantine healing).
     const ALLOWED: &[(&str, &str)] = &[
         ("rusty-store/src/blob.rs", "file mtimes use the OS clock"),
+        ("rusty-store/src/pool.rs", "the breaker's cool-down and the latency average are process-local timing, and the cutoffs of repair are compared with object modification times stamped by the backends"),
+        ("rusty-store/src/blob_stores.rs", "how long an opened blob store is kept is process-local timing"),
         ("rusty-store/src/fixtures/pg_db.rs", "test-only (feature test-fixtures): names and reaps stale test databases"),
     ];
     let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");

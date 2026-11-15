@@ -57,6 +57,7 @@ pub struct Repos {
     pub relay: Arc<dyn crate::repo::RelayRepo>,
     pub admin: Arc<dyn crate::repo::AdminRepo>,
     pub blob_stores: Arc<dyn crate::repo::BlobStoreRepo>,
+    pub blob_pool: Arc<dyn crate::repo::BlobPoolRepo>,
 }
 
 /// An opened store: the repositories plus the Postgres handle.
@@ -84,7 +85,8 @@ impl Store {
                         sealed: repo.clone(),
                         relay: repo.clone(),
                         admin: repo.clone(),
-                        blob_stores: repo,
+                        blob_stores: repo.clone(),
+                        blob_pool: repo,
                     },
                     pg: store,
                 })
