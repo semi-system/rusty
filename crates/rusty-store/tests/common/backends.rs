@@ -24,6 +24,7 @@ pub struct Backend {
     pub jrepo: Arc<dyn JobRepo>,
     pub nrepo: Arc<dyn DnsRepo>,
     pub srepo: Arc<dyn rusty_store::repo::SealedRepo>,
+    pub rrepo: Arc<dyn rusty_store::repo::RelayRepo>,
     pub grepo: Arc<dyn GcRepo>,
     pub blobs: Arc<dyn BlobStore>,
     pub pg: Option<(PgStore, PgRepo)>,
@@ -60,6 +61,7 @@ pub async fn pg_backend() -> Option<Backend> {
         jrepo: arc.clone(),
         nrepo: arc.clone(),
         srepo: arc.clone(),
+        rrepo: arc.clone(),
         grepo: arc,
         blobs: blob_dir(&tmp).await,
         pg: Some((store, repo)),
@@ -420,6 +422,11 @@ impl Backend {
     /// The DNS validation store over this backend's repository.
     pub fn dns(&self) -> DnsStore {
         DnsStore::with_repo(self.nrepo.clone())
+    }
+
+    /// The per-domain relay store over this backend's repository.
+    pub fn relay(&self) -> rusty_store::RelayStore {
+        rusty_store::RelayStore::with_repo(self.rrepo.clone())
     }
 
     /// The writer facade of the sealed secrets (what the admin service holds).

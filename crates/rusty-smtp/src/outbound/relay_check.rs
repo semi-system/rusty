@@ -19,7 +19,7 @@ use rusty_svc::SecretSource;
 
 use super::client::{probe_session, HostFailure, SessionParams, Timeouts};
 use super::dial::Dialer;
-use super::route::{ConfigRoute, OutboundRoute, Route};
+use super::route::{ConfigRoute, OutboundRoute, RelaySpec, Route};
 use super::tls::{TlsInfo, TlsUpgrader};
 use crate::resolve::MxResolver;
 
@@ -70,6 +70,8 @@ pub enum RelayFailure {
     NoMechanism { offered: Vec<String> },
     /// The conversation failed (no greeting in time, an invalid or refusing reply).
     Protocol,
+    /// A tenant's relay resolves only to addresses that are not public (nothing was connected to).
+    Refused,
 }
 
 impl fmt::Display for RelayFailure {
@@ -83,11 +85,26 @@ impl fmt::Display for RelayFailure {
             RelayFailure::Auth => "the relay refused the user name or password",
             RelayFailure::NoMechanism { .. } => "the relay offers no login mechanism this server speaks (PLAIN or LOGIN)",
             RelayFailure::Protocol => "the relay did not complete the SMTP conversation",
+            RelayFailure::Refused => "the relay's name resolves only to addresses that are not on the public internet",
         })
     }
 }
 
 impl std::error::Error for RelayFailure {}
+
+impl RelayFailure {
+    /// The fixed category stored for a failed check (`domain_relays.check_status`; see `rusty_store::CHECK_STATUSES`).
+    pub fn category(&self) -> &'static str {
+        match self {
+            RelayFailure::Credentials => "unsealable",
+            RelayFailure::Tls => "tls_failed",
+            RelayFailure::Auth => "auth_failed",
+            RelayFailure::NoMechanism { .. } => "no_login_mechanism",
+            RelayFailure::Refused => "refused_address",
+            RelayFailure::NotConfigured | RelayFailure::Dns | RelayFailure::Connect | RelayFailure::Protocol => "unreachable",
+        }
+    }
+}
 
 pub async fn check_relay(cfg: &OutboundConfig, deps: &RelayCheckDeps<'_>) -> Result<RelayReport, RelayFailure> {
     if cfg.relay.is_none() {
@@ -96,7 +113,21 @@ pub async fn check_relay(cfg: &OutboundConfig, deps: &RelayCheckDeps<'_>) -> Res
     // The same code the worker uses reads the password (a bad file is refused here, before any connection).
     let route = ConfigRoute::from_config(cfg, deps.secrets).map_err(|_| RelayFailure::Credentials)?;
     let Ok(Route::Relay(spec)) = route.route("", "").await else { return Err(RelayFailure::NotConfigured) };
+    probe_spec(&spec, cfg, deps).await
+}
 
+/// The relay a tenant entered for `domain`, checked the way the worker would use it: the same route (database row, sealed password), the same
+/// public-addresses-only rule, the same session code. A route that is not a relay, or whose password cannot be opened, is a failure with its category.
+pub async fn check_domain_relay(route: &dyn OutboundRoute, domain: &str, cfg: &OutboundConfig, deps: &RelayCheckDeps<'_>) -> Result<RelayReport, RelayFailure> {
+    match route.route(domain, "").await {
+        Ok(Route::Relay(spec)) if spec.public_only => probe_spec(&spec, cfg, deps).await,
+        Ok(_) => Err(RelayFailure::NotConfigured),
+        Err(_) => Err(RelayFailure::Credentials),
+    }
+}
+
+/// Resolve, connect, TLS and log in to `spec`, and stop: no mail. A tenant relay (`public_only`) is judged on what its name resolves to now.
+pub async fn probe_spec(spec: &RelaySpec, cfg: &OutboundConfig, deps: &RelayCheckDeps<'_>) -> Result<RelayReport, RelayFailure> {
     let addrs = if let Ok(ip) = spec.host.parse::<IpAddr>() {
         vec![ip]
     } else {
@@ -105,6 +136,10 @@ pub async fn check_relay(cfg: &OutboundConfig, deps: &RelayCheckDeps<'_>) -> Res
             _ => return Err(RelayFailure::Dns),
         }
     };
+    let addrs: Vec<IpAddr> = if spec.public_only { addrs.into_iter().filter(|a| rusty_core::relay_policy::is_public_address(*a)).collect() } else { addrs };
+    if addrs.is_empty() {
+        return Err(RelayFailure::Refused);
+    }
 
     let policy = if spec.tls == RelayTls::None { TlsPolicy::None } else { TlsPolicy::Verified };
     let implicit = spec.tls == RelayTls::Implicit;

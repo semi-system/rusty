@@ -19,6 +19,7 @@
 mod directory;
 mod gc;
 pub(crate) mod sealed;
+pub(crate) mod relay;
 mod dns;
 pub(crate) mod jobs;
 mod mailbox;
@@ -28,6 +29,7 @@ pub mod pg;
 pub use dns::{DkimKeyRow, DnsConfig, DnsConfigRow, DnsEventRow, DnsRepo};
 pub use gc::{GcRepo, PurgeBatch};
 pub use sealed::{SealedMeta, SealedRepo, SealedRow};
+pub use relay::{RelayRepo, RelayRow};
 pub use jobs::{BatchJob, BatchRequest, ClaimRequest, JobRepo, NewJob, OwnerLimits};
 pub use directory::{
     AccountInfo, AccountStatus, AliasInfo, AuthRow, CapabilityGrant, ConfigLayers, ConfigTarget,

@@ -83,3 +83,63 @@ certificate bundle.
 The tests run against loopback fake relays with real TLS (rustls) for STARTTLS, implicit TLS, wrong certificates and host
 names, broken handshakes, `PLAIN` and `LOGIN`. They have **not** been run against a real provider (SES, SendGrid, Mailgun):
 try `relay check` with your account before relying on it.
+
+## Per-domain relays: the rules, the storage and the outbound route
+
+A tenant administrator will be able to enter the relay of **its own domain** in the web admin (design section 14.4). This change adds the rules and the
+storage and the outbound service side; `rustyctl domain relay` enters one (below), the web comes later.
+
+* `rusty_core::relay_policy`: what a tenant may choose. The port is one of 25, 465, 587, 2525; the host is a DNS name of two or more labels (no
+  `localhost`, `.local`, `.internal`, numeric last label) or a **public** IP literal; a login is refused over `tls = none`; implicit TLS only on 465.
+  `is_public_address` is the check the outbound service will apply to every **resolved** address at every connection (private ranges, loopback, link-local
+  including the cloud metadata address, CGNAT, documentation, benchmarking, reserved, multicast; IPv4 inside mapped, NAT64 and 6to4 addresses is judged as IPv4).
+  Refusal texts never echo what was entered.
+* Table `domain_relays` (migration 0020): host, port, TLS mode, user name, SPF include and the fixed category of the last connection check. The table
+  repeats the port, TLS and login rules. The **password is not in it**: it is a sealed secret (`docs/sealed-secrets.md`, purpose `relay-password`).
+* `RelayStore` validates, stores, replaces (a replaced relay forgets its last check) and removes; a relay goes with its domain.
+* `DomainRoute` (outbound service, when `[unsealing]` is set): mail sent **from** a domain that has a row in `domain_relays` leaves through that relay;
+  every other domain uses the platform route (`[outbound.relay]` or direct). Relays are read from the database and kept 60 seconds. The password is opened
+  from `sealed_secrets` (purpose `relay-password`, context bound to the domain). A relay with a user name whose password is missing or cannot be opened is
+  an **error**: the worker defers the mail and never connects without credentials. TLS is verified, as for any relay with a login.
+* **SSRF at every connection**: a tenant's relay is marked `public_only`; each attempt resolves the name again and the worker connects only to addresses
+  for which `is_public_address` holds. A name that now points inside (10.x, 127.x, 169.254.169.254, CGNAT, ULA, ...) makes the attempt fail and the mail wait;
+  no connection is made. The platform relay of the operator is not subject to this (it is the operator's own choice).
+
+## Entering a domain's relay: `rustyctl domain relay`
+
+```
+rustyctl domain relay set example.org --host smtp.mail.net [--port 587] [--tls starttls|implicit|none] \
+                                      [--user U] [--spf-include spf.mail.net] [--password-stdin | --prompt]
+rustyctl domain relay show example.org      # everything except the password (it can only be overwritten, never read back)
+rustyctl domain relay remove example.org    # the domain goes back to the platform route; the sealed password goes too
+```
+
+* The rules are those of `rusty_core::relay_policy` (the web will apply the same): the four mail ports, a public host, a login only over TLS.
+  The default port is 587, or 465 with `--tls implicit`.
+* A relay with `--user` **always** needs its password in the same command, and the password is sealed to `[sealing] public_key` before it is stored.
+  A new host never inherits the password given for an earlier one; setting a relay without a login deletes the old sealed password.
+* `show` tells whether a password is set and the category of the last connection check (`never checked` until the `relay.check` job exists).
+* The outbound service uses the relay within a minute (its cache), once `[unsealing]` is configured there.
+
+## Testing a domain's relay: `relay.check`
+
+```
+rustyctl domain relay check example.org     # queues the check; the outbound service runs it
+rustyctl domain relay show example.org      # ... last check: ok (at <unix time>)
+```
+
+The admin side cannot read the password back, so it cannot test the connection itself. `domain relay check` (and, later, the web's "Test connection")
+enqueues a `relay.check` job; the outbound service, which holds the unsealing key (`[unsealing]`), resolves the relay, connects, negotiates TLS and logs in
+through the same code and the same route the worker uses, **sends no mail**, and records one fixed category with its time on the relay:
+
+| `last check` | Meaning |
+|---|---|
+| `ok` | resolved, TLS verified, login accepted |
+| `auth_failed` | the relay refused the user name or password |
+| `tls_failed` | TLS not offered, refused, or the certificate does not verify |
+| `no_login_mechanism` | the relay offers no PLAIN or LOGIN |
+| `refused_address` | the name resolves only to non-public addresses; nothing was connected to |
+| `unsealable` | the password is missing or this service cannot open it |
+| `unreachable` | the name does not resolve, nothing accepted a connection, or the conversation failed |
+
+No text of the remote server, no host and no address is stored. Replacing the relay clears the last check (it described another server).

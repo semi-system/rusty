@@ -52,6 +52,14 @@ pub enum Command {
     /// `dkim generate --sealed`: make the key and seal its private half in the database; no file, no key directory.
     DkimGenerateSealed { domain: String, selector: String },
     DkimImport { domain: String, selector: String, key_file: PathBuf },
+    /// `domain relay set`: the relay of one domain (host, port, TLS, login; the password is read from stdin or the terminal and sealed).
+    DomainRelaySet { name: String, host: String, port: u16, tls: rusty_core::config::RelayTls, user: Option<String>, spf_include: Option<String>, password: PasswordSource },
+    /// `domain relay show`: the relay of the domain, without its password.
+    DomainRelayShow { name: String },
+    /// `domain relay check`: ask the outbound service to test the relay (a `relay.check` job); the result shows in `domain relay show`.
+    DomainRelayCheck { name: String },
+    /// `domain relay remove`: the domain goes back to the platform route; its sealed password is removed.
+    DomainRelayRemove { name: String },
     Check,
     /// `db migrate`: apply pending Postgres migrations with the migrator role (never the daemon).
     DbMigrate { require_roles: bool },
@@ -106,6 +114,9 @@ pub const USAGE: &str = "usage: rustyctl [--config FILE | --dev [--data-dir DIR]
                                              keep an RSA (2048-4096 bit) or ed25519 private key (0600)\n\
                                              and print its DNS record; make an RSA key with\n\
                                              openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048\n\
+  domain relay set <domain> --host H [--port P] [--tls starttls|implicit|none] [--user U] [--spf-include NAME] [--password-stdin | --prompt]
+                                             the relay this domain's mail leaves through (a login needs the password, which is sealed)
+  domain relay show <domain> | remove <domain> | check <domain>
   relay check                                log in to the configured relay (resolve, TLS, AUTH) without sending mail
   seal keygen <file>                         make the key that opens sealed secrets (private half to <file>, 0600), print the public half
   seal show <file>                           print the public half and the id of the key in <file>
@@ -129,6 +140,11 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
     let mut help = false;
     let mut without_roles = false;
     let mut sealed = false;
+    let mut relay_host: Option<String> = None;
+    let mut relay_port: Option<String> = None;
+    let mut relay_tls: Option<String> = None;
+    let mut relay_user: Option<String> = None;
+    let mut relay_spf: Option<String> = None;
     let mut words: Vec<&str> = Vec::new();
 
     let mut it = args.iter();
@@ -144,6 +160,11 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             "--config" => config = Some(PathBuf::from(it.next().ok_or(err("--config needs a value"))?)),
             "--data-dir" => data_dir = Some(PathBuf::from(it.next().ok_or(err("--data-dir needs a value"))?)),
             "--selector" => selector = Some(it.next().ok_or(err("--selector needs a value"))?.clone()),
+            "--host" => relay_host = Some(it.next().ok_or(err("--host needs a value"))?.clone()),
+            "--port" => relay_port = Some(it.next().ok_or(err("--port needs a value"))?.clone()),
+            "--tls" => relay_tls = Some(it.next().ok_or(err("--tls needs a value"))?.clone()),
+            "--user" => relay_user = Some(it.next().ok_or(err("--user needs a value"))?.clone()),
+            "--spf-include" => relay_spf = Some(it.next().ok_or(err("--spf-include needs a value"))?.clone()),
             s if s == "-p" || s == "--password" || s.starts_with("--password=") => {
                 return Err(err(
                     "a password is never accepted on the command line; use --password-stdin or --prompt",
@@ -206,6 +227,10 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         }
     };
 
+    let relay_opts = relay_host.is_some() || relay_port.is_some() || relay_tls.is_some() || relay_user.is_some() || relay_spf.is_some();
+    if relay_opts && !matches!(words.as_slice(), ["domain", "relay", "set", _]) {
+        return Err(err("--host, --port, --tls, --user and --spf-include apply to domain relay set only"));
+    }
     if sealed && !matches!(words.as_slice(), ["dkim", "generate", _]) {
         return Err(err("--sealed applies to dkim generate only"));
     }
@@ -291,6 +316,34 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             no_password()?;
             no_without_roles()?;
             done(Command::DkimImport { domain: (*domain).to_owned(), selector: dkim_selector()?, key_file: PathBuf::from(key_file) })
+        }
+        ["domain", "relay", "set", name] => {
+            no_selector()?;
+            no_without_roles()?;
+            let host = relay_host.clone().ok_or(err("domain relay set needs --host"))?;
+            let tls = match relay_tls.as_deref() {
+                None | Some("starttls") => rusty_core::config::RelayTls::Starttls,
+                Some("implicit") => rusty_core::config::RelayTls::Implicit,
+                Some("none") => rusty_core::config::RelayTls::None,
+                Some(_) => return Err(err("--tls must be starttls, implicit or none")),
+            };
+            let port = match relay_port.as_deref() {
+                None => if tls == rusty_core::config::RelayTls::Implicit { 465 } else { 587 },
+                Some(p) => p.parse::<u16>().map_err(|_| err("--port must be a number"))?,
+            };
+            done(Command::DomainRelaySet { name: (*name).to_owned(), host, port, tls, user: relay_user.clone(), spf_include: relay_spf.clone(), password })
+        }
+        ["domain", "relay", "show", name] => {
+            plain()?;
+            done(Command::DomainRelayShow { name: (*name).to_owned() })
+        }
+        ["domain", "relay", "check", name] => {
+            plain()?;
+            done(Command::DomainRelayCheck { name: (*name).to_owned() })
+        }
+        ["domain", "relay", "remove", name] => {
+            plain()?;
+            done(Command::DomainRelayRemove { name: (*name).to_owned() })
         }
         ["db", "migrate"] => {
             no_password()?;
