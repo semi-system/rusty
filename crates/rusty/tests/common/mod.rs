@@ -41,6 +41,8 @@ use rusty_store::{Store, StoreConfig};
 pub struct PgDev {
     db: PgTestDb,
     pub url: String,
+    /// The same login reached directly: `[store] direct_url` when the suite runs behind a pooler (`RUSTY_TEST_PG_POOLED`).
+    direct_url: String,
     pub password: String,
     pw_dir: tempfile::TempDir,
 }
@@ -54,7 +56,8 @@ pub async fn pg_dev() -> PgDev {
     let file = pw_dir.path().join("pg-password");
     std::fs::write(&file, &password).unwrap();
     std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
-    PgDev { db, url, password, pw_dir }
+    let direct_url = db.direct_split_url().0;
+    PgDev { db, url, direct_url, password, pw_dir }
 }
 
 impl PgDev {
@@ -68,6 +71,9 @@ impl PgDev {
             // The test server has no TLS: production accepts that only with this explicit, logged override.
             insecure_allow_unverified_tls: true,
             password_from_dev_env: false,
+            // Behind a pooler the daemon is configured the way a deployment is: the pooler flag, and the database itself for the change feed.
+            pooler: std::env::var("RUSTY_TEST_PG_POOLED").is_ok_and(|v| !v.is_empty()),
+            direct_url: std::env::var("RUSTY_TEST_PG_POOLED").is_ok_and(|v| !v.is_empty()).then(|| self.direct_url.clone()),
             ..StoreSection::default()
         };
         c

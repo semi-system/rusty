@@ -88,12 +88,18 @@ pub struct PgSecurity {
     /// Refuse a role that is not a plain runtime role (superuser, DDL rights, TRUNCATE, writes on
     /// the address registry) or has no statement / idle-in-transaction timeout of its own.
     pub verify_role: bool,
+    /// `url` is a connection pooler in transaction mode: no server-side prepared statements (they live in one server connection, and the next statement may run in another).
+    pub pooler: bool,
+    /// The database itself, for the connections that need a session (the change feed): used when `pooler` is set, else the main URL serves.
+    pub direct_url: Option<String>,
 }
 
 /// A bounded PostgreSQL pool. Clones share the same pool and the same write queue.
 #[derive(Clone)]
 pub struct PgStore {
     pool: PgPool,
+    /// How the change feed connects: the database itself when the main connection goes through a pooler.
+    feed_options: PgConnectOptions,
     lock_timeout: String,
     queue: Arc<MailboxQueue>,
 }
@@ -134,6 +140,10 @@ pub(crate) fn connect_options(url: &str, security: &PgSecurity) -> Result<PgConn
     }
     if let Some(p) = &security.password {
         options = options.password(&p.0);
+    }
+    if security.pooler {
+        // Behind a transaction pooler a named prepared statement made on one server connection is missing on the next: every statement is sent unprepared.
+        options = options.statement_cache_capacity(0);
     }
     let host = options.get_host().to_owned();
     let local = host.starts_with('/') || is_loopback_host(&host);
@@ -184,7 +194,12 @@ impl PgStore {
             pool.close().await;
             return Err(e);
         }
-        Ok(Self { pool, lock_timeout, queue: Arc::new(MailboxQueue::new(config.queue_timeout)) })
+        // The change feed's LISTEN needs a session: behind a pooler it connects to the database directly (same TLS policy, same password).
+        let feed_options = match (&security.pooler, &security.direct_url) {
+            (true, Some(direct)) => connect_options(direct, &PgSecurity { pooler: false, ..security.clone() })?,
+            _ => (*pool.connect_options()).clone(),
+        };
+        Ok(Self { pool, feed_options, lock_timeout, queue: Arc::new(MailboxQueue::new(config.queue_timeout)) })
     }
 
     /// The underlying pool. Public only with the `test-fixtures` feature (dev-dependencies only,
@@ -230,7 +245,7 @@ impl PgStore {
     /// The feed of changes made by other processes (migration 0017): one dedicated connection that LISTENs.
     /// Nothing connects until it is run.
     pub fn change_feed(&self) -> crate::feed::PgChangeFeed {
-        crate::feed::PgChangeFeed::new(&self.pool)
+        crate::feed::PgChangeFeed::new(self.feed_options.clone())
     }
 
     /// Close all connections and wait for checked-out connections to return.

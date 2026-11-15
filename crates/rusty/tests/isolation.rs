@@ -315,7 +315,8 @@ async fn an_authenticated_sender_cannot_send_as_another_user_or_tenant() {
         assert!(s.cmd("RCPT TO:<amy@a.test>").starts_with("250"));
         assert!(s.cmd("DATA").starts_with("354"));
         let ok = "From: Alice <alice@a.test>\r\nTo: amy@a.test\r\nSubject: fine\r\nMessage-ID: <g@a.test>\r\nDate: Mon, 09 Nov 2026 10:00:00 +0000\r\n\r\nx\r\n.";
-        assert!(s.cmd(ok).starts_with("250"));
+        let r = s.cmd(ok);
+        assert!(r.starts_with("250"), "her own name was refused: {r}");
     })
     .await
     .unwrap();
