@@ -813,3 +813,88 @@ async fn storage_check_queues_one_job_for_the_store_and_refuses_what_has_nothing
     })
     .await;
 }
+
+fn backend_add(domain: &str, name: &str, bucket: &str, weight: u32) -> Command {
+    Command::StorageBackendAdd { name: domain.into(), backend: name.into(), endpoint: "https://s3.example-cloud.com".into(), region: "eu-west-3".into(), bucket: bucket.into(), prefix: String::new(), path_style: true, weight }
+}
+
+#[tokio::test]
+async fn a_pool_is_built_with_sealed_backend_keys_checked_changed_and_emptied_before_a_backend_goes() {
+    use rusty_core::storage_policy::{ACCESS_KEY_PURPOSE, BACKEND_SECRET_OWNER, SECRET_KEY_PURPOSE};
+    use rusty_store::repo::{BackendState, StoreId};
+    for_each_backend(|b| async move {
+        let n = b.name;
+        b.run(Command::DomainAdd { name: "example.org".into() }, &[]).await.unwrap();
+        let (unseal, seal) = rusty_seal::generate();
+        let keys = ["AKIAEXAMPLEKEY", "super-secret-key-material"];
+        // No pool yet: backends have nowhere to go.
+        assert!(b.run_relay(backend_add("example.org", "a", "bucket-a", 100), &keys, Some(&seal)).await.is_err(), "{n}");
+        let policy = rusty_store::PoolPolicy::parse(r#"{"copies":2,"sync_copies":1,"placement":"ordered","read":"ordered"}"#).unwrap();
+        let out = b.run_relay(Command::StoragePool { name: "example.org".into(), policy }, &[], None).await.unwrap();
+        let store = StoreId(out.json["store"].as_i64().unwrap());
+        for (name, bucket) in [("a", "bucket-a"), ("b", "bucket-b")] {
+            let r = b.run_relay(backend_add("example.org", name, bucket, 100), &keys, Some(&seal)).await.unwrap();
+            let printed = format!("{} {}", r.text, r.json);
+            assert!(!printed.contains("AKIAEXAMPLEKEY") && !printed.contains("super-secret"), "{n}: the keys never print");
+        }
+        // Both keys of each backend are sealed to that backend, and only for it.
+        let unsealer = rusty_seal::Unsealer::new(vec![unseal]).unwrap();
+        let backends = b.store.repos().blob_pool.backends(store).await.unwrap();
+        assert_eq!(backends.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), vec!["a", "b"], "{n}");
+        for be in &backends {
+            for (purpose, plain) in [(ACCESS_KEY_PURPOSE, "AKIAEXAMPLEKEY"), (SECRET_KEY_PURPOSE, "super-secret-key-material")] {
+                let sealed = b.store.repos().sealed.get(BACKEND_SECRET_OWNER, be.id.0, purpose).await.unwrap().unwrap();
+                let ctx = rusty_seal::Context::new(BACKEND_SECRET_OWNER, be.id.0, purpose).unwrap();
+                assert_eq!(&**unsealer.unseal(&ctx, &sealed.sealed).unwrap(), plain.as_bytes(), "{n}");
+                let other = rusty_seal::Context::new(BACKEND_SECRET_OWNER, be.id.0 + 1, purpose).unwrap();
+                assert!(unsealer.unseal(&other, &sealed.sealed).is_err(), "{n}: bound to its backend");
+            }
+        }
+        // The same name twice, a bad weight and a bad endpoint change nothing.
+        assert!(b.run_relay(backend_add("example.org", "a", "bucket-x", 100), &keys, Some(&seal)).await.is_err(), "{n}");
+        assert!(b.run_relay(backend_add("example.org", "c", "bucket-c", 0), &keys, Some(&seal)).await.is_err(), "{n}");
+        let bad = Command::StorageBackendAdd { name: "example.org".into(), backend: "c".into(), endpoint: "https://127.0.0.1".into(), region: "r".into(), bucket: "bucket-c".into(), prefix: String::new(), path_style: true, weight: 100 };
+        assert!(b.run_relay(bad, &keys, Some(&seal)).await.is_err(), "{n}");
+        assert_eq!(b.store.repos().blob_pool.backends(store).await.unwrap().len(), 2, "{n}");
+
+        // Show: the policy and the backends, no keys.
+        let shown = b.run_relay(Command::StorageShow { name: "example.org".into() }, &[], None).await.unwrap();
+        assert!(shown.text.contains("pool store") && shown.text.contains("bucket-a") && shown.text.contains("bucket-b") && shown.text.contains("keys sealed/sealed"), "{n}: {}", shown.text);
+        assert!(!shown.text.contains("super-secret") && !shown.json.to_string().contains("super-secret"), "{n}");
+        assert_eq!(shown.json["backends"].as_array().unwrap().len(), 2, "{n}");
+        // Check queues a job for the store.
+        let q = b.run_relay(Command::StorageCheck { name: "example.org".into() }, &[], None).await.unwrap();
+        assert_eq!(q.json["queued"], true, "{n}");
+
+        // State and weight; the keys can be replaced (the backend has to be checked again).
+        b.run_relay(Command::StorageBackendSet { name: "example.org".into(), backend: "b".into(), state: Some(BackendState::Draining), weight: Some(300) }, &[], None).await.unwrap();
+        let be = b.store.repos().blob_pool.backends(store).await.unwrap().into_iter().find(|x| x.name == "b").unwrap();
+        assert_eq!((be.state, be.weight), (BackendState::Draining, 300), "{n}");
+        b.store.repos().blob_pool.record_backend_check(be.id, "ok", None).await.unwrap();
+        b.run_relay(Command::StorageBackendRekey { name: "example.org".into(), backend: "b".into() }, &["AKIANEW", "newsecret"], Some(&seal)).await.unwrap();
+        assert_eq!(b.store.repos().blob_pool.backend(be.id).await.unwrap().unwrap().check_status, "unchecked", "{n}: new keys, new check");
+        assert!(b.run_relay(Command::StorageBackendSet { name: "example.org".into(), backend: "nosuch".into(), state: None, weight: Some(5) }, &[], None).await.is_err(), "{n}");
+
+        // Remove: a backend that holds an object stays until it is drained.
+        let hash = rusty_core::BlobHash::of(b"x");
+        b.store.repos().blob_pool.add_locations(store, &hash, &[be.id]).await.unwrap();
+        assert!(b.run_relay(Command::StorageBackendRemove { name: "example.org".into(), backend: "b".into() }, &[], None).await.is_err(), "{n}: it still holds an object");
+        b.store.repos().blob_pool.remove_location(store, &hash, be.id).await.unwrap();
+        b.run_relay(Command::StorageBackendRemove { name: "example.org".into(), backend: "b".into() }, &[], None).await.unwrap();
+        assert_eq!(b.store.repos().blob_pool.backends(store).await.unwrap().len(), 1, "{n}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_domain_with_another_kind_of_store_cannot_become_a_pool() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        b.run(Command::DomainAdd { name: "example.org".into() }, &[]).await.unwrap();
+        let (_u, seal) = rusty_seal::generate();
+        b.run_relay(storage_set("example.org", "https://s3.example-cloud.com", "tenant-mail"), &["AKIAEXAMPLEKEY", "super-secret-key-material"], Some(&seal)).await.unwrap();
+        let policy = rusty_store::PoolPolicy::default();
+        assert!(b.run_relay(Command::StoragePool { name: "example.org".into(), policy }, &[], None).await.is_err(), "{n}");
+    })
+    .await;
+}

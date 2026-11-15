@@ -75,6 +75,8 @@ pub struct CtlEnv<'a> {
     pub relays: Option<&'a rusty_store::RelayStore>,
     /// The blob stores of domains (`storage`).
     pub blob_stores: Option<&'a rusty_store::BlobStoreAdmin>,
+    /// The pools of backends of domains (`storage pool`, `storage backend`).
+    pub pools: Option<&'a rusty_store::BlobPoolAdmin>,
     /// The job queue (`domain relay check` enqueues a `relay.check` job for the outbound service).
     pub jobs: Option<&'a rusty_store::JobQueue>,
     /// Administrator grants (`admin grant`, `revoke`, `list`).
@@ -343,8 +345,8 @@ async fn storage_check(env: &mut CtlEnv<'_>, name: &str) -> Result<Outcome, CtlE
     let Some(row) = admin.for_domain(dom.id).await.map_err(|e| map_error(&e, "storage"))? else {
         return Err(CtlError::runtime("the domain has no store of its own to check"));
     };
-    if row.kind != "s3" {
-        return Err(CtlError::runtime("only an S3 store is checked"));
+    if row.kind != "s3" && row.kind != "pool" {
+        return Err(CtlError::runtime("only an S3 store or a pool is checked"));
     }
     jobs.enqueue(STORAGE_CHECK_JOB_KIND, Some(dom.id), &json!({ "store": row.id.0 }), None).await.map_err(|e| map_error(&e, "storage check"))?;
     Ok(Outcome::new(
@@ -361,6 +363,36 @@ async fn storage_show(env: &mut CtlEnv<'_>, name: &str) -> Result<Outcome, CtlEr
     let Some(row) = admin.for_domain(dom.id).await.map_err(|e| map_error(&e, "storage"))? else {
         return Ok(Outcome::new(format!("{} uses the platform blob store", dom.name), json!({ "domain": dom.name, "store": null })));
     };
+    if row.kind == "pool" {
+        let backends = backends_json(env, row.id).await?;
+        let lines: Vec<String> = backends
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|b| {
+                        format!(
+                            "  {} [{}] weight {} {} bucket {}; keys {}/{}; {} objects; check: {}",
+                            b["name"].as_str().unwrap_or("?"),
+                            b["state"].as_str().unwrap_or("?"),
+                            b["weight"],
+                            b["settings"]["endpoint"].as_str().unwrap_or("?"),
+                            b["settings"]["bucket"].as_str().unwrap_or("?"),
+                            if b["access_key_set"] == true { "sealed" } else { "MISSING" },
+                            if b["secret_key_set"] == true { "sealed" } else { "MISSING" },
+                            b["objects"],
+                            b["check_status"].as_str().unwrap_or("?"),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let policy: Value = serde_json::from_str(&row.config).unwrap_or(Value::Null);
+        let text = format!("{}: pool store {} {}; pool check: {}\n{}", dom.name, row.id.0, policy, row.check_status, lines.join("\n"));
+        return Ok(Outcome::new(
+            text,
+            json!({ "domain": dom.name, "store": row.id.0, "kind": "pool", "policy": policy, "check_status": row.check_status, "checked_at": row.checked_at, "backends": backends }),
+        ));
+    }
     let meta = writer.meta(STORE_SECRET_OWNER, row.id.0).await.map_err(|e| map_error(&e, "storage credentials"))?;
     let has = |p: &str| meta.iter().any(|m| m.purpose == p);
     let (access, secret) = (has(ACCESS_KEY_PURPOSE), has(SECRET_KEY_PURPOSE));
@@ -753,6 +785,18 @@ pub async fn execute(command: &Command, env: &mut CtlEnv<'_>) -> Result<Outcome,
         Command::StorageShow { name } => storage_show(env, name).await,
 
         Command::StorageCheck { name } => storage_check(env, name).await,
+
+        Command::StoragePool { name, policy } => storage_pool(env, name, *policy).await,
+
+        Command::StorageBackendAdd { name, backend, endpoint, region, bucket, prefix, path_style, weight } => {
+            storage_backend_add(env, name, backend, endpoint, region, bucket, prefix, *path_style, *weight).await
+        }
+
+        Command::StorageBackendRekey { name, backend } => storage_backend_rekey(env, name, backend).await,
+
+        Command::StorageBackendSet { name, backend, state, weight } => storage_backend_set(env, name, backend, *state, *weight).await,
+
+        Command::StorageBackendRemove { name, backend } => storage_backend_remove(env, name, backend).await,
 
         Command::BlobsVerify => blobs_verify(env).await,
 
@@ -1159,4 +1203,145 @@ pub fn render(outcome: &Outcome, json: bool) -> String {
     } else {
         outcome.text.clone()
     }
+}
+
+// ------------------------------------------------------------------------------------------------ pools of backends (docs/design-s3-per-tenant.md, section 12)
+
+fn pool_stores<'a>(env: &CtlEnv<'a>) -> Result<&'a rusty_store::BlobPoolAdmin, CtlError> {
+    env.pools.ok_or_else(|| CtlError::runtime("blob pools are not available here"))
+}
+
+/// The two keys, one per line on standard input, each one printable line of at most 256 bytes.
+fn read_keys(env: &mut CtlEnv<'_>) -> Result<(Secret, Secret), CtlError> {
+    let access = env.passwords.read(PasswordSource::Stdin)?;
+    let secret = env.passwords.read(PasswordSource::Stdin)?;
+    for (what, v) in [("access key", access.expose()), ("secret key", secret.expose())] {
+        if v.is_empty() || v.len() > 256 || v.chars().any(char::is_control) {
+            return Err(CtlError::runtime(match what {
+                "access key" => "the access key must be one printable line of at most 256 bytes",
+                _ => "the secret key must be one printable line of at most 256 bytes",
+            }));
+        }
+    }
+    Ok((access, secret))
+}
+
+/// Seal both keys to the backend (owner kind `blobbackend`, the backend's id).
+async fn seal_backend_keys(env: &CtlEnv<'_>, backend: i64, access: &Secret, secret: &Secret) -> Result<(), CtlError> {
+    use rusty_core::storage_policy::{ACCESS_KEY_PURPOSE, BACKEND_SECRET_OWNER, SECRET_KEY_PURPOSE};
+    let Some(seal) = env.sealing else {
+        return Err(CtlError::runtime("set [sealing] public_key in the configuration: the credentials are sealed to it (`rustyctl seal keygen` makes one)"));
+    };
+    let Some(writer) = env.sealed else { return Err(CtlError::runtime("sealed secrets are not available here")) };
+    for (purpose, value) in [(ACCESS_KEY_PURPOSE, access.expose()), (SECRET_KEY_PURPOSE, secret.expose())] {
+        let context = rusty_seal::Context::new(BACKEND_SECRET_OWNER, backend, purpose).map_err(|e| map_error(&e, "backend credentials"))?;
+        let sealed = seal.seal(&context, value.as_bytes()).map_err(|e| map_error(&e, "backend credentials"))?;
+        writer.put(BACKEND_SECRET_OWNER, backend, purpose, &seal.id().to_hex(), &sealed).await.map_err(|e| map_error(&e, "backend credentials"))?;
+    }
+    Ok(())
+}
+
+async fn pool_of_domain(env: &CtlEnv<'_>, name: &str) -> Result<(rusty_directory::DomainInfo, rusty_store::repo::BlobStoreRow), CtlError> {
+    let pools = pool_stores(env)?;
+    let dom = find_domain(env, name).await?;
+    let Some(row) = pools.pool_of(dom.id).await.map_err(|e| map_error(&e, "storage"))? else {
+        return Err(CtlError::runtime("the domain has no pool: run `storage pool` first"));
+    };
+    Ok((dom, row))
+}
+
+async fn backend_of(env: &CtlEnv<'_>, store: rusty_store::repo::StoreId, backend: &str) -> Result<rusty_store::repo::BackendRow, CtlError> {
+    let pools = pool_stores(env)?;
+    pools.backends(store).await.map_err(|e| map_error(&e, "storage"))?.into_iter().find(|b| b.name == backend).ok_or_else(|| CtlError::runtime("the pool has no backend of that name"))
+}
+
+async fn storage_pool(env: &mut CtlEnv<'_>, name: &str, policy: rusty_store::PoolPolicy) -> Result<Outcome, CtlError> {
+    let pools = pool_stores(env)?;
+    let dom = find_domain(env, name).await?;
+    let row = pools.set_policy(dom.id, policy).await.map_err(|e| map_error(&e, "storage"))?;
+    Ok(Outcome::new(
+        format!(
+            "{} uses a pool (store {}): copies {}, sync copies {}; add backends with `storage backend add`, then `storage check` (the pool is used once every backend passed)",
+            dom.name, row.id.0, policy.copies, policy.sync_copies
+        ),
+        json!({ "domain": dom.name, "store": row.id.0, "policy": serde_json::from_str::<Value>(&policy.to_json()).unwrap_or(Value::Null) }),
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn storage_backend_add(env: &mut CtlEnv<'_>, name: &str, backend: &str, endpoint: &str, region: &str, bucket: &str, prefix: &str, path_style: bool, weight: u32) -> Result<Outcome, CtlError> {
+    let s3 = rusty_core::storage_policy::validate_tenant_s3(endpoint, region, bucket, prefix, path_style).map_err(|e| map_error(&e, "storage"))?;
+    let (access, secret) = read_keys(env)?;
+    let pools = pool_stores(env)?;
+    if env.sealing.is_none() {
+        return Err(CtlError::runtime("set [sealing] public_key in the configuration: the credentials are sealed to it (`rustyctl seal keygen` makes one)"));
+    }
+    let (dom, pool) = pool_of_domain(env, name).await?;
+    let row = pools.add_s3(pool.id, backend, &s3, weight).await.map_err(|e| map_error(&e, "storage"))?;
+    seal_backend_keys(env, row.id.0, &access, &secret).await?;
+    Ok(Outcome::new(
+        format!("added backend {} ({} bucket {}) to the pool of {}; run `storage check {}` before it is used", row.name, s3.endpoint, s3.bucket, dom.name, dom.name),
+        json!({ "domain": dom.name, "store": pool.id.0, "backend": row.name, "id": row.id.0, "endpoint": s3.endpoint, "region": s3.region, "bucket": s3.bucket, "weight": row.weight }),
+    ))
+}
+
+async fn storage_backend_rekey(env: &mut CtlEnv<'_>, name: &str, backend: &str) -> Result<Outcome, CtlError> {
+    let (access, secret) = read_keys(env)?;
+    let pools = pool_stores(env)?;
+    let (dom, pool) = pool_of_domain(env, name).await?;
+    let b = backend_of(env, pool.id, backend).await?;
+    let settings: Value = serde_json::from_str(&b.config).unwrap_or(Value::Null);
+    let text = |n: &str| settings.get(n).and_then(Value::as_str).unwrap_or_default().to_owned();
+    let s3 = rusty_core::storage_policy::validate_tenant_s3(&text("endpoint"), &text("region"), &text("bucket"), &text("prefix"), settings.get("path_style").and_then(Value::as_bool).unwrap_or(false))
+        .map_err(|e| map_error(&e, "storage"))?;
+    seal_backend_keys(env, b.id.0, &access, &secret).await?;
+    pools.set_s3(b.id, &s3).await.map_err(|e| map_error(&e, "storage"))?;
+    Ok(Outcome::new(
+        format!("replaced the keys of backend {} of {}; run `storage check {}` before it is used again", b.name, dom.name, dom.name),
+        json!({ "domain": dom.name, "backend": b.name, "rekeyed": true }),
+    ))
+}
+
+async fn storage_backend_set(env: &mut CtlEnv<'_>, name: &str, backend: &str, state: Option<rusty_store::repo::BackendState>, weight: Option<u32>) -> Result<Outcome, CtlError> {
+    let pools = pool_stores(env)?;
+    let (dom, pool) = pool_of_domain(env, name).await?;
+    let b = backend_of(env, pool.id, backend).await?;
+    if let Some(w) = weight {
+        pools.set_weight(b.id, w).await.map_err(|e| map_error(&e, "storage"))?;
+    }
+    if let Some(s) = state {
+        pools.set_state(b.id, s).await.map_err(|e| map_error(&e, "storage"))?;
+    }
+    Ok(Outcome::new(
+        format!("backend {} of {} updated (the services pick it up within a minute)", b.name, dom.name),
+        json!({ "domain": dom.name, "backend": b.name, "state": state.map(rusty_store::repo::BackendState::name), "weight": weight }),
+    ))
+}
+
+async fn storage_backend_remove(env: &mut CtlEnv<'_>, name: &str, backend: &str) -> Result<Outcome, CtlError> {
+    let pools = pool_stores(env)?;
+    let (dom, pool) = pool_of_domain(env, name).await?;
+    let b = backend_of(env, pool.id, backend).await?;
+    pools.remove(b.id).await.map_err(|e| map_error(&e, "storage"))?;
+    Ok(Outcome::new(format!("removed backend {} from the pool of {}", b.name, dom.name), json!({ "domain": dom.name, "backend": b.name, "removed": true })))
+}
+
+/// The backends of a pool for `storage show`.
+async fn backends_json(env: &CtlEnv<'_>, store: rusty_store::repo::StoreId) -> Result<Value, CtlError> {
+    use rusty_core::storage_policy::{ACCESS_KEY_PURPOSE, BACKEND_SECRET_OWNER, SECRET_KEY_PURPOSE};
+    let pools = pool_stores(env)?;
+    let mut out = Vec::new();
+    for b in pools.backends(store).await.map_err(|e| map_error(&e, "storage"))? {
+        let meta = match env.sealed {
+            Some(w) => w.meta(BACKEND_SECRET_OWNER, b.id.0).await.map_err(|e| map_error(&e, "backend credentials"))?,
+            None => Vec::new(),
+        };
+        let has = |p: &str| meta.iter().any(|m| m.purpose == p);
+        let held = pools.count_held(b.id).await.map_err(|e| map_error(&e, "storage"))?;
+        out.push(json!({
+            "name": b.name, "id": b.id.0, "kind": b.kind, "state": b.state.name(), "weight": b.weight, "settings": serde_json::from_str::<Value>(&b.config).unwrap_or(Value::Null),
+            "access_key_set": has(ACCESS_KEY_PURPOSE), "secret_key_set": has(SECRET_KEY_PURPOSE), "check_status": b.check_status, "checked_at": b.checked_at, "objects": held,
+        }));
+    }
+    Ok(Value::Array(out))
 }

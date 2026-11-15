@@ -60,6 +60,16 @@ pub enum Command {
     StorageSet { name: String, endpoint: String, region: String, bucket: String, prefix: String, path_style: bool },
     /// `storage show`: the store of the domain, without its credentials.
     StorageShow { name: String },
+    /// `storage pool`: make the domain's store a pool of backends with this policy (or change the policy of its pool while it holds no body).
+    StoragePool { name: String, policy: rusty_store::PoolPolicy },
+    /// `storage backend add`: add an S3 backend (settings here, the keys from standard input) to the domain's pool.
+    StorageBackendAdd { name: String, backend: String, endpoint: String, region: String, bucket: String, prefix: String, path_style: bool, weight: u32 },
+    /// `storage backend rekey`: replace the keys of a backend (same settings; it has to pass a check again).
+    StorageBackendRekey { name: String, backend: String },
+    /// `storage backend set`: the state (`active`, `readonly`, `draining`, `disabled`) and/or the weight of a backend.
+    StorageBackendSet { name: String, backend: String, state: Option<rusty_store::repo::BackendState>, weight: Option<u32> },
+    /// `storage backend remove`: remove a backend that holds no object (drain it first).
+    StorageBackendRemove { name: String, backend: String },
     /// `storage check`: ask the mail service to test the store (a `storage.check` job); the result shows in `storage show`.
     StorageCheck { name: String },
     /// `domain relay check`: ask the outbound service to test the relay (a `relay.check` job); the result shows in `domain relay show`.
@@ -137,6 +147,11 @@ pub const USAGE: &str = "usage: rustyctl [--config FILE | --dev [--data-dir DIR]
                                              give the domain its own S3 store for message bodies (before it holds any message); the access key and the
                                              secret key are read from standard input, one per line, and sealed
   storage show <domain>                      the domain's store, without its credentials
+  storage pool <domain> [--copies N] [--sync-copies N] [--placement ordered|weighted] [--read located|ordered|round_robin|fastest]
+                                             spread the domain's bodies over several S3 backends: JBOD (copies 1), mirror (copies N), failover (copies 2, sync-copies 1,
+                                             ordered); add backends with storage backend add
+  storage backend add <domain> <name> --endpoint https://HOST[:PORT] --region R --bucket B [--prefix P] [--path-style] [--weight W] --credentials-stdin
+  storage backend rekey <domain> <name> --credentials-stdin | set <domain> <name> [--state active|readonly|draining|disabled] [--weight W] | remove <domain> <name>
   storage check <domain>                     ask the mail service to test the store (write, read, list, delete a probe object); the result shows in storage show.
                                              A store is used only after a check passed
   admin grant <addr> [domain]                let an account use the admin web (all domains, or one); also the recovery path
@@ -177,6 +192,12 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
     let mut s3_prefix: Option<String> = None;
     let mut s3_path_style = false;
     let mut s3_credentials_stdin = false;
+    let mut pool_copies: Option<String> = None;
+    let mut pool_sync: Option<String> = None;
+    let mut pool_placement: Option<String> = None;
+    let mut pool_read: Option<String> = None;
+    let mut weight: Option<String> = None;
+    let mut state: Option<String> = None;
     let mut words: Vec<&str> = Vec::new();
 
     let mut it = args.iter();
@@ -203,6 +224,12 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             "--prefix" => s3_prefix = Some(it.next().ok_or(err("--prefix needs a value"))?.clone()),
             "--path-style" => s3_path_style = true,
             "--credentials-stdin" => s3_credentials_stdin = true,
+            "--copies" => pool_copies = Some(it.next().ok_or(err("--copies needs a value"))?.clone()),
+            "--sync-copies" => pool_sync = Some(it.next().ok_or(err("--sync-copies needs a value"))?.clone()),
+            "--placement" => pool_placement = Some(it.next().ok_or(err("--placement needs a value"))?.clone()),
+            "--read" => pool_read = Some(it.next().ok_or(err("--read needs a value"))?.clone()),
+            "--weight" => weight = Some(it.next().ok_or(err("--weight needs a value"))?.clone()),
+            "--state" => state = Some(it.next().ok_or(err("--state needs a value"))?.clone()),
             s if s == "-p" || s == "--password" || s.starts_with("--password=") => {
                 return Err(err(
                     "a password is never accepted on the command line; use --password-stdin or --prompt",
@@ -266,8 +293,19 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
     };
 
     let s3_opts = s3_endpoint.is_some() || s3_region.is_some() || s3_bucket.is_some() || s3_prefix.is_some() || s3_path_style || s3_credentials_stdin;
-    if s3_opts && !matches!(words.as_slice(), ["storage", "set", _]) {
-        return Err(err("--endpoint, --region, --bucket, --prefix, --path-style and --credentials-stdin apply to storage set only"));
+    let s3_target = matches!(words.as_slice(), ["storage", "set", _] | ["storage", "backend", "add", _, _]);
+    let rekey = matches!(words.as_slice(), ["storage", "backend", "rekey", _, _]);
+    if s3_opts && !s3_target && !(rekey && s3_credentials_stdin && s3_endpoint.is_none() && s3_region.is_none() && s3_bucket.is_none() && s3_prefix.is_none() && !s3_path_style) {
+        return Err(err("--endpoint, --region, --bucket, --prefix, --path-style and --credentials-stdin apply to storage set, storage backend add and (--credentials-stdin) storage backend rekey only"));
+    }
+    if (pool_copies.is_some() || pool_sync.is_some() || pool_placement.is_some() || pool_read.is_some()) && !matches!(words.as_slice(), ["storage", "pool", _]) {
+        return Err(err("--copies, --sync-copies, --placement and --read apply to storage pool only"));
+    }
+    if weight.is_some() && !matches!(words.as_slice(), ["storage", "backend", "add" | "set", _, _]) {
+        return Err(err("--weight applies to storage backend add and set only"));
+    }
+    if state.is_some() && !matches!(words.as_slice(), ["storage", "backend", "set", _, _]) {
+        return Err(err("--state applies to storage backend set only"));
     }
     let relay_opts = relay_host.is_some() || relay_port.is_some() || relay_tls.is_some() || relay_user.is_some() || relay_spf.is_some();
     if relay_opts && !matches!(words.as_slice(), ["domain", "relay", "set", _]) {
@@ -386,6 +424,70 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             let region = s3_region.clone().ok_or(err("storage set needs --region"))?;
             let bucket = s3_bucket.clone().ok_or(err("storage set needs --bucket"))?;
             done(Command::StorageSet { name: (*name).to_owned(), endpoint, region, bucket, prefix: s3_prefix.clone().unwrap_or_default(), path_style: s3_path_style })
+        }
+        ["storage", "pool", name] => {
+            plain()?;
+            let mut m = serde_json::Map::new();
+            let num = |v: &str, what: &'static str| v.parse::<u32>().map_err(|_| err(what));
+            if let Some(v) = &pool_copies {
+                m.insert("copies".into(), num(v, "--copies must be a number")?.into());
+            }
+            if let Some(v) = &pool_sync {
+                m.insert("sync_copies".into(), num(v, "--sync-copies must be a number")?.into());
+            }
+            if let Some(v) = &pool_placement {
+                m.insert("placement".into(), v.clone().into());
+            }
+            if let Some(v) = &pool_read {
+                m.insert("read".into(), v.clone().into());
+            }
+            let policy = rusty_store::PoolPolicy::parse(&serde_json::Value::Object(m).to_string())
+                .map_err(|_| err("the pool settings are not valid: 1 <= sync-copies <= copies <= 8, placement ordered or weighted, read located, ordered, round_robin or fastest"))?;
+            done(Command::StoragePool { name: (*name).to_owned(), policy })
+        }
+        ["storage", "backend", "add", name, backend] => {
+            no_selector()?;
+            no_without_roles()?;
+            no_password()?;
+            if !s3_credentials_stdin {
+                return Err(err("storage backend add reads the access key and the secret key from standard input (two lines): add --credentials-stdin"));
+            }
+            let endpoint = s3_endpoint.clone().ok_or(err("storage backend add needs --endpoint"))?;
+            let region = s3_region.clone().ok_or(err("storage backend add needs --region"))?;
+            let bucket = s3_bucket.clone().ok_or(err("storage backend add needs --bucket"))?;
+            let weight = match &weight {
+                None => 100,
+                Some(w) => w.parse::<u32>().map_err(|_| err("--weight must be a number from 1 to 1000"))?,
+            };
+            done(Command::StorageBackendAdd { name: (*name).to_owned(), backend: (*backend).to_owned(), endpoint, region, bucket, prefix: s3_prefix.clone().unwrap_or_default(), path_style: s3_path_style, weight })
+        }
+        ["storage", "backend", "rekey", name, backend] => {
+            no_selector()?;
+            no_without_roles()?;
+            no_password()?;
+            if !s3_credentials_stdin {
+                return Err(err("storage backend rekey reads the access key and the secret key from standard input (two lines): add --credentials-stdin"));
+            }
+            done(Command::StorageBackendRekey { name: (*name).to_owned(), backend: (*backend).to_owned() })
+        }
+        ["storage", "backend", "set", name, backend] => {
+            plain()?;
+            if state.is_none() && weight.is_none() {
+                return Err(err("storage backend set needs --state and/or --weight"));
+            }
+            let st = match &state {
+                None => None,
+                Some(v) => Some(rusty_store::repo::BackendState::parse(v).ok_or(err("--state must be active, readonly, draining or disabled"))?),
+            };
+            let w = match &weight {
+                None => None,
+                Some(w) => Some(w.parse::<u32>().map_err(|_| err("--weight must be a number from 1 to 1000"))?),
+            };
+            done(Command::StorageBackendSet { name: (*name).to_owned(), backend: (*backend).to_owned(), state: st, weight: w })
+        }
+        ["storage", "backend", "remove", name, backend] => {
+            plain()?;
+            done(Command::StorageBackendRemove { name: (*name).to_owned(), backend: (*backend).to_owned() })
         }
         ["storage", "show", name] => {
             plain()?;
