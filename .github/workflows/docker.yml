@@ -88,6 +88,8 @@ jobs:
           set -euo pipefail
           docker build -f deploy/docker/Dockerfile --build-arg "SOURCE_DATE_EPOCH=$SDE" -t rusty:smoke .
           bash scripts/check-image.sh rusty:smoke
+          docker build --target admin -f deploy/docker/Dockerfile --build-arg "SOURCE_DATE_EPOCH=$SDE" -t rusty-admin:smoke .
+          bash scripts/check-admin-image.sh rusty-admin:smoke
       - name: Build the dev-cert variant and run the local-run scenario against it
         if: ${{ matrix.variant == 'amd64-dev-cert' }}
         run: |
