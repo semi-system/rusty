@@ -39,7 +39,7 @@ if [ "$STAGING" = 1 ]; then ACME_DIR="https://acme-staging-v02.api.letsencrypt.o
 
 mkdir -p state/{secrets,etc,pgtls,keys,tls,edge/acme,edge/certs,run}
 rand() { head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
-for s in pg_postgres pg_app pg_migrator; do [ -s "state/secrets/$s" ] || (umask 077; rand > "state/secrets/$s"); done
+for s in pg_postgres pg_app pg_admin pg_migrator; do [ -s "state/secrets/$s" ] || (umask 077; rand > "state/secrets/$s"); done
 
 # The database CA and the server certificate for the name `db` (clients verify it: sslmode verify-full). Made once; openssl comes from the postgres image.
 in_pg() { docker run --rm --entrypoint sh -v "$PWD/state/pgtls:/w" -w /w "$PG_IMG" -c "$1"; }

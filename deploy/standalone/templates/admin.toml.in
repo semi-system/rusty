@@ -7,8 +7,9 @@ public_origin = "https://@ADMIN_HOST@"
 public_ips = ["@PUBLIC_IP@"]
 
 [store]
-url = "postgres://rusty_app@db:5432/rusty"
-password_file = "/run/secrets/pg_app"
+# The admin web has a database role of its own: no mail tables, no reading of sealed secrets back (docs/postgres-production.md).
+url = "postgres://rusty_admin@db:5432/rusty"
+password_file = "/run/secrets/pg_admin"
 sslmode = "verify-full"
 ca_bundle = "/etc/rusty/db-ca.pem"
 

@@ -40,7 +40,7 @@ services:
     read_only: true
     restart: "no"
     entrypoint: [/bin/sh, /db-init.sh]
-    secrets: [pg_postgres, pg_app, pg_migrator]
+    secrets: [pg_postgres, pg_app, pg_admin, pg_migrator]
     volumes:
       - ./db-init.sh:/db-init.sh:ro
       - ../db/roles.sql:/roles.sql:ro
@@ -87,7 +87,7 @@ services:
     build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: admin }
     <<: *hardened
     tmpfs: [/tmp]
-    secrets: [pg_app]
+    secrets: [pg_admin]
     volumes:
       - ./state/etc:/etc/rusty:ro
     networks: [db, app]
@@ -129,9 +129,29 @@ services:
       retries: 60
     depends_on: [edge]
 
+  # Keeps the edge's certificates on disk (as the edge's own uid), so a restarted edge starts with them instead of ordering new ones (docs/acme.md).
+  cert-keep-mail: &keep
+    image: haproxy@sha256:2caaf8b1a1ef67f3f1ea9b721f2821675d3ba4500fb518e23884fecb93e8dbaa
+    user: "99:99"
+    <<: *hardened
+    environment: { COMBINED: mail.pem }
+    entrypoint: [/bin/sh, /cert-sync.sh, /run/ha/admin.sock, "@certs/mail.pem", /keep, "60"]
+    network_mode: none
+    volumes:
+      - ../edge/cert-sync.sh:/cert-sync.sh:ro
+      - ./state/run:/run/ha
+      - ./state/edge/certs:/keep
+    depends_on: [edge]
+
+  cert-keep-admin:
+    <<: *keep
+    environment: { COMBINED: admin.pem }
+    entrypoint: [/bin/sh, /cert-sync.sh, /run/ha/admin.sock, "@certs/admin.pem", /keep, "60"]
+
 secrets:
   pg_postgres: { file: ./state/secrets/pg_postgres }
   pg_app: { file: ./state/secrets/pg_app }
+  pg_admin: { file: ./state/secrets/pg_admin }
   pg_migrator: { file: ./state/secrets/pg_migrator }
 
 volumes:
