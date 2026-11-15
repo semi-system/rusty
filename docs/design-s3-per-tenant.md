@@ -1,26 +1,26 @@
 # Design: blob storage on S3, one store per tenant
 
-Status: **proposal for the owner's approval** (decided 2026-11-15: S3, a store of its own for each tenant, not one S3 for the whole system). Nothing here is built.
+Status: **approved in principle** (decided 2026-11-15: S3, a store of its own for each tenant, not one S3 for the whole system; **tenant = domain**). Nothing here is built.
 Builds on `docs/superpowers/plans/2026-11-14-per-service-images-design.md` (blobs on S3 only, any S3-compatible server, RustFS in tests, credentials per service).
 
 ## 1. What changes, in one paragraph
 
 Today every message body is a file in one directory, named by its SHA-256, shared by everybody; isolation between tenants is in the database. After this change a **blob store** is a
-first-class object: a domain points at one, the store is an S3 bucket (and prefix) that belongs to the tenant, and the message bodies of that domain are objects in it. The platform
+first-class object: a domain has at most one of its own, the store is an S3 bucket (and prefix) that belongs to the tenant, and the message bodies of that domain are objects in it. The platform
 keeps a default store (the one in `rusty.toml`, a filesystem directory or an S3 bucket the operator runs) for domains that have none of their own and for system mail.
 
 ## 2. Vocabulary: what a "tenant" is here
 
-The data model has no tenant entity: a **domain** is the unit that administrators are scoped to. A **blob store** row is what a tenant owns; **several domains may point at the same
-store** (a tenant with many domains), and a domain points at exactly one. So "per tenant" = "per store", and the store is chosen per domain.
+**A tenant is a domain** (decided 2026-11-15): the unit administrators are scoped to, and the unit that owns storage. A domain either has a store of its own (one row, one bucket, bound to that domain
+only) or uses the platform store. Two domains never share a store row, so the settings, the credentials, the check status and the garbage collection of a store are all that one domain's.
 
 ## 3. Data model (migration 0023)
 
-* `blob_stores(id, name, kind 'fs'|'s3', config jsonb, check_status, checked_at, created_at)`. `config` holds the non-secret part only: endpoint, region, bucket, key prefix, path-style flag.
+* `blob_stores(id, domain_id UNIQUE NULL, kind 'fs'|'s3', config jsonb, check_status, checked_at, created_at)`: `domain_id` names the one domain that owns the store (NULL only for the platform row). `config` holds the non-secret part only: endpoint, region, bucket, key prefix, path-style flag.
   Row `1` is `platform` (made by the migration; its settings come from `rusty.toml`, never from the database).
 * Credentials are **not** in `config`: the access key and secret key are sealed secrets (HPKE, `docs/sealed-secrets.md`, owner kind `blobstore`, purposes `s3-access-key` and `s3-secret-key`),
   written by the admin service (which cannot read them back) and opened only by the services that read or write bodies.
-* `domains.blob_store_id` (default 1). `blobs` is keyed by `(store_id, hash)` and `messages` gain `blob_store_id`, fixed when the message is stored; the reference-count triggers and the
+* `domains.blob_store_id` (default 1; a domain's own store is the row whose `domain_id` it is). `blobs` is keyed by `(store_id, hash)` and `messages` gain `blob_store_id`, fixed when the message is stored; the reference-count triggers and the
   foreign key use the pair. Existing rows get store 1: no data moves.
 * Same hash in two stores = two objects and two rows (see section 9).
 
@@ -94,7 +94,7 @@ Changing the store of a domain that has messages is **refused in v1** (it needs 
 
 ## 12. Points to confirm
 
-1. A tenant is a group of domains sharing a store row (section 2), not a new entity.
-2. Version 1: only the platform administrator binds a store (section 7).
-3. Refusing to re-point a domain that already has messages in v1 (section 7).
-4. `aws-sigv4` plus our own request layer instead of `aws-sdk-s3` (section 5).
+1. ~~A tenant is a group of domains~~ **Decided: tenant = domain** (section 2).
+2. Version 1: only the platform administrator binds a store (section 7). *Taken as the default unless the owner says otherwise.*
+3. Refusing to re-point a domain that already has messages in v1 (section 7). *Same.*
+4. `aws-sigv4` plus our own request layer instead of `aws-sdk-s3` (section 5). *Same.*
