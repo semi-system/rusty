@@ -27,6 +27,7 @@ mod redact;
 mod secret;
 mod service;
 mod throttle;
+mod valkey_throttle;
 mod tls;
 
 pub use budget::MemoryBudget;
@@ -46,6 +47,7 @@ pub use redact::{redact_command, Redacted};
 pub use secret::{FileSecretSource, SecretSource, MAX_SECRET_BYTES};
 pub use service::{run_services, ListenerService, Service};
 pub use throttle::{throttle_keys, AttemptPermit, AuthThrottle, Clock, RateLimiter, SystemClock, Verdict};
+pub use valkey_throttle::ValkeyThrottle;
 pub use tls::{
     certified_key, parse_cert_chain, parse_private_key, CertResolver, FileCertResolver, StaticCertResolver,
     TlsProvider, MAX_CERT_CHAIN,

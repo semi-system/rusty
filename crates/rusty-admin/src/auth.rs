@@ -87,20 +87,24 @@ impl AdminAuth {
     pub async fn sign_in(&self, peer: IpAddr, address: &str, password: &str) -> std::result::Result<(String, Session), SignInError> {
         let keys = throttle_keys(&self.directory, address).await;
         for k in &keys {
-            if let Verdict::Blocked { retry_after_secs } = self.throttle.check(peer, k) {
+            if let Verdict::Blocked { retry_after_secs } = self.throttle.check(peer, k).await {
                 return Err(SignInError::Throttled { retry_after_secs });
             }
         }
         let Some(_permit) = self.throttle.try_begin_attempt() else { return Err(SignInError::Busy) };
         let fail = |keys: &[String]| {
-            for k in keys {
-                self.throttle.record_failure(peer, k);
+            let throttle = self.throttle.clone();
+            let keys = keys.to_vec();
+            async move {
+                for k in &keys {
+                    throttle.record_failure(peer, k).await;
+                }
             }
         };
         let account = match self.authenticator.verify(address, password).await {
             Ok(Some(a)) => a,
             Ok(None) => {
-                fail(&keys);
+                fail(&keys).await;
                 return Err(SignInError::Invalid);
             }
             Err(_) => return Err(SignInError::Unavailable),
@@ -109,7 +113,7 @@ impl AdminAuth {
             Ok(Some(g)) => g,
             // The password is right but the account administers nothing: the same answer, and it counts as a failure.
             Ok(None) => {
-                fail(&keys);
+                fail(&keys).await;
                 return Err(SignInError::Invalid);
             }
             Err(_) => return Err(SignInError::Unavailable),
@@ -117,7 +121,7 @@ impl AdminAuth {
         let label = rusty_directory::parse_address(address).map_or_else(|_| address.trim().to_ascii_lowercase(), |(l, d)| format!("{l}@{d}"));
         let opened = self.sessions.create(account, grant.domain, &label).await.map_err(|_| SignInError::Unavailable)?;
         for k in &keys {
-            self.throttle.record_success(peer, k);
+            self.throttle.record_success(peer, k).await;
         }
         Ok(opened)
     }

@@ -402,7 +402,11 @@ impl InboundHandler {
         let temporary = || AuthVerdict::Failure(Reply::new(454, "4.7.0", "Temporary authentication failure"));
         let ip = peer.addr.ip();
         let keys = rusty_svc::throttle_keys(&self.directory, identity).await;
-        if keys.iter().any(|k| matches!(self.rate.check(ip, k), Verdict::Blocked { .. })) {
+        let mut blocked = false;
+        for k in &keys {
+            blocked |= matches!(self.rate.check(ip, k).await, Verdict::Blocked { .. });
+        }
+        if blocked {
             return AuthVerdict::Failure(Reply::new(454, "4.7.0", "Too many failed attempts, try again later"));
         }
         let Some(_slot) = self.rate.try_begin_attempt() else {
@@ -416,12 +420,16 @@ impl InboundHandler {
         let service = "submission";
         match (verified, address) {
             (Ok(Some(account)), Ok(address)) => {
-                keys.iter().for_each(|k| self.rate.record_success(ip, k));
+                for k in &keys {
+                    self.rate.record_success(ip, k).await;
+                }
                 self.events.emit(ServiceEvent::AuthResult { service, peer: peer.addr, ok: true });
                 AuthVerdict::Success(Identity { account, address })
             }
             (Ok(_), _) => {
-                keys.iter().for_each(|k| self.rate.record_failure(ip, k));
+                for k in &keys {
+                    self.rate.record_failure(ip, k).await;
+                }
                 self.events.emit(ServiceEvent::AuthResult { service, peer: peer.addr, ok: false });
                 AuthVerdict::Failure(Reply::new(535, "5.7.8", "Authentication credentials invalid"))
             }

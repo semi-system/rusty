@@ -10,6 +10,7 @@ publish.workspace = true
 rusty-core = { path = "../rusty-core" }
 rusty-store = { path = "../rusty-store" }
 rusty-svc = { path = "../rusty-svc", default-features = false }
+rusty-valkey = { path = "../rusty-valkey" }
 tokio = { workspace = true, features = ["rt", "signal", "sync", "macros"] }
 tokio-util.workspace = true
 tracing.workspace = true

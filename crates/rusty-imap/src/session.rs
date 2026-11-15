@@ -499,7 +499,11 @@ impl Session {
         }
         let ip = self.peer.addr.ip();
         let keys = rusty_svc::throttle_keys(&self.ctx.directory, identity).await;
-        if keys.iter().any(|k| matches!(self.ctx.rate.check(ip, k), Verdict::Blocked { .. })) {
+        let mut blocked = false;
+        for k in &keys {
+            blocked |= matches!(self.ctx.rate.check(ip, k).await, Verdict::Blocked { .. });
+        }
+        if blocked {
             self.ctx.events.emit(ServiceEvent::AuthResult { service: "imap", peer: self.peer.addr, ok: false });
             self.failed_auths += 1;
             return Err(Done::no("AUTHENTICATIONFAILED", "Too many failed attempts, try again later"));
@@ -512,7 +516,9 @@ impl Session {
         let account = match verified {
             Ok(Some(a)) => a,
             Ok(None) => {
-                keys.iter().for_each(|k| self.ctx.rate.record_failure(ip, k));
+                for k in &keys {
+                    self.ctx.rate.record_failure(ip, k).await;
+                }
                 self.ctx.events.emit(ServiceEvent::AuthResult { service: "imap", peer: self.peer.addr, ok: false });
                 self.failed_auths += 1;
                 return Err(Done::no("AUTHENTICATIONFAILED", "Authentication failed"));
@@ -523,7 +529,9 @@ impl Session {
             Ok(m) => m,
             Err(e) => return Err(Done::store(Op::Mailbox, &e)),
         };
-        keys.iter().for_each(|k| self.ctx.rate.record_success(ip, k));
+        for k in &keys {
+            self.ctx.rate.record_success(ip, k).await;
+        }
         self.ctx.events.emit(ServiceEvent::AuthResult { service: "imap", peer: self.peer.addr, ok: true });
         self.user = Some(User { mailbox });
         Ok(())
