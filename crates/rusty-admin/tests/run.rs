@@ -3,6 +3,8 @@
 
 use std::time::Duration;
 
+mod common;
+
 use rusty_admin::run::start;
 use rusty_core::config::{Role, StartupConfig};
 use rusty_directory::Directory;
@@ -84,4 +86,81 @@ async fn a_missing_admin_section_or_a_taken_port_fails_the_start() {
     let first = start(&cfg, &store, CancellationToken::new()).await.unwrap();
     let taken = config(&format!("[admin]\nlisten = \"{}\"\npublic_origin = \"https://admin.example.org\"\n", first.addr));
     assert!(start(&taken, &store, CancellationToken::new()).await.is_err(), "the port is in use");
+}
+
+fn valkey_url() -> Option<String> {
+    match std::env::var("RUSTY_TEST_VALKEY_URL") {
+        Ok(u) if !u.is_empty() => Some(u),
+        _ => {
+            assert!(std::env::var("RUSTY_REQUIRE_VALKEY").as_deref() != Ok("1"), "RUSTY_REQUIRE_VALKEY=1 but RUSTY_TEST_VALKEY_URL is not set");
+            None
+        }
+    }
+}
+
+/// `[valkey]` text for the test server, the password in a 0600 file inside `dir`.
+fn valkey_section(url: &str, dir: &std::path::Path, prefix: &str) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let rest = url.strip_prefix("valkey://").unwrap();
+    let (cred, hostport) = rest.split_once('@').unwrap();
+    let (user, password) = cred.split_once(':').unwrap();
+    let (host, port) = hostport.rsplit_once(':').unwrap();
+    let pw = dir.join("valkey.pw");
+    std::fs::write(&pw, password).unwrap();
+    std::fs::set_permissions(&pw, std::fs::Permissions::from_mode(0o600)).unwrap();
+    format!("[valkey]\nhost = \"{host}\"\nport = {port}\nusername = \"{user}\"\npassword_file = \"{}\"\nkey_prefix = \"{prefix}\"\n", pw.display())
+}
+
+const ADMIN: &str = "[admin]\nlisten = \"127.0.0.1:0\"\npublic_origin = \"https://admin.example.org\"\n";
+
+#[tokio::test]
+async fn a_configured_valkey_that_cannot_be_reached_fails_the_start_instead_of_falling_back_to_memory() {
+    let (store, _db) = store().await;
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    drop(l);
+    let cfg = config(&format!("{ADMIN}[valkey]\nhost = \"127.0.0.1\"\nport = {port}\nconnect_timeout_ms = 500\n"));
+    assert!(start(&cfg, &store, CancellationToken::new()).await.is_err());
+}
+
+#[tokio::test]
+async fn sessions_kept_in_valkey_are_shared_by_two_instances_and_survive_a_restart() {
+    let Some(url) = valkey_url() else { return };
+    let (store, _db) = store().await;
+    let dir = Directory::with_repo(store.repos().directory.clone());
+    let d = dir.create_domain("one.test").await.unwrap();
+    let a = dir.create_account("root", d, Some(common::PW), None).await.unwrap();
+    AdminStore::with_repo(store.repos().admin.clone()).grant(a, None).await.unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = config(&format!("{ADMIN}{}", valkey_section(&url, tmp.path(), &format!("rt{}", std::process::id()))));
+
+    let stop1 = CancellationToken::new();
+    let first = start(&cfg, &store, stop1.clone()).await.unwrap();
+    let client = common::Client::sign_in(first.addr, "root@one.test").await;
+    assert_eq!(client.get("/api/v1/session").await.status, 200);
+
+    // A second instance (another process in production) and, after the first stops, a restart: the same cookie is still a session.
+    let stop2 = CancellationToken::new();
+    let second = start(&cfg, &store, stop2.clone()).await.unwrap();
+    let on_second = common::Client { addr: second.addr, cookie: client.cookie.clone(), csrf: client.csrf.clone() };
+    assert_eq!(on_second.get("/api/v1/session").await.status, 200, "the other instance knows the session");
+    stop1.cancel();
+    let _ = first.task.await;
+    assert_eq!(on_second.get("/api/v1/session").await.status, 200, "and it outlives the instance that made it");
+    stop2.cancel();
+}
+
+#[tokio::test]
+async fn without_valkey_a_session_belongs_to_one_process() {
+    let (store, _db) = store().await;
+    let dir = Directory::with_repo(store.repos().directory.clone());
+    let d = dir.create_domain("one.test").await.unwrap();
+    let a = dir.create_account("root", d, Some(common::PW), None).await.unwrap();
+    AdminStore::with_repo(store.repos().admin.clone()).grant(a, None).await.unwrap();
+    let cfg = config(ADMIN);
+    let first = start(&cfg, &store, CancellationToken::new()).await.unwrap();
+    let client = common::Client::sign_in(first.addr, "root@one.test").await;
+    let second = start(&cfg, &store, CancellationToken::new()).await.unwrap();
+    let elsewhere = common::Client { addr: second.addr, cookie: client.cookie.clone(), csrf: client.csrf.clone() };
+    assert_eq!(elsewhere.get("/api/v1/session").await.status, 401, "the memory store is not shared");
 }

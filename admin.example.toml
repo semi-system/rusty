@@ -28,3 +28,13 @@ public_key = "rusty-seal-v1:0000000000000000000000000000000000000000000000000000
 # [tls]
 # cert_file = "/etc/rusty/tls/admin.crt"
 # key_file = "/etc/rusty/tls/admin.key"
+
+# Sessions in the shared key-value store (docs/valkey.md): a restart signs nobody out and several instances share the sessions. Without this section they
+# live in the process. A Valkey that cannot be reached stops the start; there is no silent fall back to memory.
+# [valkey]
+# host = "valkey.internal"
+# tls = true
+# ca_bundle = "/etc/rusty/valkey-ca.pem"
+# username = "rusty-admin"                       # an ACL user of its own, limited to its key prefix
+# password_file = "/run/secrets/valkey-password"   # mode 0600
+# key_prefix = "rusty"                           # the admin service adds ":admin:"

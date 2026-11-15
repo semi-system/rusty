@@ -1,7 +1,8 @@
 //! Start the admin service: the pieces assembled from a configuration and an opened store (the `rusty-admin` binary is a thin `main` over this).
 //!
-//! * Sessions live in the in-process `Kv` for now: a restart signs everyone out (acceptable for one admin instance, design section 5). A `[valkey]` section
-//!   is accepted by the configuration but **not used yet** (the Valkey-backed sessions are a later step); a warning says so.
+//! * Sessions live in the shared key-value store when `[valkey]` is configured (a restart signs nobody out, several instances share the sessions); without it
+//!   they live in this process and a restart signs everyone out. A configured Valkey that cannot be reached **fails the start**: there is no silent fall back
+//!   to process memory. The sign-in throttle and the setup-token limiter are still per process.
 //! * When no platform administrator exists the setup token is made and **returned**, for the caller to print once; it is never logged.
 //! * TLS terminates at the service when `[tls]` names a certificate, otherwise at the edge in front of it (`listen` defaults to loopback).
 
@@ -14,7 +15,7 @@ use rusty_core::{Error, Result};
 use rusty_directory::{Directory, LocalAuthenticator};
 use rusty_http::{HttpConfig, HttpHandler, Router};
 use rusty_store::{AdminStore, Store};
-use rusty_svc::{Accept, AuthThrottle, BoundListener, DirectTcp, DirectTls, FileSecretSource, ListenerSpec, TlsProvider, TracingEvents};
+use rusty_svc::{Accept, AuthThrottle, BoundListener, DirectTcp, DirectTls, FileSecretSource, ListenerSpec, SecretSource, TlsProvider, TracingEvents};
 use rusty_valkey::MemoryKv;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -39,16 +40,44 @@ pub struct Running {
     pub task: JoinHandle<Result<()>>,
 }
 
+/// Where sessions are kept: the Valkey of `[valkey]` (connected now, so a wrong address or password stops the start), else this process.
+async fn session_kv(cfg: &StartupConfig) -> Result<Arc<dyn rusty_valkey::Kv>> {
+    let Some(v) = &cfg.valkey else { return Ok(Arc::new(MemoryKv::new())) };
+    let password = match &v.password_file {
+        Some(p) => Some(String::from_utf8(FileSecretSource::new().read(p)?).map_err(|_| Error::Invalid("valkey.password_file is not text".into()))?.trim_end().to_owned()),
+        None => None,
+    };
+    let tls = if v.tls {
+        let ca = match &v.ca_bundle {
+            Some(p) => Some(std::fs::read(p).map_err(|_| Error::Invalid("valkey.ca_bundle cannot be read".into()))?),
+            None => None,
+        };
+        Some(rusty_valkey::TlsOptions { ca_bundle_pem: ca })
+    } else {
+        None
+    };
+    let kv = rusty_valkey::ValkeyKv::connect(rusty_valkey::ValkeyOptions {
+        host: v.host.clone(),
+        port: v.port,
+        tls,
+        username: v.username.clone(),
+        password,
+        connect_timeout: Duration::from_millis(v.connect_timeout_ms),
+        command_timeout: Duration::from_millis(v.command_timeout_ms),
+        key_prefix: format!("{}:admin:", v.key_prefix.trim_end_matches(':')),
+    })
+    .await?;
+    tracing::info!(host = %v.host, "admin sessions are kept in Valkey");
+    Ok(Arc::new(kv))
+}
+
 /// Bind and serve. The listener is bound before this returns (a clash fails the start); `shutdown` drains it.
 pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationToken) -> Result<Running> {
     let Some(admin) = cfg.admin.clone() else { return Err(Error::Invalid("the admin service needs an [admin] section".into())) };
-    if cfg.valkey.is_some() {
-        tracing::warn!("[valkey] is configured but the admin sessions are kept in this process for now: a restart signs everyone out");
-    }
     let repos = store.repos();
     let directory = Directory::with_repo(repos.directory.clone());
     let admins = AdminStore::with_repo(repos.admin.clone());
-    let sessions = SessionStore::new(Arc::new(MemoryKv::new()), SessionConfig::default());
+    let sessions = SessionStore::new(session_kv(cfg).await?, SessionConfig::default());
     let throttle = Arc::new(AuthThrottle::from_limits(&cfg.limits));
     let authenticator = Arc::new(LocalAuthenticator::new(directory.clone()).await?);
     let auth = AdminAuth::new(authenticator, directory.clone(), admins.clone(), sessions, throttle);
