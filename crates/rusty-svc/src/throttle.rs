@@ -49,11 +49,12 @@ pub enum Verdict {
 #[derive(Debug)]
 pub struct AttemptPermit(#[allow(dead_code)] OwnedSemaphorePermit);
 
+#[async_trait::async_trait]
 pub trait RateLimiter: Send + Sync {
     /// May this peer try to authenticate as `identity` now?
-    fn check(&self, ip: IpAddr, identity: &str) -> Verdict;
-    fn record_failure(&self, ip: IpAddr, identity: &str);
-    fn record_success(&self, ip: IpAddr, identity: &str);
+    async fn check(&self, ip: IpAddr, identity: &str) -> Verdict;
+    async fn record_failure(&self, ip: IpAddr, identity: &str);
+    async fn record_success(&self, ip: IpAddr, identity: &str);
     /// Take a slot in the process-wide cap on concurrent authentication attempts (password
     /// hashing is expensive), or `None` when all slots are busy.
     fn try_begin_attempt(&self) -> Option<AttemptPermit>;
@@ -106,7 +107,7 @@ impl AuthThrottle {
         self.map.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn key(ip: IpAddr, identity: &str) -> (IpAddr, String) {
+    pub(crate) fn key(ip: IpAddr, identity: &str) -> (IpAddr, String) {
         // The directory's own normalisation (trim, case, trailing dot, NFC, IDNA), so every spelling
         // of one address is one key; anything that is not an address is kept as trimmed lower case.
         let mut id = match rusty_directory::parse_address(identity) {
@@ -133,8 +134,9 @@ impl AuthThrottle {
     }
 }
 
+#[async_trait::async_trait]
 impl RateLimiter for AuthThrottle {
-    fn check(&self, ip: IpAddr, identity: &str) -> Verdict {
+    async fn check(&self, ip: IpAddr, identity: &str) -> Verdict {
         let now = self.clock.now_ms();
         let m = self.lock();
         match m.get(&Self::key(ip, identity)) {
@@ -146,7 +148,7 @@ impl RateLimiter for AuthThrottle {
         }
     }
 
-    fn record_failure(&self, ip: IpAddr, identity: &str) {
+    async fn record_failure(&self, ip: IpAddr, identity: &str) {
         let now = self.clock.now_ms();
         let key = Self::key(ip, identity);
         let mut m = self.lock();
@@ -178,7 +180,7 @@ impl RateLimiter for AuthThrottle {
         e.failures = e.failures.saturating_add(1);
     }
 
-    fn record_success(&self, ip: IpAddr, identity: &str) {
+    async fn record_success(&self, ip: IpAddr, identity: &str) {
         self.lock().remove(&Self::key(ip, identity));
     }
 

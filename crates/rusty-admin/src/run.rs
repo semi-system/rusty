@@ -78,7 +78,11 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     let directory = Directory::with_repo(repos.directory.clone());
     let admins = AdminStore::with_repo(repos.admin.clone());
     let sessions = SessionStore::new(session_kv(cfg).await?, SessionConfig::default());
-    let throttle = Arc::new(AuthThrottle::from_limits(&cfg.limits));
+    let throttle: Arc<dyn rusty_svc::RateLimiter> = match &cfg.valkey {
+        // The sessions' store also keeps the sign-in failures, so several instances share the counters.
+        Some(_) => Arc::new(rusty_svc::ValkeyThrottle::from_limits(session_kv(cfg).await?, &cfg.limits)),
+        None => Arc::new(AuthThrottle::from_limits(&cfg.limits)),
+    };
     let authenticator = Arc::new(LocalAuthenticator::new(directory.clone()).await?);
     let auth = AdminAuth::new(authenticator, directory.clone(), admins.clone(), sessions, throttle);
 

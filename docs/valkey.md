@@ -9,7 +9,7 @@ Rusty worked before, so Valkey is an upgrade for deployments with several replic
 | Step | Content | State |
 |---|---|---|
 | V1 | the `rusty-valkey` crate (the `Kv` trait, an in-memory and a Valkey implementation, one conformance suite for both), the `[valkey]` configuration, the test server and its CI wiring | this change |
-| V2 | async rate limiters over `Kv` (login throttle, submission limit) with the in-process fallback | next |
+| V2 | async rate limiters over `Kv`: the login throttle (`ValkeyThrottle`: one counter per peer and identity shared by every replica, submission and IMAP counting together, the admin web over its own namespace; the in-process throttle stays under it as the floor, and an unreachable store is logged and ignored). The per-account submission limit (`MemorySubmissionLimiter`) is still per process | login throttle done; submission limit next |
 | V3 | the session store (admin web, webmail) | after V2; has no consumer until the web parts exist |
 | V4 | the read cache | after V3; see "The cache" below |
 

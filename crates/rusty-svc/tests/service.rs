@@ -41,10 +41,10 @@ async fn the_default_seams_are_wired_through_their_traits() {
     let r: &dyn RateLimiter = &*c.rate;
     let ip = "192.0.2.9".parse().unwrap();
     for _ in 0..c.cfg.limits.auth_failures_max {
-        assert_eq!(r.check(ip, "a@x.test"), Verdict::Allowed);
-        r.record_failure(ip, "a@x.test");
+        assert_eq!(r.check(ip, "a@x.test").await, Verdict::Allowed);
+        r.record_failure(ip, "a@x.test").await;
     }
-    assert!(matches!(r.check(ip, "a@x.test"), Verdict::Blocked { .. }));
+    assert!(matches!(r.check(ip, "a@x.test").await, Verdict::Blocked { .. }));
 
     // ServiceEvents: replaceable; the default tracing implementation accepts every event.
     c.events.emit(ServiceEvent::AuthResult { service: "t", peer: "192.0.2.9:1".parse().unwrap(), ok: false });

@@ -144,7 +144,11 @@ async fn build(
     let blobs = platform_blobs(cfg).await?;
     let cfg = Arc::new(cfg.clone());
     let (opener, s3_opener, backend_opener) = tenant_store_opener(&cfg, store)?;
-    let ctx = Context::new_with_opener(store.repos(), blobs, cfg.clone(), tls.clone(), opener).await?;
+    let mut ctx = Context::new_with_opener(store.repos(), blobs, cfg.clone(), tls.clone(), opener).await?;
+    // The services that check passwords count failures in the shared store (every replica, and submission with IMAP, against one counter); the in-memory throttle stays under it.
+    if let Some(kv) = rusty_runtime::kv::connect_kv(&cfg, "auth").await? {
+        ctx = ctx.with_rate(Arc::new(rusty_svc::ValkeyThrottle::from_limits(kv, &cfg.limits)));
+    }
 
     // Bind everything before serving anything: a clash fails the whole start.
     let mut addrs = Vec::new();
