@@ -1,0 +1,149 @@
+# A complete Rusty mail server on one host: PostgreSQL, the mail services, the admin web and the edge (HAProxy with ACME certificates).
+# Run ./setup.sh first (it writes ./state and builds the images); then `docker compose up -d`. docs/first-mail.md walks through it.
+name: rusty
+
+x-hardened: &hardened
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+
+services:
+  db:
+    image: postgres@sha256:3a4264520e121176619f54ff867d12774bc81e95e7b84db58d63bccdb6144b81
+    # The postgres entrypoint starts as root to prepare its data directory and then runs the server as uid 999.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: rusty
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_postgres
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --data-checksums"
+    command: [postgres, -c, ssl=on, -c, ssl_cert_file=/pgtls/server.crt, -c, ssl_key_file=/pgtls/server.key, -c, ssl_min_protocol_version=TLSv1.3]
+    secrets: [pg_postgres]
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./state/pgtls:/pgtls:ro
+    networks: [db]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U postgres -d rusty"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  db-init:
+    image: postgres@sha256:3a4264520e121176619f54ff867d12774bc81e95e7b84db58d63bccdb6144b81
+    user: "65532:65532"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    restart: "no"
+    entrypoint: [/bin/sh, /db-init.sh]
+    secrets: [pg_postgres, pg_app, pg_migrator]
+    volumes:
+      - ./db-init.sh:/db-init.sh:ro
+      - ../db/roles.sql:/roles.sql:ro
+      - ./state/etc/db-ca.pem:/etc/rusty/db-ca.pem:ro
+    networks: [db]
+    depends_on:
+      db: { condition: service_healthy }
+
+  migrate:
+    image: rusty-mail:local
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile }
+    <<: *hardened
+    restart: "no"
+    entrypoint: [/usr/local/bin/rustyctl]
+    command: [--config, /etc/rusty/migrate.toml, db, migrate]
+    secrets: [pg_app, pg_migrator]
+    volumes:
+      - ./state/etc:/etc/rusty:ro
+    networks: [db]
+    depends_on:
+      db-init: { condition: service_completed_successfully }
+
+  mail:
+    image: rusty-mail:local
+    <<: *hardened
+    tmpfs: [/tmp]
+    secrets: [pg_app]
+    volumes:
+      - ./state/etc:/etc/rusty:ro
+      - ./state/tls:/etc/rusty/tls:ro
+      - ./state/keys:/etc/rusty/keys:ro
+      - mail-data:/var/lib/rusty
+    networks:
+      db: {}
+      app: { ipv4_address: 10.77.0.10 }
+      egress: {}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      cert-sync: { condition: service_healthy }
+    stop_grace_period: 45s
+
+  admin:
+    image: rusty-admin:local
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: admin }
+    <<: *hardened
+    tmpfs: [/tmp]
+    secrets: [pg_app]
+    volumes:
+      - ./state/etc:/etc/rusty:ro
+    networks: [db, app]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  edge:
+    image: haproxy@sha256:2caaf8b1a1ef67f3f1ea9b721f2821675d3ba4500fb518e23884fecb93e8dbaa
+    <<: *hardened
+    # The process is not root: ports below 1024 need this sysctl (the container's own network namespace).
+    sysctls: { net.ipv4.ip_unprivileged_port_start: 0 }
+    # No depends_on: the edge starts first (the mail service needs the certificate it hands out); it finds the backends by name at run time.
+    tmpfs: [/tmp]
+    ports: ["25:25", "80:80", "143:143", "443:443", "465:465", "587:587", "993:993"]
+    volumes:
+      - ./state/etc/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./state/edge:/var/lib/haproxy
+      - ./state/run:/run/ha
+    networks:
+      app: { ipv4_address: 10.77.0.2 }
+      egress: {}
+
+  # Copies the certificate the edge obtained to the files the mail services read for STARTTLS (docs/acme.md). Runs as the mail uid, no network.
+  cert-sync:
+    image: haproxy@sha256:2caaf8b1a1ef67f3f1ea9b721f2821675d3ba4500fb518e23884fecb93e8dbaa
+    user: "65532:65532"
+    group_add: ["99"]
+    <<: *hardened
+    entrypoint: [/bin/sh, /cert-sync.sh, /run/ha/admin.sock, "@certs/mail.pem", /out, "60"]
+    network_mode: none
+    volumes:
+      - ../edge/cert-sync.sh:/cert-sync.sh:ro
+      - ./state/run:/run/ha
+      - ./state/tls:/out
+    healthcheck:
+      test: [CMD, /bin/sh, -c, "test -s /out/cert.pem && test -s /out/key.pem"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+    depends_on: [edge]
+
+secrets:
+  pg_postgres: { file: ./state/secrets/pg_postgres }
+  pg_app: { file: ./state/secrets/pg_app }
+  pg_migrator: { file: ./state/secrets/pg_migrator }
+
+volumes:
+  pgdata:
+  mail-data:
+
+networks:
+  # The database is reachable by the services that need it only.
+  db: { internal: true }
+  # The edge to the services; nothing else on it.
+  app:
+    internal: true
+    ipam: { config: [{ subnet: 10.77.0.0/24 }] }
+  # Out to the internet: the edge (ACME, inbound ports) and the mail service (outbound delivery).
+  egress: {}
