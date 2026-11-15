@@ -39,7 +39,11 @@ frontend http_in
     bind :80
     timeout http-request 10s
 #ACME     http-request return status 200 content-type text/plain lf-string "%[path,field(-1,/)].%[path,field(-1,/),map(virt@acme)]" if { path_beg /.well-known/acme-challenge/ }
-    http-request redirect scheme https code 308
+    # Mail client auto-setup (Thunderbird): http://autoconfig.<domain>/mail/config-v1.1.xml goes to the admin service, which answers that one path and nothing else; every other request is sent to HTTPS.
+    acl autoconfig_host hdr(host),lower,field(1,:) -m beg autoconfig.
+    acl autoconfig_path path -m str /mail/config-v1.1.xml
+    http-request redirect scheme https code 308 unless autoconfig_host autoconfig_path METH_GET
+    use_backend be_admin if autoconfig_host autoconfig_path METH_GET
 
 frontend smtp_in
     bind :25

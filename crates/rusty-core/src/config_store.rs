@@ -78,6 +78,12 @@ pub struct StoreSection {
     /// and `rustyctl` do that in `storecfg`). Never deserialized, so a configuration file cannot turn it on.
     #[serde(skip)]
     pub password_from_dev_env: bool,
+    /// `url` names a connection pooler in transaction mode (PgBouncer): the server-side prepared statement cache is switched off, and the connections that need a
+    /// session (the change feed's `LISTEN`, `rustyctl db migrate`) go to `direct_url` instead. Requires `direct_url`.
+    #[serde(default)]
+    pub pooler: bool,
+    /// The database itself behind the pooler, a `postgres://` URL written like `url`: only with `pooler = true`.
+    pub direct_url: Option<String>,
 }
 
 fn d_pool() -> u32 {
@@ -112,6 +118,8 @@ impl Default for StoreSection {
             ca_bundle: None,
             insecure_allow_unverified_tls: false,
             password_from_dev_env: false,
+            pooler: false,
+            direct_url: None,
         }
     }
 }
@@ -239,6 +247,17 @@ impl StoreSection {
         }
         if self.migrator_password_file.is_some() && self.migrator_user.is_none() {
             return Err(invalid("[store] migrator_password_file needs migrator_user"));
+        }
+        match (self.pooler, &self.direct_url) {
+            (true, None) => return Err(invalid("[store] pooler = true needs direct_url: the change feed (LISTEN) and the migrations cannot go through a transaction pooler")),
+            (false, Some(_)) => return Err(invalid("[store] direct_url is for pooler = true only")),
+            (true, Some(d)) => {
+                parse_pg_url(d)?;
+                if Some(d.as_str()) == self.url.as_deref() {
+                    return Err(invalid("[store] direct_url must name the database, not the pooler"));
+                }
+            }
+            (false, None) => {}
         }
         if !(1..=MAX_POOL_SIZE).contains(&self.pool_size) {
             return Err(invalid("[store] pool_size must be 1..=200"));

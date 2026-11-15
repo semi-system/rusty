@@ -73,3 +73,14 @@ docker compose run --rm ctl domain dns example.org      # the records to publish
 ## What is not here yet
 
 Spam and virus filtering (design: `docs/design-filters-and-resolver.md`), the webmail, two-factor sign-in, a tenant's own certificates, and several instances of a service.
+
+## Mail client auto-setup (Thunderbird)
+
+The admin service answers the Mozilla autoconfig request, so a client given only `user@example.org` finds the servers by itself. The edge sends the one request
+`GET http://autoconfig.example.org/mail/config-v1.1.xml?emailaddress=user@example.org` (port 80, host `autoconfig.*`, exactly that path) to the admin service; every other request on
+port 80 is still redirected to HTTPS. The answer names the configured mail host name with IMAP over TLS on 993, submission with STARTTLS on 587 and the address as the user name,
+the same for every domain, so it says nothing about which domains or accounts exist.
+
+What you do per domain: publish `autoconfig.example.org` (an `A` record, or a `CNAME` to the mail host) and keep port 80 open to the edge. The SRV records the DNS page already lists
+(`_imaps._tcp`, `_submission._tcp`, `_submissions._tcp`, RFC 6186) serve the clients that read those. Not provided: Outlook's `autodiscover` (it needs HTTPS and a certificate for
+`autodiscover.<domain>`, which waits for the per-tenant certificate decision) and an HTTPS autoconfig for the same reason: Thunderbird falls back to plain HTTP for it.

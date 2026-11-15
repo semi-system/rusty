@@ -12,3 +12,4 @@ node:22-alpine3.22  node@sha256:cd7807368cf24826297cbad5dca1a44972ccfd770647db52
 ghcr.io/letsencrypt/pebble:latest  ghcr.io/letsencrypt/pebble@sha256:0c81f05db371f436c97fb894bd6d2ab8fc9c8e2ce40f8bef8a8e15941bcd75ef  2026-11-15  (Pebble ACME test CA; scripts/tests/acme-pebble.sh, test only)
 ghcr.io/letsencrypt/pebble-challtestsrv:latest  ghcr.io/letsencrypt/pebble-challtestsrv@sha256:0152c8cb506e2ecba2900ed47d23932e27e3e6575a7d2c8ef93c7719ee3dea4c  2026-11-15  (Pebble challenge test server; scripts/tests/acme-pebble.sh, test only)
 rustfs/rustfs:latest  rustfs/rustfs@sha256:b81d16a90ee25bd9511280127ca1471788c6e874cf0f0da759645f46b2dc1d74  2026-11-15  (RustFS, the S3 test server of crates/rusty-s3; tests and the dev compose)
+edoburu/pgbouncer:latest  edoburu/pgbouncer@sha256:8638aa563607256d3c7440437534195f1066a92b68015d89ae9d6b935b444a6d  2026-11-15  (PgBouncer 1.26.1, transaction pooling; scripts/pgb-up.sh, test only until the standalone stack uses it)
