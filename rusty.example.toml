@@ -51,7 +51,7 @@ blob_dir = "/var/lib/rusty/blobs"
 # the per-address cap and the login throttle see). The header is read ONLY from the listed addresses; a connection from any other address is dropped.
 # On the implicit-TLS ports (465, 993) TLS ends at the edge, so they need no certificate of their own; the STARTTLS ports (587, 143) still do.
 # proxy_protocol = false
-# trusted_proxies = ["10.0.0.0/24"]   # required with proxy_protocol, at most 16 blocks, never 0.0.0.0/0
+# trusted_proxies = ["10.0.0.0/24", "127.0.0.1/32"]   # required with proxy_protocol, at most 16 blocks, never 0.0.0.0/0. Add 127.0.0.1/32 for `rusty healthcheck`: it probes from loopback with a PROXY LOCAL header
 
 # [imap]
 # listen_143 = "0.0.0.0:143"
