@@ -302,6 +302,9 @@ fn seal_keygen_and_show_need_no_configuration_and_no_database() {
     // It still never replaces an existing key.
     let again = Command::new(BIN).args(["ctl", "seal", "keygen", key.to_str().unwrap()]).output().unwrap();
     assert_ne!(again.status.code(), Some(0));
+}
+
+#[test]
 fn blobs_init_makes_the_blob_directory_without_a_database_and_is_safe_to_repeat() {
     use std::os::unix::fs::PermissionsExt;
     let dir = private_tmp();
