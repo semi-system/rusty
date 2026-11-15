@@ -108,7 +108,13 @@ pub struct S3Client {
     /// Seconds the server's clock is ahead of ours, from the `Date` header of the last reply: signatures use the server's time (a skew over a few minutes is refused), and GC
     /// compares the store's clock with the database clock.
     offset: AtomicI64,
+    /// At most this many requests are in flight at once (a store of a pool has its own client, so each backend has its own cap): a burst of deliveries waits here instead of opening
+    /// hundreds of connections to the bucket. A request that waits longer than the deadline fails as a timeout.
+    permits: Arc<tokio::sync::Semaphore>,
 }
+
+/// Requests in flight at once per client, unless [`S3Client::with_max_concurrent`] says otherwise.
+pub const DEFAULT_MAX_CONCURRENT: usize = 64;
 
 impl fmt::Debug for S3Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -127,7 +133,13 @@ impl S3Client {
             return Err(Error::Invalid("an https endpoint needs a TLS configuration".into()));
         }
         let http = Http::new(endpoint, connector, tls, cfg.deadline);
-        Ok(S3Client { http, cfg, creds, offset: AtomicI64::new(0) })
+        Ok(S3Client { http, cfg, creds, offset: AtomicI64::new(0), permits: Arc::new(tokio::sync::Semaphore::new(DEFAULT_MAX_CONCURRENT)) })
+    }
+
+    /// Allow at most `n` (at least 1) requests in flight at once.
+    pub fn with_max_concurrent(mut self, n: usize) -> S3Client {
+        self.permits = Arc::new(tokio::sync::Semaphore::new(n.max(1)));
+        self
     }
 
     pub fn config(&self) -> &S3Config {
@@ -195,6 +207,10 @@ impl S3Client {
         let mut sent: Vec<(String, String)> = headers.into_iter().filter(|(n, _)| n != "host").collect();
         sent.push(("authorization".into(), auth));
         let target = if canonical_query.is_empty() { uri } else { format!("{uri}?{canonical_query}") };
+        let _permit = match tokio::time::timeout(self.cfg.deadline, self.permits.clone().acquire_owned()).await {
+            Ok(Ok(p)) => p,
+            _ => return Err(S3Fail::Timeout),
+        };
         let reply = self.http.send(method, &target, &host, &sent, body, max_reply).await?;
         if let Some(date) = reply.header("date").and_then(parse_http_date) {
             let local = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
