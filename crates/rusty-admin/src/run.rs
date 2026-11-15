@@ -61,7 +61,8 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
         (Some(g), Some(t))
     };
     let app = Arc::new(AdminApp::new(auth, directory, admins, gate, &admin.public_origin, SessionConfig::default()));
-    let handler = Arc::new(HttpHandler::new(routes(app, Router::new()), HttpConfig::default()));
+    let router = crate::manage::routes(app.clone(), routes(app, Router::new()));
+    let handler = Arc::new(HttpHandler::new(router, HttpConfig::default()));
 
     let (accept, tls): (Arc<dyn Accept>, Option<TlsProvider>) = if cfg.tls.has_cert() {
         let hostname = cfg.hostname.clone().unwrap_or_else(|| "localhost".to_owned());

@@ -93,3 +93,24 @@ password_file = "/run/secrets/pg"
   A new token is made at every start; once the first administrator exists there is no token and the setup page answers `404`.
 * Sessions are kept in the process for now (a restart signs everyone out). A `[valkey]` section is accepted but not used yet; a warning says so.
 * Exit status: 0 after a clean stop (SIGTERM or SIGINT, sessions drain within `shutdown_grace_secs`), 1 for a runtime failure, 2 for a bad command line or configuration.
+
+## Management endpoints: domains, accounts, aliases
+
+The routes, their request and response shapes and their authorisation are fixed by **`crates/rusty-admin/contract/v1.json`**; the front end's types are generated
+from it. A test runs the endpoints and checks the real responses have exactly the declared fields and types, and that every listed route exists.
+
+| | Platform administrator | Domain administrator |
+|---|---|---|
+| list domains | all | its own domain only |
+| create, disable, enable a domain | yes | `403 forbidden` |
+| accounts, aliases of a domain | every domain | its own domain |
+| account password, disable, enable | every account | accounts of its own domain |
+
+* **Scope is decided in the handler, after the session**: a domain, account or alias outside the administrator's scope is `404 not_found`, **byte for byte the answer for one
+  that does not exist**, so the API is no oracle for other tenants' names (tested with both spellings and with odd encodings of the other domain). An alias in your domain
+  pointing at another tenant's account is "no such account". Platform-only actions are `403` (a rule, not a missing thing).
+* **No self-lockout**: an administrator cannot disable the account it is signed in with, nor disable the domain that account lives in.
+* **Sessions follow the account**: a new password or a disabled account ends every session of that account at once.
+* The first account of a domain also receives `postmaster@` and `abuse@` (as with `rustyctl account add`; the rule is repeated here, not shared).
+* Lists are paged by `?after=<cursor>` (page size 100); `next` is `null` at the end; any other query parameter is `400`. A mutation takes no query at all. Unknown JSON
+  fields are `400`. Passwords: at least 8 characters for an account (as with `rustyctl`).

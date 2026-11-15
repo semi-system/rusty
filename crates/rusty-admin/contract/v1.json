@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "about": "The contract between rusty-admin and the web front end (design sections 4 and 8). The front end types are generated from this file; a test runs every endpoint and checks the real responses against these shapes, and that the routes of the service are exactly the ones listed.",
+  "conventions": {
+    "base": "/api/v1",
+    "errors": "{\"error\": <code>} with a fixed code: invalid 400, unauthorized 401, forbidden 403, not_found 404, exists 409, unsupported 415, throttled 429 (Retry-After), busy 503",
+    "mutations": "need Origin = the public origin, Content-Type: application/json and X-CSRF-Token (from GET /session)",
+    "scope": "a domain outside the administrator's scope is 404 not_found, the same answer as a domain that does not exist",
+    "pagination": "lists return {items, next}; pass ?after=<next> for the following page; next is null at the end; the page size is fixed (100)"
+  },
+  "types": {
+    "integer": "JSON number without fraction",
+    "string": "JSON string",
+    "boolean": "true or false",
+    "T[]": "array of T",
+    "T|null": "T or null"
+  },
+  "shapes": {
+    "Empty": {},
+    "Error": { "error": "string" },
+    "Me": { "address": "string", "scope": "string", "domain": "integer|null", "csrf": "string" },
+    "SetupState": { "required": "boolean" },
+    "Domain": { "id": "integer", "name": "string", "status": "string" },
+    "Account": { "id": "integer", "address": "string", "status": "string", "has_password": "boolean" },
+    "AccountCreated": { "id": "integer", "address": "string", "status": "string", "has_password": "boolean", "aliases_created": "string[]" },
+    "Alias": { "id": "integer", "alias": "string", "target": "string" },
+    "AliasCreated": { "alias": "string", "target": "string" },
+    "DomainList": { "items": "Domain[]", "next": "integer|null" },
+    "AccountList": { "items": "Account[]", "next": "integer|null" },
+    "AliasList": { "items": "Alias[]", "next": "integer|null" }
+  },
+  "endpoints": [
+    { "method": "POST", "path": "/api/v1/session", "auth": "none", "request": { "address": "string", "password": "string" }, "response": "Me", "status": 200 },
+    { "method": "GET", "path": "/api/v1/session", "auth": "admin", "request": null, "response": "Me", "status": 200 },
+    { "method": "DELETE", "path": "/api/v1/session", "auth": "admin", "request": null, "response": "Empty", "status": 200 },
+    { "method": "GET", "path": "/api/v1/setup", "auth": "none", "request": null, "response": "SetupState", "status": 200, "note": "404 once a platform administrator exists" },
+    { "method": "POST", "path": "/api/v1/setup", "auth": "none", "request": { "token": "string", "address": "string", "password": "string" }, "response": "Me", "status": 201, "note": "404 once a platform administrator exists" },
+    { "method": "GET", "path": "/api/v1/domains", "auth": "admin", "request": null, "response": "DomainList", "status": 200, "note": "a domain administrator sees its own domain only" },
+    { "method": "POST", "path": "/api/v1/domains", "auth": "platform", "request": { "name": "string" }, "response": "Domain", "status": 201 },
+    { "method": "POST", "path": "/api/v1/domains/{d}/disable", "auth": "platform", "request": null, "response": "Domain", "status": 200 },
+    { "method": "POST", "path": "/api/v1/domains/{d}/enable", "auth": "platform", "request": null, "response": "Domain", "status": 200 },
+    { "method": "GET", "path": "/api/v1/domains/{d}/accounts", "auth": "admin", "request": null, "response": "AccountList", "status": 200 },
+    { "method": "POST", "path": "/api/v1/domains/{d}/accounts", "auth": "admin", "request": { "local": "string", "password": "string|null (optional)" }, "response": "AccountCreated", "status": 201 },
+    { "method": "POST", "path": "/api/v1/accounts/{a}/password", "auth": "admin", "request": { "password": "string" }, "response": "Empty", "status": 200 },
+    { "method": "POST", "path": "/api/v1/accounts/{a}/disable", "auth": "admin", "request": null, "response": "Account", "status": 200 },
+    { "method": "POST", "path": "/api/v1/accounts/{a}/enable", "auth": "admin", "request": null, "response": "Account", "status": 200 },
+    { "method": "GET", "path": "/api/v1/domains/{d}/aliases", "auth": "admin", "request": null, "response": "AliasList", "status": 200 },
+    { "method": "POST", "path": "/api/v1/domains/{d}/aliases", "auth": "admin", "request": { "local": "string", "target": "string" }, "response": "AliasCreated", "status": 201 },
+    { "method": "DELETE", "path": "/api/v1/aliases/{a}", "auth": "admin", "request": null, "response": "Empty", "status": 200 }
+  ]
+}
