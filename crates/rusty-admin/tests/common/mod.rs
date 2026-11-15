@@ -34,6 +34,8 @@ pub struct Rig {
     /// Opens what the app sealed (the outbound service's key).
     pub unsealer: rusty_seal::Unsealer,
     pub store: Store,
+    /// The outbound service's view of the database (role `rusty_app`): the only one that may read a sealed secret.
+    pub outbound: Store,
     pub fx: rusty_store::fixtures::Fixtures,
     _db: pg::PgTestDb,
 }
@@ -62,8 +64,10 @@ pub async fn rig_without_sealing() -> Rig {
 
 async fn build(with_sealing: bool) -> Rig {
     let url = pg::pg_admin_url().expect("RUSTY_TEST_PG_URL");
-    let db = pg::PgTestDb::create(&url).await;
-    let store = Store::open(StoreConfig::postgres(db.url())).await.unwrap();
+    // The service runs as its own database role (deploy/db/roles.sql, grants_pg.sql): a query that needs more than that role has fails here.
+    let db = pg::PgTestDb::create_with_roles(&url).await;
+    let store = Store::open(StoreConfig::postgres(db.role_url("rusty_admin"))).await.unwrap();
+    let outbound = Store::open(StoreConfig::postgres(db.role_url("rusty_app"))).await.unwrap();
     let dir = Directory::with_repo(store.repos().directory.clone());
     let admins = AdminStore::with_repo(store.repos().admin.clone());
     let now = Arc::new(ManualNow::new(1_000_000));
@@ -93,7 +97,7 @@ async fn build(with_sealing: bool) -> Rig {
     tokio::spawn(async move {
         let _ = bound.serve(Arc::new(DirectTcp), Arc::new(h), Arc::new(TracingEvents), s, Duration::from_secs(5)).await;
     });
-    Rig { addr, dir, admins, stop, now, unsealer: rusty_seal::Unsealer::new(vec![unseal_key]).unwrap(), fx, store, _db: db }
+    Rig { addr, dir, admins, stop, now, unsealer: rusty_seal::Unsealer::new(vec![unseal_key]).unwrap(), fx, store, outbound, _db: db }
 }
 
 pub struct Reply {

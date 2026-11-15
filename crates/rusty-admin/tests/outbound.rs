@@ -32,7 +32,9 @@ async fn a_dkim_key_is_made_sealed_and_only_its_public_record_is_returned() {
     assert!(!made.body.contains("PRIVATE") && !made.body.to_lowercase().contains("secret"), "no private key in the response");
 
     // The private half is a sealed secret that only the outbound service's key opens, bound to this domain.
-    let row = r.store.repos().sealed.get("domain", id, &sealed_purpose("rusty-ed25519")).await.unwrap().expect("sealed");
+    let row = r.outbound.repos().sealed.get("domain", id, &sealed_purpose("rusty-ed25519")).await.unwrap().expect("sealed");
+    // The admin service's own database role cannot read the ciphertext back: the privilege is not there, whatever the code does.
+    assert!(r.store.repos().sealed.get("domain", id, &sealed_purpose("rusty-ed25519")).await.is_err(), "the admin role must not read a sealed secret");
     let pem = r.unsealer.unseal(&Context::new("domain", id, &sealed_purpose("rusty-ed25519")).unwrap(), &row.sealed).unwrap();
     assert!(String::from_utf8_lossy(&pem).contains("PRIVATE KEY"));
     assert!(!String::from_utf8_lossy(&row.sealed).contains("PRIVATE"), "the stored blob is ciphertext");
@@ -101,7 +103,7 @@ async fn a_relay_is_set_with_a_sealed_password_that_is_never_returned() {
     assert!(!got.body.contains("relay-secret-1") && got.json()["relay"]["password_set"] == true);
 
     // The password is in the sealed store and only the outbound service's key opens it, bound to this domain and purpose.
-    let sealed = r.store.repos().sealed.get("domain", id, RELAY_PASSWORD_PURPOSE).await.unwrap().unwrap();
+    let sealed = r.outbound.repos().sealed.get("domain", id, RELAY_PASSWORD_PURPOSE).await.unwrap().unwrap();
     let ctx = Context::new("domain", id, RELAY_PASSWORD_PURPOSE).unwrap();
     assert_eq!(&**r.unsealer.unseal(&ctx, &sealed.sealed).unwrap(), b"relay-secret-1");
 
@@ -109,7 +111,7 @@ async fn a_relay_is_set_with_a_sealed_password_that_is_never_returned() {
     let nologin = c.mutate("PUT", "/api/v1/domains/one.test/relay", Some(relay_body("two.mail.net", None, None))).await;
     assert_eq!(nologin.status, 200, "{}", nologin.body);
     assert_eq!(nologin.json()["relay"]["password_set"], false);
-    assert!(r.store.repos().sealed.get("domain", id, RELAY_PASSWORD_PURPOSE).await.unwrap().is_none());
+    assert!(r.outbound.repos().sealed.get("domain", id, RELAY_PASSWORD_PURPOSE).await.unwrap().is_none());
     assert_eq!(c.mutate("PUT", "/api/v1/domains/one.test/relay", Some(relay_body("three.mail.net", Some("u"), None))).await.status, 400);
 
     // Check: queued for the outbound service; the job exists.
@@ -124,7 +126,7 @@ async fn a_relay_is_set_with_a_sealed_password_that_is_never_returned() {
     assert_eq!(del.status, 200);
     conforms(&del.json(), "Empty");
     assert!(c.get("/api/v1/domains/one.test/relay").await.json()["relay"].is_null());
-    assert!(r.store.repos().sealed.get("domain", id, RELAY_PASSWORD_PURPOSE).await.unwrap().is_none());
+    assert!(r.outbound.repos().sealed.get("domain", id, RELAY_PASSWORD_PURPOSE).await.unwrap().is_none());
     assert_eq!(c.mutate("DELETE", "/api/v1/domains/one.test/relay", None).await.status, 404);
     assert_eq!(c.post_empty("/api/v1/domains/one.test/relay/check").await.status, 404, "nothing to check");
 }
@@ -207,7 +209,7 @@ async fn a_domain_administrator_cannot_reach_another_tenants_dkim_or_relay_and_c
     // Nothing of the other tenant changed: its relay is still the one it set, with its password.
     let theirs = r.store.repos().relay.get(rusty_core::DomainId(two)).await.unwrap().unwrap();
     assert_eq!(theirs.host, "smtp.mail.net");
-    assert!(r.store.repos().sealed.get("domain", two, RELAY_PASSWORD_PURPOSE).await.unwrap().is_some());
+    assert!(r.outbound.repos().sealed.get("domain", two, RELAY_PASSWORD_PURPOSE).await.unwrap().is_some());
     assert_eq!(r.count_jobs("relay.check").await, 0);
     // Its own domain works.
     assert_eq!(c.post("/api/v1/domains/one.test/dkim", json!({})).await.status, 201);

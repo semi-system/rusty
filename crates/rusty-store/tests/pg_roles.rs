@@ -445,3 +445,41 @@ async fn password_comes_from_the_security_struct_and_never_shows_in_errors_or_de
     assert!(!format!("{cfg:?}").contains(secret));
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn the_admin_role_manages_tenants_but_reaches_no_mail_and_reads_no_secret() {
+    let Some(admin) = pg_admin_url() else { return };
+    let db = PgTestDb::create_with_roles(&admin).await;
+    let a = pool_as(&db, "rusty_admin").await;
+    for sql in [
+        "SELECT * FROM messages",
+        "SELECT * FROM keywords",
+        "SELECT * FROM blobs",
+        "SELECT * FROM deliveries",
+        "SELECT * FROM change_log",
+        "DELETE FROM messages",
+        "UPDATE folders SET name = 'x'",
+        "DELETE FROM folders",
+        "SELECT sealed FROM sealed_secrets",
+        "SELECT * FROM sealed_secrets",
+        "UPDATE address_owners SET local_part = 'y'",
+        "TRUNCATE domains CASCADE",
+        "CREATE TABLE evil (id int)",
+    ] {
+        denied(&a, sql).await;
+    }
+    // What it is for: tenants, DNS, relays, grants, jobs; and the existence and size of a secret, never its content.
+    for sql in [
+        "SELECT count(*) FROM domains",
+        "SELECT count(*) FROM accounts",
+        "SELECT count(*) FROM admin_grants",
+        "SELECT count(*) FROM domain_relays",
+        "SELECT count(*) FROM jobs",
+        "SELECT owner_kind, owner_id, purpose, key_id, sealed_len FROM sealed_secrets",
+        "SELECT count(*) FROM _sqlx_migrations",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(sql)).execute(&a).await.unwrap_or_else(|e| panic!("{sql}: {e}"));
+    }
+    a.close().await;
+    db.cleanup().await;
+}

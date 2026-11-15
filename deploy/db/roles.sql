@@ -66,3 +66,24 @@ $db$;
 REVOKE ALL ON SCHEMA public FROM PUBLIC;
 GRANT USAGE, CREATE ON SCHEMA public TO rusty_migrator;
 GRANT USAGE ON SCHEMA public TO rusty_app, rusty_ro;
+
+-- The admin web service has a role of its own (rusty_admin): it manages tenants and secrets, it never touches a mailbox, a message or a blob, and it cannot
+-- read a sealed secret back (grants_pg.sql). Same timeouts as the other runtime roles.
+DO $admin$
+BEGIN
+  IF to_regrole('rusty_admin') IS NULL THEN
+    BEGIN
+      CREATE ROLE rusty_admin NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END;
+  END IF;
+END
+$admin$;
+ALTER ROLE rusty_admin SET statement_timeout = '30s';
+ALTER ROLE rusty_admin SET idle_in_transaction_session_timeout = '30s';
+DO $admin_db$
+BEGIN
+  EXECUTE format('GRANT CONNECT ON DATABASE %I TO rusty_admin', current_database());
+END
+$admin_db$;
+GRANT USAGE ON SCHEMA public TO rusty_admin;
