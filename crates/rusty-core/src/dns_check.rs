@@ -208,6 +208,55 @@ impl<'s, S: DnsSource> Net<'s, S> {
     }
 }
 
+/// The same check against two resolvers (`[dns_check] nameserver` and `second_nameserver`), merged record by record: a record both resolvers see the same way keeps that verdict;
+/// a record on which they differ and one of them says `ok` is `pending` (the answer is on its way to the other resolver: propagation lag, not a fault) with the finding
+/// `resolvers.differ` and both pieces of evidence; a verdict that could not be reached (`warning`) gives way to the other resolver's; two different faults keep the first
+/// resolver's verdict with the finding.
+pub async fn check_records_compared<S: DnsSource, T: DnsSource>(first: &S, second: &T, expected: &[DnsRecord], opts: &CheckOptions) -> Vec<RecordCheck> {
+    let a = check_records(first, expected, opts).await;
+    let b = check_records(second, expected, opts).await;
+    merge_checks(a, b)
+}
+
+/// Merge two checks of the same expected records, in the same order (see [`check_records_compared`]). Entries beyond the shorter list are dropped.
+pub fn merge_checks(first: Vec<RecordCheck>, second: Vec<RecordCheck>) -> Vec<RecordCheck> {
+    first
+        .into_iter()
+        .zip(second)
+        .map(|(a, b)| {
+            if a.status == b.status {
+                return a;
+            }
+            let both_seen = || match (&a.seen, &b.seen) {
+                (Some(x), Some(y)) => Some(format!("{x} | second resolver: {y}")),
+                (Some(x), None) => Some(format!("{x} | second resolver: nothing")),
+                (None, Some(y)) => Some(format!("nothing | second resolver: {y}")),
+                (None, None) => None,
+            };
+            let with_finding = |mut c: RecordCheck, status: RecordStatus, seen: Option<String>| {
+                c.status = status;
+                c.seen = seen;
+                if !c.findings.contains(&"resolvers.differ") {
+                    c.findings.push("resolvers.differ");
+                }
+                c
+            };
+            match (a.status, b.status) {
+                (RecordStatus::Warning, _) => b,
+                (_, RecordStatus::Warning) => a,
+                (RecordStatus::Ok, _) | (_, RecordStatus::Ok) => {
+                    let seen = both_seen();
+                    with_finding(a, RecordStatus::Pending, seen)
+                }
+                _ => {
+                    let (status, seen) = (a.status, both_seen());
+                    with_finding(a, status, seen)
+                }
+            }
+        })
+        .collect()
+}
+
 /// Check every record of `expected` against what DNS publishes. The result has one entry per record (the reverse
 /// records are left out when mail goes through a relay), in the order of `expected`.
 pub async fn check_records<S: DnsSource>(src: &S, expected: &[DnsRecord], opts: &CheckOptions) -> Vec<RecordCheck> {
