@@ -428,3 +428,33 @@ async fn the_database_itself_refuses_to_change_a_published_dkim_key() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn the_periodic_check_picks_domains_that_were_never_checked_or_are_overdue_oldest_first() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let s = b.dns();
+        let (a, c, e) = (domain(&b, "due-a.test").await, domain(&b, "due-b.test").await, domain(&b, "due-c.test").await);
+        let ids = |v: Vec<(DomainId, String)>| v.into_iter().map(|(i, _)| i).collect::<Vec<_>>();
+
+        // Nothing was ever checked: all three are due.
+        let mut all = ids(s.due_for_check_at(3600, 0, 10, 10_000).await.unwrap());
+        all.sort_by_key(|i| i.0);
+        assert_eq!(all, vec![a, c, e], "{n}");
+
+        // a was checked at 9000, c at 1000: at 10000 with an interval of 3600 only c and the never-checked e are due, never-checked first.
+        s.record_check_at(a, &[obs("r.due-a.test.", RecordStatus::Ok, H1)], 3, 9000).await.unwrap();
+        s.record_check_at(c, &[obs("r.due-b.test.", RecordStatus::Ok, H1)], 3, 1000).await.unwrap();
+        assert_eq!(ids(s.due_for_check_at(3600, 0, 10, 10_000).await.unwrap()), vec![e, c], "{n}");
+        // The limit counts.
+        assert_eq!(ids(s.due_for_check_at(3600, 0, 1, 10_000).await.unwrap()), vec![e], "{n}");
+        // The stable offset inside the jitter window pushes a domain later, never earlier: with a window of 5000 seconds a's offset is a.id % 5000,
+        // so it is not due 3600 seconds after its check unless that offset is zero; the same call twice gives the same answer.
+        let first = ids(s.due_for_check_at(3600, 5000, 10, 12_700).await.unwrap());
+        assert_eq!(first, ids(s.due_for_check_at(3600, 5000, 10, 12_700).await.unwrap()), "{n}: stable");
+        assert!(!first.contains(&a) || a.0 % 5000 == 0 || 9000 + 3600 + a.0 % 5000 <= 12_700, "{n}");
+        // Long after: everything is due again.
+        assert_eq!(ids(s.due_for_check_at(3600, 0, 10, 1_000_000).await.unwrap()).len(), 3, "{n}");
+    })
+    .await;
+}

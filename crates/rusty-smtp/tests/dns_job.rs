@@ -10,7 +10,7 @@ use common::*;
 use rusty_core::config::OutboundConfig;
 use rusty_core::dns::{records_with_facts, DnsRecord, MailFacts, RecordType};
 use rusty_core::dns_check::{record_hash, DnsFail, DnsSource, MxEntry, SrvEntry};
-use rusty_smtp::outbound::dns_job::{enqueue_dns_check, DnsCheckWorker};
+use rusty_smtp::outbound::dns_job::{enqueue_dns_check, DnsCheckScheduler, DnsCheckWorker};
 use rusty_store::DnsStore;
 use rusty_svc::Service;
 use tokio_util::sync::CancellationToken;
@@ -112,6 +112,43 @@ async fn a_published_domain_is_recorded_ok_and_an_unpublished_one_missing() {
         run_job(&b, Zone::default()).await;
         let states = dns.states(id).await.unwrap();
         assert!(states.iter().any(|s| s.status.as_str() == "missing"), "{:?}", states.iter().map(|s| s.status.as_str()).collect::<Vec<_>>());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_scheduler_queues_domains_that_are_due_and_not_disabled_ones() {
+    for_each_backend(|b| async move {
+        let (ctx, _blobs) = make_context(&b).await;
+        let dns = DnsStore::with_repo(b.store.repos().dns.clone());
+        let live = b.dir.create_domain("live.example").await.unwrap();
+        let off = b.dir.create_domain("off.example").await.unwrap();
+        b.dir.set_domain_status(off, rusty_directory::DomainStatus::Disabled).await.unwrap();
+        let sched = DnsCheckScheduler::new(dns.clone(), 3600, 0);
+
+        // Never checked: the active domain is queued, the disabled one is not.
+        assert_eq!(sched.pass(&ctx.jobs).await.unwrap(), 1);
+        let queued = b.fx.scalar("SELECT count(*) FROM jobs WHERE kind = 'dns.check'", &[]).await;
+        assert_eq!(queued, 1);
+
+        // Once the worker has recorded a check, the domain is not due again until the interval passes.
+        let (records, _) = records_with_facts("live.example", &facts(), &[]).unwrap();
+        let worker = DnsCheckWorker::new(dns.clone(), cfg(), "mail.example.net", Arc::new(published(&records))).with_poll(Duration::from_millis(50));
+        let token = CancellationToken::new();
+        let task = tokio::spawn({
+            let (ctx, token) = (ctx.clone(), token.clone());
+            async move { Box::new(worker).run(ctx, token).await }
+        });
+        for _ in 0..100 {
+            if b.fx.scalar("SELECT count(*) FROM jobs WHERE kind = 'dns.check' AND state = 'done'", &[]).await == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        token.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+        assert!(!dns.states(live).await.unwrap().is_empty(), "the check was recorded");
+        assert_eq!(sched.pass(&ctx.jobs).await.unwrap(), 0, "a domain just checked is not due");
     })
     .await;
 }

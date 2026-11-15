@@ -112,3 +112,65 @@ impl<S: DnsSource + 'static> Service for DnsCheckWorker<S> {
         Ok(())
     }
 }
+
+/// The periodic check (`[dns_check] enabled`): once a minute it asks the database which active domains are due (the newest check of their records is
+/// older than `interval_secs` plus the domain's stable offset inside `jitter_secs`, or there was none) and queues a `dns.check` job for each. The queue's
+/// per-domain cap and the worker above do the rest, so a domain that cannot be checked is not queried more often than the queue allows.
+pub struct DnsCheckScheduler {
+    dns: rusty_store::DnsStore,
+    interval_secs: u64,
+    jitter_secs: u64,
+    tick: Duration,
+}
+
+/// Domains queued per tick at most: a large backlog (a first start with many domains) drains over several ticks instead of flooding the queue.
+const PER_TICK: u32 = 200;
+
+impl DnsCheckScheduler {
+    pub fn new(dns: rusty_store::DnsStore, interval_secs: u64, jitter_secs: u64) -> DnsCheckScheduler {
+        DnsCheckScheduler { dns, interval_secs, jitter_secs, tick: Duration::from_secs(60) }
+    }
+
+    pub fn with_tick(mut self, tick: Duration) -> DnsCheckScheduler {
+        self.tick = tick;
+        self
+    }
+
+    /// One pass: queue what is due; how many jobs were queued.
+    pub async fn pass(&self, jobs: &rusty_store::JobQueue) -> Result<usize> {
+        let due = self.dns.due_for_check(self.interval_secs, self.jitter_secs, PER_TICK).await?;
+        let mut queued = 0;
+        for (id, name) in due {
+            match enqueue_dns_check(jobs, id, &name).await {
+                Ok(()) => queued += 1,
+                // The per-domain cap or a full queue: it is tried again at the next pass.
+                Err(e) => tracing::debug!(domain = id.0, error = %e, "periodic dns check not queued"),
+            }
+        }
+        Ok(queued)
+    }
+}
+
+#[async_trait]
+impl Service for DnsCheckScheduler {
+    fn name(&self) -> &'static str {
+        "dns-check-schedule"
+    }
+
+    async fn run(self: Box<Self>, ctx: Context, shutdown: CancellationToken) -> Result<()> {
+        tracing::info!(interval_secs = self.interval_secs, "periodic dns check scheduler started");
+        loop {
+            match self.pass(&ctx.jobs).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(queued = n, "periodic dns checks queued"),
+                Err(e) => tracing::warn!(error = %e, "periodic dns check pass failed"),
+            }
+            tokio::select! {
+                () = shutdown.cancelled() => break,
+                () = tokio::time::sleep(self.tick) => {}
+            }
+        }
+        tracing::info!("periodic dns check scheduler stopped");
+        Ok(())
+    }
+}

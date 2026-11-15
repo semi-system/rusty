@@ -43,4 +43,4 @@ that was `ok` and fails three checks in a row raises an alert (drift). A key tha
 ## Not covered
 
 Whether the ports are reachable from outside and the TLS certificate they serve (they need connections, not DNS), DNSBL listings, DNSSEC,
-and the domain-ownership challenge record. A periodic check (the `dns.check` job) comes next; today the command is run by hand or by cron.
+and the domain-ownership challenge record. The periodic check is `[dns_check] enabled = true` in the mail daemon: once a minute it queues a `dns.check` job for each active domain whose newest check is older than `interval_secs` plus its stable offset inside `jitter_secs` (at most 200 per pass); `nameserver` overrides the resolver for these checks. The second resolver comparison (`second_nameserver`) is not wired yet.
