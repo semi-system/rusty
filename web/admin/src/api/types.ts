@@ -99,6 +99,25 @@ export interface StorageSettings {
   path_style: boolean;
 }
 
+export interface StoragePolicy {
+  copies: number;
+  sync_copies: number;
+  placement: string;
+  read: string;
+}
+
+export interface StorageBackend {
+  name: string;
+  state: string;
+  weight: number;
+  check_status: string;
+  checked_at: number | null;
+  settings: StorageSettings | null;
+  access_key_set: boolean | null;
+  secret_key_set: boolean | null;
+  objects: number | null;
+}
+
 export interface Storage {
   kind: string;
   ready: boolean;
@@ -107,6 +126,8 @@ export interface Storage {
   settings: StorageSettings | null;
   access_key_set: boolean | null;
   secret_key_set: boolean | null;
+  policy: StoragePolicy | null;
+  backends: StorageBackend[] | null;
 }
 
 export interface StorageState {

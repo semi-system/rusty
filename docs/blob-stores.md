@@ -57,7 +57,7 @@ Each backend has a circuit breaker: after consecutive failures it is left out un
 `pending_delete` location that repair retries. `PoolStore::repair` also makes missing copies and empties a `draining` backend (which can then be removed). A pool is used only when every backend
 that is not disabled passed a check.
 
-Not there yet: the S3 opener for backends, `rustyctl`/admin commands for backends and the repair job (this step has the pool itself, tested with directory backends).
+Set up with `rustyctl storage pool DOMAIN --copies 2 --sync-copies 1 --placement ordered --read ordered`, `storage backend add DOMAIN NAME --endpoint ... --credentials-stdin [--weight W]` (also `rekey`, `set --state/--weight`, `remove`), `storage check DOMAIN` (every backend that is used is tried) and `storage show DOMAIN`, or on the admin web page of the domain (platform administrators; a domain administrator sees the state of the backends only). Each backend's keys are sealed to that backend (owner kind `blobbackend`). The upkeep service runs `repair` every minute, and opened stores are re-read every minute, so a changed pool takes effect without a restart.
 
 ## What is not here yet
 

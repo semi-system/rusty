@@ -31,6 +31,20 @@ export interface StorageInput {
   secret_key: string;
 }
 
+/** What `PUT .../storage/pool` takes. */
+export interface PoolInput {
+  copies: number;
+  sync_copies: number;
+  placement: 'ordered' | 'weighted';
+  read: 'located' | 'ordered' | 'round_robin' | 'fastest';
+}
+
+/** What `POST .../storage/backends` takes. */
+export interface BackendInput extends StorageInput {
+  name: string;
+  weight: number;
+}
+
 const seg = encodeURIComponent;
 const cursor = (after?: number): string => (after === undefined ? '' : `?after=${after}`);
 
@@ -238,6 +252,26 @@ export class Client {
 
   async putStorage(domain: string, input: StorageInput): Promise<Storage | null> {
     return (await this.call<{ storage: Storage | null }>('PUT', `/api/v1/domains/${seg(domain)}/storage`, input)).storage;
+  }
+
+  async putPool(domain: string, input: PoolInput): Promise<Storage | null> {
+    return (await this.call<{ storage: Storage | null }>('PUT', `/api/v1/domains/${seg(domain)}/storage/pool`, input)).storage;
+  }
+
+  async addBackend(domain: string, input: BackendInput): Promise<Storage | null> {
+    return (await this.call<{ storage: Storage | null }>('POST', `/api/v1/domains/${seg(domain)}/storage/backends`, input)).storage;
+  }
+
+  async putBackend(domain: string, backend: string, input: { state: string; weight: number }): Promise<Storage | null> {
+    return (await this.call<{ storage: Storage | null }>('PUT', `/api/v1/domains/${seg(domain)}/storage/backends/${seg(backend)}`, input)).storage;
+  }
+
+  async backendKeys(domain: string, backend: string, input: { access_key: string; secret_key: string }): Promise<Storage | null> {
+    return (await this.call<{ storage: Storage | null }>('POST', `/api/v1/domains/${seg(domain)}/storage/backends/${seg(backend)}/keys`, input)).storage;
+  }
+
+  async deleteBackend(domain: string, backend: string): Promise<void> {
+    await this.call('DELETE', `/api/v1/domains/${seg(domain)}/storage/backends/${seg(backend)}`);
   }
 
   async checkStorage(domain: string): Promise<void> {

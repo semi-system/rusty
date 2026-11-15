@@ -4,6 +4,7 @@
   import type { Me, Storage } from '../api/types';
   import DomainShell from '../lib/DomainShell.svelte';
   import ErrorNote from '../lib/ErrorNote.svelte';
+  import StoragePool from './StoragePool.svelte';
   import { t, tFor } from '../i18n';
 
   let { app, me, name }: { app: App; me: Me; name: string } = $props();
@@ -16,6 +17,8 @@
   let error = $state<unknown>(null);
   let notice = $state<string | null>(null);
   let busy = $state(false);
+  // A platform administrator who chose a pool for a domain that has no store of its own yet.
+  let poolMode = $state(false);
 
   let endpoint = $state('');
   let region = $state('');
@@ -105,7 +108,18 @@
     {#if notice !== null}<p role="status">{notice}</p>{/if}
     {#if error !== null}<ErrorNote {error} />{/if}
 
-    {#if platform}
+    {#if (storage !== null && storage.kind === 'pool') || (platform && poolMode)}
+      <StoragePool {app} {name} {storage} {platform} onupdate={(s) => (storage = s)} />
+      {#if platform && storage !== null}
+        <p>
+          <button type="button" onclick={check} disabled={busy}>{t('storage.check')}</button>
+          <button type="button" onclick={load}>{t('dns.reload')}</button>
+        </p>
+      {:else if !platform}
+        <p class="muted">{t('storage.platformOnly')}</p>
+        <p><button type="button" onclick={load}>{t('dns.reload')}</button></p>
+      {/if}
+    {:else if platform}
       <form onsubmit={save}>
         <label>
           {t('storage.endpoint')}
@@ -141,6 +155,11 @@
         <p>
           <button type="button" onclick={check} disabled={busy}>{t('storage.check')}</button>
           <button type="button" onclick={load}>{t('dns.reload')}</button>
+        </p>
+      {/if}
+      {#if storage === null && loaded}
+        <p>
+          <button type="button" onclick={() => (poolMode = true)}>{t('pool.use')}</button>
         </p>
       {/if}
     {:else if loaded}

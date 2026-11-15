@@ -357,6 +357,22 @@ describe('storage', () => {
     settings: { endpoint: 'https://s3.example-cloud.com', region: 'eu-west-3', bucket: 'tenant-mail', prefix: 'mail/a', path_style: true },
     access_key_set: true,
     secret_key_set: true,
+    policy: null,
+    backends: null,
+  };
+  const POOL: Storage = {
+    kind: 'pool',
+    ready: false,
+    check_status: 'unchecked',
+    checked_at: null,
+    settings: null,
+    access_key_set: null,
+    secret_key_set: null,
+    policy: { copies: 2, sync_copies: 1, placement: 'ordered', read: 'ordered' },
+    backends: [
+      { name: 'a', state: 'active', weight: 100, check_status: 'ok', checked_at: 1_700_000_000, settings: { endpoint: 'https://s3.example-cloud.com', region: 'r', bucket: 'bucket-a', prefix: '', path_style: true }, access_key_set: true, secret_key_set: true, objects: 7 },
+      { name: 'b', state: 'draining', weight: 300, check_status: 'auth', checked_at: 1_700_000_000, settings: { endpoint: 'https://s3.example-cloud.com', region: 'r', bucket: 'bucket-b', prefix: '', path_style: true }, access_key_set: true, secret_key_set: true, objects: 0 },
+    ],
   };
   const GET = 'GET /api/v1/domains/example.org/storage';
   const PUT = 'PUT /api/v1/domains/example.org/storage';
@@ -412,5 +428,71 @@ describe('storage', () => {
     expect(screen.queryByLabelText(t('storage.bucket'))).toBeNull();
     expect(screen.queryByRole('button', { name: t('storage.save') })).toBeNull();
     expect(screen.queryByRole('button', { name: t('storage.check') })).toBeNull();
+  });
+
+  const POOL_PUT = 'PUT /api/v1/domains/example.org/storage/pool';
+
+  it('lets a platform administrator choose a pool for a domain without a store and shows its backends', async () => {
+    const s = await open('/domains/example.org/storage', PLATFORM, { [GET]: ok({ storage: null }), [POOL_PUT]: ok({ storage: { ...POOL, backends: [] } }) });
+    await fireEvent.click(await screen.findByRole('button', { name: t('pool.use') }));
+    await fireEvent.input(await screen.findByLabelText(t('pool.copies')), { target: { value: '2' } });
+    await fireEvent.input(screen.getByLabelText(t('pool.syncCopies')), { target: { value: '1' } });
+    await fireEvent.click(screen.getByRole('button', { name: t('pool.save') }));
+    expect(await screen.findByText(t('pool.saved'))).toBeTruthy();
+    expect(s.last(POOL_PUT)!.body).toEqual({ copies: 2, sync_copies: 1, placement: 'weighted', read: 'located' });
+    expect(screen.getByText(t('pool.noBackends'))).toBeTruthy();
+  });
+
+  it('shows the state of every backend of a pool, with the result of the last test and the objects held', async () => {
+    await open('/domains/example.org/storage', PLATFORM, { [GET]: ok({ storage: POOL }) });
+    const table = await screen.findByRole('table');
+    expect(within(table).getByText(t('storage.check.auth'))).toBeTruthy();
+    expect(within(table).getByText(t('pool.state.draining'))).toBeTruthy();
+    expect(within(table).getByText('7')).toBeTruthy();
+    expect(screen.getByRole('button', { name: t('storage.check') })).toBeTruthy();
+  });
+
+  it('adds a backend with its keys sent once and kept neither in the fields nor on the page', async () => {
+    const add = 'POST /api/v1/domains/example.org/storage/backends';
+    const s = await open('/domains/example.org/storage', PLATFORM, { [GET]: ok({ storage: POOL }), [add]: ok({ storage: POOL }) });
+    await type(t('pool.name'), 'c');
+    await type(t('storage.endpoint'), 'https://s3.example-cloud.com');
+    await type(t('storage.region'), 'eu-west-3');
+    await type(t('storage.bucket'), 'bucket-c');
+    const keys = screen.getAllByLabelText(t('storage.accessKey')) as HTMLInputElement[];
+    const secrets = screen.getAllByLabelText(t('storage.secretKey')) as HTMLInputElement[];
+    await fireEvent.input(keys[keys.length - 1]!, { target: { value: 'AKIAEXAMPLEKEY' } });
+    await fireEvent.input(secrets[secrets.length - 1]!, { target: { value: 'super-secret-key-material' } });
+    await fireEvent.click(screen.getByRole('button', { name: t('pool.addBackendSave') }));
+    expect(await screen.findByText(t('pool.backendAdded'))).toBeTruthy();
+    expect(s.last(add)!.body).toEqual({ name: 'c', endpoint: 'https://s3.example-cloud.com', region: 'eu-west-3', bucket: 'bucket-c', prefix: '', path_style: false, weight: 100, access_key: 'AKIAEXAMPLEKEY', secret_key: 'super-secret-key-material' });
+    expect((screen.getAllByLabelText(t('storage.secretKey')) as HTMLInputElement[]).every((i) => i.value === '')).toBe(true);
+    expect(document.body.textContent).not.toContain('super-secret-key-material');
+  });
+
+  it('changes the state of a backend and removes one', async () => {
+    const put = 'PUT /api/v1/domains/example.org/storage/backends/a';
+    const del = 'DELETE /api/v1/domains/example.org/storage/backends/b';
+    const s = await open('/domains/example.org/storage', PLATFORM, { [GET]: ok({ storage: POOL }), [put]: ok({ storage: POOL }), [del]: ok() });
+    const row = (await screen.findByText('a', { selector: 'legend' })).closest('fieldset')!;
+    await fireEvent.change(within(row).getByLabelText(t('pool.state')), { target: { value: 'readonly' } });
+    await fireEvent.click(within(row).getByRole('button', { name: t('pool.update') }));
+    expect(await screen.findByText(t('pool.backendUpdated'))).toBeTruthy();
+    expect(s.last(put)!.body).toEqual({ state: 'readonly', weight: 100 });
+    const other = screen.getByText('b', { selector: 'legend' }).closest('fieldset')!;
+    await fireEvent.click(within(other).getByRole('button', { name: t('pool.remove') }));
+    expect(await screen.findByText(t('pool.backendRemoved'))).toBeTruthy();
+    expect(s.last(del)).toBeTruthy();
+  });
+
+  it('shows a domain administrator the backends and none of the settings or controls', async () => {
+    const seen: Storage = { ...POOL, backends: (POOL.backends ?? []).map((b) => ({ ...b, settings: null, access_key_set: null, secret_key_set: null, objects: null })) };
+    await open('/domains/example.org/storage', TENANT, { 'GET /api/v1/domains': ok({ items: [D1], next: null }), [GET]: ok({ storage: seen }) });
+    const table = await screen.findByRole('table');
+    expect(within(table).getByText('a')).toBeTruthy();
+    expect(document.body.textContent).not.toContain('bucket-a');
+    expect(screen.queryByRole('button', { name: t('pool.save') })).toBeNull();
+    expect(screen.queryByRole('button', { name: t('pool.remove') })).toBeNull();
+    expect(screen.getByText(t('storage.platformOnly'))).toBeTruthy();
   });
 });
