@@ -902,7 +902,7 @@ async fn a_domain_with_another_kind_of_store_cannot_become_a_pool() {
 #[tokio::test]
 async fn blobs_verify_checks_the_stores_of_tenants_and_pools_too_and_names_the_store_that_lost_something() {
     use bytes::Bytes;
-    use rusty_store::{BlobStore, BlobStores, FsBlobStore, FsStoreOpener, KindBackendOpener, KindOpener, PoolOpener};
+    use rusty_store::{BlobRouter, BlobStore, BlobStores, FsBlobStore, FsStoreOpener, KindBackendOpener, KindOpener, PoolOpener};
     for_each_backend(|b| async move {
         let n = b.name;
         let root = b.tmp.path().join("blobs");
