@@ -15,6 +15,7 @@ mod change_feed;
 mod context;
 mod events;
 mod gc;
+mod maintain;
 mod hub;
 mod listener;
 mod logging;
@@ -34,6 +35,7 @@ pub use accept::{Accept, AsyncStream, BoxedStream, DirectTcp, DirectTls, PeerInf
 pub use context::Context;
 pub use events::{RejectReason, ServiceEvent, ServiceEvents, TracingEvents};
 pub use gc::{GcService, GcSummary};
+pub use maintain::MaintainService;
 pub use hub::MailboxHub;
 pub use listener::{BoundListener, ListenerSpec, SessionHandler};
 pub use logging::{init_logging, subscriber};

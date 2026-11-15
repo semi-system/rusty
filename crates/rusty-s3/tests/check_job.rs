@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use rusty_core::storage_policy::validate_tenant_s3;
 use rusty_s3::{enqueue_storage_check, Prober, StorageCheckWorker, STORAGE_CHECK_JOB_KIND};
 use rusty_store::fixtures::pg_db::{pg_admin_url, PgTestDb};
-use rusty_store::repo::{BlobStoreRow, StoreId};
-use rusty_store::{BlobStoreAdmin, JobQueue, Store, StoreConfig};
+use rusty_store::repo::{BackendRow, BackendState, BlobStoreRow, StoreId};
+use rusty_store::{BlobPoolAdmin, BlobStoreAdmin, JobQueue, PoolPolicy, Store, StoreConfig};
 use rusty_svc::{Context, Service, TlsProvider};
 use tokio_util::sync::CancellationToken;
 
@@ -20,6 +20,11 @@ struct Fixed(&'static str, AtomicU64);
 #[async_trait]
 impl Prober for Fixed {
     async fn probe(&self, _row: &BlobStoreRow, _nonce: u64) -> &'static str {
+        self.1.fetch_add(1, Ordering::SeqCst);
+        self.0
+    }
+
+    async fn probe_backend(&self, _row: &BackendRow, _nonce: u64) -> &'static str {
         self.1.fetch_add(1, Ordering::SeqCst);
         self.0
     }
@@ -113,4 +118,40 @@ async fn jobs_that_are_not_ours_or_name_nothing_checkable_change_nothing_and_do_
     assert_eq!(r.admin.get(r.row.id).await.unwrap().unwrap().check_status, before.check_status);
     assert_eq!(r.admin.get(StoreId(fs_store.0)).await.unwrap().unwrap().check_status, "unchecked");
     assert_eq!(unfinished(&r).await, 0, "every job was settled, none is left to loop");
+}
+
+#[tokio::test]
+async fn the_check_of_a_pool_tries_every_backend_that_is_used_and_the_pool_is_ready_only_when_each_passed() {
+    let Some(r) = rig().await else { return };
+    let pools = BlobPoolAdmin::with_repos(r.store.repos().blob_stores.clone(), r.store.repos().blob_pool.clone());
+    let dom = rusty_directory::Directory::with_repo(r.store.repos().directory.clone()).create_domain("pool.test").await.unwrap();
+    let pool = pools.set_policy(dom, PoolPolicy::parse(r#"{"copies":2}"#).unwrap()).await.unwrap();
+    let s3 = |bucket: &str| validate_tenant_s3("https://s3.example-cloud.com", "eu-west-3", bucket, "", true).unwrap();
+    let a = pools.add_s3(pool.id, "a", &s3("bucket-a"), 100).await.unwrap();
+    let b = pools.add_s3(pool.id, "b", &s3("bucket-b"), 100).await.unwrap();
+    let c = pools.add_s3(pool.id, "c", &s3("bucket-c"), 100).await.unwrap();
+    pools.set_state(c.id, BackendState::Disabled).await.unwrap();
+    enqueue_storage_check(&r.jobs, dom, pool.id).await.unwrap();
+    let prober = Arc::new(Fixed("ok", AtomicU64::new(0)));
+    let p = prober.clone();
+    let worker = StorageCheckWorker::new(r.admin.clone(), prober.clone()).with_pools(pools.clone()).with_poll(Duration::from_millis(20));
+    let token = CancellationToken::new();
+    let task = tokio::spawn(Box::new(worker).run(r.ctx.clone(), token.clone()));
+    for _ in 0..250 {
+        if r.admin.get(pool.id).await.unwrap().unwrap().check_status == "ok" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(p.1.load(Ordering::SeqCst), 2, "the two backends in use were tried, the disabled one was not");
+    assert_eq!(pools.backend(a.id).await.unwrap().unwrap().check_status, "ok");
+    assert_eq!(pools.backend(b.id).await.unwrap().unwrap().check_status, "ok");
+    assert_eq!(pools.backend(c.id).await.unwrap().unwrap().check_status, "unchecked");
+    assert_eq!(r.admin.get(pool.id).await.unwrap().unwrap().check_status, "ok");
+    // A backend that was added after the pool passed makes it unchecked again until the next check.
+    let d = pools.add_s3(pool.id, "d", &s3("bucket-d"), 100).await.unwrap();
+    assert_eq!(r.admin.get(pool.id).await.unwrap().unwrap().check_status, "unchecked");
+    assert_eq!(d.check_status, "unchecked");
+    token.cancel();
+    let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 }

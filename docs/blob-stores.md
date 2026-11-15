@@ -39,7 +39,27 @@ which holds the unsealing key, opens the store exactly as for real mail, puts, r
 `no-bucket`, `tls`, ...) with its time. Only a platform administrator can set the store or queue a check (`PUT` and `POST` `/api/v1/domains/{d}/storage[/check]`); a domain administrator
 sees whether the store is ready and the last result, never the settings or keys. Changing the keys makes the store unchecked again.
 
+## Pools (several backends for one domain)
+
+A store of kind `pool` spreads a domain's bodies over one to eight backends (migration 0024; design section 12). `blob_stores.config` holds the policy
+(`{"copies":2,"sync_copies":1,"placement":"ordered","read":"ordered"}`; every field optional) and `blob_backends` the backends, each with a name, a weight and a state
+(`active`, `readonly`, `draining`, `disabled`). `blob_locations` records which backend holds which object and is what reads go by.
+
+| behaviour | copies | sync_copies | placement | read |
+|---|---|---|---|---|
+| JBOD (capacity, no redundancy) | 1 | 1 | `weighted` | `located` |
+| mirror (any one may fail) | N | N | `weighted` or `ordered` | `round_robin` or `fastest` |
+| failover (second copy made afterwards) | 2+ | 1 | `ordered` | `ordered` |
+
+A write goes first to the backends that already hold the object, then by the placement rule; it succeeds when `sync_copies` copies are written and recorded (fewer healthy backends is a
+temporary failure, so the sender retries). A read tries the recorded holders in the read order, verifies the bytes against the name and forgets (and removes) a copy that is wrong or missing.
+Each backend has a circuit breaker: after consecutive failures it is left out until a cool-down passed. Garbage collection deletes an object on every backend; one that cannot be reached keeps a
+`pending_delete` location that repair retries. `PoolStore::repair` also makes missing copies and empties a `draining` backend (which can then be removed). A pool is used only when every backend
+that is not disabled passed a check.
+
+Not there yet: the S3 opener for backends, `rustyctl`/admin commands for backends and the repair job (this step has the pool itself, tested with directory backends).
+
 ## What is not here yet
 
-Using several buckets for one tenant (failover, JBOD, load balancing), moving a domain's bodies between stores, and the outbound
+Moving a domain's bodies between stores, and the outbound
 queue (its bodies stay in the platform store). See the design for the order.

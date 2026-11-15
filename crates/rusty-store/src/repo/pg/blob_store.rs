@@ -63,8 +63,8 @@ impl BlobStoreRepo for PgRepo {
     }
 
     async fn create_for_domain(&self, domain: DomainId, kind: &str, config: &str) -> Result<StoreId> {
-        if !matches!(kind, "fs" | "s3") {
-            return Err(Error::Invalid("a domain's own blob store is of kind fs or s3".into()));
+        if !matches!(kind, "fs" | "s3" | "pool") {
+            return Err(Error::Invalid("a domain's own blob store is of kind fs, s3 or pool".into()));
         }
         let mut tx = self.store.pool().begin().await.map_err(map_db_error)?;
         // The domain row is locked: two requests cannot both give it a store, and a delivery cannot slip in a first message between the check and the switch.

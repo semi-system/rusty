@@ -9,6 +9,8 @@ use crate::{Error, Result};
 
 /// `sealed_secrets.owner_kind` of a blob store's credentials (owner id: the store's id).
 pub const STORE_SECRET_OWNER: &str = "blobstore";
+/// Owner kind of the sealed credentials of a backend of a pool (the owner id is the backend id).
+pub const BACKEND_SECRET_OWNER: &str = "blobbackend";
 /// `sealed_secrets.purpose` of the access key and of the secret key of an S3 store.
 pub const ACCESS_KEY_PURPOSE: &str = "s3-access-key";
 pub const SECRET_KEY_PURPOSE: &str = "s3-secret-key";
