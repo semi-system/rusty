@@ -99,13 +99,14 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     let services = Services {
         dns: rusty_store::DnsStore::with_repo(repos.dns.clone()),
         relays: rusty_store::RelayStore::with_repo(repos.relay.clone()),
+        blob_stores: rusty_store::BlobStoreAdmin::with_repo(repos.blob_stores.clone()),
         sealed: rusty_store::SealedWriter::with_repo(repos.sealed.clone()),
         jobs: rusty_store::JobQueue::with_repo(repos.jobs.clone()),
         sealing,
         mail: cfg.hostname.clone().map(|host| MailSettings { host, public_ips: admin.public_ips.clone(), spf_include: admin.spf_include.clone() }),
     };
     let app = Arc::new(AdminApp::new(auth, directory, admins, gate, &admin.public_origin, SessionConfig::default()).with_services(services));
-    let router = crate::dns::routes(app.clone(), crate::outbound::routes(app.clone(), crate::manage::routes(app.clone(), routes(app, Router::new()))));
+    let router = crate::dns::routes(app.clone(), crate::outbound::routes(app.clone(), crate::storage::routes(app.clone(), crate::manage::routes(app.clone(), routes(app, Router::new())))));
     // The front end embedded at build time answers every other path (and the single-page routes); without one this is an API server only.
     let router = match crate::web::handler() {
         Some(h) => router.fallback(h),

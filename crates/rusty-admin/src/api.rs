@@ -42,6 +42,8 @@ pub struct MailSettings {
 pub struct Services {
     pub dns: rusty_store::DnsStore,
     pub relays: rusty_store::RelayStore,
+    /// The blob stores of domains (docs/design-s3-per-tenant.md).
+    pub blob_stores: rusty_store::BlobStoreAdmin,
     pub sealed: rusty_store::SealedWriter,
     pub jobs: rusty_store::JobQueue,
     /// `[sealing] public_key`: what secrets are sealed to. `None`: nothing can be sealed, the endpoints that need it answer `503 unavailable`.

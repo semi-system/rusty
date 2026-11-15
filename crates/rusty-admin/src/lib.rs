@@ -16,6 +16,7 @@ pub mod outbound;
 pub mod run;
 pub mod session;
 pub mod setup;
+pub mod storage;
 pub mod web;
 
 pub use auth::{AdminAuth, Principal, Scope, SignInError};
