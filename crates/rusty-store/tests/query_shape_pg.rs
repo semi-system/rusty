@@ -76,6 +76,7 @@ const BUDGET: &[(&str, usize)] = &[
     ("claim (nothing)", 3),
     ("heartbeat", 3),
     ("fence_check", 1),
+    ("count_by_state", 1),
     ("fail", 3),
     ("reschedule", 3),
     ("complete", 3),

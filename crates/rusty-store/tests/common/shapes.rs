@@ -212,6 +212,8 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
         j.heartbeat(claimed.id, claimed.epoch, 30, None));
     other!("JobRepo", "fence_check", false, None, None,
         j.fence_check(rusty_store::JobFence { id: claimed.id, epoch: claimed.epoch }, None));
+    other!("JobRepo", "count_by_state", false, None, None,
+        j.count_by_state("outbound.send", 1));
     other!("JobRepo", "fail", true, Some(("UPDATE jobs SET", "UPDATE jobs SET")), None,
         j.fail(claimed.id, claimed.epoch, "x", 0, None));
     let again = j.claim(&c4).await.unwrap().unwrap();
@@ -304,7 +306,7 @@ fn method_of(call: &str) -> String {
 /// cannot escape the lock-first probe by being forgotten).
 const TRAITS: &[(&str, &str, &[&str])] = &[
     ("MailboxRepo", include_str!("../../src/repo/mailbox.rs"), &[]),
-    ("JobRepo", include_str!("../../src/repo/jobs.rs"), &["db_now", "fence_check"]),
+    ("JobRepo", include_str!("../../src/repo/jobs.rs"), &["db_now", "fence_check", "count_by_state"]),
     (
         "GcRepo",
         include_str!("../../src/repo/gc.rs"),
