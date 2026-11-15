@@ -898,3 +898,44 @@ async fn a_domain_with_another_kind_of_store_cannot_become_a_pool() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn blobs_verify_checks_the_stores_of_tenants_and_pools_too_and_names_the_store_that_lost_something() {
+    use bytes::Bytes;
+    use rusty_store::{BlobStore, BlobStores, FsBlobStore, FsStoreOpener, KindBackendOpener, KindOpener, PoolOpener};
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let root = b.tmp.path().join("blobs");
+        FsBlobStore::init(&root).await.unwrap();
+        let blobs = std::sync::Arc::new(FsBlobStore::open(&root).await.unwrap());
+        let fs = std::sync::Arc::new(FsStoreOpener::new(b.tmp.path().join("stores")));
+        let backends: std::sync::Arc<dyn rusty_store::BackendOpener> = std::sync::Arc::new(KindBackendOpener::new().with_fs(fs.clone()));
+        let opener = KindOpener::new().with_fs(fs).with_pool(std::sync::Arc::new(PoolOpener::new(b.store.repos().blob_pool.clone(), backends)));
+        let platform: std::sync::Arc<dyn BlobStore> = blobs.clone();
+        let router = BlobStores::new(platform, b.store.repos().blob_stores.clone(), std::sync::Arc::new(opener));
+        // A domain on a pool of two directories, with one referenced blob held by both.
+        b.run(Command::DomainAdd { name: "pool.example".into() }, &[]).await.unwrap();
+        let dom = b.dir.find_domain("pool.example").await.unwrap().unwrap();
+        let store = b.store.repos().blob_stores.create_for_domain(dom.id, "pool", r#"{"copies":2,"placement":"ordered"}"#).await.unwrap();
+        for name in ["a", "b"] {
+            let id = b.store.repos().blob_pool.add_backend(store, name, "fs", &format!(r#"{{"dir":"{name}"}}"#), 100).await.unwrap();
+            b.store.repos().blob_pool.record_backend_check(id, "ok", None).await.unwrap();
+        }
+        let pool = router.store(store).await.unwrap();
+        let h = pool.put(Bytes::from_static(b"a message of the pool")).await.unwrap();
+        b.fx.run(&format!("INSERT INTO blobs (store_id, hash, size, refcount) VALUES ({}, decode('{}', 'hex'), 9, 1)", store.0, h.as_str()), &[]).await;
+        let ok = b.run_blobs_verify_all(&blobs, &router).await.unwrap();
+        assert!(!ok.failed && ok.text.contains(&format!("store {}", store.0)) && ok.text.contains("platform store"), "{n}: {}", ok.text);
+        assert_eq!(ok.json["stores"].as_array().unwrap().len(), 2, "{n}");
+        // Both copies are lost: the pool's store is named.
+        assert!(pool.delete_if_older(&h, std::time::SystemTime::now() + std::time::Duration::from_secs(3600)).await.unwrap(), "{n}");
+        let bad = b.run_blobs_verify_all(&blobs, &router).await.unwrap();
+        assert!(bad.failed && bad.text.contains(&format!("MISSING in the store {}", store.0)) && bad.text.contains(h.as_str()), "{n}: {}", bad.text);
+        // A pool that cannot be opened (a backend never checked) is reported as not checked, and fails.
+        b.store.repos().blob_pool.add_backend(store, "c", "fs", r#"{"dir":"c"}"#, 100).await.unwrap();
+        let router2 = BlobStores::new(blobs.clone(), b.store.repos().blob_stores.clone(), std::sync::Arc::new(KindOpener::new()));
+        let unopened = b.run_blobs_verify_all(&blobs, &router2).await.unwrap();
+        assert!(unopened.failed && unopened.text.contains("NOT CHECKED"), "{n}: {}", unopened.text);
+    })
+    .await;
+}
