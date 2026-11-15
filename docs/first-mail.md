@@ -22,7 +22,7 @@ cd deploy/standalone
 `--staging` uses the Let's Encrypt test authority (no rate limits; mail clients will not trust its certificates). When it works run `setup.sh` again without it.
 For a LAN test host: `./setup.sh --self-signed --mail-host mail.lan --admin-host admin.lan --public-ip 192.168.1.10 --admin-allow 192.168.1.0/24`.
 
-`setup.sh` makes, under `./state`: the database passwords (one for each of the four database roles), a private CA and certificate for the database link (clients verify it),
+`setup.sh` makes, under `~/rusty-state` (`--state-dir` or `RUSTY_STATE` to change it; it lives outside the repository on purpose: an image build reads the repository, and it cannot read what belongs to the service users): the database passwords (one for each of the four database roles), a private CA and certificate for the database link (clients verify it),
 the sealing key pair (the private half stays with the mail service), and the three configuration files from `templates/`. It builds the two images (`docker compose build`,
 BuildKit needed; `SKIP_BUILD=1` when they already exist). Nothing is sent anywhere. Run it again to change a setting: existing secrets and keys are kept.
 
