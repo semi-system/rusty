@@ -1752,6 +1752,7 @@ dependencies = [
  "rusty-http",
  "rusty-imap",
  "rusty-mime",
+ "rusty-seal",
  "rusty-smtp",
  "rusty-svc",
  "unicode-general-category",
