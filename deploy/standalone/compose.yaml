@@ -93,7 +93,7 @@ services:
     depends_on:
       migrate: { condition: service_completed_successfully }
       blobs-init: { condition: service_completed_successfully }
-      cert-sync: { condition: service_healthy }
+      cert-sync: { condition: service_healthy, required: false }
     stop_grace_period: 45s
 
   admin:
@@ -128,6 +128,7 @@ services:
 
   # Copies the certificate the edge obtained to the files the mail services read for STARTTLS (docs/acme.md). Runs as the mail uid, no network.
   cert-sync:
+    profiles: [acme]
     image: haproxy@sha256:2caaf8b1a1ef67f3f1ea9b721f2821675d3ba4500fb518e23884fecb93e8dbaa
     user: "65532:65532"
     group_add: ["99"]
@@ -147,6 +148,7 @@ services:
 
   # Keeps the edge's certificates on disk (as the edge's own uid), so a restarted edge starts with them instead of ordering new ones (docs/acme.md).
   cert-keep-mail: &keep
+    profiles: [acme]
     image: haproxy@sha256:2caaf8b1a1ef67f3f1ea9b721f2821675d3ba4500fb518e23884fecb93e8dbaa
     user: "99:99"
     <<: *hardened
