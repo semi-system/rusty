@@ -13,15 +13,22 @@ rusty-store = { path = "../rusty-store" }
 rusty-svc = { path = "../rusty-svc" }
 rusty-valkey = { path = "../rusty-valkey" }
 rusty-http = { path = "../rusty-http" }
+rusty-runtime = { path = "../rusty-runtime" }
+tokio-util = { workspace = true }
+tracing.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 hex.workspace = true
 rand_core.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "rt-multi-thread", "macros"] }
 
 [dev-dependencies]
 rusty-store = { path = "../rusty-store", features = ["test-fixtures"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
-tokio-util = { workspace = true }
+tempfile.workspace = true
+
+[[bin]]
+name = "rusty-admin"
+path = "src/main.rs"

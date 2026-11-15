@@ -24,6 +24,7 @@ const SECTIONS: &[(&str, &str)] = &[
     ("valkey", "[valkey]\nhost = \"kv.internal\"\nport = 6379\ntls = true\nusername = \"rusty\"\npassword_file = \"/run/secrets/kv\"\n"),
     ("sealing", "[sealing]\npublic_key = \"rusty-seal-v1:0000000000000000000000000000000000000000000000000000000000000001\"\n"),
     ("unsealing", "[unsealing]\nkey_files = [\"/etc/rusty/unseal.key\"]\n"),
+    ("admin", "[admin]\npublic_origin = \"https://admin.example.org\"\n"),
 ];
 
 fn allowed(role: Role) -> &'static [&'static str] {
@@ -34,7 +35,7 @@ fn allowed(role: Role) -> &'static [&'static str] {
         Role::Imap => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "max_message_bytes", "tls", "imap", "valkey"],
         Role::Outbound => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "outbound", "unsealing"],
         Role::Gc => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "gc_grace_seconds", "dns_check"],
-        Role::Admin => &["hostname", "log_level", "log_format", "store", "limits", "tls", "valkey", "sealing"],
+        Role::Admin => &["hostname", "log_level", "log_format", "store", "limits", "tls", "valkey", "sealing", "admin"],
     }
 }
 

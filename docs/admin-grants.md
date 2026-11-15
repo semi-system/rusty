@@ -66,3 +66,30 @@ The logic behind the admin web, without HTTP: `rusty_admin::SessionStore` and `A
   grant, spends the token and opens the session.
 * `AdminApp::require(req, mutating)` is what the later endpoints call: the session from the cookie, the administrator from the database (not the session), and for a
   mutation the three guards.
+
+## The binary: `rusty-admin`
+
+```
+rusty-admin [--config FILE]        # default /etc/rusty/admin.toml
+```
+
+Its configuration is the file of the **admin role** (sections it accepts: `store`, `limits`, `tls`, `valkey`, `sealing`, `admin`; any other service's section is refused
+without echoing it). `blob_dir` is not needed and not accepted.
+
+```toml
+hostname = "admin.example.org"
+
+[admin]
+listen = "127.0.0.1:8080"                  # default; behind the edge, which terminates TLS and applies the IP allow-list
+public_origin = "https://admin.example.org" # exactly what the browser sends in Origin: lower case, no path
+
+[store]
+url = "postgres://rusty_app@db.internal:5432/rusty"
+password_file = "/run/secrets/pg"
+```
+
+* With `[tls]` naming a certificate the service terminates TLS itself (SIGHUP reloads it); without it, put the edge in front.
+* **Standard output carries one line, and only when no platform administrator exists: the setup token** (64 hex digits). Logs go to standard error and never contain it.
+  A new token is made at every start; once the first administrator exists there is no token and the setup page answers `404`.
+* Sessions are kept in the process for now (a restart signs everyone out). A `[valkey]` section is accepted but not used yet; a warning says so.
+* Exit status: 0 after a clean stop (SIGTERM or SIGINT, sessions drain within `shutdown_grace_secs`), 1 for a runtime failure, 2 for a bad command line or configuration.
