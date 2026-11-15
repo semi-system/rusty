@@ -30,6 +30,9 @@ ok "exposes 8080 only"
 
 entry="$(docker image inspect "$IMAGE" --format '{{json .Config.Entrypoint}}')"
 [ "$entry" = '["/usr/local/bin/rusty-admin"]' ] || die "unexpected entrypoint: $entry"
+hc="$(docker image inspect "$IMAGE" --format '{{json .Config.Healthcheck.Test}}')"
+[[ "$hc" == *'"/usr/local/bin/rusty-admin"'*'"healthcheck"'* ]] || die "HEALTHCHECK is not 'rusty-admin healthcheck': $hc"
+ok "HEALTHCHECK $hc"
 for l in source revision version created; do
   docker image inspect "$IMAGE" --format "{{index .Config.Labels \"org.opencontainers.image.$l\"}}" >/dev/null || die "label $l"
 done

@@ -10,6 +10,7 @@
 pub mod api;
 pub mod auth;
 pub mod dns;
+pub mod health;
 pub mod manage;
 pub mod outbound;
 pub mod run;
