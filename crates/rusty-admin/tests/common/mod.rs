@@ -83,6 +83,7 @@ async fn build(with_sealing: bool) -> Rig {
         dns: rusty_store::DnsStore::with_repo(repos.dns.clone()),
         relays: rusty_store::RelayStore::with_repo(repos.relay.clone()),
         blob_stores: rusty_store::BlobStoreAdmin::with_repo(repos.blob_stores.clone()),
+        pools: rusty_store::BlobPoolAdmin::with_repos(repos.blob_stores.clone(), repos.blob_pool.clone()),
         sealed: rusty_store::SealedWriter::with_repo(repos.sealed.clone()),
         jobs: rusty_store::JobQueue::with_repo(repos.jobs.clone()),
         sealing: with_sealing.then_some(seal_key),

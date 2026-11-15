@@ -44,6 +44,8 @@ pub struct Services {
     pub relays: rusty_store::RelayStore,
     /// The blob stores of domains (docs/design-s3-per-tenant.md).
     pub blob_stores: rusty_store::BlobStoreAdmin,
+    /// The pools of backends of domains (docs/design-s3-per-tenant.md, section 12).
+    pub pools: rusty_store::BlobPoolAdmin,
     pub sealed: rusty_store::SealedWriter,
     pub jobs: rusty_store::JobQueue,
     /// `[sealing] public_key`: what secrets are sealed to. `None`: nothing can be sealed, the endpoints that need it answer `503 unavailable`.
