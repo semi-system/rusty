@@ -9,6 +9,7 @@ use std::time::Duration;
 use rusty_admin::api::routes as session_routes;
 use rusty_admin::manage::routes as manage_routes;
 use rusty_admin::outbound::routes as outbound_routes;
+use rusty_admin::storage::routes as storage_routes;
 use rusty_admin::{AdminApp, AdminAuth, MailSettings, ManualNow, Services, SessionConfig, SessionStore};
 use rusty_directory::{Directory, LocalAuthenticator};
 use rusty_http::{HttpConfig, HttpHandler, Router};
@@ -81,13 +82,14 @@ async fn build(with_sealing: bool) -> Rig {
     let services = Services {
         dns: rusty_store::DnsStore::with_repo(repos.dns.clone()),
         relays: rusty_store::RelayStore::with_repo(repos.relay.clone()),
+        blob_stores: rusty_store::BlobStoreAdmin::with_repo(repos.blob_stores.clone()),
         sealed: rusty_store::SealedWriter::with_repo(repos.sealed.clone()),
         jobs: rusty_store::JobQueue::with_repo(repos.jobs.clone()),
         sealing: with_sealing.then_some(seal_key),
         mail: Some(MailSettings { host: "mail.example.org".into(), public_ips: vec!["203.0.114.5".parse().unwrap()], spf_include: None }),
     };
     let app = Arc::new(AdminApp::new(auth, dir.clone(), admins.clone(), None, ORIGIN, SessionConfig::default()).with_services(services));
-    let router = rusty_admin::dns::routes(app.clone(), outbound_routes(app.clone(), manage_routes(app.clone(), session_routes(app, Router::new()))));
+    let router = rusty_admin::dns::routes(app.clone(), outbound_routes(app.clone(), storage_routes(app.clone(), manage_routes(app.clone(), session_routes(app, Router::new())))));
     let h = HttpHandler::new(router, HttpConfig::default());
     let spec = ListenerSpec { name: "admin-test", addr: "127.0.0.1:0".parse().unwrap(), max_connections: 64, max_per_ip: 64 };
     let bound = BoundListener::bind(spec).await.unwrap();

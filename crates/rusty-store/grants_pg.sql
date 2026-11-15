@@ -9,7 +9,7 @@
 --                rs_address_truncate (migration 0016), which the migrator owns.
 --                _sqlx_migrations is SELECT only (the daemon reads the schema version, never writes it).
 --   rusty_admin: the admin web. DML on the tenant tables only (domains, accounts, aliases, lists, plans, capabilities, DKIM and DNS state, relays,
---                admin grants, jobs, the mailbox rows of an account, and the system folders it is made with); no access to messages, keywords, blobs, deliveries or the change log. Sealed secrets:
+--                admin grants, jobs, the mailbox rows of an account, and the system folders it is made with); no access to message content, keywords, blob hashes, deliveries or the change log (two single columns, `blobs.store_id` and `messages.mailbox_id`, say only that a store or a domain holds something; `blob_stores` is its to manage). Sealed secrets:
 --                INSERT, UPDATE, DELETE and SELECT of every column except `sealed` (the ciphertext): it can write a secret and never read one back.
 --   rusty_ro   : SELECT on every table except accounts.password_hash and sealed_secrets (sealed ciphertext).
 DO $grants$
@@ -30,6 +30,11 @@ BEGIN
       domain_dkim_keys, domain_dns_config, domain_dns_event, domain_dns_state, domain_relays, admin_grants, jobs TO rusty_admin;
     GRANT SELECT ON address_owners, _sqlx_migrations TO rusty_admin;
     GRANT SELECT, INSERT ON folders TO rusty_admin;   -- an account is made with its system folders
+    -- Blob stores of domains (docs/design-s3-per-tenant.md): the settings, never a body. Two single columns are enough to know that a store or a domain already holds something:
+    -- a store that holds a blob row, a domain whose mailboxes hold a message.
+    GRANT SELECT, INSERT, UPDATE ON blob_stores TO rusty_admin;
+    GRANT SELECT (store_id) ON blobs TO rusty_admin;
+    GRANT SELECT (mailbox_id) ON messages TO rusty_admin;
     GRANT INSERT, UPDATE, DELETE ON sealed_secrets TO rusty_admin;
     SELECT string_agg(quote_ident(column_name), ', ' ORDER BY ordinal_position) INTO cols
       FROM information_schema.columns

@@ -91,6 +91,28 @@ export interface RelayState {
   relay: Relay | null;
 }
 
+export interface StorageSettings {
+  endpoint: string;
+  region: string;
+  bucket: string;
+  prefix: string;
+  path_style: boolean;
+}
+
+export interface Storage {
+  kind: string;
+  ready: boolean;
+  check_status: string;
+  checked_at: number | null;
+  settings: StorageSettings | null;
+  access_key_set: boolean | null;
+  secret_key_set: boolean | null;
+}
+
+export interface StorageState {
+  storage: Storage | null;
+}
+
 export interface Queued {
   queued: boolean;
 }

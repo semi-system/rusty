@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import App from '../App.svelte';
-import type { Account, Alias, Dkim, DnsRecord, Domain, Me, Relay } from '../api/types';
+import type { Account, Alias, Dkim, DnsRecord, Domain, Me, Relay, Storage } from '../api/types';
 import { App as State } from '../lib/app.svelte';
 import { nav } from '../lib/nav.svelte';
 import { en } from '../i18n/en';
@@ -88,7 +88,7 @@ describe('overview', () => {
     expect(screen.getByText(t('domain.queueDead', { n: 2 }))).toBeTruthy();
     const tabs = screen.getByRole('navigation', { name: t('domain.tabs', { name: 'example.org' }) });
     expect(within(tabs).getAllByRole('link').map((a) => a.getAttribute('href'))).toEqual(
-      ['overview', 'accounts', 'aliases', 'dkim', 'dns', 'relay'].map((p) => `/domains/example.org/${p}`),
+      ['overview', 'accounts', 'aliases', 'dkim', 'dns', 'relay', 'storage'].map((p) => `/domains/example.org/${p}`),
     );
     expect(within(tabs).getByRole('link', { name: t('domain.overview') }).getAttribute('aria-current')).toBe('page');
   });
@@ -345,5 +345,72 @@ describe('navigation', () => {
     await fireEvent.click(await screen.findByRole('link', { name: 'example.org' }));
     expect(nav.path).toBe('/domains/example.org/overview');
     expect(await screen.findByRole('heading', { name: 'example.org' })).toBeTruthy();
+  });
+});
+
+describe('storage', () => {
+  const ST: Storage = {
+    kind: 's3',
+    ready: false,
+    check_status: 'auth',
+    checked_at: 1_700_000_000,
+    settings: { endpoint: 'https://s3.example-cloud.com', region: 'eu-west-3', bucket: 'tenant-mail', prefix: 'mail/a', path_style: true },
+    access_key_set: true,
+    secret_key_set: true,
+  };
+  const GET = 'GET /api/v1/domains/example.org/storage';
+  const PUT = 'PUT /api/v1/domains/example.org/storage';
+
+  it('shows a platform administrator the settings, the result of the last test and no keys', async () => {
+    await open('/domains/example.org/storage', PLATFORM, { [GET]: ok({ storage: ST }) });
+    expect(await screen.findByText(t('storage.notReady'))).toBeTruthy();
+    expect(screen.getByText(t('storage.check.auth'))).toBeTruthy();
+    expect(screen.getByText(t('storage.keysSet'))).toBeTruthy();
+    expect(field(t('storage.bucket')).value).toBe('tenant-mail');
+    expect(field(t('storage.accessKey')).value).toBe('');
+    expect(field(t('storage.secretKey')).value).toBe('');
+  });
+
+  it('sends the settings and the keys once and keeps the keys neither in the fields nor on the page', async () => {
+    const s = await open('/domains/example.org/storage', PLATFORM, { [GET]: ok({ storage: null }), [PUT]: ok({ storage: { ...ST, check_status: 'unchecked', checked_at: null } }) });
+    await screen.findByText(t('storage.none'));
+    await type(t('storage.endpoint'), 'https://s3.example-cloud.com');
+    await type(t('storage.region'), 'eu-west-3');
+    await type(t('storage.bucket'), 'tenant-mail');
+    await type(t('storage.accessKey'), 'AKIAEXAMPLEKEY');
+    await type(t('storage.secretKey'), 'super-secret-key-material');
+    await fireEvent.click(screen.getByRole('button', { name: t('storage.save') }));
+    await screen.findByText(t('storage.saved'));
+    expect(s.last(PUT)!.body).toEqual({ endpoint: 'https://s3.example-cloud.com', region: 'eu-west-3', bucket: 'tenant-mail', prefix: '', path_style: false, access_key: 'AKIAEXAMPLEKEY', secret_key: 'super-secret-key-material' });
+    expect(field(t('storage.accessKey')).value).toBe('');
+    expect(field(t('storage.secretKey')).value).toBe('');
+    expect(document.body.textContent).not.toContain('super-secret-key-material');
+  });
+
+  it('shows a refusal with the fixed message', async () => {
+    await open('/domains/example.org/storage', PLATFORM, { [GET]: ok({ storage: null }), [PUT]: fail(400, 'invalid') });
+    await type(t('storage.endpoint'), 'http://127.0.0.1');
+    await type(t('storage.region'), 'r');
+    await type(t('storage.bucket'), 'bucket');
+    await type(t('storage.accessKey'), 'a');
+    await type(t('storage.secretKey'), 'b');
+    await fireEvent.click(screen.getByRole('button', { name: t('storage.save') }));
+    expect((await screen.findByRole('alert')).textContent).toBe(t('error.invalid'));
+  });
+
+  it('queues a test of the store', async () => {
+    const s = await open('/domains/example.org/storage', PLATFORM, { [GET]: ok({ storage: ST }), 'POST /api/v1/domains/example.org/storage/check': ok({ queued: true }) });
+    await fireEvent.click(await screen.findByRole('button', { name: t('storage.check') }));
+    expect(await screen.findByText(t('storage.checkQueued'))).toBeTruthy();
+    expect(s.last('POST /api/v1/domains/example.org/storage/check')!.headers['X-CSRF-Token']).toBe(PLATFORM.csrf);
+  });
+
+  it('shows a domain administrator only the status, with no form', async () => {
+    await open('/domains/example.org/storage', TENANT, { 'GET /api/v1/domains': ok({ items: [D1], next: null }), [GET]: ok({ storage: { ...ST, settings: null, access_key_set: null, secret_key_set: null } }) });
+    expect(await screen.findByText(t('storage.platformOnly'))).toBeTruthy();
+    expect(screen.getByText(t('storage.notReady'))).toBeTruthy();
+    expect(screen.queryByLabelText(t('storage.bucket'))).toBeNull();
+    expect(screen.queryByRole('button', { name: t('storage.save') })).toBeNull();
+    expect(screen.queryByRole('button', { name: t('storage.check') })).toBeNull();
   });
 });

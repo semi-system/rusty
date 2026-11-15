@@ -137,7 +137,7 @@ async fn scoped_account(app: &AdminApp, p: &Principal, address: &str) -> Result<
     }
 }
 
-fn platform_only(p: &Principal) -> Result<(), Response> {
+pub(crate) fn platform_only(p: &Principal) -> Result<(), Response> {
     if p.scope.is_platform() {
         Ok(())
     } else {

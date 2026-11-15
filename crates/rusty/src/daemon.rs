@@ -141,7 +141,8 @@ async fn build(
     let hostname = hostname.as_str();
     let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::open(&cfg.blob_dir).await?);
     let cfg = Arc::new(cfg.clone());
-    let ctx = Context::new_with_opener(store.repos(), blobs, cfg.clone(), tls.clone(), tenant_store_opener(&cfg, store)?).await?;
+    let (opener, s3_opener) = tenant_store_opener(&cfg, store)?;
+    let ctx = Context::new_with_opener(store.repos(), blobs, cfg.clone(), tls.clone(), opener).await?;
 
     // Bind everything before serving anything: a clash fails the whole start.
     let mut addrs = Vec::new();
@@ -243,6 +244,13 @@ async fn build(
         }
         services.push(Box::new(OutboundWorker::new(deps, WorkerOptions::new(cfg.outbound.clone(), hostname)).with_wake(wake)));
     }
+    // The check of a tenant's S3 store (`storage.check`, queued by the admin web or `rustyctl`): it needs the unsealing key, so it runs only where the S3 opener exists.
+    if let Some(s3_opener) = s3_opener {
+        services.push(Box::new(rusty_s3::StorageCheckWorker::new(
+            rusty_store::BlobStoreAdmin::with_repo(store.repos().blob_stores.clone()),
+            Arc::new(rusty_s3::S3Prober::new(s3_opener)),
+        )));
+    }
     for (kind, addr) in &addrs {
         tracing::info!(service = kind.name(), %addr, "listening");
     }
@@ -252,15 +260,21 @@ async fn build(
 
 /// The opener of the blob stores of tenants: directories next to the platform's, and, when `[unsealing]` names this service's private key (the credentials of an S3 store are sealed
 /// to it), S3 buckets. Without the key a tenant's S3 store cannot be opened, so it is not offered.
-fn tenant_store_opener(cfg: &StartupConfig, store: &Store) -> Result<Arc<dyn rusty_store::StoreOpener>> {
+/// The openers of tenants' blob stores: all kinds served (for the registry), and the S3 one by itself (the store check needs it), present only with an unsealing key.
+type TenantOpeners = (Arc<dyn rusty_store::StoreOpener>, Option<Arc<rusty_s3::S3StoreOpener>>);
+
+fn tenant_store_opener(cfg: &StartupConfig, store: &Store) -> Result<TenantOpeners> {
     let stores_dir = cfg.blob_dir.parent().map_or_else(|| std::path::PathBuf::from("stores"), |p| p.join("stores"));
     let mut opener = rusty_store::KindOpener::new().with_fs(Arc::new(rusty_store::FsStoreOpener::new(stores_dir)));
+    let mut s3 = None;
     if let Some(unsealer) = unsealer_of(cfg, &FileSecretSource::new())? {
         let tls = rusty_s3::client::tls_config(None)?;
         let reader = rusty_store::SealedReader::with_repo(store.repos().sealed.clone());
-        opener = opener.with_s3(Arc::new(rusty_s3::S3StoreOpener::new(reader, Arc::new(unsealer), tls)));
+        let o = Arc::new(rusty_s3::S3StoreOpener::new(reader, Arc::new(unsealer), tls));
+        opener = opener.with_s3(o.clone());
+        s3 = Some(o);
     }
-    Ok(Arc::new(opener))
+    Ok((Arc::new(opener), s3))
 }
 
 /// The private keys named by `[unsealing]` (none when the section is absent: this service opens no sealed secret).

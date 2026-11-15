@@ -455,6 +455,11 @@ async fn the_admin_role_manages_tenants_but_reaches_no_mail_and_reads_no_secret(
         "SELECT * FROM messages",
         "SELECT * FROM keywords",
         "SELECT * FROM blobs",
+        "SELECT hash FROM blobs",
+        "SELECT blob_hash FROM messages",
+        "SELECT subject FROM messages",
+        "DELETE FROM blob_stores",
+        "DELETE FROM blobs",
         "SELECT * FROM deliveries",
         "SELECT * FROM change_log",
         "DELETE FROM messages",
@@ -477,6 +482,10 @@ async fn the_admin_role_manages_tenants_but_reaches_no_mail_and_reads_no_secret(
         "SELECT count(*) FROM jobs",
         "SELECT owner_kind, owner_id, purpose, key_id, sealed_len FROM sealed_secrets",
         "SELECT count(*) FROM _sqlx_migrations",
+        "SELECT * FROM blob_stores",
+        "SELECT store_id FROM blobs",
+        "SELECT mailbox_id FROM messages",
+        "UPDATE blob_stores SET check_status = 'ok' WHERE id = 1",
     ] {
         sqlx::query(sqlx::AssertSqlSafe(sql)).execute(&a).await.unwrap_or_else(|e| panic!("{sql}: {e}"));
     }

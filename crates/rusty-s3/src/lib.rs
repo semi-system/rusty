@@ -7,6 +7,7 @@
 //! * [`store`]: [`S3BlobStore`], the `BlobStore` over one bucket and prefix.
 #![forbid(unsafe_code)]
 
+pub mod check_job;
 pub mod client;
 pub mod error;
 pub mod http;
@@ -18,6 +19,7 @@ pub mod store;
 mod time;
 mod xml;
 
+pub use check_job::{enqueue_storage_check, Prober, S3Prober, StorageCheckWorker, STORAGE_CHECK_JOB_KIND};
 pub use client::{Credentials, ListPage, ObjectMeta, S3Client, S3Config};
 pub use error::S3Fail;
 pub use http::{Connector, DirectConnector};

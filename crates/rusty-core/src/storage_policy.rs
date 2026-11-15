@@ -13,6 +13,9 @@ pub const STORE_SECRET_OWNER: &str = "blobstore";
 pub const ACCESS_KEY_PURPOSE: &str = "s3-access-key";
 pub const SECRET_KEY_PURPOSE: &str = "s3-secret-key";
 
+/// The job kind of a store check (queued by the admin web or `rustyctl`, run by the service that holds the unsealing key). The payload is `{"store": <store id>}`.
+pub const STORAGE_CHECK_JOB_KIND: &str = "storage.check";
+
 /// The ports a tenant may name for an S3 endpoint: HTTPS, its usual alternative, and the ports the common self-hosted S3 servers use.
 pub const TENANT_S3_PORTS: [u16; 4] = [443, 8443, 9000, 9443];
 

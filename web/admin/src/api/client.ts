@@ -1,7 +1,7 @@
 // The API client: the contract's endpoints as typed calls. It knows the three rules of a state-changing request (design section 5): the JSON content type,
 // the CSRF token of the session (the browser adds `Origin` itself) and that a failure is a fixed code, never text to show.
 
-import type { Account, AccountCreated, Alias, Dkim, DkimList, DnsRecords, Domain, Me, Queue, Relay, SetupState } from './types';
+import type { Account, AccountCreated, Alias, Dkim, DkimList, DnsRecords, Domain, Me, Queue, Relay, SetupState, Storage } from './types';
 import type { MessageKey } from '../i18n';
 
 /** A page of a list and the cursor of the next one. */
@@ -18,6 +18,17 @@ export interface RelayInput {
   username?: string;
   spf_include?: string;
   password?: string;
+}
+
+/** What `PUT .../storage` takes: the S3 settings and both keys (sealed by the server, never returned). */
+export interface StorageInput {
+  endpoint: string;
+  region: string;
+  bucket: string;
+  prefix: string;
+  path_style: boolean;
+  access_key: string;
+  secret_key: string;
 }
 
 const seg = encodeURIComponent;
@@ -218,6 +229,19 @@ export class Client {
 
   async checkRelay(domain: string): Promise<void> {
     await this.call('POST', `/api/v1/domains/${seg(domain)}/relay/check`);
+  }
+
+  /** The store of the domain, or `null` when it uses the platform store. */
+  async storage(domain: string): Promise<Storage | null> {
+    return (await this.call<{ storage: Storage | null }>('GET', `/api/v1/domains/${seg(domain)}/storage`)).storage;
+  }
+
+  async putStorage(domain: string, input: StorageInput): Promise<Storage | null> {
+    return (await this.call<{ storage: Storage | null }>('PUT', `/api/v1/domains/${seg(domain)}/storage`, input)).storage;
+  }
+
+  async checkStorage(domain: string): Promise<void> {
+    await this.call('POST', `/api/v1/domains/${seg(domain)}/storage/check`);
   }
 
   dns(domain: string): Promise<DnsRecords> {

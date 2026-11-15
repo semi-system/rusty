@@ -10,8 +10,8 @@ use rusty_core::{DomainId, Error, Result};
 use crate::repo::{BlobStoreRepo, BlobStoreRow, StoreId};
 
 /// The categories a check may record besides `ok` (the names of `rusty_s3::S3Fail`, plus the one of a store that cannot be opened at all).
-pub const CHECK_STATUSES: [&str; 14] = [
-    "unchecked", "ok", "resolve", "connect", "tls", "timeout", "auth", "denied", "no-bucket", "not-found", "throttled", "server", "protocol", "too-large",
+pub const CHECK_STATUSES: [&str; 15] = [
+    "unchecked", "ok", "config", "resolve", "connect", "tls", "timeout", "auth", "denied", "no-bucket", "not-found", "throttled", "server", "protocol", "too-large",
 ];
 
 #[derive(Clone)]
@@ -48,6 +48,9 @@ impl BlobStoreAdmin {
                 let same = serde_json::from_str::<serde_json::Value>(&row.config).ok() == serde_json::from_str::<serde_json::Value>(&config).ok();
                 if !same {
                     self.repo.update_config(row.id, &config).await?;
+                } else {
+                    // The same settings: the keys are being replaced. The store has to pass a check again before it is used (after the next start of the services).
+                    self.repo.record_check(row.id, "unchecked", None).await?;
                 }
                 let fresh = self.repo.get(row.id).await?.ok_or_else(|| Error::NotFound("blob store".into()))?;
                 Ok((fresh, false))
