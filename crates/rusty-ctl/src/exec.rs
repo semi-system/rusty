@@ -828,6 +828,15 @@ async fn dkim_import(env: &mut CtlEnv<'_>, domain: &str, selector: &str, key_fil
 /// `seal keygen <file>`: make the key pair that seals and opens secrets (admin web design, section 14.1). The private half is written to
 /// `file` (an absolute path in a directory that exists), mode 0600, **never replacing** a file (everything sealed to the old key would be
 /// lost); it is never printed. The public half and its id are printed with the two configuration sections to add.
+/// `seal keygen` and `seal show` work on a key file only: they need no configuration and no database (an installer makes the key before anything exists).
+pub fn run_seal_file_command(command: &Command) -> Option<Result<Outcome, CtlError>> {
+    match command {
+        Command::SealKeygen { file } => Some(seal_keygen(file)),
+        Command::SealShow { file } => Some(seal_show(file)),
+        _ => None,
+    }
+}
+
 fn seal_keygen(file: &std::path::Path) -> Result<Outcome, CtlError> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
