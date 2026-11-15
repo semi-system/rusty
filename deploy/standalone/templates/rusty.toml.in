@@ -14,13 +14,13 @@ listen_25 = "0.0.0.0:2525"
 listen_587 = "0.0.0.0:5587"
 listen_465 = "0.0.0.0:4465"
 proxy_protocol = true
-trusted_proxies = ["10.77.0.2/32"]
+trusted_proxies = ["10.77.0.2/32", "127.0.0.1/32"]   # the edge; and loopback, from where `rusty healthcheck` probes
 
 [imap]
 listen_143 = "0.0.0.0:1143"
 listen_993 = "0.0.0.0:1993"
 proxy_protocol = true
-trusted_proxies = ["10.77.0.2/32"]
+trusted_proxies = ["10.77.0.2/32", "127.0.0.1/32"]   # the edge; and loopback, from where `rusty healthcheck` probes
 
 [outbound]
 dkim_dir = "/var/lib/rusty/dkim"
