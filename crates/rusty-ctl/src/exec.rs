@@ -666,7 +666,7 @@ pub async fn execute(command: &Command, env: &mut CtlEnv<'_>) -> Result<Outcome,
         },
 
         Command::Check => check(env).await,
-        Command::DbMigrate { .. } | Command::DbStatus | Command::RelayCheck => {
+        Command::DbMigrate { .. } | Command::DbStatus | Command::RelayCheck | Command::BlobsInit => {
             Err(CtlError::runtime("db and relay commands are run by the composition root, not against the directory"))
         }
     }
