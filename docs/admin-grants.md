@@ -27,4 +27,20 @@ rustyctl admin list
 
 ## Not in this change
 
-Sessions, sign-in, CSRF and the `rusty-admin` binary come next; until then a grant changes nothing a user can do.
+The HTTP handlers (session endpoints, CSRF, the setup page) and the `rusty-admin` binary come next; until then a grant changes nothing a user can do.
+
+## Sessions and sign-in (crate `rusty-admin`)
+
+The logic behind the admin web, without HTTP: `rusty_admin::SessionStore` and `AdminAuth`.
+
+* **Session id**: 256 random bits (OS generator), 64 hex digits in the cookie. The store keeps **only `SHA-256(id)`** as the key, so reading the store
+  does not give a usable id. The value (account, scope at sign-in, CSRF token, creation time) lives in the `Kv` store (Valkey, or the in-process store).
+* **Idle timeout** 30 minutes (renewed at every use), **absolute** 8 hours after sign-in. A new id at every sign-in.
+* **Revocation**: `revoke_account` makes every session of the account made up to that moment invalid (password changed, account disabled, grant removed)
+  with a single marker, no index of sessions needed.
+* **Fails closed**: when the store cannot answer, `get` is an error, never "signed in"; a malformed id is "no session" without touching the store.
+* **Sign-in** uses the directory's authenticator (Argon2, dummy verification for unknown accounts) and the same `RateLimiter` as IMAP and submission
+  (keys of the resolved account and of the canonical address, per source address). **One fixed error** for a wrong password, an unknown or disabled
+  account and an account that is not an administrator; the last counts as a failure, so probing for administrators is throttled like guessing.
+* **Every request** goes through `AdminAuth::principal`, which re-reads the grant and the account status from the database: narrowing or removing a grant,
+  or disabling the account, takes effect at the next request whatever the session remembers, and a refused session is ended.

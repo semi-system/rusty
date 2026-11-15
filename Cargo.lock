@@ -2124,6 +2124,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusty-admin"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hex",
+ "rand_core 0.6.4",
+ "rusty-core",
+ "rusty-directory",
+ "rusty-store",
+ "rusty-svc",
+ "rusty-valkey",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tokio",
+]
+
+[[package]]
 name = "rusty-core"
 version = "0.1.0"
 dependencies = [
