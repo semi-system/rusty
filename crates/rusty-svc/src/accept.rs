@@ -33,6 +33,12 @@ pub trait Accept: Send + Sync {
     /// Turn an accepted socket into a stream. Runs inside the session task, so a slow peer
     /// delays only itself. An error drops the connection.
     async fn accept(&self, tcp: TcpStream, addr: SocketAddr) -> Result<(BoxedStream, PeerInfo)>;
+
+    /// The real client's address is known only after `accept` (an edge proxy puts it in a header): the listener then takes the per-address slot on
+    /// `PeerInfo::addr` after `accept`, not on the TCP peer (which would be the proxy, shared by every client).
+    fn per_ip_after_accept(&self) -> bool {
+        false
+    }
 }
 
 /// Plain TCP; STARTTLS (if the protocol has it) is the session's business.

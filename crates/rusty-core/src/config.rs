@@ -228,6 +228,21 @@ impl StartupConfig {
             .count()
     }
 
+    /// The listeners that need a certificate of their own: every authenticated listener, except an implicit-TLS port (465, 993) of a service whose TLS ends
+    /// at the edge (`proxy_protocol`): the edge holds that key and the stream arrives already protected. STARTTLS ports (587, 143) still need one:
+    /// the edge passes those through and the service upgrades the connection itself.
+    pub fn tls_required_listeners(&self) -> usize {
+        [
+            (self.smtp.listen_587, true),
+            (self.smtp.listen_465, !self.smtp.proxy_protocol),
+            (self.imap.listen_143, true),
+            (self.imap.listen_993, !self.imap.proxy_protocol),
+        ]
+        .iter()
+        .filter(|(l, needs)| *needs && l.addr().is_some())
+        .count()
+    }
+
     /// Start-up rules that need the whole file: a production start needs `hostname`, and an
     /// enabled listener that accepts authentication needs a TLS source (a certificate pair or
     /// the explicit `dev_self_signed`). There is no plaintext fallback: the start is refused.
@@ -235,7 +250,7 @@ impl StartupConfig {
         if profile == Profile::Production && self.hostname.is_none() {
             return Err(Error::Invalid("hostname is required".into()));
         }
-        if self.authenticated_listeners() > 0 && !self.tls.has_cert() && !self.tls.dev_self_signed {
+        if self.tls_required_listeners() > 0 && !self.tls.has_cert() && !self.tls.dev_self_signed {
             return Err(Error::Invalid(
                 "listeners that accept authentication need TLS: set [tls] cert_file and key_file, \
                  or disable those listeners"

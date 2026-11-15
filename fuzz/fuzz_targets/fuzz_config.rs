@@ -33,7 +33,12 @@ fuzz_target!(|data: &[u8]| {
     assert!((1024..=1024 * 1024 * 1024).contains(&c.max_message_bytes));
     assert!(c.smtp_max_message_bytes() >= 1024 && c.smtp_max_message_bytes() <= c.max_message_bytes);
     assert!(c.gc_grace_seconds >= 3600);
-    assert!(!c.smtp.proxy_protocol && !c.imap.proxy_protocol);
+    // The PROXY protocol settings are explicit and narrow: a list only with the switch, never empty with it, never every address.
+    for (on, list) in [(c.smtp.proxy_protocol, &c.smtp.trusted_proxies), (c.imap.proxy_protocol, &c.imap.trusted_proxies)] {
+        assert!(list.len() <= 16);
+        assert_eq!(on, !list.is_empty());
+        assert!(list.iter().all(|b| !b.is_everything()));
+    }
     assert!((1..=MAX_RECIPIENTS).contains(&c.smtp.max_recipients));
     assert!(c.smtp.max_connections >= 1 && c.imap.max_connections >= 1);
     assert!((1..=600).contains(&c.limits.shutdown_grace_secs));
@@ -66,7 +71,7 @@ fuzz_target!(|data: &[u8]| {
     }
     let prod = c.check_startup(Profile::Production);
     let dev = c.check_startup(Profile::Dev);
-    if c.authenticated_listeners() > 0 && !c.tls.has_cert() && !c.tls.dev_self_signed {
+    if c.tls_required_listeners() > 0 && !c.tls.has_cert() && !c.tls.dev_self_signed {
         assert!(prod.is_err() && dev.is_err());
     }
     if c.hostname.is_none() {

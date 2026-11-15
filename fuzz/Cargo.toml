@@ -37,6 +37,12 @@ doc = false
 bench = false
 
 [[bin]]
+name = "fuzz_proxy_v2"
+path = "fuzz_targets/fuzz_proxy_v2.rs"
+test = false
+doc = false
+
+[[bin]]
 name = "fuzz_config"
 path = "fuzz_targets/fuzz_config.rs"
 test = false

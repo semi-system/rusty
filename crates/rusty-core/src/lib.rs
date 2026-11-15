@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod cidr;
 pub mod config;
 pub mod dns;
 pub mod dns_check;
