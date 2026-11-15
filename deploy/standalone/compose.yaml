@@ -63,6 +63,19 @@ services:
     depends_on:
       db-init: { condition: service_completed_successfully }
 
+  # The blob directory is never made implicitly by a production start: this one-shot makes it (and does nothing when it exists).
+  blobs-init:
+    image: rusty-mail:local
+    <<: *hardened
+    restart: "no"
+    entrypoint: [/usr/local/bin/rustyctl]
+    command: [--config, /etc/rusty/rusty.toml, blobs, init]
+    secrets: [pg_app]
+    volumes:
+      - ./state/etc:/etc/rusty:ro
+      - mail-data:/var/lib/rusty
+    networks: [db]
+
   mail:
     image: rusty-mail:local
     <<: *hardened
@@ -79,6 +92,7 @@ services:
       egress: {}
     depends_on:
       migrate: { condition: service_completed_successfully }
+      blobs-init: { condition: service_completed_successfully }
       cert-sync: { condition: service_healthy }
     stop_grace_period: 45s
 
@@ -90,7 +104,9 @@ services:
     secrets: [pg_admin]
     volumes:
       - ./state/etc:/etc/rusty:ro
-    networks: [db, app]
+    networks:
+      db: {}
+      app: { ipv4_address: 10.77.0.11 }
     depends_on:
       migrate: { condition: service_completed_successfully }
 

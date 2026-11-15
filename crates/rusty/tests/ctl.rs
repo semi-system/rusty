@@ -302,6 +302,30 @@ fn seal_keygen_and_show_need_no_configuration_and_no_database() {
     // It still never replaces an existing key.
     let again = Command::new(BIN).args(["ctl", "seal", "keygen", key.to_str().unwrap()]).output().unwrap();
     assert_ne!(again.status.code(), Some(0));
+fn blobs_init_makes_the_blob_directory_without_a_database_and_is_safe_to_repeat() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = private_tmp();
+    let blobs = dir.path().join("blobs");
+    let pw = dir.path().join("pg.pw");
+    std::fs::write(&pw, "x").unwrap();
+    std::fs::set_permissions(&pw, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let conf = dir.path().join("rusty.toml");
+    std::fs::write(
+        &conf,
+        format!(
+            "hostname = \"mail.example.test\"\nblob_dir = \"{}\"\n[tls]\ndev_self_signed = true\n[store]\nurl = \"postgres://rusty_app@127.0.0.1:1/rusty\"\npassword_file = \"{}\"\n",
+            blobs.display(),
+            pw.display()
+        ),
+    )
+    .unwrap();
+    for _ in 0..2 {
+        let out = Command::new(BIN).args(["ctl", "--config", conf.to_str().unwrap(), "blobs", "init"]).output().unwrap();
+        assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let mode = std::fs::metadata(&blobs).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700);
+    assert!(blobs.join(".rusty-blobs").exists(), "the marker");
 }
 
 #[test]

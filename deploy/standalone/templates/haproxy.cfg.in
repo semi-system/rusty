@@ -19,10 +19,6 @@ defaults
     timeout client 5m
     timeout server 5m
 
-resolvers docker
-    nameserver dns 127.0.0.11:53
-    hold valid 10s
-
 acme letsencrypt
     directory @ACME_DIRECTORY@
     contact @CONTACT@
@@ -76,20 +72,20 @@ frontend admin_https
     default_backend be_admin
 
 backend be_smtp
-    server mail mail:2525 send-proxy-v2 resolvers docker init-addr libc,none
+    server mail 10.77.0.10:2525 send-proxy-v2
 
 backend be_submission
-    server mail mail:5587 send-proxy-v2 resolvers docker init-addr libc,none
+    server mail 10.77.0.10:5587 send-proxy-v2
 
 backend be_smtps
-    server mail mail:4465 send-proxy-v2 resolvers docker init-addr libc,none
+    server mail 10.77.0.10:4465 send-proxy-v2
 
 backend be_imap
-    server mail mail:1143 send-proxy-v2 resolvers docker init-addr libc,none
+    server mail 10.77.0.10:1143 send-proxy-v2
 
 backend be_imaps
-    server mail mail:1993 send-proxy-v2 resolvers docker init-addr libc,none
+    server mail 10.77.0.10:1993 send-proxy-v2
 
 backend be_admin
     mode http
-    server admin admin:8080 check resolvers docker init-addr libc,none
+    server admin 10.77.0.11:8080 check
