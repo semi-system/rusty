@@ -24,9 +24,12 @@ own certificate was dropped for now (it would put a private key on the web); if 
 
 ## What is checked, and what is not
 
+`scripts/tests/acme-pebble.sh` (the nightly edge job) runs a **real issuance and a renewal**: HAProxy 3.4.7 registers with Pebble (the Let's Encrypt test CA, images pinned by digest), answers the HTTP-01 challenge, installs the
+certificate for the requested name (issued by the CA, not its temporary self-signed one) and, on `acme renew`, swaps in a new one (another serial) without a reload. (Found while writing it: with the challenge test server's
+default AAAA answer the validation connected to `::1` and failed; the names in a real installation must resolve to the edge on IPv4 and IPv6 alike, or only IPv4.)
+
 `scripts/check-edge-acme.sh` (run by CI in the image smoke job) parses the template with the pinned HAProxy image, checks that HAProxy makes the account key and the temporary key pairs, and that nothing
-needs the network. **Not checked here: a real issuance and a renewal.** That needs an ACME server (Pebble) and a reachable port 80; it is the next test to add (an `edge-tests` case in the nightly
-suite), and until then the first issuance of an installation should be watched against the staging directory.
+needs the network. **Not checked here: Let's Encrypt itself** (rate limits, the production directory, port 80 reachable from the internet): the first issuance of an installation should be watched against the staging directory.
 
 
 ## Behind the edge: PROXY protocol v2

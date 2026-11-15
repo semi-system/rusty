@@ -531,6 +531,10 @@ jobs:
           restore-keys: |
             cargo-target-v1-edge-${{ runner.os }}-
       - run: cargo test -p edge-tests -- --ignored --nocapture
+      - name: The edge accepter against the real HAProxy (PROXY v2, health checks)
+        run: cargo test -p rusty-svc --test haproxy_compat -- --ignored --nocapture
+      - name: ACME HTTP-01 issuance and renewal by HAProxy against Pebble
+        run: bash scripts/tests/acme-pebble.sh
       - name: Prune the build directory (workspace artefacts, test binaries) before saving
         if: ${{ success() && github.ref == 'refs/heads/main' && steps.target.outputs.cache-hit != 'true' }}
         run: bash scripts/ci-cache-prune.sh target
