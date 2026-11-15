@@ -58,12 +58,9 @@ render() { # template -> file: the values were validated above, none holds a cha
       -e "s|@SEAL_PUBLIC@|$SEAL_PUBLIC|g" -e "s|@ACME_DIRECTORY@|$ACME_DIR|g" -e "s|@ADMIN_ALLOW@|${ALLOW[*]}|g" "templates/$1.in" > "state/etc/$1"
 }
 # The sealing key pair: the private half stays in state/keys (mail uid only); the public half goes to both configurations.
-mail_ctl() { docker run --rm --user 65532:65532 --entrypoint /usr/local/bin/rustyctl -v "$PWD/state/etc:/etc/rusty:ro" -v "$PWD/state/keys:/etc/rusty-keys" -v "$PWD/state/secrets/pg_app:/run/secrets/pg_app:ro" rusty-mail:local --config /etc/rusty/rusty.toml "$@"; }
+mail_ctl() { docker run --rm --user 65532:65532 --entrypoint /usr/local/bin/rustyctl -v "$PWD/state/keys:/etc/rusty-keys" rusty-mail:local "$@"; }
 [ "${SKIP_BUILD:-0}" = 1 ] || docker compose build >/dev/null   # SKIP_BUILD=1: the images rusty-mail:local and rusty-admin:local already exist
 docker run --rm --user 0 --entrypoint sh -v "$PWD/state:/s" "$HA_IMG" -c 'chown 65532:65532 /s/keys /s/tls /s/secrets /s/secrets/* && chmod 0700 /s/keys /s/secrets && chmod 0600 /s/secrets/* && chmod 0755 /s/tls'
-# rustyctl always loads a configuration: a bootstrap one (the template with a placeholder key) lets it make and show the key; the real one is rendered after.
-SEAL_PUBLIC="rusty-seal-v1:0000000000000000000000000000000000000000000000000000000000000001"
-render rusty.toml
 if [ ! -e state/keys/unseal.key ]; then mail_ctl seal keygen /etc/rusty-keys/unseal.key >/dev/null; fi
 SEAL_PUBLIC="$(mail_ctl seal show /etc/rusty-keys/unseal.key | grep -o 'rusty-seal-v1:[0-9a-f]\{64\}' | head -1)"
 [ -n "$SEAL_PUBLIC" ] || die "could not read the sealing public key"
