@@ -227,7 +227,42 @@ fn load_config(args: &DaemonArgs, with_store: bool) -> Result<(StartupConfig, Pr
     }
 }
 
-async fn run_daemon(prog: &str, args: DaemonArgs) -> u8 {
+/// How often the certificate files are looked at. The edge renews certificates and writes them for this service (see docs/acme.md): a change is picked up
+/// by the next handshake without a signal or a restart.
+const CERT_POLL: std::time::Duration = std::time::Duration::from_secs(30);
+/// The wait after a change is seen, so a writer can finish both files before they are read.
+const CERT_SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn stamp(paths: &[std::path::PathBuf]) -> Vec<Option<(std::time::SystemTime, u64)>> {
+    paths.iter().map(|p| std::fs::metadata(p).ok().and_then(|m| m.modified().ok().map(|t| (t, m.len())))).collect()
+}
+
+/// Reloads the TLS provider when a certificate or key file changes (modification time or size). A failed reload (half-written or invalid pair) keeps the
+/// certificate in use and is tried again at the next change.
+fn watch_cert_files(paths: Vec<std::path::PathBuf>, tls: rusty_svc::TlsProvider, stop: CancellationToken, poll: std::time::Duration, settle: std::time::Duration) {
+    tokio::spawn(async move {
+        let mut seen = stamp(&paths);
+        loop {
+            tokio::select! { _ = stop.cancelled() => return, _ = tokio::time::sleep(poll) => {} }
+            let now = stamp(&paths);
+            if now == seen {
+                continue;
+            }
+            tokio::time::sleep(settle).await;
+            let now = stamp(&paths);
+            match tls.reload() {
+                Ok(()) => {
+                    tracing::info!("certificate files changed: reloaded");
+                    seen = now;
+                }
+                Err(e) => tracing::warn!(error = %e, "certificate files changed but did not load; keeping the current certificate"),
+            }
+        }
+    });
+}
+
+async fn run_daemon(
+prog: &str, args: DaemonArgs) -> u8 {
     // Signals are claimed before anything starts, so one that arrives early is not lost to the
     // default action (which would kill the process without closing the store).
     let Ok(signals) = Signals::claim() else {
@@ -247,6 +282,7 @@ async fn run_daemon(prog: &str, args: DaemonArgs) -> u8 {
     // A second initialisation (tests in one process) is not an error worth stopping for.
     let _ = init_logging(cfg.log_level, cfg.log_format);
 
+    let watched: Vec<std::path::PathBuf> = [cfg.tls.cert_file.clone(), cfg.tls.key_file.clone()].into_iter().flatten().collect();
     let token = CancellationToken::new();
     let running = match start(cfg, profile, token.clone()).await {
         Ok(r) => r,
@@ -258,7 +294,62 @@ async fn run_daemon(prog: &str, args: DaemonArgs) -> u8 {
     };
 
     let tls = running.tls().clone();
+    if !watched.is_empty() {
+        watch_cert_files(watched, running.tls().clone(), token.clone(), CERT_POLL, CERT_SETTLE);
+    }
     signals.spawn(token.clone(), Some(Box::new(move || tls.reload())));
 
     exit_code(running.wait().await)
+}
+
+#[cfg(test)]
+mod cert_watch_tests {
+    use super::*;
+    use rusty_core::config::TlsConfig;
+    use rusty_svc::{FileSecretSource, TlsProvider};
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn write_pair(dir: &std::path::Path, name: &str) {
+        let ck = rcgen::generate_simple_self_signed(vec![name.to_owned()]).unwrap();
+        let (c, k) = (dir.join("cert.pem"), dir.join("key.pem"));
+        std::fs::write(&c, ck.cert.pem()).unwrap();
+        std::fs::write(&k, ck.signing_key.serialize_pem()).unwrap();
+        std::fs::set_permissions(&c, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::set_permissions(&k, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    async fn leaf_changes(p: &TlsProvider, from: &[u8]) -> bool {
+        for _ in 0..100 {
+            if p.leaf_der().as_deref() != Some(from) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn a_certificate_the_edge_renews_is_served_without_a_restart_and_a_broken_write_keeps_the_old_one() {
+        let dir = tempfile::tempdir().unwrap();
+        write_pair(dir.path(), "mail.example.test");
+        let cfg = TlsConfig { cert_file: Some(dir.path().join("cert.pem")), key_file: Some(dir.path().join("key.pem")), dev_self_signed: false };
+        let tls = TlsProvider::from_config(&cfg, "mail.example.test", Arc::new(FileSecretSource::new())).unwrap();
+        let first = tls.leaf_der().unwrap();
+        let stop = CancellationToken::new();
+        watch_cert_files(vec![dir.path().join("cert.pem"), dir.path().join("key.pem")], tls.clone(), stop.clone(), Duration::from_millis(50), Duration::from_millis(20));
+
+        // A half-written pair (new certificate, old key) does not load: the certificate in use stays.
+        let old_key = std::fs::read(dir.path().join("key.pem")).unwrap();
+        write_pair(dir.path(), "mail.example.test");
+        std::fs::write(dir.path().join("key.pem"), &old_key).unwrap();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(tls.leaf_der().unwrap(), first, "a mismatched pair must not replace the certificate");
+
+        // The pair completes: the next handshakes use the new certificate.
+        write_pair(dir.path(), "mail.example.test");
+        assert!(leaf_changes(&tls, &first).await, "the renewed certificate was not picked up");
+        stop.cancel();
+    }
 }

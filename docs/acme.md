@@ -48,3 +48,17 @@ trusted_proxies = ["10.0.0.0/24"]     # the addresses the proxy connects from
   own address; a `PP2_TYPE_SSL` TLV with the client bit means the client's connection used TLS at the edge.
 * **TLS split**: the implicit-TLS ports (465, 993) end TLS at the edge, so with `proxy_protocol` they need **no certificate of their own** and their streams count as protected. The STARTTLS ports (587, 143) are
   passed through by the edge and upgraded by the service itself, so they **still need `[tls]`**: the edge cannot hold the key for a protocol upgrade it does not speak.
+
+## The certificate for the STARTTLS ports
+
+HAProxy keeps the certificate it obtained over ACME in memory only; nothing is written under `certs/`. The mail services need a copy for 25, 587 and 143, so a small step hands it over:
+
+* `deploy/edge/cert-sync.sh <runtime socket> @certs/mail.pem <outdir> [seconds]` asks HAProxy's runtime socket for the certificate (`dump ssl cert`) and writes `cert.pem` (0644) and `key.pem` (0600) atomically, only when
+  the content changed. Run it as the **mail services' uid** (the key file must be owned by the service account) in a sidecar that shares the runtime socket (socket mode 660, the sidecar joins HAProxy's group) and the
+  output directory with the mail services (read-only there). Point `tls.cert_file` and `tls.key_file` at those two files.
+* The service looks at both files every 30 seconds and reloads on a change (no signal, no restart). A pair that does not load (new certificate, old key, half-written) is ignored and tried again; the certificate in use
+  stays. SIGHUP still reloads at once.
+* The key therefore exists in three places: HAProxy's memory, the shared directory (0600, one uid), the services' memory. That is the cost of offering STARTTLS; a deployment that serves only 465 and 993 can skip
+  this and keep the key at the edge alone.
+
+`scripts/tests/acme-pebble.sh` runs the whole path against Pebble: issuance, renewal, then `cert-sync` (modes, same certificate as presented, no rewrite when nothing changed).
