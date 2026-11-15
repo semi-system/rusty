@@ -1,8 +1,27 @@
 // The API client: the contract's endpoints as typed calls. It knows the three rules of a state-changing request (design section 5): the JSON content type,
 // the CSRF token of the session (the browser adds `Origin` itself) and that a failure is a fixed code, never text to show.
 
-import type { Domain, Me, SetupState } from './types';
+import type { Account, AccountCreated, Alias, Dkim, DkimList, DnsRecords, Domain, Me, Queue, Relay, SetupState } from './types';
 import type { MessageKey } from '../i18n';
+
+/** A page of a list and the cursor of the next one. */
+export interface Page<T> {
+  items: T[];
+  next: number | null;
+}
+
+/** What `PUT .../relay` takes (the password only together with a user name). */
+export interface RelayInput {
+  host: string;
+  port: number;
+  tls: 'starttls' | 'implicit' | 'none';
+  username?: string;
+  spf_include?: string;
+  password?: string;
+}
+
+const seg = encodeURIComponent;
+const cursor = (after?: number): string => (after === undefined ? '' : `?after=${after}`);
 
 /** A failed call: the status, the fixed error code of the contract, and the delay of a throttled one. */
 export class ApiError extends Error {
@@ -135,7 +154,81 @@ export class Client {
     return me;
   }
 
-  async domains(after?: number): Promise<{ items: Domain[]; next: number | null }> {
-    return this.call('GET', after === undefined ? '/api/v1/domains' : `/api/v1/domains?after=${after}`);
+  domains(after?: number): Promise<Page<Domain>> {
+    return this.call('GET', `/api/v1/domains${cursor(after)}`);
+  }
+
+  createDomain(name: string): Promise<Domain> {
+    return this.call('POST', '/api/v1/domains', { name });
+  }
+
+  setDomainEnabled(name: string, enabled: boolean): Promise<Domain> {
+    return this.call('POST', `/api/v1/domains/${seg(name)}/${enabled ? 'enable' : 'disable'}`);
+  }
+
+  accounts(domain: string, after?: number): Promise<Page<Account>> {
+    return this.call('GET', `/api/v1/domains/${seg(domain)}/accounts${cursor(after)}`);
+  }
+
+  createAccount(domain: string, local: string, password?: string): Promise<AccountCreated> {
+    return this.call('POST', `/api/v1/domains/${seg(domain)}/accounts`, password === undefined || password === '' ? { local } : { local, password });
+  }
+
+  async setPassword(address: string, password: string): Promise<void> {
+    await this.call('POST', `/api/v1/accounts/${seg(address)}/password`, { password });
+  }
+
+  setAccountEnabled(address: string, enabled: boolean): Promise<Account> {
+    return this.call('POST', `/api/v1/accounts/${seg(address)}/${enabled ? 'enable' : 'disable'}`);
+  }
+
+  aliases(domain: string, after?: number): Promise<Page<Alias>> {
+    return this.call('GET', `/api/v1/domains/${seg(domain)}/aliases${cursor(after)}`);
+  }
+
+  async createAlias(domain: string, local: string, target: string): Promise<void> {
+    await this.call('POST', `/api/v1/domains/${seg(domain)}/aliases`, { local, target });
+  }
+
+  async deleteAlias(address: string): Promise<void> {
+    await this.call('DELETE', `/api/v1/aliases/${seg(address)}`);
+  }
+
+  async dkim(domain: string): Promise<Dkim[]> {
+    return (await this.call<DkimList>('GET', `/api/v1/domains/${seg(domain)}/dkim`)).items;
+  }
+
+  createDkim(domain: string, selector?: string): Promise<Dkim> {
+    return this.call('POST', `/api/v1/domains/${seg(domain)}/dkim`, selector === undefined || selector === '' ? {} : { selector });
+  }
+
+  /** The relay of the domain, or `null` when it has none of its own. */
+  async relay(domain: string): Promise<Relay | null> {
+    return (await this.call<{ relay: Relay | null }>('GET', `/api/v1/domains/${seg(domain)}/relay`)).relay;
+  }
+
+  async putRelay(domain: string, input: RelayInput): Promise<Relay> {
+    const r = await this.call<{ relay: Relay }>('PUT', `/api/v1/domains/${seg(domain)}/relay`, input);
+    return r.relay;
+  }
+
+  async deleteRelay(domain: string): Promise<void> {
+    await this.call('DELETE', `/api/v1/domains/${seg(domain)}/relay`);
+  }
+
+  async checkRelay(domain: string): Promise<void> {
+    await this.call('POST', `/api/v1/domains/${seg(domain)}/relay/check`);
+  }
+
+  dns(domain: string): Promise<DnsRecords> {
+    return this.call('GET', `/api/v1/domains/${seg(domain)}/dns`);
+  }
+
+  async checkDns(domain: string): Promise<void> {
+    await this.call('POST', `/api/v1/domains/${seg(domain)}/dns/check`);
+  }
+
+  outbound(domain: string): Promise<Queue> {
+    return this.call('GET', `/api/v1/domains/${seg(domain)}/outbound`);
   }
 }

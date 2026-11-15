@@ -37,3 +37,17 @@ button[disabled] { opacity: 0.6; cursor: progress; }
 .skip:focus { left: 0.5rem; top: 0.5rem; background: var(--bg); padding: 0.5rem; }
 header.bar { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 0.75rem 1rem; border-bottom: 1px solid var(--line); }
 header.bar nav { display: flex; gap: 1rem; align-items: center; }
+table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+thead th { font-size: 0.875rem; color: var(--muted); }
+nav.tabs { display: flex; gap: 1rem; flex-wrap: wrap; border-bottom: 1px solid var(--line); margin-bottom: 1rem; }
+nav.tabs a[aria-current="page"], header.bar a[aria-current="page"] { font-weight: 700; text-decoration: none; }
+a { color: var(--accent); }
+select { font: inherit; padding: 0.5rem 0.625rem; border: 1px solid var(--line); border-radius: 0.375rem; background: var(--bg); color: var(--fg); }
+.copy { display: inline-flex; gap: 0.5rem; align-items: center; max-width: 100%; }
+.copy input { min-width: 12rem; width: 100%; font-family: ui-monospace, monospace; font-size: 0.875rem; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+ul.plain { list-style: none; padding: 0; }
+h2 { font-size: 1.2rem; margin: 1.5rem 0 0.5rem; }
+h3 { font-size: 1rem; margin: 1rem 0 0.25rem; }
+main { max-width: 64rem; }
