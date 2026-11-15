@@ -156,6 +156,15 @@ fn describe(e: &Error) -> String {
     out
 }
 
+/// How long a collection lease lasts without being renewed (it is renewed at every batch of rows and every shard of files).
+const GC_LEASE_SECS: i64 = 1800;
+
+/// A name for this run: the process and a random number, so two runs never share one.
+fn lease_holder() -> String {
+    use rand_core::RngCore;
+    format!("{}-{:016x}", std::process::id(), rand_core::OsRng.next_u64())
+}
+
 /// The garbage collector over a [`GcRepo`].
 #[derive(Clone)]
 pub struct Gc {
@@ -363,6 +372,27 @@ impl Gc {
         cutoff_secs: i64,
         cutoff: SystemTime,
     ) -> Result<GcReport> {
+        // The store's lease first: it excludes a collector of another process or host, which the lock below (a mutex, a file) cannot. It is renewed as the run goes and given
+        // back at the end.
+        let holder = lease_holder();
+        if !self.repo.acquire_gc_lease(self.store, &holder, GC_LEASE_SECS).await? {
+            return Err(Error::Conflict("gc already running".into()));
+        }
+        let result = self.run_leased(blobs, cutoff_secs, cutoff, &holder).await;
+        let _ = self.repo.release_gc_lease(self.store, &holder).await;
+        result
+    }
+
+    /// Renew the lease; `Conflict` when it was lost (the run stops: another collector has the store).
+    async fn renew(&self, holder: &str) -> Result<()> {
+        if self.repo.acquire_gc_lease(self.store, holder, GC_LEASE_SECS).await? {
+            Ok(())
+        } else {
+            Err(Error::Conflict("the gc lease was lost".into()))
+        }
+    }
+
+    async fn run_leased(&self, blobs: &dyn BlobStore, cutoff_secs: i64, cutoff: SystemTime, holder: &str) -> Result<GcReport> {
         // Held until this function returns (or unwinds).
         let _lock = blobs.try_lock_gc().await?;
         let mut report = GcReport::default();
@@ -376,8 +406,8 @@ impl Gc {
             }
             Err(e) => report.error(|| format!("quarantine: {}", describe(&e))),
         }
-        self.collect_rows(blobs, cutoff, cutoff_secs, &mut report).await?;
-        self.collect_orphans(blobs, cutoff, unix_secs(cutoff), &mut report).await;
+        self.collect_rows(blobs, cutoff, cutoff_secs, &mut report, holder).await?;
+        self.collect_orphans(blobs, cutoff, unix_secs(cutoff), &mut report, holder).await;
         match blobs.sweep_temp_before(cutoff).await {
             Ok(n) => report.tmp_swept = n,
             Err(e) => report.error(|| format!("temporary files: {}", describe(&e))),
@@ -392,9 +422,11 @@ impl Gc {
         cutoff: SystemTime,
         cutoff_secs: i64,
         report: &mut GcReport,
+        holder: &str,
     ) -> Result<()> {
         let mut after: Option<BlobHash> = None;
         loop {
+            self.renew(holder).await?;
             let batch = self
                 .repo
                 .blob_candidates(self.store, cutoff_secs, after.as_ref(), GC_BATCH)
@@ -456,8 +488,13 @@ impl Gc {
         cutoff: SystemTime,
         cutoff_secs: i64,
         report: &mut GcReport,
+        holder: &str,
     ) {
         for shard in 0..=u8::MAX {
+            if self.renew(holder).await.is_err() {
+                report.error(|| "the gc lease was lost: the run stopped".to_owned());
+                return;
+            }
             let entries = match blobs.list_shard(shard).await {
                 Ok(v) => v,
                 Err(e) => {

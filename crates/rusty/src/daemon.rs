@@ -141,7 +141,7 @@ async fn build(
 ) -> Result<(Vec<(ListenerKind, SocketAddr)>, JoinHandle<Result<()>>)> {
     let hostname = cfg.hostname.clone().unwrap_or_else(|| "localhost".to_owned());
     let hostname = hostname.as_str();
-    let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::open(&cfg.blob_dir).await?);
+    let blobs = platform_blobs(cfg).await?;
     let cfg = Arc::new(cfg.clone());
     let (opener, s3_opener, backend_opener) = tenant_store_opener(&cfg, store)?;
     let ctx = Context::new_with_opener(store.repos(), blobs, cfg.clone(), tls.clone(), opener).await?;
@@ -266,6 +266,14 @@ async fn build(
 
 /// The opener of the blob stores of tenants: directories next to the platform's, and, when `[unsealing]` names this service's private key (the credentials of an S3 store are sealed
 /// to it), S3 buckets. Without the key a tenant's S3 store cannot be opened, so it is not offered.
+/// The platform blob store: the bucket of `[blob_s3]` when it is set, else the directory `blob_dir`.
+pub(crate) async fn platform_blobs(cfg: &StartupConfig) -> Result<Arc<dyn BlobStore>> {
+    match &cfg.blob_s3 {
+        Some(s3) => Ok(Arc::new(rusty_s3::platform_store(s3, &FileSecretSource::new())?)),
+        None => Ok(Arc::new(FsBlobStore::open(&cfg.blob_dir).await?)),
+    }
+}
+
 /// The openers of tenants' blob stores: all kinds served (for the registry), and the S3 one by itself (the store check needs it), present only with an unsealing key.
 type TenantOpeners = (Arc<dyn rusty_store::StoreOpener>, Option<Arc<rusty_s3::S3StoreOpener>>, Arc<dyn rusty_store::BackendOpener>);
 

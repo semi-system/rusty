@@ -33,6 +33,9 @@ COLUMN blob_locations.store_id bigint nullable=NO identity=NO/ collation= defaul
 COLUMN blob_locations.hash bytea nullable=NO identity=NO/ collation= default=
 COLUMN blob_locations.backend_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN blob_locations.state text nullable=NO identity=NO/ collation=C default='ok'::text
+COLUMN blob_store_leases.store_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN blob_store_leases.holder text nullable=NO identity=NO/ collation=C default=
+COLUMN blob_store_leases.expires_at bigint nullable=NO identity=NO/ collation= default=
 COLUMN blob_stores.id bigint nullable=NO identity=YES/ALWAYS collation= default=
 COLUMN blob_stores.domain_id bigint nullable=YES identity=NO/ collation= default=
 COLUMN blob_stores.kind text nullable=NO identity=NO/ collation=C default=
@@ -242,6 +245,12 @@ CONSTRAINT blob_locations.blob_locations_state_not_null NOT NULL state
 CONSTRAINT blob_locations.blob_locations_state_valid CHECK (state = ANY (ARRAY['ok'::text, 'pending_delete'::text]))
 CONSTRAINT blob_locations.blob_locations_store_id_fkey FOREIGN KEY (store_id) REFERENCES blob_stores(id) ON DELETE RESTRICT
 CONSTRAINT blob_locations.blob_locations_store_id_not_null NOT NULL store_id
+CONSTRAINT blob_store_leases.blob_store_leases_expires_at_not_null NOT NULL expires_at
+CONSTRAINT blob_store_leases.blob_store_leases_holder_not_null NOT NULL holder
+CONSTRAINT blob_store_leases.blob_store_leases_holder_valid CHECK (length(holder) >= 1 AND length(holder) <= 128)
+CONSTRAINT blob_store_leases.blob_store_leases_pkey PRIMARY KEY (store_id)
+CONSTRAINT blob_store_leases.blob_store_leases_store_id_fkey FOREIGN KEY (store_id) REFERENCES blob_stores(id) ON DELETE CASCADE
+CONSTRAINT blob_store_leases.blob_store_leases_store_id_not_null NOT NULL store_id
 CONSTRAINT blob_stores.blob_stores_check_status_not_null NOT NULL check_status
 CONSTRAINT blob_stores.blob_stores_check_valid CHECK (length(check_status) >= 1 AND length(check_status) <= 64)
 CONSTRAINT blob_stores.blob_stores_config_not_null NOT NULL config
@@ -508,6 +517,7 @@ INDEX blob_backends.blob_backends_name_unique CREATE UNIQUE INDEX blob_backends_
 INDEX blob_backends.blob_backends_pkey CREATE UNIQUE INDEX blob_backends_pkey ON public.blob_backends USING btree (id)
 INDEX blob_locations.blob_locations_backend CREATE INDEX blob_locations_backend ON public.blob_locations USING btree (backend_id, state)
 INDEX blob_locations.blob_locations_pkey CREATE UNIQUE INDEX blob_locations_pkey ON public.blob_locations USING btree (store_id, hash, backend_id)
+INDEX blob_store_leases.blob_store_leases_pkey CREATE UNIQUE INDEX blob_store_leases_pkey ON public.blob_store_leases USING btree (store_id)
 INDEX blob_stores.blob_stores_domain_id_key CREATE UNIQUE INDEX blob_stores_domain_id_key ON public.blob_stores USING btree (domain_id)
 INDEX blob_stores.blob_stores_pkey CREATE UNIQUE INDEX blob_stores_pkey ON public.blob_stores USING btree (id)
 INDEX blobs.blobs_pkey CREATE UNIQUE INDEX blobs_pkey ON public.blobs USING btree (store_id, hash)
