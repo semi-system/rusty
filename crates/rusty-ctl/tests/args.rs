@@ -324,3 +324,41 @@ fn storage_set_needs_its_settings_and_the_credentials_on_stdin_and_nothing_else_
     assert!(parse_args(&["storage", "show", "example.org", "--bucket", "x"].map(String::from)).is_err(), "options of set on show");
     assert!(parse_args(&["domain", "add", "example.org", "--credentials-stdin"].map(String::from)).is_err(), "options of set elsewhere");
 }
+
+#[test]
+fn the_pool_commands_parse_their_settings_and_refuse_options_that_belong_to_others() {
+    use rusty_store::repo::BackendState;
+    let p = |a: &[&str]| parse_args(&a.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>());
+    match cmd(&["storage", "pool", "example.org", "--copies", "2", "--sync-copies", "1", "--placement", "ordered", "--read", "ordered"]) {
+        Command::StoragePool { policy, .. } => assert_eq!((policy.copies, policy.sync_copies), (2, 1)),
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(cmd(&["storage", "pool", "example.org"]), Command::StoragePool { .. }), "JBOD is the default");
+    for bad in [
+        vec!["storage", "pool", "example.org", "--copies", "0"],
+        vec!["storage", "pool", "example.org", "--copies", "2", "--sync-copies", "3"],
+        vec!["storage", "pool", "example.org", "--copies", "x"],
+        vec!["storage", "pool", "example.org", "--placement", "random"],
+        vec!["storage", "set", "example.org", "--copies", "2"],
+    ] {
+        assert!(p(&bad).is_err(), "{bad:?}");
+    }
+    let add = ["storage", "backend", "add", "example.org", "a", "--endpoint", "https://s3.example-cloud.com", "--region", "r", "--bucket", "bbb", "--weight", "300", "--credentials-stdin"];
+    match cmd(&add) {
+        Command::StorageBackendAdd { backend, weight, .. } => assert_eq!((backend.as_str(), weight), ("a", 300)),
+        other => panic!("{other:?}"),
+    }
+    assert!(p(&["storage", "backend", "add", "example.org", "a", "--endpoint", "https://s3.example-cloud.com", "--region", "r", "--bucket", "bbb"]).is_err(), "no --credentials-stdin");
+    assert!(p(&["storage", "backend", "add", "example.org", "a", "--region", "r", "--bucket", "bbb", "--credentials-stdin"]).is_err(), "no --endpoint");
+    assert!(matches!(cmd(&["storage", "backend", "rekey", "example.org", "a", "--credentials-stdin"]), Command::StorageBackendRekey { .. }));
+    assert!(p(&["storage", "backend", "rekey", "example.org", "a"]).is_err());
+    assert!(p(&["storage", "backend", "rekey", "example.org", "a", "--credentials-stdin", "--bucket", "x"]).is_err(), "rekey changes keys only");
+    match cmd(&["storage", "backend", "set", "example.org", "a", "--state", "draining", "--weight", "5"]) {
+        Command::StorageBackendSet { state, weight, .. } => assert_eq!((state, weight), (Some(BackendState::Draining), Some(5))),
+        other => panic!("{other:?}"),
+    }
+    assert!(p(&["storage", "backend", "set", "example.org", "a"]).is_err(), "nothing to set");
+    assert!(p(&["storage", "backend", "set", "example.org", "a", "--state", "gone"]).is_err());
+    assert!(p(&["storage", "backend", "remove", "example.org", "a", "--state", "active"]).is_err(), "--state is for set");
+    assert!(matches!(cmd(&["storage", "backend", "remove", "example.org", "a"]), Command::StorageBackendRemove { .. }));
+}
