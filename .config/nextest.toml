@@ -1,0 +1,9 @@
+# cargo-nextest for local runs: `bash scripts/wsl-cargo.sh nextest run --workspace` (about twice as fast as `cargo test --workspace` here).
+# The heavy suites share one Postgres server; running too many at once starves them, so they form a group that runs two at a time.
+[test-groups]
+heavy-db = { max-threads = 2 }
+
+[[profile.default.overrides]]
+filter = "test(acceptance_10k_messages) or test(deliver_many_matches_loop_of_deliver)"
+test-group = "heavy-db"
+slow-timeout = { period = "60s", terminate-after = 10 }
