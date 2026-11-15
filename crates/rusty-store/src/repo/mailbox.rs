@@ -60,6 +60,8 @@ use crate::mailbox::{
 #[derive(Debug, Clone)]
 pub struct NewMessage {
     pub folder: FolderId,
+    /// The blob store the body was written to: the store of the mailbox's domain.
+    pub store: super::StoreId,
     pub hash: BlobHash,
     pub size: i64,
     pub flags: Flags,
@@ -166,12 +168,16 @@ pub struct MessageDetail {
 pub struct RawRef {
     pub blob: BlobHash,
     pub size: i64,
+    /// The blob store the body is in (the one named by the message row, not necessarily the one its domain uses now).
+    pub store: super::StoreId,
 }
 
 #[async_trait]
 pub trait MailboxRepo: Send + Sync {
     // ---- lookups (no transaction)
     async fn mailbox_for_account(&self, account: AccountId) -> Result<MailboxId>;
+    /// The blob store that holds the bodies written for this mailbox now: the store of the domain of its account.
+    async fn blob_store_of_mailbox(&self, mailbox: MailboxId) -> Result<super::StoreId>;
     /// `NotFound` if the folder is not in this mailbox.
     async fn folder_exists(&self, mb: MailboxId, folder: FolderId) -> Result<()>;
     /// All folders in id order.
@@ -347,9 +353,9 @@ pub mod sql_text {
         FROM messages WHERE mailbox_id = $1 AND folder_id = $2 AND deleted_at IS NULL";
     pub const SET_SUBSCRIBED: &str = "UPDATE folders SET subscribed = $3 WHERE mailbox_id = $1 AND id = $2";
     /// Copy one live message row to message id `$3`, folder `$4`, uid `$5`.
-    pub const COPY_ROW: &str = "INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, size, \
+    pub const COPY_ROW: &str = "INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, blob_store_id, size, \
         internal_date, subject, from_addr, to_addrs, message_id_hdr, thread_id, flags) \
-        SELECT mailbox_id, CAST($3 AS BIGINT), CAST($4 AS BIGINT), CAST($5 AS BIGINT), blob_hash, size, \
+        SELECT mailbox_id, CAST($3 AS BIGINT), CAST($4 AS BIGINT), CAST($5 AS BIGINT), blob_hash, blob_store_id, size, \
         internal_date, subject, from_addr, to_addrs, message_id_hdr, thread_id, flags \
         FROM messages WHERE mailbox_id = $1 AND id = $2 AND deleted_at IS NULL";
     pub const COPY_KEYWORDS: &str = "INSERT INTO keywords (mailbox_id, message_id, keyword) \

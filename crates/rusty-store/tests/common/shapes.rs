@@ -29,6 +29,7 @@ async fn new_msg(b: &Backend, folder: FolderId, subject: &str) -> NewMessage {
     let hash = b.blobs.put(bytes.clone()).await.unwrap();
     NewMessage {
         folder,
+        store: rusty_store::PLATFORM_STORE,
         hash,
         size: bytes.len() as i64,
         flags: Flags::default(),
@@ -236,13 +237,13 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
     }
     let hs: Vec<_> = hexes.iter().map(|h| rusty_core::BlobHash::parse(h).unwrap()).collect();
     other!("GcRepo", "db_now (gc)", false, None, None, g.db_now());
-    other!("GcRepo", "blob_candidates", false, None, None, g.blob_candidates(100, None, 1000));
-    other!("GcRepo", "blob_rows_in_shard", false, None, None, g.blob_rows_in_shard(0xaa));
-    other!("GcRepo", "blob_rows_in_use_in_shard", false, None, None, g.blob_rows_in_use_in_shard(0xaa));
-    other!("GcRepo", "blob_row_exists", false, None, None, g.blob_row_exists(&hs[0]));
+    other!("GcRepo", "blob_candidates", false, None, None, g.blob_candidates(rusty_store::PLATFORM_STORE, 100, None, 1000));
+    other!("GcRepo", "blob_rows_in_shard", false, None, None, g.blob_rows_in_shard(rusty_store::PLATFORM_STORE, 0xaa));
+    other!("GcRepo", "blob_rows_in_use_in_shard", false, None, None, g.blob_rows_in_use_in_shard(rusty_store::PLATFORM_STORE, 0xaa));
+    other!("GcRepo", "blob_row_exists", false, None, None, g.blob_row_exists(rusty_store::PLATFORM_STORE, &hs[0]));
     other!("GcRepo", "delete_blob_rows (2 rows)", true,
-        Some(("FROM blobs WHERE hash = ANY($1) ORDER BY hash FOR NO KEY UPDATE", "DELETE FROM blobs WHERE hash = ?")),
-        None, g.delete_blob_rows(&hs, 100));
+        Some(("FROM blobs WHERE hash = ANY($1) ORDER BY store_id, hash FOR NO KEY UPDATE", "DELETE FROM blobs WHERE store_id = $3 AND hash = ANY($1)")),
+        None, g.delete_blob_rows(rusty_store::PLATFORM_STORE, &hs, 100));
     let gone = mb.append(INBOX, raw("gc-purge", None), Flags::default()).await.unwrap();
     mb.expunge_many_at(&[gone.id], 1).await.unwrap();
     other!("GcRepo", "purge_deleted_batch (1 message)", true,
@@ -306,12 +307,12 @@ fn method_of(call: &str) -> String {
 /// traits every method NOT listed as a read is a write (a new method defaults to "write", so it
 /// cannot escape the lock-first probe by being forgotten).
 const TRAITS: &[(&str, &str, &[&str])] = &[
-    ("MailboxRepo", include_str!("../../src/repo/mailbox.rs"), &[]),
+    ("MailboxRepo", include_str!("../../src/repo/mailbox.rs"), &["blob_store_of_mailbox"]),
     ("JobRepo", include_str!("../../src/repo/jobs.rs"), &["db_now", "fence_check", "count_by_state"]),
     (
         "GcRepo",
         include_str!("../../src/repo/gc.rs"),
-        &["db_now", "blob_candidates", "blob_rows_in_shard", "blob_rows_in_use_in_shard", "blob_row_exists"],
+        &["db_now", "blob_candidates", "blob_rows_in_shard", "blob_rows_in_use_in_shard", "blob_row_exists", "blob_store_ids"],
     ),
 ];
 

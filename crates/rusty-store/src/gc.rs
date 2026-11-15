@@ -48,7 +48,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rusty_core::{BlobHash, Error, MailboxId, Result};
 
 use crate::blob::unix_secs;
-use crate::repo::GcRepo;
+use crate::repo::{GcRepo, StoreId, PLATFORM_STORE};
 use crate::BlobStore;
 
 /// Messages hard-deleted per transaction by [`Gc::purge_deleted`].
@@ -160,13 +160,24 @@ fn describe(e: &Error) -> String {
 #[derive(Clone)]
 pub struct Gc {
     repo: Arc<dyn GcRepo>,
+    /// The blob store this collector works on: its rows, and the `BlobStore` handed to `collect_blobs` / `verify_blobs` must be that store's.
+    store: StoreId,
 }
 
 impl Gc {
+    /// A collector for the platform store; [`for_store`](Self::for_store) makes one for another store.
     pub fn new(repo: Arc<dyn GcRepo>) -> Gc {
-        Gc {
-            repo,
-        }
+        Gc { repo, store: PLATFORM_STORE }
+    }
+
+    /// The same collector working on blob store `store` (every statement about blob rows is scoped to it).
+    pub fn for_store(&self, store: StoreId) -> Gc {
+        Gc { repo: self.repo.clone(), store }
+    }
+
+    /// Every blob store that exists, platform first: collection and verification run once for each.
+    pub async fn store_ids(&self) -> Result<Vec<StoreId>> {
+        self.repo.blob_store_ids().await
     }
 
     /// Check that every blob the database references exists in `blobs`, shard by shard (memory bounded by one shard). A read only: nothing is
@@ -181,7 +192,7 @@ impl Gc {
                     continue;
                 }
             };
-            let rows = match self.repo.blob_rows_in_use_in_shard(shard).await {
+            let rows = match self.repo.blob_rows_in_use_in_shard(self.store, shard).await {
                 Ok(v) => v,
                 Err(e) => {
                     report.errors.push(format!("{shard:02x}: rows not readable: {}", describe(&e)));
@@ -386,7 +397,7 @@ impl Gc {
         loop {
             let batch = self
                 .repo
-                .blob_candidates(cutoff_secs, after.as_ref(), GC_BATCH)
+                .blob_candidates(self.store, cutoff_secs, after.as_ref(), GC_BATCH)
                 .await?;
             let Some(last) = batch.last() else {
                 return Ok(());
@@ -394,7 +405,7 @@ impl Gc {
             after = Some(last.clone());
             let full = batch.len() as i64 >= GC_BATCH;
 
-            let deleted = match self.repo.delete_blob_rows(&batch, cutoff_secs).await {
+            let deleted = match self.repo.delete_blob_rows(self.store, &batch, cutoff_secs).await {
                 Ok(d) => d,
                 Err(Error::Busy(_)) => {
                     report.error(|| format!("blob rows from {}: database busy", batch[0].as_str()));
@@ -405,7 +416,7 @@ impl Gc {
                 Err(_) if batch.len() > 1 => {
                     let mut ok = Vec::new();
                     for h in &batch {
-                        match self.repo.delete_blob_rows(std::slice::from_ref(h), cutoff_secs).await {
+                        match self.repo.delete_blob_rows(self.store, std::slice::from_ref(h), cutoff_secs).await {
                             Ok(mut d) => ok.append(&mut d),
                             Err(e) => report.error(|| {
                                 format!("blob {}: delete row: {}", h.as_str(), describe(&e))
@@ -463,7 +474,7 @@ impl Gc {
             if old.is_empty() {
                 continue;
             }
-            let rows: HashSet<String> = match self.repo.blob_rows_in_shard(shard).await {
+            let rows: HashSet<String> = match self.repo.blob_rows_in_shard(self.store, shard).await {
                 Ok(v) => v.into_iter().collect(),
                 Err(e) => {
                     report.error(|| format!("shard {shard:02x}: read rows: {}", describe(&e)));
@@ -472,7 +483,7 @@ impl Gc {
             };
             for hash in old.into_iter().filter(|h| !rows.contains(h.as_str())) {
                 // Re-check right before deleting: an append may have committed a row since.
-                match self.repo.blob_row_exists(&hash).await {
+                match self.repo.blob_row_exists(self.store, &hash).await {
                     Ok(false) => {}
                     Ok(true) => continue,
                     Err(e) => {

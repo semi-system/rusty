@@ -42,14 +42,30 @@ impl GcService {
             Err(e) => step_failed(&mut s, "purge capabilities", &e),
         }
         let grace = Duration::from_secs(ctx.cfg.gc_grace_seconds);
-        match ctx.gc.collect_blobs(&*ctx.blobs, grace).await {
-            Ok(r) => {
-                s.blobs_deleted = r.files_deleted;
-                s.errors += r.errors.len();
+        // One collection per blob store: each store's rows and objects are its own.
+        match ctx.gc.store_ids().await {
+            Ok(ids) => {
+                for id in ids {
+                    let store = match ctx.stores.store(id).await {
+                        Ok(st) => st,
+                        // A store that cannot be opened (its settings, its disk, its bucket) is skipped and counted; the others are still collected.
+                        Err(e) => {
+                            step_failed(&mut s, "open blob store", &e);
+                            continue;
+                        }
+                    };
+                    match ctx.gc.for_store(id).collect_blobs(&*store, grace).await {
+                        Ok(r) => {
+                            s.blobs_deleted += r.files_deleted;
+                            s.errors += r.errors.len();
+                        }
+                        // Another process holds this store's GC lock: that pass is theirs.
+                        Err(Error::Conflict(_)) => {}
+                        Err(e) => step_failed(&mut s, "collect blobs", &e),
+                    }
+                }
             }
-            // Another process holds the GC lock: that pass is theirs.
-            Err(Error::Conflict(_)) => {}
-            Err(e) => step_failed(&mut s, "collect blobs", &e),
+            Err(e) => step_failed(&mut s, "list blob stores", &e),
         }
         Ok(s)
     }

@@ -270,11 +270,11 @@ async fn five_forced_deadlocks_are_busy_for_claim_and_gc_and_change_nothing() {
     common::backends::insert_blob_row(&b, h.as_str(), 5).await;
     common::backends::set_zero_since(&b, h.as_str(), 0).await;
     r.inject_deadlocks_for_test(5);
-    let err = GcRepo::delete_blob_rows(&*r, std::slice::from_ref(&h), i64::MAX).await.unwrap_err();
+    let err = GcRepo::delete_blob_rows(&*r, rusty_store::PLATFORM_STORE, std::slice::from_ref(&h), i64::MAX).await.unwrap_err();
     assert!(matches!(err, Error::Busy(_)), "{err:?}");
     assert_eq!(r.stats().exhausted.load(Ordering::Relaxed), 2);
     assert!(common::backends::blob_row_exists(&b, h.as_str()).await, "nothing deleted");
-    assert_eq!(GcRepo::delete_blob_rows(&*r, std::slice::from_ref(&h), i64::MAX).await.unwrap(), vec![h]);
+    assert_eq!(GcRepo::delete_blob_rows(&*r, rusty_store::PLATFORM_STORE, std::slice::from_ref(&h), i64::MAX).await.unwrap(), vec![h]);
 }
 
 // ---------------------------------------------------------------- GC versus references
@@ -418,7 +418,7 @@ async fn gc_versus_purge(gc_knobs: Knobs, purge_knobs: Knobs) -> (Arc<PgRepo>, A
     let purge = tokio::spawn(async move { mb.purge_deleted(i64::MAX).await });
     wait_for_sleeper(b.pg.as_ref().unwrap().0.pool()).await; // purge holds its first blob lock
     let g = gc_repo.clone();
-    let deleted = GcRepo::delete_blob_rows(&*g, &hashes, i64::MAX).await.expect("GC batch must succeed");
+    let deleted = GcRepo::delete_blob_rows(&*g, rusty_store::PLATFORM_STORE, &hashes, i64::MAX).await.expect("GC batch must succeed");
     assert_eq!(purge.await.unwrap().unwrap(), 2);
     (gc_repo, purge_repo, deleted.len())
 }

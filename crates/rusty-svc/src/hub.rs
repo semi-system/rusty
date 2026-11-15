@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use rusty_core::{AccountId, MailboxId, Result};
 use rusty_store::repo::MailboxRepo;
-use rusty_store::{BlobStore, ChangeNotifier, Mailbox, MailboxLimits};
+use rusty_store::{BlobRouter, ChangeNotifier, IntoRouter, Mailbox, MailboxLimits};
 use tokio::sync::watch;
 
 /// Pruning of channels without subscribers starts when this many exist.
@@ -19,15 +19,15 @@ type Channels = Arc<Mutex<HashMap<MailboxId, watch::Sender<u64>>>>;
 #[derive(Clone)]
 pub struct MailboxHub {
     repo: Arc<dyn MailboxRepo>,
-    blobs: Arc<dyn BlobStore>,
+    blobs: Arc<dyn BlobRouter>,
     limits: MailboxLimits,
     channels: Channels,
 }
 
 impl MailboxHub {
     /// `repo` comes from `Repos::mailbox` (any backend); the hub never names a backend.
-    pub fn new(repo: Arc<dyn MailboxRepo>, blobs: Arc<dyn BlobStore>, limits: MailboxLimits) -> MailboxHub {
-        MailboxHub { repo, blobs, limits, channels: Arc::default() }
+    pub fn new(repo: Arc<dyn MailboxRepo>, blobs: impl IntoRouter, limits: MailboxLimits) -> MailboxHub {
+        MailboxHub { repo, blobs: blobs.into_router(), limits, channels: Arc::default() }
     }
 
     /// The mailbox of `account` (`NotFound` if it has none), with the configured limits.

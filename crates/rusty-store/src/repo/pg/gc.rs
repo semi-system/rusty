@@ -7,7 +7,7 @@ use rusty_core::{BlobHash, Error, MailboxId, Result};
 use super::tx::tx_retry;
 use super::{lock_existing_blobs, PgRepo};
 use crate::map_db_error;
-use crate::repo::{hash_bytes, GcRepo, MailboxRepo, PurgeBatch};
+use crate::repo::{hash_bytes, GcRepo, MailboxRepo, PurgeBatch, StoreId};
 
 /// Mailboxes visited by one `purge_deleted_batch` call.
 const MAILBOXES_PER_BATCH: i64 = 16;
@@ -27,6 +27,7 @@ impl GcRepo for PgRepo {
 
     async fn blob_candidates(
         &self,
+        store: StoreId,
         cutoff_secs: i64,
         after: Option<&BlobHash>,
         limit: i64,
@@ -37,18 +38,19 @@ impl GcRepo for PgRepo {
         };
         let rows: Vec<Vec<u8>> = sqlx::query_scalar(
             crate::repo::pg_lit("SELECT hash FROM blobs \
-             WHERE refcount = 0 AND zero_since < $1 AND hash > $2 ORDER BY hash LIMIT $3"),
+             WHERE store_id = $4 AND refcount = 0 AND zero_since < $1 AND hash > $2 ORDER BY hash LIMIT $3"),
         )
         .bind(cutoff_secs)
         .bind(after)
         .bind(limit)
+        .bind(store.0)
         .fetch_all(self.store.pool())
         .await
         .map_err(map_db_error)?;
         Ok(rows.iter().filter_map(|b| hash_of(b)).collect())
     }
 
-    async fn delete_blob_rows(&self, hashes: &[BlobHash], cutoff_secs: i64) -> Result<Vec<BlobHash>> {
+    async fn delete_blob_rows(&self, store: StoreId, hashes: &[BlobHash], cutoff_secs: i64) -> Result<Vec<BlobHash>> {
         if hashes.is_empty() {
             return Ok(Vec::new());
         }
@@ -60,11 +62,12 @@ impl GcRepo for PgRepo {
                 // that each row is still unreferenced and past the cutoff.
                 lock_existing_blobs(c, &raw, knobs).await?;
                 let gone: Vec<Vec<u8>> = sqlx::query_scalar(
-                    crate::repo::pg_lit("DELETE FROM blobs WHERE hash = ANY($1) AND refcount = 0 \
+                    crate::repo::pg_lit("DELETE FROM blobs WHERE store_id = $3 AND hash = ANY($1) AND refcount = 0 \
                      AND zero_since IS NOT NULL AND zero_since < $2 RETURNING hash"),
                 )
                 .bind(&raw)
                 .bind(cutoff_secs)
+                .bind(store.0)
                 .fetch_all(&mut *c)
                 .await?;
                 Ok(gone)
@@ -75,40 +78,51 @@ impl GcRepo for PgRepo {
         Ok(out)
     }
 
-    async fn blob_rows_in_use_in_shard(&self, shard: u8) -> Result<Vec<String>> {
+    async fn blob_rows_in_use_in_shard(&self, store: StoreId, shard: u8) -> Result<Vec<String>> {
         let mut lo = [0u8; 32];
         let mut hi = [0xffu8; 32];
         lo[0] = shard;
         hi[0] = shard;
         let rows: Vec<Vec<u8>> =
-            sqlx::query_scalar(crate::repo::pg_lit("SELECT hash FROM blobs WHERE hash >= $1 AND hash <= $2 AND refcount > 0"))
+            sqlx::query_scalar(crate::repo::pg_lit("SELECT hash FROM blobs WHERE store_id = $3 AND hash >= $1 AND hash <= $2 AND refcount > 0"))
                 .bind(lo.to_vec())
                 .bind(hi.to_vec())
+                .bind(store.0)
                 .fetch_all(self.store.pool())
                 .await
                 .map_err(map_db_error)?;
         Ok(rows.iter().map(hex::encode).collect())
     }
 
-    async fn blob_rows_in_shard(&self, shard: u8) -> Result<Vec<String>> {
+    async fn blob_rows_in_shard(&self, store: StoreId, shard: u8) -> Result<Vec<String>> {
 
         let mut lo = [0u8; 32];
         let mut hi = [0xffu8; 32];
         lo[0] = shard;
         hi[0] = shard;
         let rows: Vec<Vec<u8>> =
-            sqlx::query_scalar(crate::repo::pg_lit("SELECT hash FROM blobs WHERE hash >= $1 AND hash <= $2"))
+            sqlx::query_scalar(crate::repo::pg_lit("SELECT hash FROM blobs WHERE store_id = $3 AND hash >= $1 AND hash <= $2"))
                 .bind(lo.to_vec())
                 .bind(hi.to_vec())
+                .bind(store.0)
                 .fetch_all(self.store.pool())
                 .await
                 .map_err(map_db_error)?;
         Ok(rows.iter().map(hex::encode).collect())
     }
 
-    async fn blob_row_exists(&self, hash: &BlobHash) -> Result<bool> {
-        sqlx::query_scalar(crate::repo::pg_lit("SELECT EXISTS (SELECT 1 FROM blobs WHERE hash = $1)"))
+    async fn blob_store_ids(&self) -> Result<Vec<StoreId>> {
+        let ids: Vec<i64> = sqlx::query_scalar(crate::repo::pg_lit("SELECT id FROM blob_stores ORDER BY id"))
+            .fetch_all(self.store.pool())
+            .await
+            .map_err(map_db_error)?;
+        Ok(ids.into_iter().map(StoreId).collect())
+    }
+
+    async fn blob_row_exists(&self, store: StoreId, hash: &BlobHash) -> Result<bool> {
+        sqlx::query_scalar(crate::repo::pg_lit("SELECT EXISTS (SELECT 1 FROM blobs WHERE store_id = $2 AND hash = $1)"))
             .bind(hash_bytes(hash)?)
+            .bind(store.0)
             .fetch_one(self.store.pool())
             .await
             .map_err(map_db_error)

@@ -599,6 +599,7 @@ async fn new_msg(b: &Backend, folder: FolderId, subject: &str) -> NewMessage {
     let hash = b.blobs.put(bytes.clone()).await.unwrap();
     assert_eq!(hash, BlobHash::of(&bytes));
     NewMessage {
+        store: rusty_store::PLATFORM_STORE,
         folder,
         hash,
         size: bytes.len() as i64,

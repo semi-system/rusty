@@ -537,27 +537,32 @@ impl GcRepo for SkewedGc {
     }
     async fn blob_candidates(
         &self,
+        store: rusty_store::StoreId,
         cutoff_secs: i64,
         after: Option<&rusty_core::BlobHash>,
         limit: i64,
     ) -> Result<Vec<rusty_core::BlobHash>, Error> {
-        self.inner.blob_candidates(cutoff_secs, after, limit).await
+        self.inner.blob_candidates(store, cutoff_secs, after, limit).await
     }
     async fn delete_blob_rows(
         &self,
+        store: rusty_store::StoreId,
         hashes: &[rusty_core::BlobHash],
         cutoff_secs: i64,
     ) -> Result<Vec<rusty_core::BlobHash>, Error> {
-        self.inner.delete_blob_rows(hashes, cutoff_secs).await
+        self.inner.delete_blob_rows(store, hashes, cutoff_secs).await
     }
-    async fn blob_rows_in_shard(&self, shard: u8) -> Result<Vec<String>, Error> {
-        self.inner.blob_rows_in_shard(shard).await
+    async fn blob_rows_in_shard(&self, store: rusty_store::StoreId, shard: u8) -> Result<Vec<String>, Error> {
+        self.inner.blob_rows_in_shard(store, shard).await
     }
-    async fn blob_rows_in_use_in_shard(&self, shard: u8) -> Result<Vec<String>, Error> {
-        self.inner.blob_rows_in_use_in_shard(shard).await
+    async fn blob_rows_in_use_in_shard(&self, store: rusty_store::StoreId, shard: u8) -> Result<Vec<String>, Error> {
+        self.inner.blob_rows_in_use_in_shard(store, shard).await
     }
-    async fn blob_row_exists(&self, hash: &rusty_core::BlobHash) -> Result<bool, Error> {
-        self.inner.blob_row_exists(hash).await
+    async fn blob_row_exists(&self, store: rusty_store::StoreId, hash: &rusty_core::BlobHash) -> Result<bool, Error> {
+        self.inner.blob_row_exists(store, hash).await
+    }
+    async fn blob_store_ids(&self) -> Result<Vec<rusty_store::StoreId>, Error> {
+        self.inner.blob_store_ids().await
     }
     async fn purge_deleted_batch(&self, o: i64, l: i64) -> Result<rusty_store::PurgeBatch, Error> {
         self.inner.purge_deleted_batch(o, l).await

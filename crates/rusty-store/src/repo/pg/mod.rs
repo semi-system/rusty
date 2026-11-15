@@ -7,6 +7,7 @@ mod gc;
 mod jobs;
 mod mailbox;
 mod sealed;
+mod blob_store;
 mod relay;
 mod admin;
 pub mod tx;
@@ -129,7 +130,7 @@ async fn lock_existing_blobs(
     asc.sort_unstable();
     asc.dedup();
     sqlx::query_scalar::<_, Vec<u8>>(
-        crate::repo::pg_lit("SELECT hash FROM blobs WHERE hash = ANY($1) ORDER BY hash FOR NO KEY UPDATE"),
+        crate::repo::pg_lit("SELECT hash FROM blobs WHERE hash = ANY($1) ORDER BY store_id, hash FOR NO KEY UPDATE"),
     )
     .bind(&asc)
     .fetch_all(&mut *c)
@@ -145,6 +146,7 @@ async fn lock_existing_blobs(
 #[cfg_attr(not(feature = "test-knobs"), allow(unused_variables))]
 async fn lock_blobs(
     c: &mut PgConnection,
+    store: i64,
     msgs: &[&NewMessage],
     knobs: Knobs,
 ) -> TxResult<()> {
@@ -165,13 +167,15 @@ async fn lock_blobs(
         let mut first = true;
         for m in order {
             let h = hash_bytes(&m.hash)?;
-            sqlx::query(crate::repo::pg_lit("INSERT INTO blobs (hash, size) VALUES ($1, $2) ON CONFLICT (store_id, hash) DO NOTHING"))
+            sqlx::query(crate::repo::pg_lit("INSERT INTO blobs (store_id, hash, size) VALUES ($3, $1, $2) ON CONFLICT (store_id, hash) DO NOTHING"))
                 .bind(&h)
                 .bind(m.size)
+                .bind(store)
                 .execute(&mut *c)
                 .await?;
-            sqlx::query(crate::repo::pg_lit("SELECT hash FROM blobs WHERE hash = $1 FOR NO KEY UPDATE"))
+            sqlx::query(crate::repo::pg_lit("SELECT hash FROM blobs WHERE store_id = $2 AND hash = $1 FOR NO KEY UPDATE"))
                 .bind(&h)
+                .bind(store)
                 .fetch_all(&mut *c)
                 .await?;
             if first && knobs.hold_after_first_blob_ms > 0 {
@@ -189,12 +193,13 @@ async fn lock_blobs(
     let sizes: Vec<i64> = blobs.values().copied().collect();
     for _ in 0..3 {
         sqlx::query(
-            crate::repo::pg_lit("INSERT INTO blobs (hash, size) \
-             SELECT t.h, t.s FROM unnest($1::bytea[], $2::bigint[]) AS t(h, s) ORDER BY t.h \
+            crate::repo::pg_lit("INSERT INTO blobs (store_id, hash, size) \
+             SELECT $3, t.h, t.s FROM unnest($1::bytea[], $2::bigint[]) AS t(h, s) ORDER BY t.h \
              ON CONFLICT (store_id, hash) DO NOTHING"),
         )
         .bind(&hashes)
         .bind(&sizes)
+        .bind(store)
         .execute(&mut *c)
         .await?;
         #[cfg(feature = "test-knobs")]
@@ -206,15 +211,17 @@ async fn lock_blobs(
         }
         #[cfg(feature = "test-knobs")]
         if knobs.drop_blob_rows_after_insert {
-            sqlx::query(crate::repo::pg_lit("DELETE FROM blobs WHERE hash = ANY($1)"))
+            sqlx::query(crate::repo::pg_lit("DELETE FROM blobs WHERE store_id = $2 AND hash = ANY($1)"))
                 .bind(&hashes)
+                .bind(store)
                 .execute(&mut *c)
                 .await?;
         }
         let locked: Vec<Vec<u8>> = sqlx::query_scalar(
-            crate::repo::pg_lit("SELECT hash FROM blobs WHERE hash = ANY($1) ORDER BY hash FOR NO KEY UPDATE"),
+            crate::repo::pg_lit("SELECT hash FROM blobs WHERE store_id = $2 AND hash = ANY($1) ORDER BY hash FOR NO KEY UPDATE"),
         )
         .bind(&hashes)
+        .bind(store)
         .fetch_all(&mut *c)
         .await?;
         if locked.len() == hashes.len() {

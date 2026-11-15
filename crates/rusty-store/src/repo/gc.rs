@@ -50,6 +50,8 @@
 use async_trait::async_trait;
 use rusty_core::{BlobHash, MailboxId, Result};
 
+use super::blob_store::StoreId;
+
 /// Outcome of one [`GcRepo::purge_deleted_batch`] call.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PurgeBatch {
@@ -67,6 +69,7 @@ pub trait GcRepo: Send + Sync {
     /// `after`, ascending, at most `limit` (a read).
     async fn blob_candidates(
         &self,
+        store: StoreId,
         cutoff_secs: i64,
         after: Option<&BlobHash>,
         limit: i64,
@@ -74,13 +77,15 @@ pub trait GcRepo: Send + Sync {
     /// Delete, in one transaction, those of `hashes` that are still unreferenced and past the
     /// cutoff; returns the hashes whose rows were deleted. Any database error rolls the whole
     /// batch back (`Err`); the caller isolates a bad row by retrying one hash at a time.
-    async fn delete_blob_rows(&self, hashes: &[BlobHash], cutoff_secs: i64) -> Result<Vec<BlobHash>>;
+    async fn delete_blob_rows(&self, store: StoreId, hashes: &[BlobHash], cutoff_secs: i64) -> Result<Vec<BlobHash>>;
     /// All row hashes whose first byte is `shard` (a read).
-    async fn blob_rows_in_shard(&self, shard: u8) -> Result<Vec<String>>;
+    async fn blob_rows_in_shard(&self, store: StoreId, shard: u8) -> Result<Vec<String>>;
     /// Like `blob_rows_in_shard`, but only the rows that something still references (`refcount > 0`): the blobs a restore must find (a read).
-    async fn blob_rows_in_use_in_shard(&self, shard: u8) -> Result<Vec<String>>;
+    async fn blob_rows_in_use_in_shard(&self, store: StoreId, shard: u8) -> Result<Vec<String>>;
     /// Whether a row exists for `hash` (a read).
-    async fn blob_row_exists(&self, hash: &BlobHash) -> Result<bool>;
+    async fn blob_row_exists(&self, store: StoreId, hash: &BlobHash) -> Result<bool>;
+    /// Every blob store that exists (a read), the platform store first: garbage collection runs once for each.
+    async fn blob_store_ids(&self) -> Result<Vec<StoreId>>;
     /// Hard-delete up to about `limit` soft-deleted messages per mailbox with `deleted_at <
     /// older_than` (those kept by a `deliveries` row excepted), across several mailboxes.
     /// `purged == 0` means none are left that could be purged. A mailbox that is `Busy` (lock

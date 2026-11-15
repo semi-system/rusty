@@ -79,7 +79,7 @@ pub const TABLE: &[Mutation] = &[
     text("R05-fence-without-lease", PG, "WHERE id = $1 AND epoch = $2 AND state = 'running' AND lease_expires_at > rs_now() AND (domain_id", "WHERE id = $1 AND epoch = $2 AND state = 'running' AND (domain_id", "the fence (COMPLETE_JOB) ignores lease expiry"),
     text("R06-transaction-clock", PG, "rs_now()", "extract(epoch FROM now())::bigint", "the database clock is the transaction start (now()) instead of the statement clock"),
     text("R07-gc-no-grace-recheck", PG, "AND zero_since IS NOT NULL AND zero_since < $2", "", "GC delete does not re-check the grace cutoff under the row lock"),
-    text("R08-gc-shard-listing-empty", PG, "FROM blobs WHERE hash >= $1 AND hash <= $2", "FROM blobs WHERE hash >= $1 AND hash <= $2 AND false", "the GC shard listing returns nothing"),
+    text("R08-gc-shard-listing-empty", PG, "FROM blobs WHERE store_id = $3 AND hash >= $1 AND hash <= $2", "FROM blobs WHERE store_id = $3 AND hash >= $1 AND hash <= $2 AND false", "the GC shard listing returns nothing"),
     // ---- Rust logic
     Mutation { id: "L01-no-retry", dialect: PG, find: "", replace: "", flag: "no-retry", what: "a deadlock/serialization failure is not retried (one attempt)" },
 ];

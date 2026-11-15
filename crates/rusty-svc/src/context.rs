@@ -7,7 +7,7 @@ use std::sync::Arc;
 use rusty_core::config::StartupConfig;
 use rusty_core::Result;
 use rusty_directory::{Authenticator, Directory, LocalAuthenticator};
-use rusty_store::{BlobStore, Gc, JobQueue, MailboxLimits, Repos};
+use rusty_store::{BlobRouter, BlobStore, BlobStores, FsStoreOpener, Gc, JobQueue, MailboxLimits, Repos};
 
 use crate::events::{ServiceEvents, TracingEvents};
 use crate::hub::MailboxHub;
@@ -22,7 +22,10 @@ pub struct Context {
     pub hub: MailboxHub,
     pub jobs: JobQueue,
     pub gc: Gc,
+    /// The platform blob store (the outbound queue's bodies live here).
     pub blobs: Arc<dyn BlobStore>,
+    /// Every blob store: the platform store and the stores of the domains that have their own.
+    pub stores: Arc<dyn BlobRouter>,
     pub cfg: Arc<StartupConfig>,
     pub tls: TlsProvider,
     pub events: Arc<dyn ServiceEvents>,
@@ -44,13 +47,17 @@ impl Context {
         let limits = MailboxLimits {
             max_message_bytes: usize::try_from(cfg.max_message_bytes).unwrap_or(usize::MAX),
         };
+        // Stores of kind `fs` live next to the platform blob directory, in `<parent of blob_dir>/stores/<name>`.
+        let stores_dir = cfg.blob_dir.parent().map_or_else(|| std::path::PathBuf::from("stores"), |p| p.join("stores"));
+        let stores: Arc<dyn BlobRouter> = Arc::new(BlobStores::new(blobs.clone(), repos.blob_stores.clone(), Arc::new(FsStoreOpener::new(stores_dir))));
         Ok(Context {
             auth,
-            hub: MailboxHub::new(repos.mailbox.clone(), blobs.clone(), limits),
+            hub: MailboxHub::new(repos.mailbox.clone(), stores.clone(), limits),
             jobs: JobQueue::with_repo(repos.jobs.clone()),
             gc: Gc::new(repos.gc.clone()),
             directory,
             blobs,
+            stores,
             tls,
             events: Arc::new(TracingEvents),
             rate: Arc::new(AuthThrottle::from_limits(&cfg.limits)),
