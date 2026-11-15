@@ -535,6 +535,12 @@ impl GcRepo for SkewedGc {
     async fn db_now(&self) -> Result<i64, Error> {
         Ok(self.inner.db_now().await? + self.skew)
     }
+    async fn acquire_gc_lease(&self, store: rusty_store::StoreId, holder: &str, ttl_secs: i64) -> Result<bool, Error> {
+        self.inner.acquire_gc_lease(store, holder, ttl_secs).await
+    }
+    async fn release_gc_lease(&self, store: rusty_store::StoreId, holder: &str) -> Result<(), Error> {
+        self.inner.release_gc_lease(store, holder).await
+    }
     async fn blob_candidates(
         &self,
         store: rusty_store::StoreId,

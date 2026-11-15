@@ -243,6 +243,12 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
     other!("GcRepo", "blob_rows_in_use_in_shard", false, None, None, g.blob_rows_in_use_in_shard(rusty_store::PLATFORM_STORE, 0xaa));
     other!("GcRepo", "blob_row_exists", false, None, None, g.blob_row_exists(rusty_store::PLATFORM_STORE, &hs[0]));
     other!("GcRepo", "blob_store_ids", false, None, None, g.blob_store_ids());
+    other!("GcRepo", "acquire_gc_lease", true,
+        Some(("INSERT INTO blob_store_leases", "INSERT INTO blob_store_leases")), None,
+        g.acquire_gc_lease(rusty_store::PLATFORM_STORE, "shape-probe", 60));
+    other!("GcRepo", "release_gc_lease", true,
+        Some(("DELETE FROM blob_store_leases", "DELETE FROM blob_store_leases")), None,
+        g.release_gc_lease(rusty_store::PLATFORM_STORE, "shape-probe"));
     other!("GcRepo", "delete_blob_rows (2 rows)", true,
         Some(("FROM blobs WHERE hash = ANY($1) ORDER BY store_id, hash FOR NO KEY UPDATE", "DELETE FROM blobs WHERE store_id = $3 AND hash = ANY($1)")),
         None, g.delete_blob_rows(rusty_store::PLATFORM_STORE, &hs, 100));
