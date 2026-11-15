@@ -36,3 +36,23 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "ne
 rustls.workspace = true
 rcgen = { workspace = true, features = ["pem"] }
 base64.workspace = true
+
+[[bin]]
+name = "rusty-smtp-in"
+path = "src/bin/smtp_in.rs"
+
+[[bin]]
+name = "rusty-submission"
+path = "src/bin/submission.rs"
+
+[[bin]]
+name = "rusty-imap"
+path = "src/bin/imap.rs"
+
+[[bin]]
+name = "rusty-outbound"
+path = "src/bin/outbound.rs"
+
+[[bin]]
+name = "rusty-gc"
+path = "src/bin/gc.rs"

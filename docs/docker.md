@@ -56,6 +56,29 @@ IMAGE=rusty:dev bash tools/acceptance/local-run.sh
 docker buildx build --platform linux/amd64,linux/arm64 -f deploy/docker/Dockerfile .
 ```
 
+## One image per service
+
+`docker build --target rusty-smtp-in|rusty-submission|rusty-imap|rusty-outbound|rusty-gc` builds one image per service from the same build stage: one static binary
+(`/usr/local/bin/rusty-<service>`) and nothing else, no shell, numeric user `65532`, and a configuration file of its own, `/etc/rusty/<service>.toml`, that accepts only the sections
+that service uses (`StartupConfig::load_for(role, ...)`; a section of another service is refused at start). The admin web has its own image (`--target admin`) and the all-in-one
+`rusty` image (the default target) stays until the split deployment replaces the dev stack.
+
+| Image | Ports | What it runs | Background services |
+|---|---|---|---|
+| `rusty-smtp-in` | 25 | unauthenticated inbound mail | none |
+| `rusty-submission` | 587, 465 | authenticated submission, enqueues outbound jobs | none |
+| `rusty-imap` | 143, 993 | IMAP | the change feed (IDLE) |
+| `rusty-outbound` | none | the delivery worker, DKIM, relays, DNS and storage checks | the change feed (wake-up) |
+| `rusty-gc` | none | blob and row garbage collection, store upkeep (pool repair) | none |
+
+Each binary takes `--config FILE` (default `/etc/rusty/<service>.toml`) and `--log-format text|json`; `<binary> healthcheck` probes its ports (a service with no port, outbound and gc,
+only proves that its configuration loads). Every service that reads or writes message bodies may carry `[blob_s3]` and `[unsealing]`: a tenant's bucket keys are sealed to the
+unsealing key, so the services that open a tenant's store need it (decision 2026-11-15). `scripts/check-service-image.sh SERVICE IMAGE` checks an image (user, no shell, ports,
+entrypoint, healthcheck, one executable, static, fails closed), and the docker workflow builds and checks all five.
+
+Known limits of this step: all five binaries still link the same protocol crates (the split of `rusty-smtp` into four crates and the per-binary dependency gate come next), and the
+smtp-in service has no `[outbound]` section, so it runs without the inbound SPF/DKIM/DMARC checks until a `[resolver]` section exists for it.
+
 ## Workflows (`.github/workflows/`)
 
 Security rules, enforced by `scripts/check-docker-pins.sh` and `actionlint`:
