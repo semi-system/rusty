@@ -43,7 +43,8 @@ docker run -d --name rusty-admin --read-only --cap-drop ALL --security-opt no-ne
 
 `scripts/check-admin-image.sh IMAGE` checks the properties above (non-root, no shell, static, front end embedded, fail closed without a configuration); CI runs it on every pull request that touches the image.
 
-Not yet: a health check inside the image (the image has no shell and the binary has no `healthcheck` command; probe `GET /api/v1/session` from the edge, a `401` means it is up), a published admin image in the
-release workflow.
+The image has a `HEALTHCHECK`: `rusty-admin healthcheck --config /etc/rusty/admin.toml` asks the service's own listener for `GET /api/v1/session` (`200` or `401` is healthy; exit 0, otherwise 1).
 
 With a `[valkey]` section the sessions are kept in Valkey (a restart signs nobody out, several instances share them; an unreachable Valkey stops the start). The sign-in throttle and the setup-token limiter are still per process.
+
+Not yet: a published admin image in the release workflow.

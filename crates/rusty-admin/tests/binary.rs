@@ -78,9 +78,15 @@ async fn the_binary_prints_only_the_token_serves_and_stops_cleanly_on_sigterm() 
     assert_eq!(token.len(), 64, "the first line of standard output is the token");
     wait_for_port(port, &mut child);
     assert_eq!(http_get(port, "/api/v1/setup"), (200, "{\"required\":true}".into()));
+    // The container health check: the same configuration, the running service answers (exit 0); once it is stopped it does not (exit 1).
+    let health = Command::new(BIN).args(["healthcheck", "--config", conf.to_str().unwrap()]).output().unwrap();
+    assert_eq!(health.status.code(), Some(0), "{}", String::from_utf8_lossy(&health.stderr));
+    assert!(health.stdout.is_empty(), "the health check prints nothing");
     let st = Command::new("kill").args(["-TERM", &child.id().to_string()]).status().unwrap();
     assert!(st.success());
     let status = child.wait().unwrap();
+    let gone = Command::new(BIN).args(["healthcheck", "--config", conf.to_str().unwrap()]).output().unwrap();
+    assert_eq!(gone.status.code(), Some(1), "a stopped service is not healthy");
     assert_eq!(status.code(), Some(0), "a clean stop");
     let mut rest = String::new();
     stdout.read_to_string(&mut rest).unwrap();

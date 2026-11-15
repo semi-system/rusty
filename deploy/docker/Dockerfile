@@ -146,6 +146,8 @@ WORKDIR /etc/rusty
 VOLUME ["/etc/rusty"]
 EXPOSE 8080
 STOPSIGNAL SIGTERM
+# Exec form, no shell: `rusty-admin healthcheck` asks the service's own listener (a 200 or 401 from /api/v1/session means up).
+HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=3 \n    CMD ["/usr/local/bin/rusty-admin", "healthcheck", "--config", "/etc/rusty/admin.toml"]
 # The setup token (first start with no administrator) is the one line on standard output; read it with `docker logs`.
 ENTRYPOINT ["/usr/local/bin/rusty-admin"]
 CMD ["--config", "/etc/rusty/admin.toml"]
