@@ -114,7 +114,8 @@ impl AdminAuth {
             }
             Err(_) => return Err(SignInError::Unavailable),
         };
-        let opened = self.sessions.create(account, grant.domain).await.map_err(|_| SignInError::Unavailable)?;
+        let label = rusty_directory::parse_address(address).map_or_else(|_| address.trim().to_ascii_lowercase(), |(l, d)| format!("{l}@{d}"));
+        let opened = self.sessions.create(account, grant.domain, &label).await.map_err(|_| SignInError::Unavailable)?;
         for k in &keys {
             self.throttle.record_success(peer, k);
         }

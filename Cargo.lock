@@ -2132,6 +2132,7 @@ dependencies = [
  "rand_core 0.6.4",
  "rusty-core",
  "rusty-directory",
+ "rusty-http",
  "rusty-store",
  "rusty-svc",
  "rusty-valkey",
@@ -2139,6 +2140,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

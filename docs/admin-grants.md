@@ -27,7 +27,7 @@ rustyctl admin list
 
 ## Not in this change
 
-The HTTP handlers (session endpoints, CSRF, the setup page) and the `rusty-admin` binary come next; until then a grant changes nothing a user can do.
+The `rusty-admin` binary (which serves this API) comes next; until then a grant changes nothing a user can do.
 
 ## Sessions and sign-in (crate `rusty-admin`)
 
@@ -44,3 +44,25 @@ The logic behind the admin web, without HTTP: `rusty_admin::SessionStore` and `A
   account and an account that is not an administrator; the last counts as a failure, so probing for administrators is throttled like guessing.
 * **Every request** goes through `AdminAuth::principal`, which re-reads the grant and the account status from the database: narrowing or removing a grant,
   or disabling the account, takes effect at the next request whatever the session remembers, and a refused session is ended.
+
+## The HTTP API: session and setup (`rusty_admin::api`)
+
+| Request | Does |
+|---|---|
+| `POST /api/v1/session` `{address, password}` | sign in; `200` with `{address, scope, domain, csrf}` and the cookie `__Host-rusty_admin` (`Secure; HttpOnly; SameSite=Strict; Path=/`, no `Domain`, lives 8 h) |
+| `GET /api/v1/session` | who is signed in, with the CSRF token; `401` when no one |
+| `DELETE /api/v1/session` | sign out; the cookie is cleared |
+| `GET /api/v1/setup` | `{required: true}` while setup is open, `404` otherwise |
+| `POST /api/v1/setup` `{token, address, password}` | make the first platform administrator (below); `201`, signed in at once |
+
+* **Every response** has `Cache-Control: no-store`. Errors are `{"error":"<code>"}` with a fixed code: `invalid` (400, also for unknown fields), `unauthorized` (401),
+  `forbidden` (403), `not_found` (404), `exists` (409), `unsupported` (415), `throttled` (429, with `Retry-After`), `busy` (503). No backend text, path or input is echoed.
+* **Sign-in** is checked for `Origin` (exactly the public origin) and a JSON body before anything else; there is no CSRF token yet at that point.
+  **Sign-out and every later state-changing request** need all three: `Origin`, `Content-Type: application/json` and `X-CSRF-Token` equal to the session's.
+* **Setup**: open only while a token is outstanding **and** no platform administrator exists (the second is a database fact read on every request, so granting
+  one with `rustyctl admin grant` closes the page at once). Wrong token `401`; 5 wrong from one address refuse that address for its hour; 20 wrong from anywhere
+  lock it for everyone for an hour (`429`). A right token with a bad address or a password under 12 characters is `400` and is **not** spent. Setup runs one at a
+  time and re-checks under the lock, so concurrent requests make exactly one administrator. It creates the domain if it does not exist, the account, the platform
+  grant, spends the token and opens the session.
+* `AdminApp::require(req, mutating)` is what the later endpoints call: the session from the cookie, the administrator from the database (not the session), and for a
+  mutation the three guards.

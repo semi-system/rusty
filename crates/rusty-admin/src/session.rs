@@ -72,6 +72,8 @@ impl Default for SessionConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
     pub account: i64,
+    /// The address it signed in with (normalised), for display.
+    pub address: String,
     /// `None`: platform administrator at sign-in.
     pub domain: Option<i64>,
     /// The value `X-CSRF-Token` must carry on a state-changing request.
@@ -130,10 +132,10 @@ impl SessionStore {
 
     /// Open a session for `account`. The id is new at every sign-in (a session id is never reused or kept across a sign-in). Returns the id (for
     /// the cookie) and the record.
-    pub async fn create(&self, account: AccountId, domain: Option<DomainId>) -> Result<(String, Session)> {
+    pub async fn create(&self, account: AccountId, domain: Option<DomainId>, address: &str) -> Result<(String, Session)> {
         let now = self.clock.unix_secs();
         let id = random_hex();
-        let session = Session { account: account.0, domain: domain.map(|d| d.0), csrf: random_hex(), created: now, last_seen: now };
+        let session = Session { account: account.0, address: address.to_owned(), domain: domain.map(|d| d.0), csrf: random_hex(), created: now, last_seen: now };
         let bytes = serde_json::to_vec(&session).map_err(|_| Error::storage("session encoding failed"))?;
         self.kv.set(&session_key(&id), &bytes, self.cfg.idle).await?;
         Ok((id, session))

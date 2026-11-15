@@ -1,14 +1,18 @@
 #![forbid(unsafe_code)]
-//! `rusty-admin`: the logic behind the admin web (admin web design, sections 5 and 14.3). No HTTP types and no SQL: sessions over the `Kv`
-//! store, sign-in over the directory's own authenticator, and what a signed-in account may administer. The HTTP layer (`rusty-http`) and the
-//! `rusty-admin` binary use it.
+//! `rusty-admin`: the logic and the HTTP API of the admin web (admin web design, sections 4, 5 and 14.3). No SQL and no HTTP library types: sessions over the `Kv`
+//! store, sign-in over the directory's own authenticator, what a signed-in account may administer, and the routes (over `rusty-http`). The
+//! `rusty-admin` binary uses them.
 //!
 //! * [`session`]: random session ids (only their SHA-256 is stored), idle and absolute timeouts, account-wide revocation, failing closed.
 //! * [`auth`]: sign-in with the throttle, one fixed failure for every reason, and the per-request check that the account is still an
 //!   administrator and still active.
 
+pub mod api;
 pub mod auth;
 pub mod session;
+pub mod setup;
 
 pub use auth::{AdminAuth, Principal, Scope, SignInError};
+pub use api::{AdminApp, COOKIE};
 pub use session::{Clock, ManualNow, Session, SessionConfig, SessionStore, SystemNow};
+pub use setup::{SetupGate, Verdict as SetupVerdict};
