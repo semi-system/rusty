@@ -172,6 +172,18 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
                 return 1;
             }
         };
+        if parsed.command == rusty_ctl::Command::BlobsInit {
+            return match rusty_store::FsBlobStore::init(&cfg.blob_dir).await {
+                Ok(()) => {
+                    println!("{}", if parsed.json { serde_json::json!({ "blob_dir": cfg.blob_dir }).to_string() } else { format!("blob directory ready: {}", cfg.blob_dir.display()) });
+                    0
+                }
+                Err(e) => {
+                    eprintln!("{prog}: cannot initialise the blob directory: {e}");
+                    1
+                }
+            };
+        }
         if matches!(parsed.command, rusty_ctl::Command::DbMigrate { .. } | rusty_ctl::Command::DbStatus) {
             return run_db(prog, &cfg, &parsed).await;
         }
