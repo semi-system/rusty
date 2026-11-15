@@ -17,3 +17,7 @@ deploy/compose/generated
 # front end tooling: the image build gets web/admin/dist from its own stage, never the host node_modules
 web/**/node_modules
 web/**/dist
+
+# a standalone installation keeps its secrets, keys and data here, owned by the service users: never part of an image build
+deploy/standalone/state
+deploy/standalone/.env
