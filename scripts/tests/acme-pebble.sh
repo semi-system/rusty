@@ -28,13 +28,14 @@ JSON
 docker run -d --name "$id-pebble" --network "$net" --ip 10.30.50.2 -e PEBBLE_VA_NOSLEEP=1 -v "$tmp/pebble.json:/test/config/pebble-config.json:ro" \
   "$PEBBLE" -config /test/config/pebble-config.json -dnsserver 10.30.50.3:8053 >/dev/null
 
-mkdir -p "$tmp/data/acme" "$tmp/data/certs"; chmod -R 0777 "$tmp/data"
+mkdir -p "$tmp/data/acme" "$tmp/data/certs" "$tmp/run" "$tmp/shared"; chmod -R 0777 "$tmp/data" "$tmp/run"; chown 65532:65532 "$tmp/shared" 2>/dev/null || chmod 0777 "$tmp/shared"
 cat > "$tmp/haproxy.cfg" <<CFG
 global
     expose-experimental-directives
     log stdout format raw local0
     httpclient.ssl.verify none
     stats socket ipv4@0.0.0.0:9999 level admin
+    stats socket /run/ha/admin.sock mode 660 level admin
 
 defaults
     mode tcp
@@ -69,7 +70,7 @@ frontend imaps
 backend nowhere
     server none 127.0.0.1:1 disabled
 CFG
-docker run -d --name "$id-ha" --network "$net" --ip 10.30.50.4 -v "$tmp/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" -v "$tmp/data:/var/lib/haproxy" \
+docker run -d --name "$id-ha" --network "$net" --ip 10.30.50.4 -v "$tmp/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" -v "$tmp/data:/var/lib/haproxy" -v "$tmp/run:/run/ha" \
   "$HAPROXY" >/dev/null
 
 # The certificate the listener presents: (issuer, serial) of what `openssl s_client` receives.
@@ -105,4 +106,16 @@ for _ in $(seq 1 60); do
 done
 [ -n "$renewed" ] || fail "the certificate was not renewed (serial stayed $serial1)"
 echo "ok: renewed without a reload (serial $serial1 -> $(sed -n 's/^serial=//p' <<<"$renewed"))"
+# The files for the STARTTLS ports (deploy/edge/cert-sync.sh, run as the mail services' uid): the certificate HAProxy holds lands in cert.pem / key.pem with
+# the right modes and matches what the listener presents; a second run with nothing new changes nothing.
+sync() { docker run --rm --user 65532:65532 --group-add 99 --entrypoint sh -v "$tmp/run:/run/ha" -v "$tmp/shared:/shared" -v "$ROOT/deploy/edge/cert-sync.sh:/cert-sync.sh:ro" "$HAPROXY" /cert-sync.sh /run/ha/admin.sock @certs/mail.pem /shared; }
+sync || fail "cert-sync failed"
+[ -s "$tmp/shared/cert.pem" ] && [ -s "$tmp/shared/key.pem" ] || fail "cert-sync wrote no files"
+[ "$(stat -c %a "$tmp/shared/key.pem")" = 600 ] && [ "$(stat -c %a "$tmp/shared/cert.pem")" = 644 ] || fail "modes: key $(stat -c %a "$tmp/shared/key.pem"), cert $(stat -c %a "$tmp/shared/cert.pem")"
+synced="$(docker run --rm -i --entrypoint openssl "$OPENSSL_IMG" x509 -noout -serial < "$tmp/shared/cert.pem" 2>/dev/null)"
+now="$(presented | sed -n 's/^serial=//p')"
+[ "${synced#serial=}" = "$now" ] || fail "the synced certificate ($synced) is not the one presented ($now)"
+before="$(stat -c %Y "$tmp/shared/cert.pem")"; sleep 1; sync >/dev/null || fail "second cert-sync failed"
+[ "$(stat -c %Y "$tmp/shared/cert.pem")" = "$before" ] || fail "an unchanged certificate was rewritten"
+echo "ok: cert-sync wrote the certificate and key for the STARTTLS ports"
 echo "acme-pebble OK"
