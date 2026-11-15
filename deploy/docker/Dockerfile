@@ -16,6 +16,18 @@
 #  * The final image is distroless "static": no shell, no package manager, a numeric non-root user,
 #    CA certificates, nothing else. It runs with `--read-only` (data lives in the two volumes).
 
+# ---- front end stage -------------------------------------------------------------------------
+# The admin web (web/admin): installed from the lockfile with no package script, checked by the same
+# gates as CI (dependency allow-list, types current, bundle scan) and built. Runs on the BUILD platform:
+# the output is plain files, the same for every target. The build is reproducible (scripts/ci-web.sh).
+FROM --platform=$BUILDPLATFORM node:22-alpine3.22@sha256:cd7807368cf24826297cbad5dca1a44972ccfd770647db52a8c7589eb4599ac8 AS web
+WORKDIR /src/web/admin
+COPY web/admin/package.json web/admin/package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY web/admin/ ./
+COPY crates/rusty-admin/contract /src/crates/rusty-admin/contract
+RUN node scripts/check-deps.mjs && node scripts/gen-types.mjs --check && npx vite build && node scripts/check-bundle.mjs
+
 # ---- compile stage ---------------------------------------------------------------------------
 # Rust version = rust-toolchain.toml `channel` (checked by scripts/check-docker-pins.sh).
 FROM --platform=$BUILDPLATFORM rust:1.99.1-alpine3.22@sha256:9a744dc47d1ac2a7d17fc3cedfc8b4928b1696dfcba3274ab25bfb40988a9ff0 AS build
@@ -74,6 +86,8 @@ EOF
 
 WORKDIR /src
 COPY . .
+# The admin service embeds the built front end (rusty-admin/build.rs); RUSTY_ADMIN_WEB_REQUIRED=1 below makes a build without it an error.
+COPY --from=web /src/web/admin/dist /src/web/admin/dist
 # The toolchain is the one in the base image tag; do not let rustup fetch another.
 RUN rm -f rust-toolchain.toml
 
@@ -88,18 +102,53 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
     export "CARGO_TARGET_${tu}_LINKER=/usr/local/bin/zigld" "CC_${tl}=/usr/local/bin/zigcc" "AR_${tl}=/usr/local/bin/zigar" \
            "CFLAGS_${tl}=-O2" "RUSTFLAGS=-C target-feature=+crt-static --remap-path-prefix=/src=/build --remap-path-prefix=/usr/local/cargo=/cargo"; \
     if [ "$DEV_CERT" = 1 ]; then feat=""; else feat="--no-default-features"; fi; \
-    cargo build --release --locked --target "$triple" -p rusty $feat --target-dir /out; \
+    RUSTY_ADMIN_WEB_REQUIRED=1 cargo build --release --locked --target "$triple" -p rusty $feat -p rusty-admin --target-dir /out; \
     install -D "/out/$triple/release/rusty" /rootfs/usr/local/bin/rusty; \
     ln -s rusty /rootfs/usr/local/bin/rustyd; ln -s rusty /rootfs/usr/local/bin/rustyctl; \
     mkdir -p /rootfs/var/lib/rusty /rootfs/etc/rusty; \
     chmod 0700 /rootfs/var/lib/rusty; chmod 0755 /rootfs/etc/rusty; \
-    find /rootfs -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+    install -D "/out/$triple/release/rusty-admin" /rootfs-admin/usr/local/bin/rusty-admin; \
+    mkdir -p /rootfs-admin/etc/rusty; chmod 0755 /rootfs-admin/etc/rusty; \
+    find /rootfs /rootfs-admin -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 
 # ---- release artefact stage ------------------------------------------------------------------
 # `docker buildx build --target binary --output type=local,dest=out .` exports just the binary
 # (release.yml). Not the default target: the last stage below is.
 FROM scratch AS binary
 COPY --from=build /rootfs/usr/local/bin/rusty /rusty
+
+# ---- admin web image (docker build --target admin) -------------------------------------------
+# One service, one image (image design): the admin web, its API and the embedded front end in one static
+# binary. Same base as the mail image; it holds no mail data and needs no volume. TLS ends at the edge
+# (listen address and public origin come from /etc/rusty/admin.toml). Not the default target: the last
+# stage below is.
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329 AS admin
+
+ARG VERSION=dev
+ARG REVISION=unknown
+ARG SOURCE_URL=
+ARG CREATED=
+
+LABEL org.opencontainers.image.title="rusty-admin" \
+      org.opencontainers.image.description="Rusty admin web (API and front end) as one static binary" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="$VERSION" \
+      org.opencontainers.image.revision="$REVISION" \
+      org.opencontainers.image.source="$SOURCE_URL" \
+      org.opencontainers.image.created="$CREATED" \
+      org.opencontainers.image.base.name="gcr.io/distroless/static-debian13:nonroot"
+
+COPY --from=build --chown=65532:65532 /rootfs-admin/etc/rusty /etc/rusty
+COPY --from=build /rootfs-admin/usr/local/bin/ /usr/local/bin/
+
+USER 65532:65532
+WORKDIR /etc/rusty
+VOLUME ["/etc/rusty"]
+EXPOSE 8080
+STOPSIGNAL SIGTERM
+# The setup token (first start with no administrator) is the one line on standard output; read it with `docker logs`.
+ENTRYPOINT ["/usr/local/bin/rusty-admin"]
+CMD ["--config", "/etc/rusty/admin.toml"]
 
 # ---- final stage -----------------------------------------------------------------------------
 # distroless static (Debian 13): CA certificates, tzdata, /tmp, no shell. Default user 65532.

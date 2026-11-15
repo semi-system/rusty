@@ -1,0 +1,30 @@
+# Configuration of the admin web service (`rusty-admin --config /etc/rusty/admin.toml`).
+# Only the sections the admin role accepts are allowed here; another service's section is refused at start.
+
+hostname = "mail.example.org"        # the mail host the DNS records point at (MX, SPF, DKIM names)
+
+[admin]
+# Where the service listens. Behind the edge (HAProxy terminates TLS and applies the IP allow-list of the admin host name),
+# keep this on a private address; in a container use 0.0.0.0:8080 on a network only the edge can reach.
+listen = "127.0.0.1:8080"
+# Exactly what the browser sends in the Origin header of a state-changing request: lower case, no path.
+public_origin = "https://admin.example.org"
+# For the DNS page: the addresses mail leaves from (the same as [outbound] public_ips of the outbound service), the relay
+# provider's SPF include when mail leaves through a relay, and whether it does.
+public_ips = ["203.0.113.5"]
+# spf_include = "spf.mail.net"
+# via_relay = true
+
+[store]
+url = "postgres://rusty_app@db.internal:5432/rusty"
+password_file = "/run/secrets/pg-password"
+
+# What secrets entered in the web (DKIM private keys, relay passwords) are sealed to: the PUBLIC key of the outbound service
+# (`rustyctl seal keygen /etc/rusty/unseal.key` prints it). Without this section the endpoints that seal answer 503.
+[sealing]
+public_key = "rusty-seal-v1:0000000000000000000000000000000000000000000000000000000000000001"
+
+# Optional: terminate TLS in this service instead of at the edge.
+# [tls]
+# cert_file = "/etc/rusty/tls/admin.crt"
+# key_file = "/etc/rusty/tls/admin.key"
