@@ -12,6 +12,7 @@ FUZZ_DEGRADED=0
 STAGE="startup"
 PG_RUN_ID=""
 KV_RUN_ID=""
+S3_RUN_ID=""
 
 # One EXIT trap for the whole script, never cleared: it tears down this run's Postgres container
 # (if one is up) and reports the stage that was active when the script exited non-zero, also for
@@ -21,6 +22,9 @@ on_exit() {
   trap - EXIT
   if [ -n "$PG_RUN_ID" ]; then
     RUSTY_PG_RUN_ID="$PG_RUN_ID" bash scripts/pg-down.sh >/dev/null 2>&1 || true
+  fi
+  if [ -n "$S3_RUN_ID" ]; then
+    RUSTY_S3_RUN_ID="$S3_RUN_ID" bash scripts/s3-down.sh >/dev/null 2>&1 || true
   fi
   if [ -n "$KV_RUN_ID" ]; then
     RUSTY_KV_RUN_ID="$KV_RUN_ID" bash scripts/kv-down.sh >/dev/null 2>&1 || true
@@ -132,6 +136,22 @@ kv_start() {
   export RUSTY_REQUIRE_VALKEY=1
 }
 stage "valkey test server" kv_start
+
+# The throw-away RustFS (scripts/s3-up.sh) for the rusty-s3 tests; a fresh run id, removed by on_exit.
+s3_start() {
+  S3_RUN_ID="ci$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+  export RUSTY_S3_RUN_ID="$S3_RUN_ID"
+  local env_file="$HOME/.rusty-s3-test-env.$S3_RUN_ID" line
+  bash scripts/s3-up.sh || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      RUSTY_TEST_S3_ENDPOINT=*|RUSTY_TEST_S3_KEY=*|RUSTY_TEST_S3_SECRET=*) export "${line%%=*}=${line#*=}" ;;
+    esac
+  done < "$env_file"
+  [ -n "${RUSTY_TEST_S3_ENDPOINT:-}" ] || { echo "S3 settings file is missing or empty" >&2; return 1; }
+  export RUSTY_REQUIRE_S3=1
+}
+stage "s3 test server" s3_start
 
 stage "test (glibc)" cargo test --workspace
 # The dev quickstart works from a clean checkout: build, build the schema, start on spare ports, banner, SIGTERM, exit 0.
