@@ -269,7 +269,7 @@ async fn build(
 /// The openers of tenants' blob stores: all kinds served (for the registry), and the S3 one by itself (the store check needs it), present only with an unsealing key.
 type TenantOpeners = (Arc<dyn rusty_store::StoreOpener>, Option<Arc<rusty_s3::S3StoreOpener>>, Arc<dyn rusty_store::BackendOpener>);
 
-fn tenant_store_opener(cfg: &StartupConfig, store: &Store) -> Result<TenantOpeners> {
+pub(crate) fn tenant_store_opener(cfg: &StartupConfig, store: &Store) -> Result<TenantOpeners> {
     let stores_dir = cfg.blob_dir.parent().map_or_else(|| std::path::PathBuf::from("stores"), |p| p.join("stores"));
     let fs = Arc::new(rusty_store::FsStoreOpener::new(stores_dir));
     let mut opener = rusty_store::KindOpener::new().with_fs(fs.clone());

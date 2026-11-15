@@ -84,6 +84,8 @@ pub struct CtlEnv<'a> {
     /// The blob store and the garbage collector's reads (`blobs verify`); the composition root opens them only for that command.
     pub blobs: Option<&'a dyn rusty_store::BlobStore>,
     pub gc: Option<&'a rusty_store::Gc>,
+    /// Every blob store of the deployment (`blobs verify` checks each one); none: the platform store only.
+    pub stores: Option<&'a dyn rusty_store::BlobRouter>,
 }
 
 /// The parts of `[outbound]` the DNS records depend on.
@@ -487,22 +489,58 @@ async fn blobs_verify(env: &mut CtlEnv<'_>) -> Result<Outcome, CtlError> {
     let (Some(blobs), Some(gc)) = (env.blobs, env.gc) else {
         return Err(CtlError::runtime("the blob store is not available here"));
     };
-    let r = gc.verify_blobs(blobs).await.map_err(|e| map_error(&e, "blob store"))?;
-    let mut lines = vec![format!(
-        "{} blobs referenced by the database, {} files in the store, {} files nothing references (garbage collection removes them)",
-        r.referenced, r.stored, r.unreferenced_files
-    )];
-    if r.missing_total > 0 {
-        lines.push(format!("MISSING: {} referenced blobs have no file (first {}):", r.missing_total, r.missing.len()));
-        lines.extend(r.missing.iter().map(|h| format!("  {h}")));
+    // Every blob store that has rows: the platform store, and (with a router) each tenant's store or pool.
+    let mut targets: Vec<(rusty_store::repo::StoreId, Option<std::sync::Arc<dyn rusty_store::BlobStore>>)> = vec![(rusty_store::repo::PLATFORM_STORE, None)];
+    if let Some(router) = env.stores {
+        for id in gc.store_ids().await.map_err(|e| map_error(&e, "blob store"))? {
+            if id != rusty_store::repo::PLATFORM_STORE {
+                targets.push((id, router.store(id).await.ok()));
+            }
+        }
     }
-    lines.extend(r.errors.iter().map(|e| format!("could not check shard {e}")));
-    lines.push(if r.is_clean() { "result: every referenced blob exists".to_owned() } else { "result: the blob store is missing data or could not be read".to_owned() });
+    let many = targets.len() > 1;
+    let mut lines = Vec::new();
+    let mut per_store = Vec::new();
+    let (mut referenced, mut stored, mut unreferenced, mut missing_total) = (0u64, 0u64, 0u64, 0u64);
+    let mut clean = true;
+    for (id, opened) in targets {
+        let label = if id == rusty_store::repo::PLATFORM_STORE { "platform store".to_owned() } else { format!("store {}", id.0) };
+        let r = match (id == rusty_store::repo::PLATFORM_STORE, &opened) {
+            (true, _) => gc.verify_blobs(blobs).await,
+            (false, Some(s)) => gc.for_store(id).verify_blobs(&**s).await,
+            (false, None) => {
+                lines.push(format!("{label}: NOT CHECKED: the store could not be opened here (unsealing key, settings, or a backend that is not ready)"));
+                per_store.push(json!({ "store": id.0, "checked": false }));
+                clean = false;
+                continue;
+            }
+        }
+        .map_err(|e| map_error(&e, "blob store"))?;
+        lines.push(format!(
+            "{}{} blobs referenced by the database, {} files in the store, {} files nothing references (garbage collection removes them)",
+            if many { format!("{label}: ") } else { String::new() },
+            r.referenced,
+            r.stored,
+            r.unreferenced_files
+        ));
+        if r.missing_total > 0 {
+            lines.push(format!("MISSING{}: {} referenced blobs have no file (first {}):", if many { format!(" in the {label}") } else { String::new() }, r.missing_total, r.missing.len()));
+            lines.extend(r.missing.iter().map(|h| format!("  {h}")));
+        }
+        lines.extend(r.errors.iter().map(|e| format!("could not check shard {e}{}", if many { format!(" of the {label}") } else { String::new() })));
+        referenced += r.referenced;
+        stored += r.stored;
+        unreferenced += r.unreferenced_files;
+        missing_total += r.missing_total;
+        clean &= r.is_clean();
+        per_store.push(json!({ "store": id.0, "checked": true, "referenced": r.referenced, "stored": r.stored, "unreferenced_files": r.unreferenced_files, "missing_total": r.missing_total, "missing": r.missing, "errors": r.errors, "ok": r.is_clean() }));
+    }
+    lines.push(if clean { "result: every referenced blob exists".to_owned() } else { "result: a blob store is missing data or could not be read".to_owned() });
     Ok(Outcome::new(
         lines.join("\n"),
-        json!({ "referenced": r.referenced, "stored": r.stored, "unreferenced_files": r.unreferenced_files, "missing_total": r.missing_total, "missing": r.missing, "errors": r.errors, "ok": r.is_clean() }),
+        json!({ "referenced": referenced, "stored": stored, "unreferenced_files": unreferenced, "missing_total": missing_total, "ok": clean, "stores": per_store }),
     )
-    .failing(!r.is_clean()))
+    .failing(!clean))
 }
 
 fn admin_store<'a>(
