@@ -8,3 +8,4 @@ gcr.io/distroless/static-debian13:nonroot  gcr.io/distroless/static-debian13@sha
 rhysd/actionlint:1.7.7  rhysd/actionlint@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9  2026-11-10  (scripts/ci-workflows-lint.sh)
 koalaman/shellcheck:v0.10.0  koalaman/shellcheck@sha256:2097951f02e735b613f4a34de20c40f937a6c8f18ecb170612c88c34517221fb  2026-11-10  (scripts/ci-workflows-lint.sh)
 valkey/valkey:9-alpine  valkey/valkey@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b  2026-11-14  (Valkey 9.1.3; tests and the dev compose)
+node:22-alpine3.22  node@sha256:cd7807368cf24826297cbad5dca1a44972ccfd770647db52a8c7589eb4599ac8  2026-11-15  (Node 22.22.3 LTS; front end gates, scripts/ci-web-docker.sh)

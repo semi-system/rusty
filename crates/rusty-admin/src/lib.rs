@@ -15,6 +15,7 @@ pub mod outbound;
 pub mod run;
 pub mod session;
 pub mod setup;
+pub mod web;
 
 pub use auth::{AdminAuth, Principal, Scope, SignInError};
 pub use api::{AdminApp, MailSettings, Services, COOKIE};
