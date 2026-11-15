@@ -34,4 +34,3 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "ne
 tempfile.workspace = true
 rusty-store = { path = "../rusty-store", features = ["test-fixtures"] }
 rusty-directory = { path = "../rusty-directory" }
-sqlx.workspace = true

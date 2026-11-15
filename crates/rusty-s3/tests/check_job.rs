@@ -71,10 +71,8 @@ async fn run_worker(r: &Rig, prober: Arc<Fixed>, done: impl Fn() -> bool) {
 
 /// How many jobs of the kind are not finished (queued or running).
 async fn unfinished(r: &Rig) -> i64 {
-    let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(r.db.admin_db_url()).await.unwrap();
-    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind = $1 AND state NOT IN ('done', 'failed')").bind(STORAGE_CHECK_JOB_KIND).fetch_one(&pool).await.unwrap();
-    pool.close().await;
-    n
+    let fx = rusty_store::fixtures::Fixtures::admin_of(&r.db, &r.store).await;
+    fx.scalar(&format!("SELECT count(*) FROM jobs WHERE kind = '{STORAGE_CHECK_JOB_KIND}' AND state NOT IN ('done', 'failed')"), &[]).await
 }
 
 #[tokio::test]
