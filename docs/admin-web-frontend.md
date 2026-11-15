@@ -46,3 +46,19 @@ RUSTY_ADMIN_WEB_DIST=/path/to/dist cargo build -p rusty-admin    # another direc
 
 Without a `dist` directory the binary is still a working API server and logs that no front end is built in. With one, the service serves `/assets/<hash>.js|css` as `immutable`, the index page for
 every non-API route (revalidated by its `ETag`) and the security headers of design section 6 on everything. Development: `npm run dev` proxies `/api` to `127.0.0.1:8080`.
+
+## Pages
+
+| Route | Page | Who |
+|---|---|---|
+| `/` | domains (list by cursor, create) | every administrator (a domain administrator sees its own domain, and not the creation form) |
+| `/domains/{name}/overview` | status, enable/disable (platform administrators), the outgoing queue figures | |
+| `/domains/{name}/accounts` | list, create (with the role addresses the first account receives), set a password, disable/enable | |
+| `/domains/{name}/aliases` | list, create, remove | |
+| `/domains/{name}/dkim` | the public records (selectable fields and a copy button), make a key; the private key is never shown | |
+| `/domains/{name}/dns` | the records with the status of their last check, queue a check, reload | |
+| `/domains/{name}/relay` | the domain's own relay (host, port, encryption, login, SPF include), test, remove; the password is never read back and is cleared from the page once sent | |
+
+The component tests run each page against a fake server that records the call, its CSRF header and its body, and check what an administrator may do (a domain administrator is not offered
+the platform actions; another tenant's domain is the same "not found" as a missing one), that a password never stays on the page, that an unknown value from the server (a status, a check
+result) becomes the generic message rather than being shown, and the fixed message of each refusal.
