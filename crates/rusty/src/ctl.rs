@@ -137,6 +137,26 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
+    // The key file commands need no configuration and no database.
+    if let Some(result) = rusty_ctl::run_seal_file_command(&parsed.command) {
+        return match result {
+            Ok(outcome) => {
+                let text = render(&outcome, parsed.json);
+                if !text.is_empty() {
+                    println!("{text}");
+                }
+                ExitCode::from(u8::from(outcome.failed))
+            }
+            Err(e) => {
+                if parsed.json {
+                    eprintln!("{}", serde_error(&e));
+                } else {
+                    eprintln!("{prog}: {e}");
+                }
+                ExitCode::from(e.exit)
+            }
+        };
+    }
     let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(rt) => rt,
         Err(e) => {

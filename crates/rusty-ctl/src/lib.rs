@@ -9,4 +9,4 @@ mod args;
 mod exec;
 
 pub use args::{parse_args, Command, Parsed, PasswordSource, Source, UsageError, DEFAULT_SELECTOR, USAGE};
-pub use exec::{check_domain, execute, map_error, render, CtlEnv, CtlError, OutboundFacts, Outcome, PasswordReader, Secret, MIN_PASSWORD_BYTES};
+pub use exec::{run_seal_file_command, check_domain, execute, map_error, render, CtlEnv, CtlError, OutboundFacts, Outcome, PasswordReader, Secret, MIN_PASSWORD_BYTES};

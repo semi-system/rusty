@@ -286,3 +286,20 @@ async fn relay_check_without_a_relay_exits_one_and_says_so_without_opening_the_d
     assert_eq!(o.code, Some(1));
     assert!(o.stderr.contains("\"ok\":false"), "{}", o.stderr);
 }
+
+#[test]
+fn seal_keygen_and_show_need_no_configuration_and_no_database() {
+    // An installer makes the sealing key before the configuration or the database exist: no --config, no file at the default path, no Postgres.
+    let dir = private_tmp();
+    let key = dir.path().join("unseal.key");
+    let made = Command::new(BIN).args(["ctl", "seal", "keygen", key.to_str().unwrap()]).output().unwrap();
+    assert_eq!(made.status.code(), Some(0), "{}", String::from_utf8_lossy(&made.stderr));
+    let public = String::from_utf8_lossy(&made.stdout).into_owned();
+    assert!(public.contains("rusty-seal-v1:"), "{public}");
+    let shown = Command::new(BIN).args(["ctl", "--config", "/nonexistent/rusty.toml", "seal", "show", key.to_str().unwrap()]).output().unwrap();
+    assert_eq!(shown.status.code(), Some(0), "{}", String::from_utf8_lossy(&shown.stderr));
+    assert!(String::from_utf8_lossy(&shown.stdout).contains("rusty-seal-v1:"));
+    // It still never replaces an existing key.
+    let again = Command::new(BIN).args(["ctl", "seal", "keygen", key.to_str().unwrap()]).output().unwrap();
+    assert_ne!(again.status.code(), Some(0));
+}
