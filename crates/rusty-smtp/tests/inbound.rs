@@ -775,3 +775,108 @@ async fn authentication_results_carry_the_real_spf_dkim_and_dmarc_verdicts() {
     })
     .await;
 }
+
+/// A clamd that answers FOUND for a message that holds "EICAR" and OK for any other (the INSTREAM framing is read to its end).
+async fn fake_clamd() -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut s, _)) = l.accept().await else { return };
+            tokio::spawn(async move {
+                let mut cmd = [0u8; 10];
+                if s.read_exact(&mut cmd).await.is_err() {
+                    return;
+                }
+                let mut body = Vec::new();
+                loop {
+                    let mut len = [0u8; 4];
+                    if s.read_exact(&mut len).await.is_err() {
+                        return;
+                    }
+                    let n = u32::from_be_bytes(len) as usize;
+                    if n == 0 {
+                        break;
+                    }
+                    let mut chunk = vec![0u8; n];
+                    if s.read_exact(&mut chunk).await.is_err() {
+                        return;
+                    }
+                    body.extend_from_slice(&chunk);
+                }
+                let _ = s.write_all(if contains(&body, b"EICAR") { b"stream: Test FOUND\0" as &[u8] } else { b"stream: OK\0" }).await;
+            });
+        }
+    });
+    addr
+}
+
+/// An rspamd that scores a message that holds "SPAMMY" as `add header` and any other as `no action`.
+async fn fake_rspamd() -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut s, _)) = l.accept().await else { return };
+            tokio::spawn(async move {
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 4096];
+                loop {
+                    let Ok(n) = s.read(&mut tmp).await else { return };
+                    if n == 0 {
+                        return;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                    if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&buf[..p]).into_owned();
+                        let len = head.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0))).unwrap_or(0);
+                        if buf.len() >= p + 4 + len {
+                            break;
+                        }
+                    }
+                }
+                let json = if contains(&buf, b"SPAMMY") { r#"{"action":"add header","score":12.0,"required_score":6.0}"# } else { r#"{"action":"no action","score":0.5,"required_score":6.0}"# };
+                let _ = s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{json}", json.len()).as_bytes()).await;
+            });
+        }
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn the_real_scanners_refuse_a_virus_file_spam_in_the_spam_folder_and_mark_a_clean_message() {
+    use rusty_core::config::OnError;
+    use rusty_smtp::scan::{ClamdFilter, RspamdFilter};
+    for_each_backend(|b| async move {
+        let (alice, _) = b.seed().await;
+        let (clamd, rspamd) = (fake_clamd().await, fake_rspamd().await);
+        let mut o = Opts::default();
+        o.options.filters = vec![
+            Arc::new(ClamdFilter::new(&clamd, Duration::from_secs(5), 1024 * 1024, OnError::Tempfail)),
+            Arc::new(RspamdFilter::new(&rspamd, Duration::from_secs(5), 1024 * 1024, OnError::Accept)),
+        ];
+        let s = start(&b, o).await;
+        let mut c = Client::hello(s.addr).await;
+        // A virus: refused at the end of DATA with 550, nothing stored.
+        let r = c.mail("s@remote.example", &["alice@example.net"], b"From: s@remote.example\r\nTo: alice@example.net\r\nSubject: v\r\n\r\nEICAR test\r\n").await;
+        assert!(r.starts_with("550 5.7.1"), "{r}");
+        // Spam: delivered, into the spam folder, with the verdict in the headers.
+        let mut c = Client::hello(s.addr).await;
+        let r = c.mail("s@remote.example", &["alice@example.net"], b"From: s@remote.example\r\nTo: alice@example.net\r\nSubject: s\r\n\r\nSPAMMY offer\r\n").await;
+        assert!(r.starts_with("250"), "{r}");
+        // A clean message: in the Inbox, marked by both scanners.
+        let mut c = Client::hello(s.addr).await;
+        let r = c.mail("s@remote.example", &["alice@example.net"], MSG).await;
+        assert!(r.starts_with("250"), "{r}");
+        let inbox = b.inbox(alice, &s.blobs).await;
+        assert_eq!(inbox.len(), 1, "only the clean message is in the Inbox");
+        assert!(contains(&inbox[0], b"X-Virus-Scan: clean\r\n") && contains(&inbox[0], b"X-Spam-Status: No, score=0.50"), "{}", String::from_utf8_lossy(&inbox[0]));
+        let spam = b.folder(alice, FolderId(5), &s.blobs).await;
+        assert_eq!(spam.len(), 1);
+        assert!(contains(&spam[0], b"X-Spam-Status: Yes, score=12.00") && contains(&spam[0], b"X-Virus-Scan: clean\r\n"));
+        s.stop().await;
+    })
+    .await;
+}

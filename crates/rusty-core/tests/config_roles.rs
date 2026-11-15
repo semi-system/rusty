@@ -31,13 +31,14 @@ bucket = \"rusty-mail\"
 access_key_file = \"/run/secrets/a\"
 secret_key_file = \"/run/secrets/s\"
 "),
+    ("filter", "[filter]\nclamd_addr = \"clamd:3310\"\n"),
     ("admin", "[admin]\npublic_origin = \"https://admin.example.org\"\n"),
 ];
 
 fn allowed(role: Role) -> &'static [&'static str] {
     // Written out per role (not computed): the point of the matrix is to be an independent statement.
     match role {
-        Role::SmtpIn => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "smtp"],
+        Role::SmtpIn => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "smtp", "filter"],
         Role::Submission => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "smtp", "outbound", "valkey"],
         Role::Imap => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "imap", "valkey"],
         Role::Outbound => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "blob_s3", "outbound", "unsealing", "dns_check"],

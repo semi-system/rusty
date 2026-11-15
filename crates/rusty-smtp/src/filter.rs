@@ -37,6 +37,8 @@ pub enum FilterVerdict {
     Quarantine(QuarantineFolder),
     /// Add these headers (`X-` names only).
     Tag(Vec<(String, String)>),
+    /// Both: deliver into a system folder and add these headers.
+    QuarantineTagged(QuarantineFolder, Vec<(String, String)>),
 }
 
 #[async_trait]
@@ -75,16 +77,22 @@ pub async fn run_filters(filters: &[Arc<dyn InboundFilter>], ctx: &FilterContext
                 return outcome;
             }
             FilterVerdict::Quarantine(q) => outcome.quarantine = Some(q),
-            FilterVerdict::Tag(tags) => {
-                for (name, value) in tags {
-                    if outcome.tags.len() < MAX_TAGS && valid_tag(&name, &value) {
-                        outcome.tags.push((name, value));
-                    } else {
-                        tracing::warn!("an inbound filter returned an unusable header tag; dropped");
-                    }
-                }
+            FilterVerdict::QuarantineTagged(q, tags) => {
+                outcome.quarantine = Some(q);
+                add_tags(&mut outcome, tags);
             }
+            FilterVerdict::Tag(tags) => add_tags(&mut outcome, tags),
         }
     }
     outcome
+}
+
+fn add_tags(outcome: &mut FilterOutcome, tags: Vec<(String, String)>) {
+    for (name, value) in tags {
+        if outcome.tags.len() < MAX_TAGS && valid_tag(&name, &value) {
+            outcome.tags.push((name, value));
+        } else {
+            tracing::warn!("an inbound filter returned an unusable header tag; dropped");
+        }
+    }
 }

@@ -66,7 +66,7 @@ impl Role {
     /// The top-level keys and sections beyond the shared ones that this role accepts.
     fn own(self) -> &'static [&'static str] {
         match self {
-            Role::SmtpIn => &["blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "smtp"],
+            Role::SmtpIn => &["blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "smtp", "filter"],
             Role::Submission => &["blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "smtp", "outbound", "valkey"],
             Role::Imap => &["blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "imap", "valkey"],
             Role::Outbound => &["blob_dir", "blob_s3", "outbound", "unsealing", "dns_check"],
@@ -82,8 +82,8 @@ impl Role {
 
 /// Every top-level key of the schema. Only these are named in a refusal: a key that is not one of them is
 /// reported as unknown, so nothing the operator typed (or pasted by mistake) is echoed.
-const SCHEMA_KEYS: [&str; 18] = [
-    "blob_dir", "blob_s3", "log_level", "log_format", "hostname", "max_message_bytes", "gc_grace_seconds", "store", "tls", "smtp", "imap", "outbound",
+const SCHEMA_KEYS: [&str; 19] = [
+    "blob_dir", "blob_s3", "filter", "log_level", "log_format", "hostname", "max_message_bytes", "gc_grace_seconds", "store", "tls", "smtp", "imap", "outbound",
     "limits", "dns_check", "valkey", "sealing", "unsealing", "admin",
 ];
 

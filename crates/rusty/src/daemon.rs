@@ -170,6 +170,17 @@ async fn build(
     // The resolver stack serves the inbound checks (smtp-in) and the worker (outbound); no other service needs it.
     let dns = if cfg.outbound.enabled && (runs(Role::SmtpIn) || runs(Role::Outbound)) { Some(DnsStack::from_config(&cfg.outbound, hostname)?) } else { None };
     let secrets = Arc::new(FileSecretSource::new());
+    // The scanners of the inbound listener (`[filter]`): the virus scan first (a virus is refused before anything else is asked), then the spam scorer.
+    let mut inbound_filters: Vec<Arc<dyn rusty_smtp::filter::InboundFilter>> = Vec::new();
+    if let Some(f) = &cfg.filter {
+        let max = f.max_scan_bytes;
+        if let Some(addr) = &f.clamd_addr {
+            inbound_filters.push(Arc::new(rusty_smtp::scan::ClamdFilter::new(addr, Duration::from_secs(f.clamd_timeout_secs), max, f.clamd_on_error)));
+        }
+        if let Some(url) = &f.rspamd_url {
+            inbound_filters.push(Arc::new(rusty_smtp::scan::RspamdFilter::new(url, Duration::from_secs(f.rspamd_timeout_secs), max, f.rspamd_on_error)));
+        }
+    }
     for planned in listener_plan_for(&cfg, role) {
         let bound = BoundListener::bind(planned.spec).await?;
         addrs.push((planned.kind, bound.local_addr()));
@@ -191,7 +202,7 @@ async fn build(
             ListenerKind::Smtp25 => {
                 Arc::new(InboundHandler::new(
                     &ctx,
-                    InboundOptions { budget: budget.clone(), auth: dns.as_ref().map(|d| d.checker.clone()), ..InboundOptions::default() },
+                    InboundOptions { budget: budget.clone(), auth: dns.as_ref().map(|d| d.checker.clone()), filters: inbound_filters.clone(), ..InboundOptions::default() },
                 ))
             }
             ListenerKind::Submission587 | ListenerKind::Submissions465 => {
