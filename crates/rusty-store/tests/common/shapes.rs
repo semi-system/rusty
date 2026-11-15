@@ -91,6 +91,7 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
     }
 
     shape!("mailbox_for_account", false, r.mailbox_for_account(acc));
+    shape!("blob_store_of_mailbox", false, r.blob_store_of_mailbox(id));
     shape!("folder_exists", false, r.folder_exists(id, INBOX));
     shape!("create_folder", true, r.create_folder(id, Some(g), "Child"));
     shape!("rename_folder", true, r.rename_folder(id, f, "F2"));
@@ -241,6 +242,7 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
     other!("GcRepo", "blob_rows_in_shard", false, None, None, g.blob_rows_in_shard(rusty_store::PLATFORM_STORE, 0xaa));
     other!("GcRepo", "blob_rows_in_use_in_shard", false, None, None, g.blob_rows_in_use_in_shard(rusty_store::PLATFORM_STORE, 0xaa));
     other!("GcRepo", "blob_row_exists", false, None, None, g.blob_row_exists(rusty_store::PLATFORM_STORE, &hs[0]));
+    other!("GcRepo", "blob_store_ids", false, None, None, g.blob_store_ids());
     other!("GcRepo", "delete_blob_rows (2 rows)", true,
         Some(("FROM blobs WHERE hash = ANY($1) ORDER BY store_id, hash FOR NO KEY UPDATE", "DELETE FROM blobs WHERE store_id = $3 AND hash = ANY($1)")),
         None, g.delete_blob_rows(rusty_store::PLATFORM_STORE, &hs, 100));
@@ -307,7 +309,7 @@ fn method_of(call: &str) -> String {
 /// traits every method NOT listed as a read is a write (a new method defaults to "write", so it
 /// cannot escape the lock-first probe by being forgotten).
 const TRAITS: &[(&str, &str, &[&str])] = &[
-    ("MailboxRepo", include_str!("../../src/repo/mailbox.rs"), &["blob_store_of_mailbox"]),
+    ("MailboxRepo", include_str!("../../src/repo/mailbox.rs"), &[]),
     ("JobRepo", include_str!("../../src/repo/jobs.rs"), &["db_now", "fence_check", "count_by_state"]),
     (
         "GcRepo",
