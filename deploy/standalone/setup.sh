@@ -8,7 +8,7 @@
 # --self-signed: for a test installation the internet cannot reach (no ACME, no --contact): the certificates for the two host names are made here, self-signed,
 # and valid for 825 days. Mail clients must be told to trust them (or to accept the warning). Without it the edge gets real certificates over ACME HTTP-01.
 #
-# Everything lands in ./state (secrets 0600 owned by the service uid). Run again to change the settings: secrets and keys that exist are kept, the
+# Everything lands in the state directory (default ~/rusty-state, outside the repository) (secrets 0600 owned by the service uid). Run again to change the settings: secrets and keys that exist are kept, the
 # configuration files are written again from the templates. Needs Docker with Compose (and BuildKit to build the images). Nothing here needs root
 # except through Docker (the files are given to the service users by a throw-away container).
 set -euo pipefail
@@ -18,7 +18,7 @@ pin() { awk -v n="$1" '$1 == n { print $2 }' "$ROOT/deploy/images.lock"; }
 PG_IMG="$(pin postgres:18)"; HA_IMG="$(pin haproxy:3.4.7-alpine3.24)"
 [ -n "$PG_IMG" ] && [ -n "$HA_IMG" ] || { echo "setup: images are not pinned in deploy/images.lock" >&2; exit 1; }
 
-MAIL_HOST=""; ADMIN_HOST=""; CONTACT=""; PUBLIC_IP=""; STAGING=0; SELF=0; ALLOW=()
+STATE="${RUSTY_STATE:-$HOME/rusty-state}"; MAIL_HOST=""; ADMIN_HOST=""; CONTACT=""; PUBLIC_IP=""; STAGING=0; SELF=0; ALLOW=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --mail-host) MAIL_HOST="${2:-}"; shift 2 ;;
@@ -28,6 +28,7 @@ while [ $# -gt 0 ]; do
     --admin-allow) ALLOW+=("${2:-}"); shift 2 ;;
     --staging) STAGING=1; shift ;;
     --self-signed) SELF=1; shift ;;
+    --state-dir) STATE="${2:-}"; shift 2 ;;
     *) echo "setup: unknown argument $1 (see the header of this script)" >&2; exit 2 ;;
   esac
 done
@@ -45,13 +46,18 @@ if [ "$STAGING" = 1 ]; then ACME_DIR="https://acme-staging-v02.api.letsencrypt.o
 # Everything under ./state changes owner (the services run as other users), so after a first run the person running this script can no longer even look into
 # some of it. Every look and every change inside ./state therefore goes through a throw-away root container (R: the haproxy image's shell; RP: the postgres
 # image's, for openssl). That also makes this script safe to run again: what exists is found and kept (secrets, keys, certificates), never remade by mistake.
-mkdir -p state
+# The state lives OUTSIDE the repository (default ~/rusty-state): the image build reads the repository as its context, and a build cannot read directories that belong to
+# the service users. An absolute path, written to .env for compose.
+case "$STATE" in /*) ;; *) die "--state-dir must be an absolute path" ;; esac
+mkdir -p "$STATE"
 HOSTID="$(id -u):$(id -g)"; export HOSTID
-R()  { docker run --rm --user 0 --entrypoint sh -e HOSTID -v "$PWD/state:/s" "$HA_IMG" -c "$1"; }
-RP() { docker run --rm --user 0 --entrypoint sh -e HOSTID -v "$PWD/state:/s" "$PG_IMG" -c "$1"; }
+R()  { docker run --rm --user 0 --entrypoint sh -e HOSTID -v "$STATE:/s" "$HA_IMG" -c "$1"; }
+RP() { docker run --rm --user 0 --entrypoint sh -e HOSTID -v "$STATE:/s" "$PG_IMG" -c "$1"; }
 R 'cd /s && mkdir -p secrets etc pgtls keys tls edge/acme edge/certs run && chown "$HOSTID" etc'
 # Which kind of certificates the edge has decides which of the optional services (cert-sync, cert-keep) compose starts.
-if [ "$SELF" = 1 ]; then echo "COMPOSE_PROFILES=" > .env; else echo "COMPOSE_PROFILES=acme" > .env; fi
+if [ "$SELF" = 1 ]; then profiles=""; else profiles="acme"; fi; printf 'RUSTY_STATE=%s
+COMPOSE_PROFILES=%s
+' "$STATE" "$profiles" > .env
 R 'cd /s/secrets && for s in pg_postgres pg_app pg_admin pg_migrator; do [ -s "$s" ] || (umask 077; head -c 32 /dev/urandom | od -An -tx1 | tr -d " \n" > "$s"); done'
 
 # The database CA and the server certificate for the name `db` (clients verify it: sslmode verify-full). Made once.
@@ -68,10 +74,10 @@ R 'cp /s/pgtls/ca.pem /s/etc/db-ca.pem && chown "$HOSTID" /s/etc/db-ca.pem && ch
 render() { # template -> file: the values were validated above, none holds a character that matters to sed (| is never in them)
   local keep drop; if [ "$SELF" = 1 ]; then keep="#SELF "; drop="#ACME"; else keep="#ACME"; drop="#SELF "; fi
   sed -e "/^${drop}/d" -e "s|^${keep}||" -e "s|@MAIL_HOST@|$MAIL_HOST|g" -e "s|@ADMIN_HOST@|$ADMIN_HOST|g" -e "s|@CONTACT@|$CONTACT|g" -e "s|@PUBLIC_IP@|$PUBLIC_IP|g" \
-      -e "s|@SEAL_PUBLIC@|$SEAL_PUBLIC|g" -e "s|@ACME_DIRECTORY@|$ACME_DIR|g" -e "s|@ADMIN_ALLOW@|${ALLOW[*]}|g" "templates/$1.in" > "state/etc/$1"
+      -e "s|@SEAL_PUBLIC@|$SEAL_PUBLIC|g" -e "s|@ACME_DIRECTORY@|$ACME_DIR|g" -e "s|@ADMIN_ALLOW@|${ALLOW[*]}|g" "templates/$1.in" > "$STATE/etc/$1"
 }
 # The sealing key pair: the private half stays in state/keys (mail uid only); the public half goes to both configurations.
-mail_ctl() { docker run --rm --user 65532:65532 --entrypoint /usr/local/bin/rustyctl -v "$PWD/state/keys:/etc/rusty-keys" rusty-mail:local "$@"; }
+mail_ctl() { docker run --rm --user 65532:65532 --entrypoint /usr/local/bin/rustyctl -v "$STATE/keys:/etc/rusty-keys" rusty-mail:local "$@"; }
 [ "${SKIP_BUILD:-0}" = 1 ] || docker compose build >/dev/null   # SKIP_BUILD=1: the images rusty-mail:local and rusty-admin:local already exist
 R 'chown 65532:65532 /s/keys /s/tls /s/secrets /s/secrets/* && chmod 0700 /s/keys /s/secrets && chmod 0600 /s/secrets/* && chmod 0755 /s/tls'
 if ! R 'test -e /s/keys/unseal.key'; then mail_ctl seal keygen /etc/rusty-keys/unseal.key >/dev/null; fi
@@ -93,8 +99,8 @@ if [ "$SELF" = 1 ]; then
   R 'cp /s/edge/certs/mail.crt /s/tls/cert.pem && cp /s/edge/certs/mail.key /s/tls/key.pem'
 fi
 # The migration run needs the migrator role; the daemon's file never names it.
-{ cat state/etc/rusty.toml; echo 'migrator_user = "rusty_migrator"'; echo 'migrator_password_file = "/run/secrets/pg_migrator"'; } > state/etc/migrate.toml
-chmod 0644 state/etc/*
+{ cat "$STATE/etc/rusty.toml"; echo 'migrator_user = "rusty_migrator"'; echo 'migrator_password_file = "/run/secrets/pg_migrator"'; } > "$STATE/etc/migrate.toml"
+chmod 0644 "$STATE"/etc/*
 
 # The edge's files belong to its user (99), the postgres key to postgres (999).
 R 'chown -R 99:99 /s/edge /s/run && chown 65532:65532 /s/tls/key.pem /s/tls/cert.pem 2>/dev/null; chmod 0600 /s/tls/key.pem 2>/dev/null; chmod 0700 /s/edge && chmod 0750 /s/run && chown -R 999:999 /s/pgtls && chmod 0600 /s/pgtls/server.key /s/pgtls/ca.key && chmod 0644 /s/pgtls/server.crt /s/pgtls/ca.pem'
