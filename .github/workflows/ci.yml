@@ -49,6 +49,23 @@ jobs:
         id: c
         run: bash scripts/ci-changes.sh | tee -a "$GITHUB_OUTPUT"
 
+  # The admin web front end (design section 8): the lockfile-only install, the dependency allow-list, types from the contract, type check, lint rules that
+  # carry design decisions, unit tests, the reproducible build and the bundle scan, all in the Node image pinned by digest in deploy/images.lock.
+  web:
+    name: front end (web/admin)
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Front end gates (scripts/ci-web.sh in the pinned Node image)
+        run: bash scripts/ci-web-docker.sh
+
   workflows-lint:
     name: actionlint and shellcheck
     needs: changes
@@ -529,7 +546,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: ${{ always() }}
-    needs: [changes, workflows-lint, gates, test-glibc, test-postgres, supply-chain, musl-test, musl-release, fuzz-smoke, edge-suite]
+    needs: [changes, workflows-lint, web, gates, test-glibc, test-postgres, supply-chain, musl-test, musl-release, fuzz-smoke, edge-suite]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}

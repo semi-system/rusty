@@ -13,3 +13,7 @@ docs
 !crates/**/*.md
 **/*.sqlite*
 deploy/compose/generated
+
+# front end tooling: the image build gets web/admin/dist from its own stage, never the host node_modules
+web/**/node_modules
+web/**/dist
