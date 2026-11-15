@@ -66,8 +66,8 @@ async fn build(with_sealing: bool) -> Rig {
     let url = pg::pg_admin_url().expect("RUSTY_TEST_PG_URL");
     // The service runs as its own database role (deploy/db/roles.sql, grants_pg.sql): a query that needs more than that role has fails here.
     let db = pg::PgTestDb::create_with_roles(&url).await;
-    let store = Store::open(StoreConfig::postgres(&db.role_url("rusty_admin"))).await.unwrap();
-    let outbound = Store::open(StoreConfig::postgres(&db.role_url("rusty_app"))).await.unwrap();
+    let store = Store::open(StoreConfig::postgres(db.role_url("rusty_admin"))).await.unwrap();
+    let outbound = Store::open(StoreConfig::postgres(db.role_url("rusty_app"))).await.unwrap();
     let dir = Directory::with_repo(store.repos().directory.clone());
     let admins = AdminStore::with_repo(store.repos().admin.clone());
     let now = Arc::new(ManualNow::new(1_000_000));
