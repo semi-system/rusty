@@ -58,6 +58,12 @@ pub enum Command {
     DomainRelayShow { name: String },
     /// `domain relay check`: ask the outbound service to test the relay (a `relay.check` job); the result shows in `domain relay show`.
     DomainRelayCheck { name: String },
+    /// `admin grant`: let an account use the admin web (every domain, or the one named).
+    AdminGrant { addr: String, domain: Option<String> },
+    /// `admin revoke`: the account stays, it is no longer an administrator.
+    AdminRevoke { addr: String },
+    /// `admin list`: the administrators and what they administer.
+    AdminList,
     /// `domain relay remove`: the domain goes back to the platform route; its sealed password is removed.
     DomainRelayRemove { name: String },
     Check,
@@ -117,6 +123,8 @@ pub const USAGE: &str = "usage: rustyctl [--config FILE | --dev [--data-dir DIR]
   domain relay set <domain> --host H [--port P] [--tls starttls|implicit|none] [--user U] [--spf-include NAME] [--password-stdin | --prompt]
                                              the relay this domain's mail leaves through (a login needs the password, which is sealed)
   domain relay show <domain> | remove <domain> | check <domain>
+  admin grant <addr> [domain]                let an account use the admin web (all domains, or one); also the recovery path
+  admin revoke <addr> | list
   relay check                                log in to the configured relay (resolve, TLS, AUTH) without sending mail
   seal keygen <file>                         make the key that opens sealed secrets (private half to <file>, 0600), print the public half
   seal show <file>                           print the public half and the id of the key in <file>
@@ -345,6 +353,22 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             plain()?;
             done(Command::DomainRelayRemove { name: (*name).to_owned() })
         }
+        ["admin", "grant", addr] => {
+            plain()?;
+            done(Command::AdminGrant { addr: (*addr).to_owned(), domain: None })
+        }
+        ["admin", "grant", addr, domain] => {
+            plain()?;
+            done(Command::AdminGrant { addr: (*addr).to_owned(), domain: Some((*domain).to_owned()) })
+        }
+        ["admin", "revoke", addr] => {
+            plain()?;
+            done(Command::AdminRevoke { addr: (*addr).to_owned() })
+        }
+        ["admin", "list"] => {
+            plain()?;
+            done(Command::AdminList)
+        }
         ["db", "migrate"] => {
             no_password()?;
             no_selector()?;
@@ -373,8 +397,8 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             done(Command::Check)
         }
         [] => Err(err("a command is required")),
-        ["domain" | "account" | "alias" | "dkim" | "db" | "relay" | "seal"] => Err(err("a subcommand is required")),
-        ["domain" | "account" | "alias" | "dkim" | "db" | "relay" | "seal", _, ..] | ["check", ..] => {
+        ["domain" | "account" | "alias" | "dkim" | "db" | "relay" | "seal" | "admin"] => Err(err("a subcommand is required")),
+        ["domain" | "account" | "alias" | "dkim" | "db" | "relay" | "seal" | "admin", _, ..] | ["check", ..] => {
             Err(err("unknown subcommand or wrong number of arguments"))
         }
         _ => Err(err("unknown command")),

@@ -75,6 +75,8 @@ pub struct CtlEnv<'a> {
     pub relays: Option<&'a rusty_store::RelayStore>,
     /// The job queue (`domain relay check` enqueues a `relay.check` job for the outbound service).
     pub jobs: Option<&'a rusty_store::JobQueue>,
+    /// Administrator grants (`admin grant`, `revoke`, `list`).
+    pub admins: Option<&'a rusty_store::AdminStore>,
 }
 
 /// The parts of `[outbound]` the DNS records depend on.
@@ -340,6 +342,74 @@ async fn domain_relay_remove(env: &mut CtlEnv<'_>, name: &str) -> Result<Outcome
     ))
 }
 
+fn admin_store<'a>(env: &CtlEnv<'a>) -> Result<&'a rusty_store::AdminStore, CtlError> {
+    env.admins.ok_or_else(|| CtlError::runtime("administrator grants are not available here"))
+}
+
+/// `admin grant <addr> [domain]`: let an account use the admin web, for every domain (no domain given) or for one. This is also the recovery path
+/// when no administrator can sign in. A grant needs an account that can sign in (it must have a password), and a domain administrator must be an
+/// account of that domain (the database refuses anything else).
+async fn admin_grant(env: &mut CtlEnv<'_>, addr: &str, domain: Option<&str>) -> Result<Outcome, CtlError> {
+    let admins = admin_store(env)?;
+    let account = account_named(env.directory, addr).await?;
+    if !account.has_password {
+        return Err(CtlError::runtime("this account has no password and cannot sign in: set one with `account set-password` first"));
+    }
+    let dom = match domain {
+        Some(d) => Some(domain_named(env.directory, d).await?),
+        None => None,
+    };
+    let g = admins.grant(account.id, dom.as_ref().map(|d| d.id)).await.map_err(|e| map_error(&e, "administrator"))?;
+    let scope_text = dom.as_ref().map_or_else(|| "every domain (platform administrator)".to_owned(), |d| format!("the domain {} only", d.name));
+    Ok(Outcome::new(
+        format!("{} may now administer {scope_text}", addr.trim()),
+        json!({ "account": addr.trim(), "scope": dom.as_ref().map_or("platform", |_| "domain"), "domain": dom.as_ref().map(|d| d.name.clone()), "created_at": g.created_at }),
+    ))
+}
+
+/// `admin revoke <addr>`: the account stays, it is no longer an administrator (its open admin sessions end at their next request).
+async fn admin_revoke(env: &mut CtlEnv<'_>, addr: &str) -> Result<Outcome, CtlError> {
+    let admins = admin_store(env)?;
+    let account = account_named(env.directory, addr).await?;
+    let removed = admins.revoke(account.id).await.map_err(|e| map_error(&e, "administrator"))?;
+    Ok(Outcome::new(
+        if removed { format!("{} is no longer an administrator", addr.trim()) } else { format!("{} was not an administrator", addr.trim()) },
+        json!({ "account": addr.trim(), "revoked": removed }),
+    ))
+}
+
+/// `admin list`: every administrator with the domain they administer (`*` for the platform).
+async fn admin_list(env: &mut CtlEnv<'_>) -> Result<Outcome, CtlError> {
+    let admins = admin_store(env)?;
+    let mut grants = Vec::new();
+    let mut after = None;
+    loop {
+        let page = admins.list(after, 200).await.map_err(|e| map_error(&e, "administrators"))?;
+        after = page.last().map(|g| g.account);
+        let n = page.len();
+        grants.extend(page);
+        if n < 200 {
+            break;
+        }
+    }
+    // Address and domain names by id: one pass over the directory (a CLI listing, not a hot path).
+    let mut names = std::collections::HashMap::new();
+    let mut domains = std::collections::HashMap::new();
+    for dom in all_domains(env.directory).await? {
+        for a in all_accounts(env.directory, &dom).await? {
+            names.insert(a.id, format!("{}@{}", a.local, dom.name));
+        }
+        domains.insert(dom.id, dom.name.clone());
+    }
+    let rows: Vec<(String, String)> = grants
+        .iter()
+        .map(|g| (names.get(&g.account).cloned().unwrap_or_else(|| "?".into()), g.domain.map_or_else(|| "*".to_owned(), |d| domains.get(&d).cloned().unwrap_or_else(|| "?".into()))))
+        .collect();
+    let text: Vec<String> = rows.iter().map(|(a, d)| format!("{a}\t{d}")).collect();
+    let j: Vec<Value> = rows.iter().map(|(a, d)| json!({ "account": a, "domain": if d == "*" { Value::Null } else { json!(d) } })).collect();
+    Ok(Outcome::new(text.join("\n"), json!({ "administrators": j })))
+}
+
 fn read_password(env: &mut CtlEnv<'_>, source: PasswordSource) -> Result<Option<Secret>, CtlError> {
     if source == PasswordSource::None {
         return Ok(None);
@@ -545,6 +615,12 @@ pub async fn execute(command: &Command, env: &mut CtlEnv<'_>) -> Result<Outcome,
         Command::DomainRelaySet { .. } => domain_relay_set(env, command).await,
 
         Command::DomainRelayShow { name } => domain_relay_show(env, name).await,
+
+        Command::AdminGrant { addr, domain } => admin_grant(env, addr, domain.as_deref()).await,
+
+        Command::AdminRevoke { addr } => admin_revoke(env, addr).await,
+
+        Command::AdminList => admin_list(env).await,
 
         Command::DomainRelayCheck { name } => domain_relay_check(env, name).await,
 

@@ -21,6 +21,7 @@ pub struct Backend {
     pub sealed: rusty_store::SealedWriter,
     pub relays: rusty_store::RelayStore,
     pub jobs: rusty_store::JobQueue,
+    pub admins: rusty_store::AdminStore,
     pub fx: Fixtures,
     pub tmp: tempfile::TempDir,
     _db: Option<pg::PgTestDb>,
@@ -61,41 +62,41 @@ impl Backend {
         hostname: Option<&str>,
     ) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(passwords);
-        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname, config_note: "test", dkim_dir: None, dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing: None, sealed: Some(&self.sealed), relays: Some(&self.relays), jobs: Some(&self.jobs) };
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname, config_note: "test", dkim_dir: None, dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing: None, sealed: Some(&self.sealed), relays: Some(&self.relays), jobs: Some(&self.jobs), admins: Some(&self.admins) };
         execute(&cmd, &mut env).await
     }
 
     pub async fn run_with_dkim(&self, cmd: Command, dkim_dir: &std::path::Path) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(&[]);
-        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: Some(dkim_dir), dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing: None, sealed: Some(&self.sealed), relays: Some(&self.relays), jobs: Some(&self.jobs) };
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: Some(dkim_dir), dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing: None, sealed: Some(&self.sealed), relays: Some(&self.relays), jobs: Some(&self.jobs), admins: Some(&self.admins) };
         execute(&cmd, &mut env).await
     }
 
     /// `domain dns` with the outbound facts of a configuration.
     pub async fn run_dns(&self, cmd: Command, outbound: OutboundFacts<'_>) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(&[]);
-        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound, live_dns: None, sealing: None, sealed: Some(&self.sealed), relays: Some(&self.relays), jobs: Some(&self.jobs) };
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound, live_dns: None, sealing: None, sealed: Some(&self.sealed), relays: Some(&self.relays), jobs: Some(&self.jobs), admins: Some(&self.admins) };
         execute(&cmd, &mut env).await
     }
 
     /// `domain check` against `src` (a zone in memory) with the outbound facts of a configuration.
     pub async fn check_with<S: DnsSource>(&self, src: &S, outbound: OutboundFacts<'_>, domain: &str) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(&[]);
-        let env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound, live_dns: None, sealing: None, sealed: Some(&self.sealed), relays: Some(&self.relays), jobs: Some(&self.jobs) };
+        let env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound, live_dns: None, sealing: None, sealed: Some(&self.sealed), relays: Some(&self.relays), jobs: Some(&self.jobs), admins: Some(&self.admins) };
         check_domain(&env, src, domain).await
     }
 
     /// A command with the sealing key of a configuration (`[sealing] public_key`) and no key directory: sealed mode needs no files.
     pub async fn run_sealed(&self, cmd: Command, sealing: Option<&rusty_seal::SealingKey>) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(&[]);
-        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing, sealed: Some(&self.sealed), relays: Some(&self.relays), jobs: Some(&self.jobs) };
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing, sealed: Some(&self.sealed), relays: Some(&self.relays), jobs: Some(&self.jobs), admins: Some(&self.admins) };
         execute(&cmd, &mut env).await
     }
 
     /// A relay command with the passwords it reads and the sealing key of the configuration.
     pub async fn run_relay(&self, cmd: Command, passwords: &[&str], sealing: Option<&rusty_seal::SealingKey>) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(passwords);
-        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing, sealed: Some(&self.sealed), relays: Some(&self.relays), jobs: Some(&self.jobs) };
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing, sealed: Some(&self.sealed), relays: Some(&self.relays), jobs: Some(&self.jobs), admins: Some(&self.admins) };
         execute(&cmd, &mut env).await
     }
 
@@ -116,6 +117,7 @@ pub async fn pg_backend() -> Option<Backend> {
         sealed: rusty_store::SealedWriter::with_repo(store.repos().sealed.clone()),
         relays: rusty_store::RelayStore::with_repo(store.repos().relay.clone()),
         jobs: rusty_store::JobQueue::with_repo(store.repos().jobs.clone()),
+        admins: rusty_store::AdminStore::with_repo(store.repos().admin.clone()),
         store,
         tmp: tempfile::tempdir().unwrap(),
         _db: Some(db),
