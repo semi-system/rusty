@@ -59,6 +59,31 @@ that is not disabled passed a check.
 
 Set up with `rustyctl storage pool DOMAIN --copies 2 --sync-copies 1 --placement ordered --read ordered`, `storage backend add DOMAIN NAME --endpoint ... --credentials-stdin [--weight W]` (also `rekey`, `set --state/--weight`, `remove`), `storage check DOMAIN` (every backend that is used is tried) and `storage show DOMAIN`, or on the admin web page of the domain (platform administrators; a domain administrator sees the state of the backends only). Each backend's keys are sealed to that backend (owner kind `blobbackend`). The upkeep service runs `repair` every minute, and opened stores are re-read every minute, so a changed pool takes effect without a restart.
 
+## The platform store in a bucket, collection leases, limits
+
+* `[blob_s3]` in the configuration puts the **platform** store (what every domain without a store of its own uses, and system mail) in a bucket instead of the `blob_dir` directory:
+
+  ```toml
+  [blob_s3]
+  endpoint = "http://10.0.0.5:9000"        # http or https, host and port only; a private address is fine (the operator chose it)
+  region = "us-east-1"
+  bucket = "rusty-mail"
+  prefix = ""                              # optional
+  path_style = true
+  access_key_file = "/run/secrets/s3-access"   # one line each, mode 0600, read through the secret source
+  secret_key_file = "/run/secrets/s3-secret"
+  max_concurrent = 64                      # requests in flight at once
+  request_timeout_secs = 60
+  ```
+
+  The section is accepted by every service that uses blobs (smtp-in, submission, imap, outbound, gc) and by none else. `blob_dir` stays in the file (the other stores of the deployment
+  live next to it) but holds no message body. A wrong name or unreadable key file stops the start. Moving existing mail from the directory to the bucket is not done by the service:
+  copy the objects (`ab/cd/<hash>`) into the bucket under the prefix, then run `rustyctl blobs verify` before switching.
+* A garbage collector takes a **lease** on the store in the database (`blob_store_leases`) for as long as it runs, renewing it at every batch and shard: a second collector, in this
+  process or in another one or on another host, is refused (`Conflict`) until the lease is given back or runs out (30 minutes without renewal).
+* Every S3 client, one per tenant store and one per backend of a pool, has a cap on requests in flight (64 by default; `max_concurrent` for the platform store). A request that cannot
+  get its turn within the deadline fails as a timeout (a temporary failure to the sender).
+
 ## What is not here yet
 
 Moving a domain's bodies between stores, and the outbound

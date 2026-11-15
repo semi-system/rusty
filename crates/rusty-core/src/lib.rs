@@ -9,6 +9,7 @@ pub mod relay_policy;
 pub mod storage_policy;
 mod config_role;
 mod config_admin;
+mod config_blob_s3;
 mod config_sealing;
 mod config_sections;
 mod config_store;

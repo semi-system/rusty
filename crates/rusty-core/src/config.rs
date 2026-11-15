@@ -14,6 +14,7 @@ use crate::{Error, Result};
 pub use crate::config_role::{Role, UNUSED_BLOB_DIR};
 pub use crate::config_admin::{valid_origin, AdminConfig};
 pub use crate::config_sealing::{SealingConfig, UnsealingConfig, MAX_UNSEALING_KEYS};
+pub use crate::config_blob_s3::{BlobS3Config, DEFAULT_BLOB_S3_CONCURRENT};
 pub use crate::config_valkey::ValkeyConfig;
 pub use crate::config_store::{
     is_loopback_host, parse_pg_url, PgEndpoint, SslMode, StoreSection, DEFAULT_POOL_SIZE, MAX_POOL_SIZE,
@@ -93,6 +94,9 @@ pub struct StartupConfig {
     /// `[sealing]`: the public key secrets are sealed to (held by whatever seals: the admin service, `rustyctl`).
     #[serde(default)]
     pub sealing: Option<SealingConfig>,
+    /// `[blob_s3]`: the platform blob store in an S3 bucket instead of the `blob_dir` directory.
+    #[serde(default)]
+    pub blob_s3: Option<BlobS3Config>,
     /// `[unsealing]`: the files holding the private keys that open sealed secrets (the outbound service only).
     #[serde(default)]
     pub unsealing: Option<UnsealingConfig>,
@@ -211,6 +215,9 @@ impl StartupConfig {
         }
         if let Some(u) = &self.unsealing {
             u.validate()?;
+        }
+        if let Some(b) = &self.blob_s3 {
+            b.validate()?;
         }
         self.limits.validate()
     }
@@ -347,6 +354,7 @@ impl StartupConfig {
             valkey: None,
             sealing: None,
             unsealing: None,
+            blob_s3: None,
             admin: None,
         }
     }

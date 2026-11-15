@@ -214,8 +214,8 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         };
         // The blob store is opened only for the command that reads it (the other commands need no blob directory).
         let blob_store = if parsed.command == rusty_ctl::Command::BlobsVerify {
-            match rusty_store::FsBlobStore::open(&cfg.blob_dir).await {
-                Ok(b) => Some(std::sync::Arc::new(b)),
+            match crate::daemon::platform_blobs(&cfg).await {
+                Ok(b) => Some(b),
                 Err(e) => {
                     eprintln!("{prog}: cannot open the blob store: {e}");
                     let _ = store.close().await;
@@ -228,7 +228,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         // `blobs verify` checks every store, so it needs the router of the tenants' stores and pools. Without the unsealing key a store of buckets cannot be opened here: it is
         // reported as not checked, never skipped silently.
         let router = blob_store.as_ref().map(|platform| {
-            let platform: std::sync::Arc<dyn rusty_store::BlobStore> = platform.clone();
+            let platform = platform.clone();
             let opener: std::sync::Arc<dyn rusty_store::StoreOpener> = match crate::daemon::tenant_store_opener(&cfg, &store) {
                 Ok((o, _, _)) => o,
                 Err(e) => {
