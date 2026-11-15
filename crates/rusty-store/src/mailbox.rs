@@ -40,7 +40,7 @@ use crate::gc::PURGE_BATCH;
 use crate::repo::{
     DeliverEntry, Delivery, FlagUpdate, FolderCounts, FolderInfo, JobFence, MailboxRepo, MessageDetail, NewMessage, RawRef,
 };
-use crate::BlobStore;
+use crate::{BlobRouter, IntoRouter};
 
 pub const DEFAULT_MAX_MESSAGE_BYTES: usize = 50 * 1024 * 1024;
 pub const MAX_KEYWORDS_PER_MESSAGE: usize = 32;
@@ -239,7 +239,7 @@ pub trait ChangeNotifier: Send + Sync {
 #[derive(Clone)]
 pub struct Mailbox {
     repo: Arc<dyn MailboxRepo>,
-    blobs: Arc<dyn BlobStore>,
+    blobs: Arc<dyn BlobRouter>,
     id: MailboxId,
     limits: MailboxLimits,
     notifier: Option<Arc<dyn ChangeNotifier>>,
@@ -328,13 +328,13 @@ impl Mailbox {
     /// Open the mailbox of `account` over a repository (`Store::repos().mailbox`; `NotFound` if it has none).
     pub async fn open_with(
         repo: Arc<dyn MailboxRepo>,
-        blobs: Arc<dyn BlobStore>,
+        blobs: impl IntoRouter,
         account: AccountId,
     ) -> Result<Mailbox> {
         let id = repo.mailbox_for_account(account).await?;
         Ok(Mailbox {
             repo,
-            blobs,
+            blobs: blobs.into_router(),
             id,
             limits: MailboxLimits::default(),
             notifier: None,
@@ -549,9 +549,12 @@ impl Mailbox {
         flags: Flags,
         parsed: (i64, Envelope),
     ) -> Result<NewMessage> {
-        let hash = self.blobs.put(raw).await?;
+        // The body goes to the store of the mailbox's domain, and the message row names that store.
+        let store = self.repo.blob_store_of_mailbox(self.id).await?;
+        let hash = self.blobs.store(store).await?.put(raw).await?;
         Ok(NewMessage {
             folder,
+            store,
             hash,
             size: parsed.0,
             flags,
@@ -765,13 +768,16 @@ impl Mailbox {
         }
         self.repo.folder_exists(self.id, folder).await?;
         let mut entries = Vec::with_capacity(items.len());
+        let store = self.repo.blob_store_of_mailbox(self.id).await?;
+        let blobs = self.blobs.store(store).await?;
         for (it, env) in items.into_iter().zip(envs) {
             let size = i64::try_from(it.raw.len())
                 .map_err(|_| Error::Quota("message too large".into()))?;
-            let hash = self.blobs.put(it.raw).await?;
+            let hash = blobs.put(it.raw).await?;
             entries.push(DeliverEntry {
                 msg: NewMessage {
                     folder,
+                    store,
                     hash,
                     size,
                     flags: it.flags,
@@ -822,7 +828,8 @@ impl Mailbox {
     /// what they ask for by the mailbox size limit.
     pub async fn get_raw(&self, id: MessageId) -> Result<Bytes> {
         let r = self.repo.get_raw_ref(self.id, id).await?;
-        self.blobs.get(&r.blob).await
+        // The store named by the message row, which is not necessarily the one its domain uses today.
+        self.blobs.store(r.store).await?.get(&r.blob).await
     }
 
     /// Keywords of the live messages among `ids` in one call (`1..=MAX_BATCH` ids, else `Invalid`);

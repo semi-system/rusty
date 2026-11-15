@@ -186,7 +186,12 @@ async fn insert_messages(
     at: Option<i64>,
     knobs: super::Knobs,
 ) -> TxResult<(Vec<MessageRef>, i64)> {
-    lock_blobs(c, msgs, knobs).await?;
+    // One append writes into one mailbox, hence one store: the blob rows and the message rows carry it.
+    let store = msgs.first().map_or(1, |m| m.store.0);
+    if msgs.iter().any(|m| m.store.0 != store) {
+        return Err(rusty_core::Error::Invalid("the messages of one write belong to different blob stores".into()).into());
+    }
+    lock_blobs(c, store, msgs, knobs).await?;
     let n = msgs.len() as i64;
 
     let (first_id, first_seq): (i64, i64) = sqlx::query_as(r(q::TAKE_MSG_IDS_AND_SEQS))
@@ -264,9 +269,9 @@ async fn insert_messages(
         });
     }
     sqlx::query(
-        crate::repo::pg_lit("INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, size, internal_date, \
+        crate::repo::pg_lit("INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, blob_store_id, size, internal_date, \
          subject, from_addr, to_addrs, message_id_hdr, thread_id, flags) \
-         SELECT $1, t.id, t.folder_id, t.uid, t.blob_hash, t.size, COALESCE($13::bigint, rs_now()), \
+         SELECT $1, t.id, t.folder_id, t.uid, t.blob_hash, $14, t.size, COALESCE($13::bigint, rs_now()), \
                 t.subject, t.from_addr, t.to_addrs, t.hdr, t.thread_id, t.flags \
          FROM unnest($2::bigint[], $3::bigint[], $4::bigint[], $5::bytea[], $6::bigint[], \
                      $7::text[], $8::text[], $9::text[], $10::text[], $11::bigint[], $12::bigint[]) \
@@ -287,6 +292,7 @@ async fn insert_messages(
     .bind(&threads)
     .bind(&flags)
     .bind(at)
+    .bind(store)
     .execute(&mut *c)
     .await?;
     if !delivery_ids.is_empty() {
@@ -329,6 +335,16 @@ impl MailboxRepo for PgRepo {
             .map_err(map_db_error)?
             .map(MailboxId)
             .ok_or_else(|| Error::NotFound("mailbox for account".into()))
+    }
+
+    async fn blob_store_of_mailbox(&self, mailbox: MailboxId) -> Result<crate::repo::StoreId> {
+        sqlx::query_scalar::<_, i64>(r(crate::repo::blob_store::sql::STORE_OF_MAILBOX))
+            .bind(mailbox.0)
+            .fetch_optional(self.store.pool())
+            .await
+            .map_err(map_db_error)?
+            .map(crate::repo::StoreId)
+            .ok_or_else(|| Error::NotFound("mailbox".into()))
     }
 
     async fn folder_exists(&self, mb: MailboxId, folder: FolderId) -> Result<()> {
@@ -1030,9 +1046,9 @@ impl MailboxRepo for PgRepo {
                 let uids: Vec<i64> = (0..n).map(|k| first_uid + k).collect();
                 let seqs: Vec<i64> = (0..n).map(|k| first_seq + k).collect();
                 sqlx::query(
-                    crate::repo::pg_lit("INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, size, \
+                    crate::repo::pg_lit("INSERT INTO messages (mailbox_id, id, folder_id, uid, blob_hash, blob_store_id, size, \
                      internal_date, subject, from_addr, to_addrs, message_id_hdr, thread_id, flags) \
-                     SELECT m.mailbox_id, t.new_id, $2, t.uid, m.blob_hash, m.size, m.internal_date, \
+                     SELECT m.mailbox_id, t.new_id, $2, t.uid, m.blob_hash, m.blob_store_id, m.size, m.internal_date, \
                             m.subject, m.from_addr, m.to_addrs, m.message_id_hdr, m.thread_id, m.flags \
                      FROM unnest($3::bigint[], $4::bigint[], $5::bigint[]) AS t(src, new_id, uid) \
                      JOIN messages m ON m.mailbox_id = $1 AND m.id = t.src AND m.deleted_at IS NULL \
@@ -1205,8 +1221,8 @@ impl MailboxRepo for PgRepo {
     }
 
     async fn get_raw_ref(&self, mb: MailboxId, id: MessageId) -> Result<RawRef> {
-        let (hash, size): (Vec<u8>, i64) = sqlx::query_as(
-            crate::repo::pg_lit("SELECT blob_hash, size FROM messages \
+        let (hash, size, store): (Vec<u8>, i64, i64) = sqlx::query_as(
+            crate::repo::pg_lit("SELECT blob_hash, size, blob_store_id FROM messages \
              WHERE mailbox_id = $1 AND id = $2 AND deleted_at IS NULL"),
         )
         .bind(mb.0)
@@ -1218,6 +1234,7 @@ impl MailboxRepo for PgRepo {
         Ok(RawRef {
             blob: BlobHash::parse(&hex::encode(hash))?,
             size,
+            store: crate::repo::StoreId(store),
         })
     }
 

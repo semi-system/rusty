@@ -8,6 +8,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use common::*;
 use rusty_core::{Error, MailboxId};
+use rusty_directory::Directory;
 use rusty_store::Repos;
 use rusty_svc::{
     run_services, Context, GcService, QuotaPolicy, RateLimiter, Service, ServiceEvent, ServiceEvents, TlsProvider,
@@ -163,4 +164,21 @@ async fn the_gc_service_runs_a_pass_through_the_gc_facade_and_stops_on_shutdown(
     tokio::time::sleep(Duration::from_millis(200)).await;
     token.cancel();
     tokio::time::timeout(Duration::from_secs(5), h).await.unwrap().unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn the_gc_pass_collects_every_blob_store_and_a_store_that_cannot_be_opened_is_counted_not_fatal() {
+    let p = parts().await;
+    let c = ctx(&p).await;
+    let dir = Directory::with_repo(p.store.repos().directory.clone());
+    let d = dir.create_domain("tenant.test").await.unwrap();
+    // A store row whose settings cannot be opened (a directory name that is a path): the pass skips it, counts one error and still runs the other stores.
+    p.store.repos().blob_stores.create_for_domain(d, "fs", r#"{"dir":"../escape"}"#).await.unwrap();
+    let report = GcService::run_once(&c).await.unwrap();
+    assert_eq!(report.errors, 1, "the unopenable store is counted");
+    // With a good store the pass is clean.
+    let d2 = dir.create_domain("good.test").await.unwrap();
+    p.store.repos().blob_stores.create_for_domain(d2, "fs", r#"{"dir":"good"}"#).await.unwrap();
+    let again = GcService::run_once(&c).await.unwrap();
+    assert_eq!(again.errors, 1, "only the unopenable store is counted; the good one collects cleanly");
 }

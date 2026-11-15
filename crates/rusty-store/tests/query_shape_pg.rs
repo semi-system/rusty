@@ -23,6 +23,7 @@ use common::stmts;
 /// below for every batched operation).
 const BUDGET: &[(&str, usize)] = &[
     ("mailbox_for_account", 1),
+    ("blob_store_of_mailbox", 1),
     ("folder_exists", 1),
     ("create_folder", 9),
     ("rename_folder", 7),
@@ -86,6 +87,7 @@ const BUDGET: &[(&str, usize)] = &[
     ("blob_rows_in_shard", 1),
     ("blob_rows_in_use_in_shard", 1),
     ("blob_row_exists", 1),
+    ("blob_store_ids", 1),
     ("delete_blob_rows (2 rows)", 4),
     ("purge_deleted_batch (1 message)", 7),
     ("purge_deliveries_batch", 3),

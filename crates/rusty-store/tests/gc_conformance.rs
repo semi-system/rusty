@@ -224,13 +224,13 @@ async fn delete_blob_rows_rechecks_the_cutoff_itself() {
         let at = blob(&b, "at", Some(cutoff)).await;
         let after = blob(&b, "after", Some(cutoff + 1)).await;
         let all = [at.clone(), after.clone(), before.clone()];
-        let gone = b.grepo.delete_blob_rows(&all, cutoff).await.unwrap();
+        let gone = b.grepo.delete_blob_rows(rusty_store::PLATFORM_STORE, &all, cutoff).await.unwrap();
         assert_eq!(gone, vec![before.clone()], "{n}: only cutoff-1 is deleted");
         assert!(!blob_row_exists(&b, before.as_str()).await, "{n}");
         assert!(blob_row_exists(&b, at.as_str()).await, "{n}: zero_since = cutoff stays");
         assert!(blob_row_exists(&b, after.as_str()).await, "{n}: zero_since = cutoff+1 stays");
         // The same call one second later takes the boundary row.
-        let gone = b.grepo.delete_blob_rows(&all, cutoff + 1).await.unwrap();
+        let gone = b.grepo.delete_blob_rows(rusty_store::PLATFORM_STORE, &all, cutoff + 1).await.unwrap();
         assert_eq!(gone, vec![at.clone()], "{n}: the row at the old cutoff goes once past it");
         assert!(blob_row_exists(&b, after.as_str()).await, "{n}");
     })
@@ -247,18 +247,18 @@ async fn a_candidate_rereferenced_and_released_after_listing_is_not_deleted() {
         let now = db_clock(&b).await;
         let cutoff = now - 3600;
         let h = blob(&b, "relisted", Some(now - 7200)).await;
-        let listed = b.grepo.blob_candidates(cutoff, None, 10).await.unwrap();
+        let listed = b.grepo.blob_candidates(rusty_store::PLATFORM_STORE, cutoff, None, 10).await.unwrap();
         assert_eq!(listed, vec![h.clone()], "{n}: listed as a candidate");
         // Another session appends a message with this content and expunges and purges it again.
         let lit = hash_lit(&b, h.as_str());
         run(&b, &format!("UPDATE blobs SET refcount = 1 WHERE hash = {lit}")).await;
         run(&b, &format!("UPDATE blobs SET refcount = 0 WHERE hash = {lit}")).await;
-        let gone = b.grepo.delete_blob_rows(&listed, cutoff).await.unwrap();
+        let gone = b.grepo.delete_blob_rows(rusty_store::PLATFORM_STORE, &listed, cutoff).await.unwrap();
         assert!(gone.is_empty(), "{n}: unreferenced for less than the grace window: {gone:?}");
         assert!(blob_row_exists(&b, h.as_str()).await, "{n}");
         // Still referenced: stays as well.
         run(&b, &format!("UPDATE blobs SET refcount = 1 WHERE hash = {lit}")).await;
-        let gone = b.grepo.delete_blob_rows(&listed, i64::MAX).await.unwrap();
+        let gone = b.grepo.delete_blob_rows(rusty_store::PLATFORM_STORE, &listed, i64::MAX).await.unwrap();
         assert!(gone.is_empty(), "{n}: referenced");
     })
     .await;

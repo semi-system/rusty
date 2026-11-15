@@ -19,6 +19,7 @@
 mod directory;
 mod gc;
 pub(crate) mod sealed;
+pub(crate) mod blob_store;
 pub(crate) mod relay;
 pub(crate) mod admin;
 mod dns;
@@ -30,6 +31,7 @@ pub mod pg;
 pub use dns::{DkimKeyRow, DnsConfig, DnsConfigRow, DnsEventRow, DnsRepo};
 pub use gc::{GcRepo, PurgeBatch};
 pub use sealed::{SealedMeta, SealedRepo, SealedRow};
+pub use blob_store::{BlobStoreRepo, BlobStoreRow, StoreId, PLATFORM_STORE};
 pub use relay::{RelayRepo, RelayRow};
 pub use admin::{AdminGrant, AdminRepo};
 pub use jobs::{BatchJob, BatchRequest, ClaimRequest, JobRepo, NewJob, OwnerLimits};
