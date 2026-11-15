@@ -75,7 +75,23 @@ impl GcRepo for PgRepo {
         Ok(out)
     }
 
+    async fn blob_rows_in_use_in_shard(&self, shard: u8) -> Result<Vec<String>> {
+        let mut lo = [0u8; 32];
+        let mut hi = [0xffu8; 32];
+        lo[0] = shard;
+        hi[0] = shard;
+        let rows: Vec<Vec<u8>> =
+            sqlx::query_scalar(crate::repo::pg_lit("SELECT hash FROM blobs WHERE hash >= $1 AND hash <= $2 AND refcount > 0"))
+                .bind(lo.to_vec())
+                .bind(hi.to_vec())
+                .fetch_all(self.store.pool())
+                .await
+                .map_err(map_db_error)?;
+        Ok(rows.iter().map(hex::encode).collect())
+    }
+
     async fn blob_rows_in_shard(&self, shard: u8) -> Result<Vec<String>> {
+
         let mut lo = [0u8; 32];
         let mut hi = [0xffu8; 32];
         lo[0] = shard;

@@ -84,6 +84,7 @@ const BUDGET: &[(&str, usize)] = &[
     ("db_now (gc)", 1),
     ("blob_candidates", 1),
     ("blob_rows_in_shard", 1),
+    ("blob_rows_in_use_in_shard", 1),
     ("blob_row_exists", 1),
     ("delete_blob_rows (2 rows)", 4),
     ("purge_deleted_batch (1 message)", 7),

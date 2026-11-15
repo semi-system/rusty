@@ -238,6 +238,7 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
     other!("GcRepo", "db_now (gc)", false, None, None, g.db_now());
     other!("GcRepo", "blob_candidates", false, None, None, g.blob_candidates(100, None, 1000));
     other!("GcRepo", "blob_rows_in_shard", false, None, None, g.blob_rows_in_shard(0xaa));
+    other!("GcRepo", "blob_rows_in_use_in_shard", false, None, None, g.blob_rows_in_use_in_shard(0xaa));
     other!("GcRepo", "blob_row_exists", false, None, None, g.blob_row_exists(&hs[0]));
     other!("GcRepo", "delete_blob_rows (2 rows)", true,
         Some(("FROM blobs WHERE hash = ANY($1) ORDER BY hash FOR NO KEY UPDATE", "DELETE FROM blobs WHERE hash = ?")),
@@ -310,7 +311,7 @@ const TRAITS: &[(&str, &str, &[&str])] = &[
     (
         "GcRepo",
         include_str!("../../src/repo/gc.rs"),
-        &["db_now", "blob_candidates", "blob_rows_in_shard", "blob_row_exists"],
+        &["db_now", "blob_candidates", "blob_rows_in_shard", "blob_rows_in_use_in_shard", "blob_row_exists"],
     ),
 ];
 

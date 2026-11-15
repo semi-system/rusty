@@ -19,3 +19,4 @@ rusty-store = { path = "../rusty-store", features = ["test-fixtures"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tempfile.workspace = true
 proptest.workspace = true
+bytes.workspace = true

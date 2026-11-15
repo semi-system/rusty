@@ -77,6 +77,9 @@ pub struct CtlEnv<'a> {
     pub jobs: Option<&'a rusty_store::JobQueue>,
     /// Administrator grants (`admin grant`, `revoke`, `list`).
     pub admins: Option<&'a rusty_store::AdminStore>,
+    /// The blob store and the garbage collector's reads (`blobs verify`); the composition root opens them only for that command.
+    pub blobs: Option<&'a dyn rusty_store::BlobStore>,
+    pub gc: Option<&'a rusty_store::Gc>,
 }
 
 /// The parts of `[outbound]` the DNS records depend on.
@@ -342,7 +345,31 @@ async fn domain_relay_remove(env: &mut CtlEnv<'_>, name: &str) -> Result<Outcome
     ))
 }
 
-fn admin_store<'a>(env: &CtlEnv<'a>) -> Result<&'a rusty_store::AdminStore, CtlError> {
+/// `blobs verify`: every blob the database still references must have its file. A read only. Exit status 1 when one is missing or a shard could not be read.
+async fn blobs_verify(env: &mut CtlEnv<'_>) -> Result<Outcome, CtlError> {
+    let (Some(blobs), Some(gc)) = (env.blobs, env.gc) else {
+        return Err(CtlError::runtime("the blob store is not available here"));
+    };
+    let r = gc.verify_blobs(blobs).await.map_err(|e| map_error(&e, "blob store"))?;
+    let mut lines = vec![format!(
+        "{} blobs referenced by the database, {} files in the store, {} files nothing references (garbage collection removes them)",
+        r.referenced, r.stored, r.unreferenced_files
+    )];
+    if r.missing_total > 0 {
+        lines.push(format!("MISSING: {} referenced blobs have no file (first {}):", r.missing_total, r.missing.len()));
+        lines.extend(r.missing.iter().map(|h| format!("  {h}")));
+    }
+    lines.extend(r.errors.iter().map(|e| format!("could not check shard {e}")));
+    lines.push(if r.is_clean() { "result: every referenced blob exists".to_owned() } else { "result: the blob store is missing data or could not be read".to_owned() });
+    Ok(Outcome::new(
+        lines.join("\n"),
+        json!({ "referenced": r.referenced, "stored": r.stored, "unreferenced_files": r.unreferenced_files, "missing_total": r.missing_total, "missing": r.missing, "errors": r.errors, "ok": r.is_clean() }),
+    )
+    .failing(!r.is_clean()))
+}
+
+fn admin_store<'a>(
+env: &CtlEnv<'a>) -> Result<&'a rusty_store::AdminStore, CtlError> {
     env.admins.ok_or_else(|| CtlError::runtime("administrator grants are not available here"))
 }
 
@@ -615,6 +642,8 @@ pub async fn execute(command: &Command, env: &mut CtlEnv<'_>) -> Result<Outcome,
         Command::DomainRelaySet { .. } => domain_relay_set(env, command).await,
 
         Command::DomainRelayShow { name } => domain_relay_show(env, name).await,
+
+        Command::BlobsVerify => blobs_verify(env).await,
 
         Command::AdminGrant { addr, domain } => admin_grant(env, addr, domain.as_deref()).await,
 
