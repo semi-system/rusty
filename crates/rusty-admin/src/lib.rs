@@ -9,6 +9,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod run;
 pub mod session;
 pub mod setup;
 

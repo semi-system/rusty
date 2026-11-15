@@ -12,6 +12,7 @@ use serde::Deserialize;
 use crate::{Error, Result};
 
 pub use crate::config_role::{Role, UNUSED_BLOB_DIR};
+pub use crate::config_admin::{valid_origin, AdminConfig};
 pub use crate::config_sealing::{SealingConfig, UnsealingConfig, MAX_UNSEALING_KEYS};
 pub use crate::config_valkey::ValkeyConfig;
 pub use crate::config_store::{
@@ -95,6 +96,9 @@ pub struct StartupConfig {
     /// `[unsealing]`: the files holding the private keys that open sealed secrets (the outbound service only).
     #[serde(default)]
     pub unsealing: Option<UnsealingConfig>,
+    /// `[admin]`: the admin web service (listen address, public origin); the admin role only.
+    #[serde(default)]
+    pub admin: Option<AdminConfig>,
 }
 
 /// Which start-up rules apply (see [`StartupConfig::check_startup`]).
@@ -201,6 +205,9 @@ impl StartupConfig {
         }
         if let Some(s) = &self.sealing {
             s.validate()?;
+        }
+        if let Some(a) = &self.admin {
+            a.validate()?;
         }
         if let Some(u) = &self.unsealing {
             u.validate()?;
@@ -325,6 +332,7 @@ impl StartupConfig {
             valkey: None,
             sealing: None,
             unsealing: None,
+            admin: None,
         }
     }
 }
