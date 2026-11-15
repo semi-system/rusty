@@ -114,3 +114,18 @@ from it. A test runs the endpoints and checks the real responses have exactly th
 * The first account of a domain also receives `postmaster@` and `abuse@` (as with `rustyctl account add`; the rule is repeated here, not shared).
 * Lists are paged by `?after=<cursor>` (page size 100); `next` is `null` at the end; any other query parameter is `400`. A mutation takes no query at all. Unknown JSON
   fields are `400`. Passwords: at least 8 characters for an account (as with `rustyctl`).
+
+## DKIM and relay endpoints
+
+Both are in `contract/v1.json` and follow the scope rules above (a domain administrator reaches its own domain only; anything else is the same `404`).
+
+* `GET/POST /api/v1/domains/{d}/dkim`: `GET` lists the **public** records (name, value, and whether the private half is sealed). `POST` makes an ed25519 key and seals
+  its private half to `[sealing] public_key` (only the outbound service's `[unsealing]` key opens it); the response is the public record only. The web never accepts a
+  pasted private key (RSA keys are imported with `rustyctl dkim import`). A selector is made once: a second request for it is `409 exists`. The **public row is written
+  first** (it is write-once, so concurrent requests for one selector have exactly one winner and only the winner stores its private half): if sealing then fails, the listing
+  shows `sealed: false` and a new selector is used.
+* `GET/PUT/DELETE /api/v1/domains/{d}/relay`, `POST .../relay/check`: the relay of the domain (host, port, TLS, login, SPF include), under the rules of `rustyctl domain relay`
+  (four ports, a public host, a login only over TLS). The password is sealed, can only be overwritten and is **never returned**; a login always comes with its password in the same
+  request, and a relay without a login deletes the old password. `check` queues a `relay.check` job; the outbound service records the fixed category shown by `GET`.
+* A deployment without `[sealing]` answers `503 unavailable` where a secret would be sealed (a relay without a login still works).
+* The admin binary currently links `rusty-smtp` (without its default features) for the key generation and the job names; the SMTP crate split of the image design removes that.

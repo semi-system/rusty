@@ -10,11 +10,12 @@
 pub mod api;
 pub mod auth;
 pub mod manage;
+pub mod outbound;
 pub mod run;
 pub mod session;
 pub mod setup;
 
 pub use auth::{AdminAuth, Principal, Scope, SignInError};
-pub use api::{AdminApp, COOKIE};
+pub use api::{AdminApp, Services, COOKIE};
 pub use session::{Clock, ManualNow, Session, SessionConfig, SessionStore, SystemNow};
 pub use setup::{SetupGate, Verdict as SetupVerdict};

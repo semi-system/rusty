@@ -30,6 +30,16 @@ const MAX_ADDRESS: usize = 320;
 const MAX_PASSWORD: usize = 1024;
 const MAX_TOKEN: usize = 128;
 
+/// The stores the outbound endpoints (DKIM, relay) need beyond the directory; absent in a deployment that only manages domains and accounts.
+pub struct Services {
+    pub dns: rusty_store::DnsStore,
+    pub relays: rusty_store::RelayStore,
+    pub sealed: rusty_store::SealedWriter,
+    pub jobs: rusty_store::JobQueue,
+    /// `[sealing] public_key`: what secrets are sealed to. `None`: nothing can be sealed, the endpoints that need it answer `503 unavailable`.
+    pub sealing: Option<rusty_seal::SealingKey>,
+}
+
 pub struct AdminApp {
     pub auth: AdminAuth,
     pub directory: Directory,
@@ -39,13 +49,20 @@ pub struct AdminApp {
     /// `https://host[:port]` of the admin host name, as the browser sends it in `Origin`.
     pub public_origin: String,
     pub session_cfg: SessionConfig,
+    pub services: Option<Services>,
     /// Serialises the setup, so two requests cannot both make a first administrator.
     setup_lock: tokio::sync::Mutex<()>,
 }
 
 impl AdminApp {
     pub fn new(auth: AdminAuth, directory: Directory, admins: AdminStore, setup: Option<SetupGate>, public_origin: &str, session_cfg: SessionConfig) -> AdminApp {
-        AdminApp { auth, directory, admins, setup, public_origin: public_origin.to_owned(), session_cfg, setup_lock: tokio::sync::Mutex::new(()) }
+        AdminApp { auth, directory, admins, setup, public_origin: public_origin.to_owned(), session_cfg, services: None, setup_lock: tokio::sync::Mutex::new(()) }
+    }
+
+    /// Give the app the stores of the outbound endpoints.
+    pub fn with_services(mut self, services: Services) -> AdminApp {
+        self.services = Some(services);
+        self
     }
 
     /// The signed-in administrator of a request. `Err` is the response to send: `401 unauthorized` (no or ended session), `503 busy` (a store
