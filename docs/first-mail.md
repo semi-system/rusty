@@ -1,6 +1,6 @@
 # First mail in about 15 minutes
 
-One host, Docker with Compose, nothing else: PostgreSQL, the mail services (SMTP and IMAP), the admin web and the edge (HAProxy) come from `deploy/standalone`.
+One host, Docker with Compose, nothing else: PostgreSQL, the five mail services (smtp-in, submission, imap, outbound, gc: one image each), the admin web and the edge (HAProxy) come from `deploy/standalone`.
 What was run end to end for this page: a message sent to port 25 through the edge was delivered and read back over IMAPS on 993, STARTTLS on 25 used the
 service's own certificate, the admin page answered over HTTPS, and the services saw the client's real address (PROXY protocol v2).
 
@@ -23,7 +23,7 @@ cd deploy/standalone
 For a LAN test host: `./setup.sh --self-signed --mail-host mail.lan --admin-host admin.lan --public-ip 192.168.1.10 --admin-allow 192.168.1.0/24`.
 
 `setup.sh` makes, under `~/rusty-state` (`--state-dir` or `RUSTY_STATE` to change it; it lives outside the repository on purpose: an image build reads the repository, and it cannot read what belongs to the service users): the database passwords (one for each of the four database roles), a private CA and certificate for the database link (clients verify it),
-the sealing key pair (the private half stays with the mail service), and the three configuration files from `templates/`. It builds the two images (`docker compose build`,
+the sealing key pair (the private half stays with the services that open message bodies), and the configuration file of every service (and one for `rustyctl`) from `templates/`. It builds the images (`docker compose build`,
 BuildKit needed; `SKIP_BUILD=1` when they already exist). Nothing is sent anywhere. Run it again to change a setting: existing secrets and keys are kept.
 
 ## 2. Start it
@@ -42,18 +42,18 @@ docker compose logs admin | tail -3       # one line: a 64-character setup token
 ```
 
 Open `https://admin.example.org/` from the allowed network, enter the token and the address and password of the first platform administrator. The page is gone for good
-once an administrator exists. Lost access? `docker compose exec mail rustyctl --config /etc/rusty/rusty.toml admin grant <address>`.
+once an administrator exists. Lost access? `docker compose run --rm ctl admin grant <address>`.
 
 ## 4. A domain, an account, DNS
 
 In the web (or with `rustyctl`): add the domain, create an account, make a DKIM key (it is sealed: the web never sees it again), then publish the records the DNS page
 shows (MX, SPF, DKIM, DMARC, the domain-ownership record). The page checks them against live DNS, and with `[dns_check] enabled = true` (set in the generated
-`rusty.toml`) the mail service re-checks every domain once a day and shows drift.
+`gc.toml`) the gc service queues a check of every domain once a day and shows drift.
 
 ```sh
-docker compose exec mail rustyctl --config /etc/rusty/rusty.toml domain add example.org
-printf '%s' 'a-long-password' | docker compose exec -T mail rustyctl --config /etc/rusty/rusty.toml account add me@example.org --password-stdin
-docker compose exec mail rustyctl --config /etc/rusty/rusty.toml domain dns example.org      # the records to publish
+docker compose run --rm ctl domain add example.org
+printf '%s' 'a-long-password' | docker compose run --rm -T ctl account add me@example.org --password-stdin
+docker compose run --rm ctl domain dns example.org      # the records to publish
 ```
 
 ## 5. Use it

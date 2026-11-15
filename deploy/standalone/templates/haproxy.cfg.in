@@ -78,19 +78,19 @@ frontend admin_https
 # The services by their fixed addresses on the private network the edge shares with them (compose.yaml): a name could resolve to another network the edge is
 # on, and the PROXY header is only accepted from the edge's address on this one.
 backend be_smtp
-    server mail 10.77.0.10:2525 send-proxy-v2
+    server smtp-in 10.77.0.10:2525 send-proxy-v2
 
 backend be_submission
-    server mail 10.77.0.10:5587 send-proxy-v2
+    server submission 10.77.0.12:5587 send-proxy-v2
 
 backend be_smtps
-    server mail 10.77.0.10:4465 send-proxy-v2
+    server submission 10.77.0.12:4465 send-proxy-v2
 
 backend be_imap
-    server mail 10.77.0.10:1143 send-proxy-v2
+    server imap 10.77.0.13:1143 send-proxy-v2
 
 backend be_imaps
-    server mail 10.77.0.10:1993 send-proxy-v2
+    server imap 10.77.0.13:1993 send-proxy-v2
 
 backend be_admin
     mode http

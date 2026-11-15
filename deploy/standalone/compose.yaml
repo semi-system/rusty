@@ -1,4 +1,4 @@
-# A complete Rusty mail server on one host: PostgreSQL, the mail services, the admin web and the edge (HAProxy with ACME certificates).
+# A complete Rusty mail server on one host: PostgreSQL, the five mail services (one image each), the admin web and the edge (HAProxy with ACME certificates).
 # Run ./setup.sh first (it writes ./state and builds the images); then `docker compose up -d`. docs/first-mail.md walks through it.
 name: rusty
 
@@ -69,15 +69,17 @@ services:
     <<: *hardened
     restart: "no"
     entrypoint: [/usr/local/bin/rustyctl]
-    command: [--config, /etc/rusty/rusty.toml, blobs, init]
+    command: [--config, /etc/rusty/gc.toml, blobs, init]
     secrets: [pg_app]
     volumes:
       - ${RUSTY_STATE:?run ./setup.sh first}/etc:/etc/rusty:ro
       - mail-data:/var/lib/rusty
     networks: [db]
 
-  mail:
-    image: rusty-mail:local
+  # Port 25: unauthenticated inbound mail.
+  smtp-in:
+    image: rusty-smtp-in:local
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: rusty-smtp-in }
     <<: *hardened
     tmpfs: [/tmp]
     secrets: [pg_app]
@@ -89,12 +91,105 @@ services:
     networks:
       db: {}
       app: { ipv4_address: 10.77.0.10 }
-      egress: {}
     depends_on:
       migrate: { condition: service_completed_successfully }
       blobs-init: { condition: service_completed_successfully }
       cert-sync: { condition: service_healthy, required: false }
     stop_grace_period: 45s
+
+  # Ports 587 and 465: authenticated submission.
+  submission:
+    image: rusty-submission:local
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: rusty-submission }
+    <<: *hardened
+    tmpfs: [/tmp]
+    secrets: [pg_app]
+    volumes:
+      - ${RUSTY_STATE:?run ./setup.sh first}/etc:/etc/rusty:ro
+      - ${RUSTY_STATE:?run ./setup.sh first}/tls:/etc/rusty-tls:ro
+      - ${RUSTY_STATE:?run ./setup.sh first}/keys:/etc/rusty-keys:ro
+      - mail-data:/var/lib/rusty
+    networks:
+      db: {}
+      app: { ipv4_address: 10.77.0.12 }
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      blobs-init: { condition: service_completed_successfully }
+      cert-sync: { condition: service_healthy, required: false }
+    stop_grace_period: 45s
+
+  # Ports 143 and 993.
+  imap:
+    image: rusty-imap:local
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: rusty-imap }
+    <<: *hardened
+    tmpfs: [/tmp]
+    secrets: [pg_app]
+    volumes:
+      - ${RUSTY_STATE:?run ./setup.sh first}/etc:/etc/rusty:ro
+      - ${RUSTY_STATE:?run ./setup.sh first}/tls:/etc/rusty-tls:ro
+      - ${RUSTY_STATE:?run ./setup.sh first}/keys:/etc/rusty-keys:ro
+      - mail-data:/var/lib/rusty
+    networks:
+      db: {}
+      app: { ipv4_address: 10.77.0.13 }
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      blobs-init: { condition: service_completed_successfully }
+      cert-sync: { condition: service_healthy, required: false }
+    stop_grace_period: 45s
+
+  # The delivery worker: DKIM, relays, DNS and storage checks. No port; it dials out.
+  outbound:
+    image: rusty-outbound:local
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: rusty-outbound }
+    <<: *hardened
+    tmpfs: [/tmp]
+    secrets: [pg_app]
+    volumes:
+      - ${RUSTY_STATE:?run ./setup.sh first}/etc:/etc/rusty:ro
+      - ${RUSTY_STATE:?run ./setup.sh first}/keys:/etc/rusty-keys:ro
+      - mail-data:/var/lib/rusty
+    networks:
+      db: {}
+      egress: {}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      blobs-init: { condition: service_completed_successfully }
+    stop_grace_period: 45s
+
+  # Garbage collection, store upkeep and the periodic jobs. No port.
+  gc:
+    image: rusty-gc:local
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: rusty-gc }
+    <<: *hardened
+    tmpfs: [/tmp]
+    secrets: [pg_app]
+    volumes:
+      - ${RUSTY_STATE:?run ./setup.sh first}/etc:/etc/rusty:ro
+      - ${RUSTY_STATE:?run ./setup.sh first}/keys:/etc/rusty-keys:ro
+      - mail-data:/var/lib/rusty
+    networks: [db]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      blobs-init: { condition: service_completed_successfully }
+    stop_grace_period: 45s
+
+  # rustyctl for the operator: `docker compose run --rm ctl domain add example.org` (docs/first-mail.md). Not started by `up`.
+  ctl:
+    profiles: [tools]
+    image: rusty-mail:local
+    <<: *hardened
+    restart: "no"
+    entrypoint: [/usr/local/bin/rustyctl, --config, /etc/rusty/ctl.toml]
+    secrets: [pg_app]
+    volumes:
+      - ${RUSTY_STATE:?run ./setup.sh first}/etc:/etc/rusty:ro
+      - ${RUSTY_STATE:?run ./setup.sh first}/keys:/etc/rusty-keys:ro
+      - mail-data:/var/lib/rusty
+    networks: [db]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
 
   admin:
     image: rusty-admin:local

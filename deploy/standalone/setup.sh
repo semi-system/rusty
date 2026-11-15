@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prepares a standalone installation: secrets, the database CA, the sealing key, the three configuration files, and the images.
+# Prepares a standalone installation: secrets, the database CA, the sealing key, the configuration file of every service, and the images.
 #
 #   ./setup.sh --mail-host mail.example.org --admin-host admin.example.org --contact you@example.org \
 #              --public-ip 203.0.113.5 --admin-allow 198.51.100.0/24 [--admin-allow 203.0.113.7] [--staging]
@@ -78,13 +78,13 @@ render() { # template -> file: the values were validated above, none holds a cha
 }
 # The sealing key pair: the private half stays in state/keys (mail uid only); the public half goes to both configurations.
 mail_ctl() { docker run --rm --user 65532:65532 --entrypoint /usr/local/bin/rustyctl -v "$STATE/keys:/etc/rusty-keys" rusty-mail:local "$@"; }
-[ "${SKIP_BUILD:-0}" = 1 ] || docker compose build >/dev/null   # SKIP_BUILD=1: the images rusty-mail:local and rusty-admin:local already exist
+[ "${SKIP_BUILD:-0}" = 1 ] || docker compose build >/dev/null   # SKIP_BUILD=1: the images (rusty-mail:local for the one-shot jobs, rusty-<service>:local, rusty-admin:local) already exist
 R 'chown 65532:65532 /s/keys /s/tls /s/secrets /s/secrets/* && chmod 0700 /s/keys /s/secrets && chmod 0600 /s/secrets/* && chmod 0755 /s/tls'
 if ! R 'test -e /s/keys/unseal.key'; then mail_ctl seal keygen /etc/rusty-keys/unseal.key >/dev/null; fi
 SEAL_PUBLIC="$(mail_ctl seal show /etc/rusty-keys/unseal.key | grep -o 'rusty-seal-v1:[0-9a-f]\{64\}' | head -1)"
 [ -n "$SEAL_PUBLIC" ] || die "could not read the sealing public key"
 
-render rusty.toml; render admin.toml; render haproxy.cfg
+for f in smtp-in.toml submission.toml imap.toml outbound.toml gc.toml ctl.toml admin.toml haproxy.cfg; do render $f; done
 # Self-signed certificates for the two names (made once; a name change makes new ones): ECDSA P-256, with the names as subject alternative names. HAProxy loads
 # a file holding the key then the certificate; the mail services read the certificate and the key of the mail name from state/tls.
 if [ "$SELF" = 1 ]; then
@@ -99,7 +99,7 @@ if [ "$SELF" = 1 ]; then
   R 'cp /s/edge/certs/mail.crt /s/tls/cert.pem && cp /s/edge/certs/mail.key /s/tls/key.pem'
 fi
 # The migration run needs the migrator role; the daemon's file never names it.
-{ cat "$STATE/etc/rusty.toml"; echo 'migrator_user = "rusty_migrator"'; echo 'migrator_password_file = "/run/secrets/pg_migrator"'; } > "$STATE/etc/migrate.toml"
+{ cat "$STATE/etc/gc.toml"; echo 'migrator_user = "rusty_migrator"'; echo 'migrator_password_file = "/run/secrets/pg_migrator"'; } > "$STATE/etc/migrate.toml"
 chmod 0644 "$STATE"/etc/*
 
 # The edge's files belong to its user (99), the postgres key to postgres (999).
