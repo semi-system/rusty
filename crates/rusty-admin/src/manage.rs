@@ -113,7 +113,7 @@ fn domain_of(address: &str) -> Option<&str> {
 }
 
 /// The domain `name` if it exists **and** the administrator may touch it; otherwise `404`, whichever it was.
-async fn scoped_domain(app: &AdminApp, p: &Principal, name: &str) -> Result<DomainInfo, Response> {
+pub(crate) async fn scoped_domain(app: &AdminApp, p: &Principal, name: &str) -> Result<DomainInfo, Response> {
     let found = match app.directory.find_domain(name).await {
         Ok(f) => f,
         // A name that is not a domain name is "no such domain".

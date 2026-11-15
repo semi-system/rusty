@@ -2134,6 +2134,8 @@ dependencies = [
  "rusty-directory",
  "rusty-http",
  "rusty-runtime",
+ "rusty-seal",
+ "rusty-smtp",
  "rusty-store",
  "rusty-svc",
  "rusty-valkey",

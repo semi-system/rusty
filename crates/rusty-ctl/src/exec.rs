@@ -6,7 +6,7 @@
 use std::fmt;
 use std::net::IpAddr;
 
-use rusty_core::dns::{records_for_domain, zone_line, DkimKind, DkimPublic, DnsInputs, DnsRecord, Requirement};
+use rusty_core::dns::{zone_line, DnsRecord, Requirement};
 use rusty_core::dns_check::{check_records, CheckOptions, DnsSource};
 use rusty_core::dns_state::RecordStatus;
 use rusty_core::Error;
@@ -907,18 +907,9 @@ async fn records_of(env: &CtlEnv<'_>, dom: &DomainInfo) -> Result<(Vec<DnsRecord
         return Err(CtlError::runtime("set hostname in the configuration: the DNS records point at it"));
     };
     let stored = env.dns.dkim_keys(dom.id).await.map_err(|e| map_error(&e, "dkim keys"))?;
-    let keys: Vec<DkimPublic> = stored
-        .iter()
-        .filter_map(|k| Some(DkimPublic { selector: &k.selector, kind: DkimKind::parse(&k.algorithm)?, public_key_b64: &k.public_key_b64 }))
-        .collect();
-    let includes: Vec<&str> = env.outbound.spf_include.into_iter().collect();
-    let inputs = DnsInputs { domain: &dom.name, mail_host: host, outbound_ips: env.outbound.public_ips, dkim: &keys, spf_includes: &includes, dmarc_rua: None };
-    let records = records_for_domain(&inputs).map_err(|e| map_error(&e, "dns records"))?;
-    let mut warnings = Vec::new();
-    if env.outbound.public_ips.is_empty() {
-        warnings.push("no_public_ips");
-    }
-    Ok((records, warnings))
+    let keys: Vec<(&str, &str, &str)> = stored.iter().map(|k| (k.selector.as_str(), k.algorithm.as_str(), k.public_key_b64.as_str())).collect();
+    let facts = rusty_core::dns::MailFacts { mail_host: host, public_ips: env.outbound.public_ips, spf_include: env.outbound.spf_include };
+    rusty_core::dns::records_with_facts(&dom.name, &facts, &keys).map_err(|e| map_error(&e, "dns records"))
 }
 
 fn warning_text(code: &str) -> &'static str {

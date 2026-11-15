@@ -217,6 +217,13 @@ async fn build(
                 hostname,
             )));
         }
+        // The check of a domain's DNS records (`dns.check`, queued by the admin web): it queries DNS, so it runs where the resolver settings are.
+        services.push(Box::new(rusty_smtp::outbound::dns_job::DnsCheckWorker::new(
+            rusty_store::DnsStore::with_repo(store.repos().dns.clone()),
+            cfg.outbound.clone(),
+            hostname,
+            Arc::new(rusty_smtp::stack::LiveDns::from_config(&cfg.outbound)?),
+        )));
         services.push(Box::new(OutboundWorker::new(deps, WorkerOptions::new(cfg.outbound.clone(), hostname)).with_wake(wake)));
     }
     for (kind, addr) in &addrs {

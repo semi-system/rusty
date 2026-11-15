@@ -19,7 +19,7 @@ use rusty_valkey::MemoryKv;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::api::{routes, AdminApp};
+use crate::api::{routes, AdminApp, MailSettings, Services};
 use crate::auth::AdminAuth;
 use crate::session::{SessionConfig, SessionStore, SystemNow};
 use crate::setup::SetupGate;
@@ -60,8 +60,23 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
         let (g, t) = SetupGate::new(Arc::new(SystemNow));
         (Some(g), Some(t))
     };
-    let app = Arc::new(AdminApp::new(auth, directory, admins, gate, &admin.public_origin, SessionConfig::default()));
-    let router = crate::manage::routes(app.clone(), routes(app, Router::new()));
+    let sealing = match &cfg.sealing {
+        Some(s) => Some(rusty_seal::SealingKey::from_text(&s.public_key)?),
+        None => {
+            tracing::warn!("no [sealing] section: DKIM keys and relay passwords cannot be created in the web (the endpoints answer 503)");
+            None
+        }
+    };
+    let services = Services {
+        dns: rusty_store::DnsStore::with_repo(repos.dns.clone()),
+        relays: rusty_store::RelayStore::with_repo(repos.relay.clone()),
+        sealed: rusty_store::SealedWriter::with_repo(repos.sealed.clone()),
+        jobs: rusty_store::JobQueue::with_repo(repos.jobs.clone()),
+        sealing,
+        mail: cfg.hostname.clone().map(|host| MailSettings { host, public_ips: admin.public_ips.clone(), spf_include: admin.spf_include.clone() }),
+    };
+    let app = Arc::new(AdminApp::new(auth, directory, admins, gate, &admin.public_origin, SessionConfig::default()).with_services(services));
+    let router = crate::dns::routes(app.clone(), crate::outbound::routes(app.clone(), crate::manage::routes(app.clone(), routes(app, Router::new()))));
     let handler = Arc::new(HttpHandler::new(router, HttpConfig::default()));
 
     let (accept, tls): (Arc<dyn Accept>, Option<TlsProvider>) = if cfg.tls.has_cert() {

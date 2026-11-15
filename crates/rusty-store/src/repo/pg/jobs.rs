@@ -469,6 +469,12 @@ impl JobRepo for PgRepo {
         ok.map(|_| ()).ok_or_else(crate::jobs::stale)
     }
 
+    async fn count_by_state(&self, kind: &str, domain: i64) -> Result<Vec<(String, i64)>> {
+        use sqlx::Row;
+        let rows = sqlx::query(r(sql::COUNT_BY_STATE)).bind(kind).bind(domain).fetch_all(self.store.pool()).await.map_err(map_db_error)?;
+        rows.iter().map(|x| Ok((x.try_get::<String, _>(0)?, x.try_get::<i64, _>(1)?))).collect::<std::result::Result<Vec<_>, sqlx::Error>>().map_err(map_db_error)
+    }
+
     async fn purge_finished_batch(&self, older_than: i64, limit: i64) -> Result<u64> {
         let n = tx_retry!(self, None, |c| {
             {
