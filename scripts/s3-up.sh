@@ -18,8 +18,8 @@ cleanup() {
 
 # Any HTTP answer (a 403 without credentials is the normal one) means the server is up.
 wait_http() {
-  local port="$1" i code
-  for i in $(seq 1 60); do
+  local port="$1" code
+  for _ in $(seq 1 60); do
     code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/" 2>/dev/null || true)"
     case "$code" in 2??|3??|4??) return 0 ;; esac
     sleep 1

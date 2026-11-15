@@ -145,7 +145,7 @@ s3_start() {
   bash scripts/s3-up.sh || return 1
   while IFS= read -r line; do
     case "$line" in
-      RUSTY_TEST_S3_ENDPOINT=*|RUSTY_TEST_S3_KEY=*|RUSTY_TEST_S3_SECRET=*) export "$line" ;;
+      RUSTY_TEST_S3_ENDPOINT=*|RUSTY_TEST_S3_KEY=*|RUSTY_TEST_S3_SECRET=*) export "${line%%=*}=${line#*=}" ;;
     esac
   done < "$env_file"
   [ -n "${RUSTY_TEST_S3_ENDPOINT:-}" ] || { echo "S3 settings file is missing or empty" >&2; return 1; }
