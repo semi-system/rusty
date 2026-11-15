@@ -62,3 +62,9 @@ HAProxy keeps the certificate it obtained over ACME in memory only; nothing is w
   this and keep the key at the edge alone.
 
 `scripts/tests/acme-pebble.sh` runs the whole path against Pebble: issuance, renewal, then `cert-sync` (modes, same certificate as presented, no rewrite when nothing changed).
+
+### Keeping the certificate across an edge restart
+
+HAProxy forgets its certificate when it stops, and the next start would order a new one (rate limits apply; until it arrives a temporary self-signed certificate is presented). Run `cert-sync.sh` a second time **as the edge's own
+uid** with `COMBINED=mail.pem` and the edge's certs directory as the output directory, in a loop (for example every 60 seconds): the certificate and its key are kept there in the format HAProxy loads, and a restarted edge starts with
+them. `scripts/tests/acme-pebble.sh` proves it: after the restart the same certificate (same serial) is presented. Two runs, two uids, because the mail services' key file must belong to their uid and HAProxy's to its own.

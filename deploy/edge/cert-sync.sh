@@ -5,6 +5,10 @@
 #   <outdir>/key.pem    the private key, mode 0600, owned by whoever runs this script (run it as the mail services' uid)
 # atomically (a new file renamed over the old one), and only when the content changed: the services reload on a change.
 #
+# With COMBINED=<file name> it writes instead ONE file `<outdir>/<file name>`: the key then the certificate chain, mode 0600, the format HAProxy loads. Run as
+# the edge's own uid with outdir = HAProxy's certs directory, it keeps the certificate across an edge restart (HAProxy then starts with it instead of asking
+# the certificate authority for a new one: no rate-limit risk, no gap with a temporary certificate).
+#
 #   cert-sync.sh <runtime socket> <certificate, e.g. @certs/mail.pem> <outdir> [interval seconds: loop forever]
 set -eu
 sock="${1:?runtime socket}"; name="${2:?certificate name}"; out="${3:?output directory}"; every="${4:-0}"
@@ -20,6 +24,12 @@ sync_once() {
     /^-----END /  { dest = "" }' "$tmp/all.pem"
   [ -s "$tmp/key.pem" ] && [ -s "$tmp/cert.pem" ] || { echo "cert-sync: HAProxy returned no certificate for $name" >&2; return 1; }
   chmod 0644 "$tmp/cert.pem"; chmod 0600 "$tmp/key.pem"
+  if [ -n "${COMBINED:-}" ]; then
+    cat "$tmp/key.pem" "$tmp/cert.pem" > "$tmp/combined.pem"; chmod 0600 "$tmp/combined.pem"
+    if [ -f "$out/$COMBINED" ] && cmp -s "$tmp/combined.pem" "$out/$COMBINED"; then rm -rf "$tmp"; trap - EXIT; return 0; fi
+    mv "$tmp/combined.pem" "$out/$COMBINED"; rm -rf "$tmp"; trap - EXIT
+    echo "cert-sync: wrote $out/$COMBINED"; return 0
+  fi
   if [ -f "$out/cert.pem" ] && [ -f "$out/key.pem" ] && cmp -s "$tmp/cert.pem" "$out/cert.pem" && cmp -s "$tmp/key.pem" "$out/key.pem"; then
     rm -rf "$tmp"; trap - EXIT; return 0
   fi

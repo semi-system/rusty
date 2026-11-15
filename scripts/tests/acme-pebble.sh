@@ -118,4 +118,19 @@ now="$(presented | sed -n 's/^serial=//p')"
 before="$(stat -c %Y "$tmp/shared/cert.pem")"; sleep 1; sync >/dev/null || fail "second cert-sync failed"
 [ "$(stat -c %Y "$tmp/shared/cert.pem")" = "$before" ] || fail "an unchanged certificate was rewritten"
 echo "ok: cert-sync wrote the certificate and key for the STARTTLS ports"
+# The certificate survives an edge restart: kept to disk by cert-sync (COMBINED, as the edge's own uid, into HAProxy's certs directory), HAProxy starts with it
+# again (the same serial) instead of a temporary certificate and a new order.
+now="$(presented | sed -n 's/^serial=//p')"
+docker run --rm --user 99:99 --entrypoint sh -e COMBINED=mail.pem -v "$tmp/run:/run/ha" -v "$tmp/data/certs:/keep" -v "$ROOT/deploy/edge/cert-sync.sh:/cert-sync.sh:ro" "$HAPROXY" /cert-sync.sh /run/ha/admin.sock @certs/mail.pem /keep || fail "cert-sync (combined) failed"
+[ "$(stat -c %a "$tmp/data/certs/mail.pem")" = 600 ] || fail "the kept certificate file is not 0600"
+docker restart "$id-ha" >/dev/null
+after=""
+for _ in $(seq 1 30); do
+  s="$(presented | sed -n 's/^serial=//p')"
+  if [ -n "$s" ]; then after="$s"; break; fi
+  sleep 1
+done
+[ -n "$after" ] || fail "the edge did not come back after a restart"
+[ "$after" = "$now" ] || fail "after a restart the edge presents another certificate ($after, was $now)"
+echo "ok: the certificate survived an edge restart"
 echo "acme-pebble OK"
