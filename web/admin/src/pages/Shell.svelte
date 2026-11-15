@@ -11,13 +11,14 @@
   import Dkim from './Dkim.svelte';
   import Dns from './Dns.svelte';
   import Relay from './Relay.svelte';
+  import Storage from './Storage.svelte';
   import NotFound from './NotFound.svelte';
   import Link from '../lib/Link.svelte';
 
   let { app, me }: { app: App; me: Me } = $props();
 
   // A route never ends in a domain name: the server answers a path that looks like a file with 404 (see docs/admin-web-frontend.md).
-  type Page = 'domains' | 'overview' | 'accounts' | 'aliases' | 'dkim' | 'dns' | 'relay';
+  type Page = 'domains' | 'overview' | 'accounts' | 'aliases' | 'dkim' | 'dns' | 'relay' | 'storage';
   const routes: Route<Page>[] = [
     { pattern: '/', value: 'domains' },
     { pattern: '/domains/{name}/overview', value: 'overview' },
@@ -26,6 +27,7 @@
     { pattern: '/domains/{name}/dkim', value: 'dkim' },
     { pattern: '/domains/{name}/dns', value: 'dns' },
     { pattern: '/domains/{name}/relay', value: 'relay' },
+    { pattern: '/domains/{name}/storage', value: 'storage' },
   ];
   const match = $derived(matchRoute(routes, nav.path));
   const name = $derived(match?.params.name ?? '');
@@ -59,8 +61,10 @@
       <Dkim {app} {name} />
     {:else if match.value === 'dns'}
       <Dns {app} {name} />
-    {:else}
+    {:else if match.value === 'relay'}
       <Relay {app} {name} />
+    {:else}
+      <Storage {app} {me} {name} />
     {/if}
   {/key}
 {/if}

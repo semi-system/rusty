@@ -14,6 +14,7 @@
     { page: 'dkim', label: 'domain.dkim' },
     { page: 'dns', label: 'domain.dns' },
     { page: 'relay', label: 'domain.relay' },
+    { page: 'storage', label: 'domain.storage' },
   ];
 </script>
 

@@ -32,7 +32,14 @@ connection): `https://` only; a public DNS name or public IP address (no `localh
 port 443, 8443, 9000 or 9443; no credentials, path or query in the URL; no redirect is ever followed; TLS is verified against the system's trusted roots. The region, bucket and prefix must be
 plain S3 names.
 
+## Check and admin web
+
+A store is used only after a check recorded `ok`. `rustyctl storage check DOMAIN` (or the button on the admin web page `/domains/{name}/storage`) queues a `storage.check` job; the mail service,
+which holds the unsealing key, opens the store exactly as for real mail, puts, reads (also a range), heads, lists and deletes a probe object and records a fixed category (`ok`, `auth`,
+`no-bucket`, `tls`, ...) with its time. Only a platform administrator can set the store or queue a check (`PUT` and `POST` `/api/v1/domains/{d}/storage[/check]`); a domain administrator
+sees whether the store is ready and the last result, never the settings or keys. Changing the keys makes the store unchecked again.
+
 ## What is not here yet
 
-The `storage.check` job and the admin web page for stores, using several buckets for one tenant (failover, JBOD, load balancing), moving a domain's bodies between stores, and the outbound
+Using several buckets for one tenant (failover, JBOD, load balancing), moving a domain's bodies between stores, and the outbound
 queue (its bodies stay in the platform store). See the design for the order.

@@ -58,6 +58,7 @@ every non-API route (revalidated by its `ETag`) and the security headers of desi
 | `/domains/{name}/dkim` | the public records (selectable fields and a copy button), make a key; the private key is never shown | |
 | `/domains/{name}/dns` | the records with the status of their last check, queue a check, reload | |
 | `/domains/{name}/relay` | the domain's own relay (host, port, encryption, login, SPF include), test, remove; the password is never read back and is cleared from the page once sent | |
+| `/domains/{name}/storage` | the domain's S3 store: status and last test for every administrator; settings, keys (never read back, cleared once sent) and the test button for a platform administrator | |
 
 The component tests run each page against a fake server that records the call, its CSRF header and its body, and check what an administrator may do (a domain administrator is not offered
 the platform actions; another tenant's domain is the same "not found" as a missing one), that a password never stays on the page, that an unknown value from the server (a status, a check
