@@ -178,13 +178,22 @@ A new migration takes the next number.
 
 * Backup: `pg_dump`/`pg_basebackup` first, then the blob directory (blobs are content-addressed and immutable, so a
   blob newer than the dump is harmless; the reverse is not). `scripts/backup.sh`, `scripts/restore.sh` and `rustyctl blobs verify` do this: see `docs/backup.md`.
-* GC singleton is still a local-volume file lock (one GC host per blob volume). The lease-row design is backlog.
-* PgBouncer (transaction pooling) is supported by construction (no session state) and tested in plan task PG8a, not
-  here. `db migrate` must connect directly.
+* GC is excluded per store by a lease row in the database (`blob_store_leases`), renewed per batch and shard and expiring on the database clock, as well as by the in-process or file lock of the store.
+* **PgBouncer (transaction pooling)** in front of the database, tested: `scripts/ci-pgb-suites.sh` runs the whole test workspace through PgBouncer 1.26 (image pinned in `deploy/images.lock`,
+  `scripts/pgb-up.sh`), the code under test on the pooler and the fixtures direct. Settings that matter:
+  * `pool_mode = transaction` and `max_prepared_statements = 200` (PgBouncer 1.21 or later keeps the client's prepared statements across server connections, so the statement cache of
+    the client stays on). Without that setting set `[store] pooler = true`: the client then sends every statement unprepared.
+  * `auth_type = scram-sha-256` with an `auth_query` (or a user list that holds each role's secret); `ignore_startup_parameters = extra_float_digits,options,application_name`;
+    server connections are pooled per (database, role), so `default_pool_size` per role is what counts against the server's `max_connections`.
+  * Two kinds of connection must not go through the pooler: the change feed's `LISTEN` (a session) and the migrations (DDL). With `[store] pooler = true` and
+    `direct_url = "postgres://rusty_app@db.internal:5432/rusty"` (the database itself, written like `url`, no password) the change feed connects there and `rustyctl db migrate` uses it
+    for its host and port (its own login and TLS rules as before). A pooler without `direct_url`, a `direct_url` without a pooler and the same endpoint twice are refused at start.
+  * What the pooled run does not cover: the tests of the feed itself run direct (`scripts/ci-pg-suites.sh`), and the check of a role's timeouts runs at the start of a service, so it
+    sees the role as it was when the pooler opened its connection: change a role's settings, then reload the pooler.
 * `deploy/standalone` (docs/first-mail.md) is the complete installation: a digest-pinned Postgres 18 with TLS verified by a private CA, a one-shot `db-init` (roles.sql and the logins of `rusty_app`, `rusty_admin` and `rusty_migrator`), a one-shot `migrate`, then the services each with its own role.
 
 ## 8. Known limits and deferred
 
 * Passwords are held in memory as `String` (no zeroizing crate in the tree).
-* No RLS, no PgBouncer test, no GC lease row, no PG7 benchmark, `jsonb`-vs-text decision: backlog in the PG plan.
+* No RLS, no PG7 benchmark, `jsonb`-vs-text decision: backlog in the PG plan.
 * `rusty_ro` is created and granted but nothing in Rusty uses it yet.

@@ -283,6 +283,8 @@ jobs:
             cargo-target-v1-test-postgres-${{ runner.os }}-
       - name: Postgres suites (scripts/ci-pg-suites.sh, as in scripts/ci.sh)
         run: bash scripts/ci-pg-suites.sh
+      - name: The suites through PgBouncer in transaction mode (scripts/ci-pgb-suites.sh)
+        run: bash scripts/ci-pgb-suites.sh
       - name: Prune the build directory (workspace artefacts, test binaries) before saving
         if: ${{ success() && github.ref == 'refs/heads/main' && steps.target.outputs.cache-hit != 'true' }}
         run: bash scripts/ci-cache-prune.sh target

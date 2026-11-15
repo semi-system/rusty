@@ -58,7 +58,7 @@ async fn a_committed_change_is_announced_with_the_mailbox_and_its_newest_seq() {
     let repo = PgRepo::new(store.clone());
     let mb = mailbox_of(&repo, "commit").await;
     // Drain what the set-up announced (account and mailbox creation write the change log too).
-    let mut l = listener(db.url()).await;
+    let mut l = listener(db.admin_db_url()).await;
     while next(&mut l, SHORT).await.is_some() {}
 
     repo.create_folder(mb, None, "Projects").await.unwrap();
@@ -76,7 +76,7 @@ async fn a_rolled_back_change_is_never_announced() {
     let store = db.connect().await;
     let repo = PgRepo::new(store.clone());
     let mb = mailbox_of(&repo, "rollback").await;
-    let mut l = listener(db.url()).await;
+    let mut l = listener(db.admin_db_url()).await;
     while next(&mut l, SHORT).await.is_some() {}
 
     let mut tx = store.begin_write().await.unwrap();
@@ -102,7 +102,7 @@ async fn one_statement_adding_many_changes_sends_one_notification_per_mailbox() 
     let repo = PgRepo::new(store.clone());
     let mb = mailbox_of(&repo, "batch").await;
     let base = newest_seq(&store, mb).await;
-    let mut l = listener(db.url()).await;
+    let mut l = listener(db.admin_db_url()).await;
     while next(&mut l, SHORT).await.is_some() {}
 
     sqlx::query(
@@ -127,7 +127,7 @@ async fn a_queued_job_is_announced() {
     let Some(admin) = pg_admin_url() else { return };
     let db = PgTestDb::create(&admin).await;
     let store = db.connect().await;
-    let mut l = listener(db.url()).await;
+    let mut l = listener(db.admin_db_url()).await;
     while next(&mut l, SHORT).await.is_some() {}
 
     sqlx::query(
