@@ -26,21 +26,21 @@ async fn plan_without_seqscan(conn: &mut PgConnection, sql: &str) -> String {
 /// check). Without an index on `messages(blob_hash)` it is a sequential scan of `messages`:
 /// 5.5 s per `GC_BATCH` of 1000 rows at 100k messages, versus 17 ms with the index.
 #[tokio::test]
-async fn gc_delete_foreign_key_probe_uses_the_blob_hash_index() {
+async fn gc_delete_foreign_key_probe_uses_the_blob_key_index() {
     let Some(admin) = pg_admin_url() else { return };
     let db = PgTestDb::create(&admin).await;
     let store = db.connect().await;
     let mut conn = PgConnection::connect(db.url()).await.unwrap();
     let plan = plan_without_seqscan(
         &mut conn,
-        "SELECT 1 FROM ONLY messages x WHERE blob_hash = decode(repeat('aa',32),'hex') FOR KEY SHARE OF x",
+        "SELECT 1 FROM ONLY messages x WHERE blob_store_id = 1 AND blob_hash = decode(repeat('aa',32),'hex') FOR KEY SHARE OF x",
     )
     .await;
     assert!(
         !plan.contains("Seq Scan"),
-        "the RESTRICT probe on messages(blob_hash) has no index to use:\n{plan}"
+        "the RESTRICT probe on messages(blob_store_id, blob_hash) has no index to use:\n{plan}"
     );
-    assert!(plan.contains("messages_blob_hash"), "expected the messages_blob_hash index:\n{plan}");
+    assert!(plan.contains("messages_blob"), "expected the messages_blob index:\n{plan}");
     conn.close().await.unwrap();
     store.close().await;
     db.cleanup().await;

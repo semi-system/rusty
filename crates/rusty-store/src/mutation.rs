@@ -68,7 +68,7 @@ pub const TABLE: &[Mutation] = &[
     text("D07-question-placeholders", PG, "$1", "?1", "$N placeholders written as ?N on Postgres"),
     text("D08-unnest-insert-unordered", PG, "FROM unnest($2::bigint[], $3::bigint[]) AS t(seq, item) ORDER BY t.seq", "FROM unnest($2::bigint[], $3::bigint[]) AS t(seq, item)", "change_log unnest insert loses its ORDER BY"),
     text("D09-blob-insert-unordered", PG, "AS t(h, s) ORDER BY t.h", "AS t(h, s)", "batch blob insert loses its ORDER BY (the ascending lock order)"),
-    text("D10-blob-insert-no-conflict-clause", PG, " ON CONFLICT (hash) DO NOTHING", "", "ON CONFLICT DO NOTHING removed from the blob upsert"),
+    text("D10-blob-insert-no-conflict-clause", PG, " ON CONFLICT (store_id, hash) DO NOTHING", "", "ON CONFLICT DO NOTHING removed from the blob upsert"),
     text("D11-list-member-insert-do-nothing", PG, "INSERT INTO list_members (list_id, account_id, external) VALUES ($1, $2, $3)", "INSERT INTO list_members (list_id, account_id, external) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING", "ON CONFLICT DO NOTHING added to the list member insert (a duplicate member no longer errors)"),
     text("D12-account-insert-do-nothing", PG, "VALUES ($1, $2, $3, $4, 'active', rs_now()) RETURNING id", "VALUES ($1, $2, $3, $4, 'active', rs_now()) ON CONFLICT DO NOTHING RETURNING id", "ON CONFLICT DO NOTHING added to the account insert (a duplicate address no longer errors)"),
     // ---- repository SQL (plan step 3)
