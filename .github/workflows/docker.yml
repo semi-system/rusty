@@ -90,6 +90,10 @@ jobs:
           bash scripts/check-image.sh rusty:smoke
           docker build --target admin -f deploy/docker/Dockerfile --build-arg "SOURCE_DATE_EPOCH=$SDE" -t rusty-admin:smoke .
           bash scripts/check-admin-image.sh rusty-admin:smoke
+          for svc in smtp-in submission imap outbound gc; do
+            docker build --target "rusty-$svc" -f deploy/docker/Dockerfile --build-arg "SOURCE_DATE_EPOCH=$SDE" -t "rusty-$svc:smoke" .
+            bash scripts/check-service-image.sh "$svc" "rusty-$svc:smoke"
+          done
           bash scripts/check-edge-acme.sh
       - name: Build the dev-cert variant and run the local-run scenario against it
         if: ${{ matrix.variant == 'amd64-dev-cert' }}

@@ -109,7 +109,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
     chmod 0700 /rootfs/var/lib/rusty; chmod 0755 /rootfs/etc/rusty; \
     install -D "/out/$triple/release/rusty-admin" /rootfs-admin/usr/local/bin/rusty-admin; \
     mkdir -p /rootfs-admin/etc/rusty; chmod 0755 /rootfs-admin/etc/rusty; \
-    find /rootfs /rootfs-admin -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+    for svc in smtp-in submission imap outbound gc; do \
+      install -D "/out/$triple/release/rusty-$svc" "/rootfs-$svc/usr/local/bin/rusty-$svc"; \
+      mkdir -p "/rootfs-$svc/etc/rusty"; chmod 0755 "/rootfs-$svc/etc/rusty"; \
+    done; \
+    find /rootfs /rootfs-admin /rootfs-smtp-in /rootfs-submission /rootfs-imap /rootfs-outbound /rootfs-gc -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 
 # ---- release artefact stage ------------------------------------------------------------------
 # `docker buildx build --target binary --output type=local,dest=out .` exports just the binary
@@ -152,6 +156,152 @@ HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=3 \
 # The setup token (first start with no administrator) is the one line on standard output; read it with `docker logs`.
 ENTRYPOINT ["/usr/local/bin/rusty-admin"]
 CMD ["--config", "/etc/rusty/admin.toml"]
+
+# ---- one image per service (docs/superpowers/plans/2026-11-14-per-service-images-design.md) ------------------------------
+# `docker build --target rusty-imap`, and so on: one static binary, no shell, numeric non-root user, a configuration file of its own that accepts only the sections the
+# service uses (`/etc/rusty/<service>.toml`). Services with a port have the HEALTHCHECK of that port; outbound and gc have no port and their check only loads the configuration.
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329 AS rusty-smtp-in
+
+ARG VERSION=dev
+ARG REVISION=unknown
+ARG SOURCE_URL=
+ARG CREATED=
+
+LABEL org.opencontainers.image.title="rusty-smtp-in" \
+      org.opencontainers.image.description="Rusty unauthenticated inbound mail (port 25)." \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="$VERSION" \
+      org.opencontainers.image.revision="$REVISION" \
+      org.opencontainers.image.source="$SOURCE_URL" \
+      org.opencontainers.image.created="$CREATED" \
+      org.opencontainers.image.base.name="gcr.io/distroless/static-debian13:nonroot"
+
+COPY --from=build --chown=65532:65532 /rootfs-smtp-in/etc/rusty /etc/rusty
+COPY --from=build /rootfs-smtp-in/usr/local/bin/ /usr/local/bin/
+
+USER 65532:65532
+WORKDIR /etc/rusty
+VOLUME ["/etc/rusty"]
+EXPOSE 25
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=3 \
+    CMD ["/usr/local/bin/rusty-smtp-in", "healthcheck", "--config", "/etc/rusty/smtp-in.toml"]
+ENTRYPOINT ["/usr/local/bin/rusty-smtp-in"]
+CMD ["--config", "/etc/rusty/smtp-in.toml"]
+
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329 AS rusty-submission
+
+ARG VERSION=dev
+ARG REVISION=unknown
+ARG SOURCE_URL=
+ARG CREATED=
+
+LABEL org.opencontainers.image.title="rusty-submission" \
+      org.opencontainers.image.description="Rusty authenticated submission (ports 587 and 465)." \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="$VERSION" \
+      org.opencontainers.image.revision="$REVISION" \
+      org.opencontainers.image.source="$SOURCE_URL" \
+      org.opencontainers.image.created="$CREATED" \
+      org.opencontainers.image.base.name="gcr.io/distroless/static-debian13:nonroot"
+
+COPY --from=build --chown=65532:65532 /rootfs-submission/etc/rusty /etc/rusty
+COPY --from=build /rootfs-submission/usr/local/bin/ /usr/local/bin/
+
+USER 65532:65532
+WORKDIR /etc/rusty
+VOLUME ["/etc/rusty"]
+EXPOSE 587 465
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=3 \
+    CMD ["/usr/local/bin/rusty-submission", "healthcheck", "--config", "/etc/rusty/submission.toml"]
+ENTRYPOINT ["/usr/local/bin/rusty-submission"]
+CMD ["--config", "/etc/rusty/submission.toml"]
+
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329 AS rusty-imap
+
+ARG VERSION=dev
+ARG REVISION=unknown
+ARG SOURCE_URL=
+ARG CREATED=
+
+LABEL org.opencontainers.image.title="rusty-imap" \
+      org.opencontainers.image.description="Rusty IMAP (ports 143 and 993)." \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="$VERSION" \
+      org.opencontainers.image.revision="$REVISION" \
+      org.opencontainers.image.source="$SOURCE_URL" \
+      org.opencontainers.image.created="$CREATED" \
+      org.opencontainers.image.base.name="gcr.io/distroless/static-debian13:nonroot"
+
+COPY --from=build --chown=65532:65532 /rootfs-imap/etc/rusty /etc/rusty
+COPY --from=build /rootfs-imap/usr/local/bin/ /usr/local/bin/
+
+USER 65532:65532
+WORKDIR /etc/rusty
+VOLUME ["/etc/rusty"]
+EXPOSE 143 993
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=3 \
+    CMD ["/usr/local/bin/rusty-imap", "healthcheck", "--config", "/etc/rusty/imap.toml"]
+ENTRYPOINT ["/usr/local/bin/rusty-imap"]
+CMD ["--config", "/etc/rusty/imap.toml"]
+
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329 AS rusty-outbound
+
+ARG VERSION=dev
+ARG REVISION=unknown
+ARG SOURCE_URL=
+ARG CREATED=
+
+LABEL org.opencontainers.image.title="rusty-outbound" \
+      org.opencontainers.image.description="Rusty the outbound delivery worker (no listening port)." \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="$VERSION" \
+      org.opencontainers.image.revision="$REVISION" \
+      org.opencontainers.image.source="$SOURCE_URL" \
+      org.opencontainers.image.created="$CREATED" \
+      org.opencontainers.image.base.name="gcr.io/distroless/static-debian13:nonroot"
+
+COPY --from=build --chown=65532:65532 /rootfs-outbound/etc/rusty /etc/rusty
+COPY --from=build /rootfs-outbound/usr/local/bin/ /usr/local/bin/
+
+USER 65532:65532
+WORKDIR /etc/rusty
+VOLUME ["/etc/rusty"]
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=3 \
+    CMD ["/usr/local/bin/rusty-outbound", "healthcheck", "--config", "/etc/rusty/outbound.toml"]
+ENTRYPOINT ["/usr/local/bin/rusty-outbound"]
+CMD ["--config", "/etc/rusty/outbound.toml"]
+
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329 AS rusty-gc
+
+ARG VERSION=dev
+ARG REVISION=unknown
+ARG SOURCE_URL=
+ARG CREATED=
+
+LABEL org.opencontainers.image.title="rusty-gc" \
+      org.opencontainers.image.description="Rusty garbage collection and periodic jobs (no listening port)." \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="$VERSION" \
+      org.opencontainers.image.revision="$REVISION" \
+      org.opencontainers.image.source="$SOURCE_URL" \
+      org.opencontainers.image.created="$CREATED" \
+      org.opencontainers.image.base.name="gcr.io/distroless/static-debian13:nonroot"
+
+COPY --from=build --chown=65532:65532 /rootfs-gc/etc/rusty /etc/rusty
+COPY --from=build /rootfs-gc/usr/local/bin/ /usr/local/bin/
+
+USER 65532:65532
+WORKDIR /etc/rusty
+VOLUME ["/etc/rusty"]
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=3 \
+    CMD ["/usr/local/bin/rusty-gc", "healthcheck", "--config", "/etc/rusty/gc.toml"]
+ENTRYPOINT ["/usr/local/bin/rusty-gc"]
+CMD ["--config", "/etc/rusty/gc.toml"]
 
 # ---- final stage -----------------------------------------------------------------------------
 # distroless static (Debian 13): CA certificates, tzdata, /tmp, no shell. Default user 65532.
