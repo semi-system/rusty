@@ -330,3 +330,34 @@ fn blobs_init_makes_the_blob_directory_without_a_database_and_is_safe_to_repeat(
     assert_eq!(mode, 0o700);
     assert!(blobs.join(".rusty-blobs").exists(), "the marker");
 }
+
+#[test]
+fn blobs_init_with_a_bucket_makes_the_bucket_or_says_why_not_and_never_makes_the_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = private_tmp();
+    let blobs = dir.path().join("blobs");
+    let secret = |name: &str| {
+        let p = dir.path().join(name);
+        std::fs::write(&p, "k").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+        p
+    };
+    let (pw, ak, sk) = (secret("pg.pw"), secret("ak"), secret("sk"));
+    let conf = dir.path().join("rusty.toml");
+    // Nothing listens on port 1: the bucket cannot be made, and the answer says so with a failure status, without touching the directory.
+    std::fs::write(
+        &conf,
+        format!(
+            "hostname = \"mail.example.test\"\nblob_dir = \"{}\"\n[tls]\ndev_self_signed = true\n[store]\nurl = \"postgres://rusty_app@127.0.0.1:1/rusty\"\npassword_file = \"{}\"\n[blob_s3]\nendpoint = \"http://127.0.0.1:1\"\nregion = \"us-east-1\"\nbucket = \"rusty-mail\"\npath_style = true\naccess_key_file = \"{}\"\nsecret_key_file = \"{}\"\nrequest_timeout_secs = 3\n",
+            blobs.display(),
+            pw.display(),
+            ak.display(),
+            sk.display()
+        ),
+    )
+    .unwrap();
+    let out = Command::new(BIN).args(["ctl", "--config", conf.to_str().unwrap(), "blobs", "init"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot make the blob bucket"), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!blobs.exists(), "with a bucket the directory is not made");
+}

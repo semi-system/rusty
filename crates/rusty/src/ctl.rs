@@ -174,6 +174,23 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
             }
         };
         if parsed.command == rusty_ctl::Command::BlobsInit {
+            // With `[blob_s3]` the blob store is the bucket: make it (a bucket that is already ours is not an error). For a stack that runs its own S3 server; an operator's bucket exists already.
+            if let Some(s3) = &cfg.blob_s3 {
+                let made = match rusty_s3::platform_client(s3, &rusty_svc::FileSecretSource::new()) {
+                    Ok(c) => c.create_bucket().await.map_err(|e| format!("{e:?}")),
+                    Err(e) => Err(e.to_string()),
+                };
+                return match made {
+                    Ok(()) => {
+                        println!("{}", if parsed.json { serde_json::json!({ "bucket": s3.bucket }).to_string() } else { format!("blob bucket ready: {}", s3.bucket) });
+                        0
+                    }
+                    Err(e) => {
+                        eprintln!("{prog}: cannot make the blob bucket: {e}");
+                        1
+                    }
+                };
+            }
             return match rusty_store::FsBlobStore::init(&cfg.blob_dir).await {
                 Ok(()) => {
                     println!("{}", if parsed.json { serde_json::json!({ "blob_dir": cfg.blob_dir }).to_string() } else { format!("blob directory ready: {}", cfg.blob_dir.display()) });

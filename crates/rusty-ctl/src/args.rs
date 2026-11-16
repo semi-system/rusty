@@ -74,7 +74,7 @@ pub enum Command {
     StorageCheck { name: String },
     /// `domain relay check`: ask the outbound service to test the relay (a `relay.check` job); the result shows in `domain relay show`.
     DomainRelayCheck { name: String },
-    /// `blobs init`: make the blob directory of the configuration (mode 0700, with its marker) once, before the first start; it needs no database. Safe to repeat.
+    /// `blobs init`: make the blob directory of the configuration (mode 0700, with its marker) once, before the first start, or, with `[blob_s3]`, the bucket; it needs no database. Safe to repeat.
     BlobsInit,
     /// `blobs verify`: check that every blob the database references exists in the blob store (after a restore); exit 1 when one is missing.
     BlobsVerify,
@@ -156,7 +156,7 @@ pub const USAGE: &str = "usage: rustyctl [--config FILE | --dev [--data-dir DIR]
                                              A store is used only after a check passed
   admin grant <addr> [domain]                let an account use the admin web (all domains, or one); also the recovery path
   admin revoke <addr> | list
-  blobs init                                 make the blob directory (0700, with its marker) once, before the first start (no database needed)
+  blobs init                                 make the blob directory (0700, with its marker) once, before the first start (with [blob_s3]: the bucket) (no database needed)
   blobs verify                               check that every blob the database references exists in the blob store (use after a restore; exit 1 if one is missing)
   relay check                                log in to the configured relay (resolve, TLS, AUTH) without sending mail
   seal keygen <file>                         make the key that opens sealed secrets (private half to <file>, 0600), print the public half
