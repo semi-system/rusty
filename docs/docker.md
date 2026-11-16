@@ -262,3 +262,24 @@ cosign verify \
 ```
 
 For development, `./setup.sh --build ...` writes `COMPOSE_FILE=compose.yaml:compose.build.yaml` into `.env`: the same image names, built from the checkout.
+
+## Scaling the services (standalone stack)
+
+The mail services keep no authoritative state of their own (coordination is through PostgreSQL), so more replicas of `smtp-in`, `submission`, `imap`, `outbound`, `gc` and `admin` run side by side:
+
+```sh
+docker compose up -d --scale smtp-in=3 --scale imap=2
+```
+
+Nothing is addressed by IP. The replicas get whatever address Docker gives them, the edge reaches them by service name through Docker's resolver (a HAProxy `server-template` per service, re-resolved every few
+seconds; a replica that does not accept connections is taken out), and the services find each other (`clamd`, `rspamd`, the database) by name. Two containers keep an address on purpose: the edge, because it
+owns the host ports (one per host) and the services accept the PROXY header and the admin web accepts connections from it only, and the resolver of the `filter` profile, because rspamd takes its nameserver
+as an address.
+
+What a replica needs:
+
+* **The database allows it by name.** `pg_hba.conf` lists `rusty-<service>-1`, `-2`, ... up to `./setup.sh --max-replicas N` (default 4, at most 99); run `setup.sh` again to raise it. A replica beyond the
+  number is refused by the database, not silently ignored.
+* **Message storage reachable from every replica.** Replicas on one host share the `mail-data` volume; replicas on several hosts need an S3-compatible blob store (`blob-stores.md`).
+* **Shared limits need Valkey.** Without `[valkey]` the sending budget per account and the login throttle are counted per process, so the effective limit grows with the replicas (`valkey.md`).
+* **Database connections add up.** Every replica opens its own pool (`[store] max_connections`); put PgBouncer in front when the sum nears the server's `max_connections` (`postgres-production.md`).
