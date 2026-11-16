@@ -211,8 +211,8 @@ gen_s3_service() {
   printf '    volumes:\n      - s3data:/data\n      - type: tmpfs\n        target: /logs\n        tmpfs: { mode: 1777 }\n      - type: tmpfs\n        target: /tmp\n        tmpfs: { mode: 1777 }\n'
   y_deploy 1 "node.labels.s3 == true" stop-first s3
   printf '    secrets:\n'
-  y_secret s3_access s3_access 0
-  y_secret s3_secret s3_secret 0
+  y_secret s3_access s3_access 10001   # the image runs as uid 10001 (rustfs)
+  y_secret s3_secret s3_secret 10001
   printf '    networks:\n      - backend\n'
 }
 
@@ -387,8 +387,16 @@ load_names() {
   if [ "$DB_IN_STACK" != 1 ]; then unset 'SECRET_NAME[pg_postgres]' 'SECRET_NAME[db_server_crt]' 'SECRET_NAME[db_server_key]' 'CONFIG_NAME[pg_hba]'; fi
 }
 
-y_service_common() { # NAME IMAGE REPLICAS
-  printf '  %s:\n    image: %s\n    read_only: true\n    cap_drop: [ALL]\n    stop_grace_period: 45s\n    volumes:\n      - type: tmpfs\n        target: /tmp\n' "$1" "$2"
+y_service_common() { # NAME IMAGE [READ-ONLY: true (default) or false, for an image that writes to its root file system]
+  printf '  %s:
+    image: %s
+    read_only: %s
+    cap_drop: [ALL]
+    stop_grace_period: 45s
+    volumes:
+      - type: tmpfs
+        target: /tmp
+' "$1" "$2" "${3:-true}"
 }
 y_deploy() { # REPLICAS [CONSTRAINT] [ORDER] [SERVICE: its resource limits]
   printf '    deploy:\n      replicas: %s\n      restart_policy: { condition: any, delay: 5s }\n      update_config: { parallelism: 1, order: %s, delay: 10s, monitor: 20s, failure_action: rollback }\n      rollback_config: { parallelism: 1, order: %s }\n' "$1" "${3:-start-first}" "${3:-start-first}"
@@ -596,7 +604,7 @@ cmd_logs() { # SERVICE [lines]
 
 # What the edge shows to the world: the greeting of each mail port, which only comes when the edge reached a service and the service accepted the PROXY header from it (trusted by name).
 banner() { # PORT -> the first line the port sends (empty when none)
-  on "$(manager_name)" sh -c "if command -v nc >/dev/null 2>&1; then (sleep 2; echo QUIT) | nc -w 6 127.0.0.1 $1; elif command -v bash >/dev/null 2>&1; then bash -c 'exec 3<>/dev/tcp/127.0.0.1/$1; read -r -t 6 l <&3; printf \"%s\n\" \"\$l\"'; fi" 2>/dev/null | head -1 | tr -d '\r'
+  on "$(manager_name)" sh -c "if command -v nc >/dev/null 2>&1; then (sleep 2; echo QUIT) | nc -w 6 127.0.0.1 $1; elif command -v bash >/dev/null 2>&1; then bash -c 'exec 3<>/dev/tcp/127.0.0.1/$1; read -r -t 6 l <&3; printf \"%s\n\" \"\$l\"'; fi" 2>/dev/null | head -1 | tr -d '\r' || true   # a port that sends nothing is reported by the caller, not a reason to stop
 }
 
 cmd_verify_stack() {
