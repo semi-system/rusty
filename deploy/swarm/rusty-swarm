@@ -426,7 +426,7 @@ offer_swarm_removal() {
   if [ "$yes" = 1 ]; then
     answer=y
   elif [ -t 0 ]; then
-    read -r -p "Remove it (every node leaves the swarm; its stacks, secrets and configs are lost) and start clean? [y/N] " answer || answer=n
+    read -r -p "Remove it (every node leaves the swarm; its stacks, secrets and configs are lost; the data volumes of a default PostgreSQL or S3 stay, and keep the passwords they were made with: keep your state directory) and start clean? [y/N] " answer || answer=n
   else
     echo "(no terminal to ask on and no --yes: the swarm is kept)"
   fi

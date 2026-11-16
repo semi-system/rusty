@@ -211,8 +211,8 @@ gen_s3_service() {
   printf '    volumes:\n      - s3data:/data\n      - type: tmpfs\n        target: /logs\n        tmpfs: { mode: 1777 }\n      - type: tmpfs\n        target: /tmp\n        tmpfs: { mode: 1777 }\n'
   y_deploy 1 "node.labels.s3 == true" stop-first s3
   printf '    secrets:\n'
-  y_secret s3_access s3_access 0
-  y_secret s3_secret s3_secret 0
+  y_secret s3_access s3_access 10001   # the image runs as uid 10001 (rustfs)
+  y_secret s3_secret s3_secret 10001
   printf '    networks:\n      - backend\n'
 }
 
@@ -596,7 +596,7 @@ cmd_logs() { # SERVICE [lines]
 
 # What the edge shows to the world: the greeting of each mail port, which only comes when the edge reached a service and the service accepted the PROXY header from it (trusted by name).
 banner() { # PORT -> the first line the port sends (empty when none)
-  on "$(manager_name)" sh -c "if command -v nc >/dev/null 2>&1; then (sleep 2; echo QUIT) | nc -w 6 127.0.0.1 $1; elif command -v bash >/dev/null 2>&1; then bash -c 'exec 3<>/dev/tcp/127.0.0.1/$1; read -r -t 6 l <&3; printf \"%s\n\" \"\$l\"'; fi" 2>/dev/null | head -1 | tr -d '\r'
+  on "$(manager_name)" sh -c "if command -v nc >/dev/null 2>&1; then (sleep 2; echo QUIT) | nc -w 6 127.0.0.1 $1; elif command -v bash >/dev/null 2>&1; then bash -c 'exec 3<>/dev/tcp/127.0.0.1/$1; read -r -t 6 l <&3; printf \"%s\n\" \"\$l\"'; fi" 2>/dev/null | head -1 | tr -d '\r' || true   # a port that sends nothing is reported by the caller, not a reason to stop
 }
 
 cmd_verify_stack() {
