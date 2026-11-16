@@ -185,6 +185,13 @@ COLUMN sealed_secrets.sealed bytea nullable=NO identity=NO/ collation= default=
 COLUMN sealed_secrets.created_at bigint nullable=NO identity=NO/ collation= default=
 COLUMN sealed_secrets.updated_at bigint nullable=NO identity=NO/ collation= default=
 COLUMN sealed_secrets.sealed_len bigint nullable=YES identity=NO/ collation= default=
+COLUMN service_heartbeats.service text nullable=NO identity=NO/ collation=C default=
+COLUMN service_heartbeats.instance text nullable=NO identity=NO/ collation=C default=
+COLUMN service_heartbeats.version text nullable=NO identity=NO/ collation=C default=
+COLUMN service_heartbeats.started_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN service_heartbeats.last_seen bigint nullable=NO identity=NO/ collation= default=
+COLUMN service_heartbeats.status text nullable=NO identity=NO/ collation=C default=
+COLUMN service_heartbeats.detail text nullable=NO identity=NO/ collation=C default='{}'::text
 CONSTRAINT accounts.accounts_config_not_null NOT NULL config
 CONSTRAINT accounts.accounts_created_at_not_null NOT NULL created_at
 CONSTRAINT accounts.accounts_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE RESTRICT
@@ -505,6 +512,19 @@ CONSTRAINT sealed_secrets.sealed_secrets_purpose_valid CHECK (purpose ~ '^[a-z0-
 CONSTRAINT sealed_secrets.sealed_secrets_sealed_not_null NOT NULL sealed
 CONSTRAINT sealed_secrets.sealed_secrets_size_valid CHECK (octet_length(sealed) >= 16 AND octet_length(sealed) <= 66000)
 CONSTRAINT sealed_secrets.sealed_secrets_updated_at_not_null NOT NULL updated_at
+CONSTRAINT service_heartbeats.service_heartbeats_detail_not_null NOT NULL detail
+CONSTRAINT service_heartbeats.service_heartbeats_detail_valid CHECK (length(detail) <= 2048)
+CONSTRAINT service_heartbeats.service_heartbeats_instance_not_null NOT NULL instance
+CONSTRAINT service_heartbeats.service_heartbeats_instance_valid CHECK (length(instance) >= 1 AND length(instance) <= 128)
+CONSTRAINT service_heartbeats.service_heartbeats_last_seen_not_null NOT NULL last_seen
+CONSTRAINT service_heartbeats.service_heartbeats_pkey PRIMARY KEY (service, instance)
+CONSTRAINT service_heartbeats.service_heartbeats_service_not_null NOT NULL service
+CONSTRAINT service_heartbeats.service_heartbeats_service_valid CHECK (service = ANY (ARRAY['smtp-in'::text, 'submission'::text, 'imap'::text, 'outbound'::text, 'gc'::text, 'admin'::text]))
+CONSTRAINT service_heartbeats.service_heartbeats_started_at_not_null NOT NULL started_at
+CONSTRAINT service_heartbeats.service_heartbeats_status_not_null NOT NULL status
+CONSTRAINT service_heartbeats.service_heartbeats_status_valid CHECK (status = ANY (ARRAY['ok'::text, 'degraded'::text]))
+CONSTRAINT service_heartbeats.service_heartbeats_version_not_null NOT NULL version
+CONSTRAINT service_heartbeats.service_heartbeats_version_valid CHECK (length(version) >= 1 AND length(version) <= 64)
 INDEX accounts.accounts_id_domain CREATE UNIQUE INDEX accounts_id_domain ON public.accounts USING btree (id, domain_id)
 INDEX accounts.accounts_local_part_domain_id_key CREATE UNIQUE INDEX accounts_local_part_domain_id_key ON public.accounts USING btree (local_part, domain_id)
 INDEX accounts.accounts_pkey CREATE UNIQUE INDEX accounts_pkey ON public.accounts USING btree (id)
@@ -564,6 +584,8 @@ INDEX messages.messages_thread CREATE INDEX messages_thread ON public.messages U
 INDEX plans.plans_name_key CREATE UNIQUE INDEX plans_name_key ON public.plans USING btree (name)
 INDEX plans.plans_pkey CREATE UNIQUE INDEX plans_pkey ON public.plans USING btree (id)
 INDEX sealed_secrets.sealed_secrets_pkey CREATE UNIQUE INDEX sealed_secrets_pkey ON public.sealed_secrets USING btree (owner_kind, owner_id, purpose)
+INDEX service_heartbeats.service_heartbeats_pkey CREATE UNIQUE INDEX service_heartbeats_pkey ON public.service_heartbeats USING btree (service, instance)
+INDEX service_heartbeats.service_heartbeats_seen CREATE INDEX service_heartbeats_seen ON public.service_heartbeats USING btree (last_seen)
 TRIGGER accounts.accounts_addr_truncate CREATE TRIGGER accounts_addr_truncate AFTER TRUNCATE ON accounts FOR EACH STATEMENT EXECUTE FUNCTION rs_address_truncate()
 TRIGGER accounts.accounts_addr_unique_del CREATE TRIGGER accounts_addr_unique_del BEFORE DELETE ON accounts FOR EACH ROW EXECUTE FUNCTION rs_address_unique()
 TRIGGER accounts.accounts_addr_unique_ins CREATE TRIGGER accounts_addr_unique_ins BEFORE INSERT ON accounts FOR EACH ROW EXECUTE FUNCTION rs_address_unique()
@@ -777,6 +799,31 @@ BEGIN
     RAISE EXCEPTION 'folder tree too deep' USING ERRCODE = 'RS002';
   END IF;
   RETURN NEW;
+END;
+$function$
+FUNCTION rs_heartbeat
+CREATE OR REPLACE FUNCTION public.rs_heartbeat(p_service text, p_instance text, p_version text, p_uptime_secs bigint, p_status text, p_detail text)
+ RETURNS void
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+AS $function$
+DECLARE
+  svc text;
+BEGIN
+  svc := CASE session_user
+    WHEN 'rusty_smtp_in' THEN 'smtp-in'
+    WHEN 'rusty_submission' THEN 'submission'
+    WHEN 'rusty_imap' THEN 'imap'
+    WHEN 'rusty_outbound' THEN 'outbound'
+    WHEN 'rusty_gc' THEN 'gc'
+    WHEN 'rusty_admin' THEN 'admin'
+    ELSE p_service
+  END;
+  INSERT INTO service_heartbeats (service, instance, version, started_at, last_seen, status, detail)
+  VALUES (svc, p_instance, p_version, rs_now() - greatest(p_uptime_secs, 0), rs_now(), p_status, p_detail)
+  ON CONFLICT (service, instance) DO UPDATE
+    SET version = EXCLUDED.version, started_at = EXCLUDED.started_at, last_seen = EXCLUDED.last_seen, status = EXCLUDED.status, detail = EXCLUDED.detail;
 END;
 $function$
 FUNCTION rs_list_member_same_domain

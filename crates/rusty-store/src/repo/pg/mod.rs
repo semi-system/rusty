@@ -9,6 +9,7 @@ mod mailbox;
 mod sealed;
 mod blob_store;
 mod blob_pool;
+mod heartbeat;
 mod relay;
 mod admin;
 pub mod tx;

@@ -122,6 +122,11 @@ async fn each_service_keeps_to_its_own_writes() {
         ("rusty_smtp_in", "domains", "INSERT", false),
         ("rusty_imap", "accounts", "INSERT", false),
         ("rusty_gc", "aliases", "SELECT", false),
+        // heartbeats: written only through rs_heartbeat(); the collector alone deletes the stale ones
+        ("rusty_gc", "service_heartbeats", "DELETE", true),
+        ("rusty_imap", "service_heartbeats", "DELETE", false),
+        ("rusty_imap", "service_heartbeats", "INSERT", false),
+        ("rusty_smtp_in", "service_heartbeats", "SELECT", false),
         // the collector's leases
         ("rusty_gc", "blob_store_leases", "INSERT", true),
         ("rusty_imap", "blob_store_leases", "SELECT", false),
@@ -149,4 +154,19 @@ async fn forbidden_statements_are_refused_by_the_real_roles() {
     let smtp_in = pool_as(&db, "rusty_smtp_in").await;
     denied(&smtp_in, "DELETE FROM messages").await;
     denied(&smtp_in, "SELECT * FROM domain_relays").await;
+}
+
+#[tokio::test]
+async fn every_service_role_may_send_its_heartbeat_and_the_reporting_role_may_not() {
+    let Some(url) = pg_admin_url() else { return };
+    let db = PgTestDb::create_with_roles(&url).await;
+    let admin = admin_pool(&db).await;
+    for role in SERVICES.into_iter().chain(["rusty_admin", "rusty_app"]) {
+        let may: bool = sqlx::query_scalar("SELECT has_function_privilege($1, 'rs_heartbeat(text, text, text, bigint, text, text)', 'EXECUTE')").bind(role).fetch_one(&admin).await.unwrap();
+        assert!(may, "{role} cannot send a heartbeat");
+    }
+    let may: bool = sqlx::query_scalar("SELECT has_function_privilege('rusty_ro', 'rs_heartbeat(text, text, text, bigint, text, text)', 'EXECUTE')").fetch_one(&admin).await.unwrap();
+    assert!(!may, "the reporting role writes nothing");
+    let public: bool = sqlx::query_scalar("SELECT has_function_privilege('public', 'rs_heartbeat(text, text, text, bigint, text, text)', 'EXECUTE')").fetch_one(&admin).await.unwrap();
+    assert!(!public, "the function is not open to PUBLIC");
 }
