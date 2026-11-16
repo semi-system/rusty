@@ -17,16 +17,20 @@ use rusty_svc::{
 use tokio_util::sync::CancellationToken;
 
 async fn ctx(p: &Parts) -> Context {
+    ctx_over(p, p.store.repos()).await
+}
+
+/// A context over the given repositories: the operator's (`p.seed_store`) for a test of the context's own seams, which no one service role is responsible for.
+async fn ctx_over(p: &Parts, repos: &Repos) -> Context {
     let cfg = Arc::new(dev_config(p.dir.path()));
     let tls = TlsProvider::from_config(&cfg.tls, "localhost", Arc::new(rusty_svc::FileSecretSource::new())).unwrap();
-    let repos: &Repos = p.store.repos();
     Context::new(repos, p.blobs.clone(), cfg, tls).await.unwrap()
 }
 
 #[tokio::test]
 async fn the_default_seams_are_wired_through_their_traits() {
     let p = parts().await;
-    let c = ctx(&p).await;
+    let c = ctx_over(&p, p.seed_store.repos()).await;
 
     // QuotaPolicy: size cap from the configuration, reached through the trait object.
     let q: &dyn QuotaPolicy = &*c.quota;
@@ -50,8 +54,9 @@ async fn the_default_seams_are_wired_through_their_traits() {
     c.events.emit(ServiceEvent::AuthResult { service: "t", peer: "192.0.2.9:1".parse().unwrap(), ok: false });
 
     // Hub: opens a mailbox through the repository trait only.
-    let dom = c.directory.create_domain("ctx.test").await.unwrap();
-    let acc = c.directory.create_account("alice", dom, None, None).await.unwrap();
+    let seed = Directory::with_repo(p.seed_store.repos().directory.clone());
+    let dom = seed.create_domain("ctx.test").await.unwrap();
+    let acc = seed.create_account("alice", dom, None, None).await.unwrap();
     let mb = c.hub.open_for(acc).await.unwrap();
     assert_eq!(c.hub.open_for(rusty_core::AccountId(9999)).await.err().map(|e| matches!(e, Error::NotFound(_))), Some(true));
     // and the hub's notifications are keyed by that mailbox
@@ -170,15 +175,15 @@ async fn the_gc_service_runs_a_pass_through_the_gc_facade_and_stops_on_shutdown(
 async fn the_gc_pass_collects_every_blob_store_and_a_store_that_cannot_be_opened_is_counted_not_fatal() {
     let p = parts().await;
     let c = ctx(&p).await;
-    let dir = Directory::with_repo(p.store.repos().directory.clone());
+    let dir = Directory::with_repo(p.seed_store.repos().directory.clone());
     let d = dir.create_domain("tenant.test").await.unwrap();
     // A store row whose settings cannot be opened (a directory name that is a path): the pass skips it, counts one error and still runs the other stores.
-    p.store.repos().blob_stores.create_for_domain(d, "fs", r#"{"dir":"../escape"}"#).await.unwrap();
+    p.seed_store.repos().blob_stores.create_for_domain(d, "fs", r#"{"dir":"../escape"}"#).await.unwrap();
     let report = GcService::run_once(&c).await.unwrap();
     assert_eq!(report.errors, 1, "the unopenable store is counted");
     // With a good store the pass is clean.
     let d2 = dir.create_domain("good.test").await.unwrap();
-    p.store.repos().blob_stores.create_for_domain(d2, "fs", r#"{"dir":"good"}"#).await.unwrap();
+    p.seed_store.repos().blob_stores.create_for_domain(d2, "fs", r#"{"dir":"good"}"#).await.unwrap();
     let again = GcService::run_once(&c).await.unwrap();
     assert_eq!(again.errors, 1, "only the unopenable store is counted; the good one collects cleanly");
 }
@@ -195,20 +200,20 @@ async fn the_upkeep_pass_makes_the_missing_copy_of_a_pool_and_skips_a_store_that
     let opener = KindOpener::new().with_pool(Arc::new(PoolOpener::new(repos.blob_pool.clone(), fs)));
     let c = Context::new_with_opener(repos, p.blobs.clone(), cfg, tls, Arc::new(opener)).await.unwrap();
 
-    let dir = Directory::with_repo(repos.directory.clone());
+    let dir = Directory::with_repo(p.seed_store.repos().directory.clone());
     let d = dir.create_domain("pool.test").await.unwrap();
-    let store = repos.blob_stores.create_for_domain(d, "pool", r#"{"copies":2,"placement":"ordered"}"#).await.unwrap();
+    let store = p.seed_store.repos().blob_stores.create_for_domain(d, "pool", r#"{"copies":2,"placement":"ordered"}"#).await.unwrap();
     for n in ["a", "b"] {
-        let id = repos.blob_pool.add_backend(store, n, "fs", &format!(r#"{{"dir":"{n}"}}"#), 100).await.unwrap();
-        repos.blob_pool.record_backend_check(id, "ok", None).await.unwrap();
+        let id = p.seed_store.repos().blob_pool.add_backend(store, n, "fs", &format!(r#"{{"dir":"{n}"}}"#), 100).await.unwrap();
+        p.seed_store.repos().blob_pool.record_backend_check(id, "ok", None).await.unwrap();
     }
     // A second pool that is not ready (its backend never passed a check): skipped, nothing fails.
     let d2 = dir.create_domain("notready.test").await.unwrap();
-    let unready = repos.blob_stores.create_for_domain(d2, "pool", "{}").await.unwrap();
-    repos.blob_pool.add_backend(unready, "x", "fs", r#"{"dir":"x"}"#, 100).await.unwrap();
+    let unready = p.seed_store.repos().blob_stores.create_for_domain(d2, "pool", "{}").await.unwrap();
+    p.seed_store.repos().blob_pool.add_backend(unready, "x", "fs", r#"{"dir":"x"}"#, 100).await.unwrap();
 
     let acc = dir.create_account("alice", d, None, None).await.unwrap();
-    let mb = Mailbox::open_with(repos.mailbox.clone(), c.stores.clone(), acc).await.unwrap();
+    let mb = Mailbox::open_with(p.seed_store.repos().mailbox.clone(), c.stores.clone(), acc).await.unwrap();
     let m = mb.append(rusty_core::FolderId(1), bytes::Bytes::from_static(b"Subject: pool\r\nMessage-ID: <p@x>\r\n\r\nbody\r\n"), Default::default()).await.unwrap();
     let blob = mb.get_raw_ref(m.id).await.unwrap().blob;
     let on_b = backends_dir.join("b").join(&blob.as_str()[0..2]).join(&blob.as_str()[2..4]).join(blob.as_str());
@@ -216,7 +221,7 @@ async fn the_upkeep_pass_makes_the_missing_copy_of_a_pool_and_skips_a_store_that
     // The copy on `b` is lost (and its record with it): the upkeep pass makes it again.
     std::fs::remove_file(&on_b).unwrap();
     let b_id = repos.blob_pool.backends(store).await.unwrap().into_iter().find(|x| x.name == "b").unwrap().id;
-    repos.blob_pool.remove_location(store, &blob, b_id).await.unwrap();
+    p.seed_store.repos().blob_pool.remove_location(store, &blob, b_id).await.unwrap();
     assert_eq!(rusty_svc::MaintainService::run_once(&c).await.unwrap(), 1);
     assert!(on_b.exists(), "the copy was made again");
     assert_eq!(repos.blob_pool.locations(store, &blob).await.unwrap().len(), 2);

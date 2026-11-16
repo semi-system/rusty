@@ -94,7 +94,7 @@ async fn run_job(b: &Backend, zone: Zone) {
 #[tokio::test]
 async fn a_published_domain_is_recorded_ok_and_an_unpublished_one_missing() {
     for_each_backend(|b| async move {
-        let id = b.dir.create_domain("example.org").await.unwrap();
+        let id = b.seed.create_domain("example.org").await.unwrap();
         let (records, _) = records_with_facts("example.org", &facts(), &[]).unwrap();
         run_job(&b, published(&records)).await;
         let dns = DnsStore::with_repo(b.store.repos().dns.clone());
@@ -121,9 +121,9 @@ async fn the_scheduler_queues_domains_that_are_due_and_not_disabled_ones() {
     for_each_backend(|b| async move {
         let (ctx, _blobs) = make_context(&b).await;
         let dns = DnsStore::with_repo(b.store.repos().dns.clone());
-        let live = b.dir.create_domain("live.example").await.unwrap();
-        let off = b.dir.create_domain("off.example").await.unwrap();
-        b.dir.set_domain_status(off, rusty_directory::DomainStatus::Disabled).await.unwrap();
+        let live = b.seed.create_domain("live.example").await.unwrap();
+        let off = b.seed.create_domain("off.example").await.unwrap();
+        b.seed.set_domain_status(off, rusty_directory::DomainStatus::Disabled).await.unwrap();
         let sched = DnsCheckScheduler::new(dns.clone(), 3600, 0);
 
         // Never checked: the active domain is queued, the disabled one is not.

@@ -94,7 +94,8 @@ async fn a_worker_process_killed_mid_delivery_loses_nothing_and_the_job_is_deliv
     let db = PgTestDb::create(&pg_admin_url().expect("a Postgres test server (RUSTY_TEST_PG_URL)")).await;
     let (ctx, store) = context(dir.path(), db.url()).await;
     let fx = Fixtures::admin_of(&db, &store).await;
-    let d = Directory::with_repo(store.repos().directory.clone());
+    let seed_store = Store::open(StoreConfig::postgres(db.seed_url())).await.unwrap();
+    let d = Directory::with_repo(seed_store.repos().directory.clone());
     let dom = d.create_domain("example.net").await.unwrap();
     let alice = d.create_account("alice", dom, Some("pw-alice-1234"), None).await.unwrap();
     let blob = ctx.blobs.put(Bytes::from(MSG.as_bytes().to_vec())).await.unwrap();

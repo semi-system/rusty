@@ -68,19 +68,19 @@ async fn relay_to_a_foreign_domain_is_refused_before_data() {
 async fn unknown_suspended_and_disabled_domain_recipients() {
     for_each_backend(|b| async move {
         let (_, bob) = b.seed().await;
-        let off = b.dir.create_domain("off.test").await.unwrap();
-        b.dir.create_account("x", off, None, None).await.unwrap();
+        let off = b.seed.create_domain("off.test").await.unwrap();
+        b.seed.create_account("x", off, None, None).await.unwrap();
         let s = start(&b, Opts::default()).await;
         let mut c = Client::hello(s.addr).await;
         c.cmd("MAIL FROM:<x@remote.example>").await;
         let r = c.cmd("RCPT TO:<nobody@example.net>").await;
         assert!(r.starts_with("550 5.1.1"), "unknown local user: {r}");
-        b.dir.set_status(bob, AccountStatus::Disabled).await.unwrap();
+        b.seed.set_status(bob, AccountStatus::Disabled).await.unwrap();
         let r = c.cmd("RCPT TO:<bob@example.net>").await;
         assert!(r.starts_with("550 5.2.1"), "suspended account: {r}");
-        b.dir.set_status(bob, AccountStatus::Locked).await.unwrap();
+        b.seed.set_status(bob, AccountStatus::Locked).await.unwrap();
         assert!(c.cmd("RCPT TO:<bob@example.net>").await.starts_with("550 5.2.1"));
-        b.dir.set_domain_status(off, rusty_directory::DomainStatus::Disabled).await.unwrap();
+        b.seed.set_domain_status(off, rusty_directory::DomainStatus::Disabled).await.unwrap();
         let r = c.cmd("RCPT TO:<x@off.test>").await;
         assert!(r.starts_with("554 5.7.1"), "a disabled domain is not local: {r}");
         let r = c.cmd("RCPT TO:<a b@example.net>").await;
@@ -163,12 +163,12 @@ async fn list_members_each_get_one_copy_and_external_members_are_skipped() {
     for_each_backend(|b| async move {
         let (alice, bob) = b.seed().await;
         let dom = b.dir.find_domain("example.net").await.unwrap().unwrap().id;
-        let list = b.dir.create_list("team", dom).await.unwrap();
-        b.dir.add_list_member(list, Some(alice), None).await.unwrap();
-        b.dir.add_list_member(list, Some(bob), None).await.unwrap();
-        b.dir.add_list_member(list, None, Some("far@away.example")).await.unwrap();
-        let only_ext = b.dir.create_list("ext", dom).await.unwrap();
-        b.dir.add_list_member(only_ext, None, Some("far@away.example")).await.unwrap();
+        let list = b.seed.create_list("team", dom).await.unwrap();
+        b.seed.add_list_member(list, Some(alice), None).await.unwrap();
+        b.seed.add_list_member(list, Some(bob), None).await.unwrap();
+        b.seed.add_list_member(list, None, Some("far@away.example")).await.unwrap();
+        let only_ext = b.seed.create_list("ext", dom).await.unwrap();
+        b.seed.add_list_member(only_ext, None, Some("far@away.example")).await.unwrap();
         let s = start(&b, Opts::default()).await;
         let mut c = Client::hello(s.addr).await;
         let r = c.mail("s@remote.example", &["team@example.net", "alice@example.net"], MSG).await;
@@ -527,10 +527,10 @@ async fn a_list_over_the_limit_is_a_permanent_refusal_and_a_big_message_fan_out_
     for_each_backend(|b| async move {
         let (alice, _) = b.seed().await;
         let dom = b.dir.find_domain("example.net").await.unwrap().unwrap().id;
-        let big = b.dir.create_list("everyone", dom).await.unwrap();
+        let big = b.seed.create_list("everyone", dom).await.unwrap();
         for i in 0..1001 {
-            let a = b.dir.create_account(&format!("m{i:04}"), dom, None, None).await.unwrap();
-            b.dir.add_list_member(big, Some(a), None).await.unwrap();
+            let a = b.seed.create_account(&format!("m{i:04}"), dom, None, None).await.unwrap();
+            b.seed.add_list_member(big, Some(a), None).await.unwrap();
         }
         let s = start(&b, Opts::default()).await;
         let mut c = Client::hello(s.addr).await;
@@ -540,10 +540,10 @@ async fn a_list_over_the_limit_is_a_permanent_refusal_and_a_big_message_fan_out_
         s.stop().await;
 
         // the per-message cap: a small list is fine alone, but two recipients together exceed 3 mailboxes
-        let small = b.dir.create_list("small", dom).await.unwrap();
+        let small = b.seed.create_list("small", dom).await.unwrap();
         for who in ["m0001", "m0002"] {
             let a = b.dir.find_account(&format!("{who}@example.net")).await.unwrap().unwrap().id;
-            b.dir.add_list_member(small, Some(a), None).await.unwrap();
+            b.seed.add_list_member(small, Some(a), None).await.unwrap();
         }
         let mut o = Opts::default();
         o.options.max_accounts = 3;
@@ -567,14 +567,14 @@ async fn a_disabled_domains_accounts_get_no_mail_even_through_a_list() {
     for_each_backend(|b| async move {
         let (alice, _) = b.seed().await;
         let dom = b.dir.find_domain("example.net").await.unwrap().unwrap().id;
-        let list = b.dir.create_list("team", dom).await.unwrap();
-        b.dir.add_list_member(list, Some(alice), None).await.unwrap();
-        let other = b.dir.create_domain("other.test").await.unwrap();
-        let eve = b.dir.create_account("eve", other, None, None).await.unwrap();
-        let foreign = b.dir.create_list("friends", other).await.unwrap();
-        assert!(b.dir.add_list_member(foreign, Some(alice), None).await.is_err(), "no cross-tenant list member");
-        b.dir.add_list_member(foreign, Some(eve), None).await.unwrap();
-        b.dir.set_domain_status(dom, rusty_directory::DomainStatus::Disabled).await.unwrap();
+        let list = b.seed.create_list("team", dom).await.unwrap();
+        b.seed.add_list_member(list, Some(alice), None).await.unwrap();
+        let other = b.seed.create_domain("other.test").await.unwrap();
+        let eve = b.seed.create_account("eve", other, None, None).await.unwrap();
+        let foreign = b.seed.create_list("friends", other).await.unwrap();
+        assert!(b.seed.add_list_member(foreign, Some(alice), None).await.is_err(), "no cross-tenant list member");
+        b.seed.add_list_member(foreign, Some(eve), None).await.unwrap();
+        b.seed.set_domain_status(dom, rusty_directory::DomainStatus::Disabled).await.unwrap();
         let s = start(&b, Opts::default()).await;
         let mut c = Client::hello(s.addr).await;
         c.cmd("MAIL FROM:<s@remote.example>").await;
@@ -649,22 +649,22 @@ async fn postmaster_is_always_deliverable_where_there_is_somebody_to_give_it_to(
         assert!(r.starts_with("250"), "{r}");
         assert_eq!(b.inbox(alice, &s.blobs).await.len(), 1);
         // a domain without the alias: the oldest active account receives it
-        b.dir.remove_alias("postmaster@example.net").await.unwrap();
+        b.seed.remove_alias("postmaster@example.net").await.unwrap();
         let r = c.mail("s@remote.example", &["postmaster@example.net"], b"Subject: two\r\n\r\nx").await;
         assert!(r.starts_with("250"), "{r}");
         assert_eq!(b.inbox(alice, &s.blobs).await.len(), 2);
         // the oldest is disabled: the next active one
-        b.dir.set_status(alice, AccountStatus::Disabled).await.unwrap();
+        b.seed.set_status(alice, AccountStatus::Disabled).await.unwrap();
         let r = c.mail("s@remote.example", &["POSTMASTER@example.net"], b"Subject: three\r\n\r\nx").await;
         assert!(r.starts_with("250"), "{r}");
         assert_eq!(b.inbox(bob, &s.blobs).await.len(), 1);
         // nobody active at all: there is nobody to deliver to
-        b.dir.set_status(bob, AccountStatus::Disabled).await.unwrap();
+        b.seed.set_status(bob, AccountStatus::Disabled).await.unwrap();
         c.cmd("MAIL FROM:<s@remote.example>").await;
         let r = c.cmd("RCPT TO:<postmaster@example.net>").await;
         assert!(r.starts_with("550"), "{r}");
         // a domain with no accounts at all
-        b.dir.create_domain("empty.test").await.unwrap();
+        b.seed.create_domain("empty.test").await.unwrap();
         let r = c.cmd("RCPT TO:<postmaster@empty.test>").await;
         assert!(r.starts_with("550 5.1.1"), "{r}");
         s.stop().await;

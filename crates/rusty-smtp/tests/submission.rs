@@ -30,9 +30,9 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 async fn world(b: &Backend) -> (AccountId, AccountId, AccountId) {
     let (alice, bob) = b.seed().await;
     let dom = b.dir.find_domain("example.net").await.unwrap().unwrap().id;
-    b.dir.add_alias("ally", dom, alice).await.unwrap();
-    let other = b.dir.create_domain("other.test").await.unwrap();
-    let eve = b.dir.create_account("eve", other, Some("pw-eve-123456"), None).await.unwrap();
+    b.seed.add_alias("ally", dom, alice).await.unwrap();
+    let other = b.seed.create_domain("other.test").await.unwrap();
+    let eve = b.seed.create_account("eve", other, Some("pw-eve-123456"), None).await.unwrap();
     (alice, bob, eve)
 }
 
@@ -135,7 +135,7 @@ async fn disabled_accounts_and_unknown_users_cannot_log_in_and_look_alike() {
     for_each_backend(|b| async move {
         let (_, bob, _) = world(&b).await;
         let s = start(&b, opts()).await;
-        b.dir.set_status(bob, AccountStatus::Disabled).await.unwrap();
+        b.seed.set_status(bob, AccountStatus::Disabled).await.unwrap();
         let mut c = Client::secure_hello(s.addr, &s.cert_der).await;
         let a = c.cmd(&format!("AUTH PLAIN {}", plain("bob@example.net", "pw-bob-12345"))).await;
         let u = c.cmd(&format!("AUTH PLAIN {}", plain("nobody@example.net", "whatever-pw"))).await;
@@ -422,7 +422,7 @@ async fn a_full_queue_or_budget_is_a_temporary_failure_and_one_user_cannot_starv
     for_each_backend(|b| async move {
         let (_alice, _bob, _) = world(&b).await;
         let dom = b.dir.find_domain("example.net").await.unwrap().unwrap().id;
-        b.dir.create_account("carol", dom, Some("pw-carol-1234"), None).await.unwrap();
+        b.seed.create_account("carol", dom, Some("pw-carol-1234"), None).await.unwrap();
         let mut o = opts();
         o.submit_limits = Some(SubmitLimits { max_pending: 1, window_secs: 3600, max_jobs: 100, max_recipients: 100, max_bytes: 1 << 30 });
         let s = start(&b, o).await;
@@ -489,7 +489,7 @@ async fn a_hosted_but_disabled_domain_is_not_queued_as_remote_and_lists_with_ext
     for_each_backend(|b| async move {
         let (_alice, _bob, _eve) = world(&b).await;
         let other = b.dir.find_domain("other.test").await.unwrap().unwrap().id;
-        b.dir.set_domain_status(other, rusty_store::repo::DomainStatus::Disabled).await.unwrap();
+        b.seed.set_domain_status(other, rusty_store::repo::DomainStatus::Disabled).await.unwrap();
         let s = start(&b, opts()).await;
         let mut c = authed(s.addr, &s.cert_der).await;
         assert!(c.cmd("MAIL FROM:<alice@example.net>").await.starts_with("250"));
@@ -498,9 +498,9 @@ async fn a_hosted_but_disabled_domain_is_not_queued_as_remote_and_lists_with_ext
         // A list with an external member: refused, not silently reduced to its local members.
         let (alice, _) = (b.dir.find_account("alice@example.net").await.unwrap().unwrap().id, ());
         let dom = b.dir.find_domain("example.net").await.unwrap().unwrap().id;
-        let list = b.dir.create_list("team", dom).await.unwrap();
-        b.dir.add_list_member(list, Some(alice), None).await.unwrap();
-        b.dir.add_list_member(list, None, Some("far@away.example")).await.unwrap();
+        let list = b.seed.create_list("team", dom).await.unwrap();
+        b.seed.add_list_member(list, Some(alice), None).await.unwrap();
+        b.seed.add_list_member(list, None, Some("far@away.example")).await.unwrap();
         let r = c.cmd("RCPT TO:<team@example.net>").await;
         assert!(r.starts_with("550 5.7.2"), "{r}");
         assert_eq!(b.count("jobs").await, 0);

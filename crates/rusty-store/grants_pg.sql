@@ -60,3 +60,81 @@ BEGIN
   END IF;
 END
 $grants$;
+
+-- The services (deploy/db/roles.sql): one role each, holding what that service does and nothing else. rusty_app (the operator's role) keeps its wide DML; these are narrower.
+-- Rows are locked with SELECT .. FOR UPDATE, which needs UPDATE on at least one column: where a service only locks a row it does not change, it gets UPDATE on one harmless column.
+-- `accounts.password_hash` goes only to the services that check a password (submission, imap); a sealed secret's ciphertext only to those that open one (every service that opens
+-- message bodies, and outbound for DKIM keys and relay passwords).
+DO $service_grants$
+DECLARE
+  r text;
+  cols text;
+BEGIN
+  SELECT string_agg(quote_ident(column_name), ', ' ORDER BY ordinal_position) INTO cols
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'accounts' AND column_name <> 'password_hash';
+  FOREACH r IN ARRAY ARRAY['rusty_smtp_in', 'rusty_submission', 'rusty_imap', 'rusty_outbound', 'rusty_gc'] LOOP
+    IF to_regrole(r) IS NOT NULL THEN
+      EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA public FROM %I', r);
+      EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM %I', r);
+      EXECUTE format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %I', r);
+      EXECUTE format('GRANT SELECT ON _sqlx_migrations TO %I', r);
+    END IF;
+  END LOOP;
+
+  -- rusty_smtp_in: inbound delivery. Reads the directory (no password hashes), writes messages and their blobs, never deletes.
+  IF to_regrole('rusty_smtp_in') IS NOT NULL THEN
+    EXECUTE format('GRANT SELECT (%s) ON accounts TO rusty_smtp_in', cols);
+    GRANT SELECT ON domains, aliases, lists, list_members, plans, address_owners, mailboxes, folders, deliveries, blob_stores, blob_backends, sealed_secrets TO rusty_smtp_in;
+    GRANT SELECT, INSERT, UPDATE ON messages, blobs, blob_locations TO rusty_smtp_in;
+    GRANT INSERT ON keywords, change_log, deliveries, jobs TO rusty_smtp_in;
+    GRANT UPDATE ON mailboxes, folders TO rusty_smtp_in;
+  END IF;
+
+  -- rusty_submission: authenticated submission. Checks a password, stores the copy and queues the outbound job.
+  IF to_regrole('rusty_submission') IS NOT NULL THEN
+    GRANT SELECT ON accounts, domains, aliases, lists, list_members, plans, address_owners, mailboxes, folders, deliveries, blob_stores, blob_backends, sealed_secrets TO rusty_submission;
+    GRANT SELECT, INSERT, UPDATE ON messages, blobs, blob_locations, jobs TO rusty_submission;
+    GRANT INSERT ON keywords, change_log, deliveries TO rusty_submission;
+    GRANT UPDATE ON mailboxes, folders TO rusty_submission;
+    GRANT UPDATE (created_at) ON domains, accounts TO rusty_submission;   -- row locks
+  END IF;
+
+  -- rusty_imap: mailbox access. Checks a password, reads and changes the messages of a mailbox.
+  IF to_regrole('rusty_imap') IS NOT NULL THEN
+    GRANT SELECT ON accounts, domains, aliases, lists, list_members, plans, address_owners, mailboxes, folders, deliveries, blob_stores, blob_backends, sealed_secrets TO rusty_imap;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON messages TO rusty_imap;
+    GRANT SELECT, INSERT, UPDATE ON blobs, blob_locations TO rusty_imap;
+    GRANT SELECT, INSERT, DELETE ON keywords TO rusty_imap;
+    GRANT SELECT, INSERT ON change_log TO rusty_imap;
+    GRANT INSERT, UPDATE, DELETE ON folders TO rusty_imap;
+    GRANT UPDATE ON mailboxes TO rusty_imap;
+    GRANT INSERT ON deliveries TO rusty_imap;
+  END IF;
+
+  -- rusty_outbound: the delivery worker. Claims and finishes jobs, reads the message and the DKIM and relay settings, writes the DNS check state.
+  IF to_regrole('rusty_outbound') IS NOT NULL THEN
+    EXECUTE format('GRANT SELECT (%s) ON accounts TO rusty_outbound', cols);
+    GRANT SELECT ON domains, aliases, lists, list_members, mailboxes, folders, messages, deliveries, blobs, blob_locations, blob_stores, blob_backends, sealed_secrets,
+      domain_dkim_keys, domain_relays, domain_dns_config TO rusty_outbound;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON jobs, domain_dns_state, domain_dns_event TO rusty_outbound;
+    GRANT UPDATE (created_at) ON domains, accounts TO rusty_outbound;   -- the row locks of the DNS check and of a delivery
+    GRANT UPDATE (check_status, checked_at) ON domain_relays TO rusty_outbound;
+    -- a bounce (DSN) is delivered to the local sender like any inbound message
+    GRANT INSERT, UPDATE ON messages, blobs, blob_locations TO rusty_outbound;
+    GRANT INSERT ON keywords, change_log, deliveries TO rusty_outbound;
+    GRANT UPDATE ON mailboxes, folders TO rusty_outbound;
+  END IF;
+
+  -- rusty_gc: garbage collection, store upkeep and the periodic jobs. Deletes what is no longer referenced; never creates a message.
+  IF to_regrole('rusty_gc') IS NOT NULL THEN
+    EXECUTE format('GRANT SELECT (%s) ON accounts TO rusty_gc', cols);
+    GRANT SELECT ON domains, mailboxes, folders, deliveries, sealed_secrets TO rusty_gc;
+    GRANT SELECT, DELETE ON messages, keywords, change_log TO rusty_gc;
+    GRANT SELECT, UPDATE, DELETE ON capabilities TO rusty_gc;
+    GRANT SELECT, UPDATE, DELETE ON blobs, deliveries TO rusty_gc;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON blob_locations, blob_store_leases, jobs TO rusty_gc;
+    GRANT SELECT, INSERT, UPDATE ON blob_stores, blob_backends TO rusty_gc;
+  END IF;
+END
+$service_grants$;

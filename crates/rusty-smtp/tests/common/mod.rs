@@ -32,6 +32,10 @@ pub struct Backend {
     pub store: Store,
     pub fx: Fixtures,
     pub dir: Directory,
+    /// The directory as the operator sees it: tests create domains, accounts and lists through it, never through `dir` (the service under test, which may run as a narrower role).
+    pub seed: Directory,
+    /// The operator's store (the role `rusty_app` in roles mode): what tests use for the admin-side writes (DKIM keys, sealed secrets).
+    pub seed_store: Store,
     pub tmp: tempfile::TempDir,
     _db: Option<pg::PgTestDb>,
 }
@@ -44,9 +48,12 @@ pub async fn pg_backend() -> Option<Backend> {
     let url = pg::pg_admin_url()?;
     let db = pg::PgTestDb::create(&url).await;
     let store = Store::open(StoreConfig::postgres(db.url())).await.unwrap();
+    let seed_store = Store::open(StoreConfig::postgres(db.seed_url())).await.unwrap();
     Some(Backend {
         name: "postgres",
         dir: Directory::with_repo(store.repos().directory.clone()),
+        seed: Directory::with_repo(seed_store.repos().directory.clone()),
+        seed_store,
         fx: Fixtures::admin_of(&db, &store).await,
         store,
         tmp: tempfile::tempdir().unwrap(),
@@ -76,10 +83,10 @@ impl Backend {
 
     /// Domain `example.net` with accounts alice and bob (and the aliases the ctl would create).
     pub async fn seed(&self) -> (AccountId, AccountId) {
-        let dom = self.dir.create_domain("example.net").await.unwrap();
-        let alice = self.dir.create_account("alice", dom, Some("pw-alice-1234"), None).await.unwrap();
-        let bob = self.dir.create_account("bob", dom, Some("pw-bob-12345"), None).await.unwrap();
-        self.dir.add_alias("postmaster", dom, alice).await.unwrap();
+        let dom = self.seed.create_domain("example.net").await.unwrap();
+        let alice = self.seed.create_account("alice", dom, Some("pw-alice-1234"), None).await.unwrap();
+        let bob = self.seed.create_account("bob", dom, Some("pw-bob-12345"), None).await.unwrap();
+        self.seed.add_alias("postmaster", dom, alice).await.unwrap();
         (alice, bob)
     }
 
@@ -365,9 +372,12 @@ pub async fn backends_short_waits() -> Vec<Backend> {
         };
         let cfg = StoreConfig::Postgres { url: db.url().to_owned(), pool: limits, security: rusty_store::PgSecurity::default() };
         let store = Store::open(cfg).await.unwrap();
+        let seed_store = Store::open(StoreConfig::postgres(db.seed_url())).await.unwrap();
         v.push(Backend {
             name: "postgres",
             dir: Directory::with_repo(store.repos().directory.clone()),
+            seed: Directory::with_repo(seed_store.repos().directory.clone()),
+        seed_store,
             fx: Fixtures::admin_of(&db, &store).await,
             store,
             tmp: tempfile::tempdir().unwrap(),

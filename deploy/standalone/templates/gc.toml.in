@@ -13,7 +13,7 @@ enabled = true
 key_files = ["/etc/rusty-keys/unseal.key"]
 
 [store]
-url = "postgres://rusty_app@db:5432/rusty"
-password_file = "/run/secrets/pg_app"
+url = "postgres://rusty_gc@db:5432/rusty"
+password_file = "/run/secrets/pg_gc"
 sslmode = "verify-full"
 ca_bundle = "/etc/rusty/db-ca.pem"

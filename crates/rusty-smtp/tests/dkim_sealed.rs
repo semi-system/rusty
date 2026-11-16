@@ -26,10 +26,10 @@ struct Rig {
 
 impl Rig {
     fn dns(&self) -> DnsStore {
-        DnsStore::with_repo(self.b.store.repos().dns.clone())
+        DnsStore::with_repo(self.b.seed_store.repos().dns.clone())
     }
     fn writer(&self) -> SealedWriter {
-        SealedWriter::with_repo(self.b.store.repos().sealed.clone())
+        SealedWriter::with_repo(self.b.seed_store.repos().sealed.clone())
     }
     fn reader(&self) -> SealedReader {
         SealedReader::with_repo(self.b.store.repos().sealed.clone())
@@ -79,7 +79,7 @@ async fn verify(keys: &[&GeneratedKey], sig: Vec<u8>) -> rusty_smtp::authres::Au
 
 async fn rig_with_domain(name: &str) -> Option<(Rig, rusty_seal::SealingKey)> {
     let b = pg_backend().await?;
-    b.dir.create_domain(name).await.unwrap();
+    b.seed.create_domain(name).await.unwrap();
     let (sk, pk) = generate();
     Some((Rig { b, unseal: vec![sk] }, pk))
 }
@@ -158,7 +158,7 @@ async fn a_key_that_cannot_be_opened_stops_signing_loudly_and_leaks_nothing() {
 #[tokio::test]
 async fn a_sealed_key_moved_to_another_domain_does_not_open_there() {
     let (rig, pk) = rig!("example.org");
-    rig.b.dir.create_domain("other.test").await.unwrap();
+    rig.b.seed.create_domain("other.test").await.unwrap();
     let k = store_key(&rig, "example.org", false, &pk).await;
     // Copy the sealed blob of example.org into other.test's row, with other.test's own public key row.
     let a = rig.b.dir.find_domain("example.org").await.unwrap().unwrap();
@@ -203,7 +203,7 @@ async fn keys_are_cached_for_the_ttl_and_a_zero_ttl_sees_a_removal_at_once() {
 #[tokio::test]
 async fn sealed_keys_win_over_key_files_and_a_domain_with_only_a_file_still_signs() {
     let (rig, pk) = rig!("example.org");
-    rig.b.dir.create_domain("fileonly.test").await.unwrap();
+    rig.b.seed.create_domain("fileonly.test").await.unwrap();
     let sealed_key = store_key(&rig, "example.org", false, &pk).await;
     let dir = tempfile::tempdir().unwrap();
     let file_key = generate_key(dir.path(), "example.org", "rusty").unwrap();
