@@ -76,7 +76,7 @@ against it:
 | `smtp-in`, `submission`, `imap` | 2+ each | workers, spread over nodes | `max_replicas_per_node` so two replicas do not land on one node |
 | `outbound` | 1+ | workers **with the label `outbound=true`** | the node's public address is the sending address: its reverse DNS, SPF and `public_ips` must match; port 25 outbound must be open at that provider |
 | `gc` | 1 | any worker | leases make a second one harmless, one is enough |
-| `admin` | 2 | workers | reached only through the edge; its `allowed_peers` is the overlay subnet |
+| `admin` | 2 | workers | reached only through the edge; its `allowed_hosts` names the edge (`tasks.edge`) |
 | `clamd` + `freshclam` | 1 + 1 | one worker with the label `av=true` (they share a local volume) | signatures are re-downloaded when the node changes |
 | `rspamd`, `resolver` | 1 each | workers | the resolver is reached as `resolver` by rspamd and `[resolver] nameserver` of smtp-in (its address, resolved at start) |
 | `valkey` | 1 | worker | no persistence; TLS and ACL users as in the standalone profile |
@@ -112,7 +112,7 @@ Every step is a subcommand of one tool, `deploy/swarm/rusty-swarm` (a bash scrip
    those roles (the operator, or the tool over SSH, installs them on the database host). Everything is idempotent.
 5. `prepare secrets`: creates the swarm secrets with **versioned names** (`pg_imap_v1`, ...; a secret cannot be changed in place): the service passwords, the Valkey passwords, the unsealing key, the S3 keys, the TLS key and
    certificate (self-signed at first, or the edge's ACME certificate once it exists, section 7). A rotation makes `_v2` and a rolling update moves the service to it.
-6. `prepare configs`: renders the per-service TOML files from `deploy/standalone/templates/*.toml.in` (the same templates; the database host, the S3 section and the overlay subnet are the swarm's values), the HAProxy
+6. `prepare configs`: renders the per-service TOML files from `deploy/standalone/templates/*.toml.in` (the same templates; the database host, the S3 section and the names of the edge (`trusted_proxy_hosts`, `allowed_hosts`) are the swarm's values), the HAProxy
    configuration, and creates them as **configs named by their content hash**; a change in content is a new config and so a rolling update.
 7. `prepare images`: pulls the images by tag on every node that will run them (so the first start is not a download), verifies the signatures (`cosign verify`, as `docker.md`).
 

@@ -89,6 +89,9 @@ pub struct SmtpConfig {
     /// The addresses (blocks) the proxy connects from. Required with `proxy_protocol`, refused without it, at most 16, never a block that holds every address.
     #[serde(default)]
     pub trusted_proxies: Vec<crate::cidr::Cidr>,
+    /// DNS names whose addresses the proxy connects from, resolved again every few seconds (Docker's DNS: `edge` in compose, `tasks.edge` in a swarm, which has no fixed addresses). Alone or with `trusted_proxies`.
+    #[serde(default)]
+    pub trusted_proxy_hosts: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -108,6 +111,9 @@ pub struct ImapConfig {
     /// As `[smtp] trusted_proxies`.
     #[serde(default)]
     pub trusted_proxies: Vec<crate::cidr::Cidr>,
+    /// As `[smtp] trusted_proxy_hosts`.
+    #[serde(default)]
+    pub trusted_proxy_hosts: Vec<String>,
 }
 
 /// How a destination domain's SMTP server is treated for TLS.
@@ -480,6 +486,7 @@ impl Default for SmtpConfig {
             max_connections_per_ip: d_per_ip_smtp(),
             proxy_protocol: false,
             trusted_proxies: Vec::new(),
+            trusted_proxy_hosts: Vec::new(),
         }
     }
 }
@@ -493,6 +500,7 @@ impl Default for ImapConfig {
             max_connections_per_ip: d_per_ip_imap(),
             proxy_protocol: false,
             trusted_proxies: Vec::new(),
+            trusted_proxy_hosts: Vec::new(),
         }
     }
 }
@@ -549,21 +557,24 @@ impl SmtpConfig {
         if self.max_connections == 0 || self.max_connections_per_ip == 0 {
             return Err(bad("smtp connection limits must be at least 1"));
         }
-        check_proxy("smtp", self.proxy_protocol, &self.trusted_proxies)?;
+        check_proxy("smtp", self.proxy_protocol, &self.trusted_proxies, &self.trusted_proxy_hosts)?;
         Ok(())
     }
 }
 
 /// The rules of the PROXY protocol settings of a service: trusting a proxy is a security decision, so it is explicit and narrow.
-fn check_proxy(section: &str, proxy_protocol: bool, trusted: &[crate::cidr::Cidr]) -> Result<()> {
+fn check_proxy(section: &str, proxy_protocol: bool, trusted: &[crate::cidr::Cidr], hosts: &[String]) -> Result<()> {
     if !proxy_protocol {
-        return if trusted.is_empty() { Ok(()) } else { Err(Error::Invalid(format!("{section}.trusted_proxies needs {section}.proxy_protocol = true"))) };
+        return if trusted.is_empty() && hosts.is_empty() { Ok(()) } else { Err(Error::Invalid(format!("{section}.trusted_proxies and {section}.trusted_proxy_hosts need {section}.proxy_protocol = true"))) };
     }
-    if trusted.is_empty() || trusted.len() > 16 {
-        return Err(Error::Invalid(format!("{section}.trusted_proxies must name one to sixteen address blocks when {section}.proxy_protocol is true")));
+    if (trusted.is_empty() && hosts.is_empty()) || trusted.len() > 16 || hosts.len() > 8 {
+        return Err(Error::Invalid(format!("{section}.trusted_proxies (one to sixteen address blocks) or {section}.trusted_proxy_hosts (one to eight names) must name the proxy when {section}.proxy_protocol is true")));
     }
     if trusted.iter().any(|c| c.is_everything()) {
         return Err(Error::Invalid(format!("{section}.trusted_proxies must not hold every address: anyone could then claim any client address")));
+    }
+    if !hosts.iter().all(|h| crate::config_metrics::host_ok(h)) {
+        return Err(Error::Invalid(format!("{section}.trusted_proxy_hosts holds a name that is not a DNS name")));
     }
     Ok(())
 }
@@ -574,7 +585,7 @@ impl ImapConfig {
         if self.max_connections == 0 || self.max_connections_per_ip == 0 {
             return Err(bad("imap connection limits must be at least 1"));
         }
-        check_proxy("imap", self.proxy_protocol, &self.trusted_proxies)?;
+        check_proxy("imap", self.proxy_protocol, &self.trusted_proxies, &self.trusted_proxy_hosts)?;
         Ok(())
     }
 }

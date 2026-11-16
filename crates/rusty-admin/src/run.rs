@@ -138,7 +138,12 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
         (Arc::new(DirectTcp), None)
     };
     // Behind the edge only: another container on the network must not reach the service directly and skip the edge's address allow-list.
-    let accept: Arc<dyn Accept> = if admin.allowed_peers.is_empty() { accept } else { Arc::new(PeerAllow::new(accept, admin.allowed_peers.clone())) };
+    let accept: Arc<dyn Accept> = if admin.allowed_peers.is_empty() && admin.allowed_hosts.is_empty() {
+        accept
+    } else {
+        let named = rusty_svc::NamedPeers::start(admin.allowed_hosts.clone(), rusty_svc::NAMED_PEERS_REFRESH, shutdown.clone()).await;
+        Arc::new(PeerAllow::new(accept, admin.allowed_peers.clone()).with_named(named))
+    };
     let spec = ListenerSpec { name: "admin", addr: admin.listen, max_connections: MAX_CONNECTIONS, max_per_ip: MAX_PER_IP };
     let bound = BoundListener::bind(spec).await?;
     let addr = bound.local_addr();

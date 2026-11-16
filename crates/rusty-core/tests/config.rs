@@ -242,6 +242,22 @@ mod proxy_settings {
         assert!(parse("[imap]\ntrusted_proxies = [\"10.0.0.0/8\"]\n").is_err());
     }
 
+
+    #[test]
+    fn the_proxy_may_be_named_instead_of_addressed() {
+        let c = parse("[smtp]\nproxy_protocol = true\ntrusted_proxy_hosts = [\"tasks.edge\", \"edge\"]\n[imap]\nproxy_protocol = true\ntrusted_proxy_hosts = [\"edge\"]\ntrusted_proxies = [\"10.0.0.0/8\"]\n").unwrap();
+        assert_eq!((c.smtp.trusted_proxy_hosts.len(), c.smtp.trusted_proxies.len()), (2, 0), "names alone are enough");
+        assert_eq!((c.imap.trusted_proxy_hosts.len(), c.imap.trusted_proxies.len()), (1, 1), "names and blocks together");
+        for bad in [
+            "[smtp]\ntrusted_proxy_hosts = [\"edge\"]\n",
+            "[smtp]\nproxy_protocol = true\ntrusted_proxy_hosts = [\"a b\"]\n",
+            "[smtp]\nproxy_protocol = true\ntrusted_proxy_hosts = [\"h1\",\"h2\",\"h3\",\"h4\",\"h5\",\"h6\",\"h7\",\"h8\",\"h9\"]\n",
+            "[imap]\nproxy_protocol = true\ntrusted_proxy_hosts = []\n",
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+    }
+
     #[test]
     fn trusting_everyone_or_nobody_is_refused() {
         for bad in [
