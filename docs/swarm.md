@@ -59,7 +59,7 @@ PostgreSQL its password is `STATE_DIR/secrets/pg_postgres`.
 | `cluster check / install-docker / init / verify` | the cluster steps alone |
 | `prepare db / secrets / configs`, `migrate`, `deploy` | the later steps alone, each repeatable |
 | `stack` | print the stack file the next `deploy` would use |
-| `backup [DIR]`, `restore FILE` | a dump of the database (with the login that stays yours) and the sealing key; the way back. The S3 bucket is not in it: copy it as you copy any bucket |
+| `backup [DIR] [--with-keys]`, `restore FILE` | a dump of the database (with the login that stays yours; the sealing key only with `--with-keys`, because it opens the credentials in the dump: keep it elsewhere); the way back. The S3 bucket is not in it: copy it as you copy any bucket |
 | `upgrade [--no-backup]` | a new release: backup, secrets, configs, the migration job on the new image, then a rolling update (a service that does not come up is rolled back by itself) |
 | `certs sync`, `certs install-timer` | with `acme`: the edge's certificate to the mail services (a new secret version and a rolling update when it changed), and a systemd timer that does it every six hours (a Manager reached as `local`; elsewhere run `certs sync` from cron) |
 | `logs SERVICE [LINES]` | the log of a service (`admin`, `smtp-in`, `edge` ...) |

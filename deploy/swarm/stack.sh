@@ -72,15 +72,16 @@ make_selfsigned() { # NAME HOST
 
 # The sealing key pair (docs/blob-stores.md): made once; the private half is kept in the state directory and goes to the services that open blobs; print the path once for a backup.
 make_sealing_key() {
-  local dir="$STATE_DIR/keys" tmp
+  local dir="$STATE_DIR/keys" tmp uid
   mkdir -p "$dir"; chmod 0700 "$dir"
   if [ -s "$dir/unseal.key" ] && [ -s "$dir/seal.pub" ]; then return 0; fi
   tmp="/tmp/rusty-swarm-keys.$$"
+  uid="$(on "$(manager_name)" id -u):$(on "$(manager_name)" id -g)"   # the files are made by this user: the tool can read them back
   on "$(manager_name)" sh -c "rm -rf $tmp && mkdir -m 1777 $tmp"
-  sw run --rm --user 65532:65532 --entrypoint /usr/local/bin/rustyctl -v "$tmp:/k" "$(rusty_image "")" seal keygen /k/unseal.key >/dev/null
+  sw run --rm --user "$uid" --entrypoint /usr/local/bin/rustyctl -v "$tmp:/k" "$(rusty_image "")" seal keygen /k/unseal.key >/dev/null
   ( umask 077
     on "$(manager_name)" cat "$tmp/unseal.key" > "$dir/unseal.key"
-    sw run --rm --user 65532:65532 --entrypoint /usr/local/bin/rustyctl -v "$tmp:/k:ro" "$(rusty_image "")" seal show /k/unseal.key | grep -o 'rusty-seal-v1:[0-9a-f]\{64\}' | head -1 > "$dir/seal.pub" )
+    sw run --rm --user "$uid" --entrypoint /usr/local/bin/rustyctl -v "$tmp:/k:ro" "$(rusty_image "")" seal show /k/unseal.key | grep -o 'rusty-seal-v1:[0-9a-f]\{64\}' | head -1 > "$dir/seal.pub" )
   on "$(manager_name)" rm -rf "$tmp"
   [ -s "$dir/unseal.key" ] && [ -s "$dir/seal.pub" ] || die "could not make the sealing key"
   echo "prepare secrets: a sealing key was made: $dir/unseal.key. It is the key that opens the tenants' stored credentials: keep a copy somewhere else (without it they cannot be read)." >&2
@@ -512,7 +513,9 @@ cmd_migrate() {
 
 cmd_deploy() {
   gen_stack > "$STATE_DIR/stack/stack.yaml"
-  sw stack deploy --with-registry-auth --prune -c - "$STACK_NAME" < "$STATE_DIR/stack/stack.yaml"
+  # --prune removes the services that are not in the file: the base file (the helpers only) must never prune the mail services of a system that is already running.
+  local prune=(--prune); [ -z "$STACK_ONLY" ] || prune=()
+  sw stack deploy --with-registry-auth "${prune[@]}" -c - "$STACK_NAME" < "$STATE_DIR/stack/stack.yaml"
   wait_converged
 }
 
@@ -559,15 +562,18 @@ cmd_verify_stack() {
 # A dump of the database with the login that stays yours (pg_dump -Fc, from a container on a node: the same road the services take) and the sealing key. The S3 bucket is not in it: it is yours
 # (or, with the default RustFS, the volume `s3data` on the node labelled s3=true): copy it the way you copy any bucket.
 # shellcheck disable=SC2120 # called without a directory by upgrade
-cmd_backup() { # [DIR]
-  local dir
-  dir="${1:-$STATE_DIR/backups}/$(date -u +%Y%m%dT%H%M%SZ)"
+cmd_backup() { # [DIR] [--with-keys]
+  local dir out="$STATE_DIR/backups" keys=0
+  while [ $# -gt 0 ]; do case "$1" in --with-keys) keys=1; shift ;; *) out="$1"; shift ;; esac; done
+  dir="$out/$(date -u +%Y%m%dT%H%M%SZ)"
   [ -r "$DB_ADMIN_PASSWORD_FILE" ] || die "backup: DB_ADMIN_PASSWORD_FILE is not readable"
   ( umask 077; mkdir -p "$dir" )
   ( umask 077; pg_tool_as "pg_dump -Fc --no-owner" "$DB_ADMIN_USER" "$DB_ADMIN_PASSWORD_FILE" < /dev/null > "$dir/rusty.dump" ) || { rm -rf "$dir"; die "backup: pg_dump failed"; }
   [ -s "$dir/rusty.dump" ] || { rm -rf "$dir"; die "backup: the dump is empty"; }
-  [ ! -d "$STATE_DIR/keys" ] || ( umask 077; cp -R "$STATE_DIR/keys" "$dir/keys" )
-  echo "backup: $dir ($(wc -c < "$dir/rusty.dump") bytes of database, and the sealing key). The S3 bucket is not in it."
+  # The sealing key opens the tenants' stored credentials that are IN the dump: it is kept apart from it unless you ask for both together.
+  if [ "$keys" = 1 ] && [ -d "$STATE_DIR/keys" ]; then ( umask 077; cp -R "$STATE_DIR/keys" "$dir/keys" ); fi
+  echo "backup: $dir ($(wc -c < "$dir/rusty.dump") bytes of database). The S3 bucket is not in it."
+  if [ "$keys" = 0 ]; then echo "backup: the sealing key ($STATE_DIR/keys/unseal.key) is NOT in it, on purpose: keep a copy of it somewhere else (without it the tenants' stored credentials cannot be read), or add --with-keys." >&2; fi
 }
 
 cmd_restore() { # DUMP-FILE: into the database of the inventory; the services should be stopped (docker stack rm rusty) while it runs
