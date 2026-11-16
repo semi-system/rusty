@@ -547,7 +547,7 @@ cmd_migrate() {
       sw stack rm "$MIGRATE_STACK" >/dev/null 2>&1 || true
       die "a job failed: nothing was deployed"
     fi
-    if [ "$ndone" = "${#jobs[@]}" ]; then echo "migrate: the schema is up to date${S3_IN_STACK/#1/ and the bucket exists}"; sw stack rm "$MIGRATE_STACK" >/dev/null 2>&1 || true; return 0; fi
+    if [ "$ndone" = "${#jobs[@]}" ]; then echo "migrate: the schema is up to date$([ "$S3_IN_STACK" = 1 ] && echo " and the bucket exists")"; sw stack rm "$MIGRATE_STACK" >/dev/null 2>&1 || true; return 0; fi
     sleep 2
   done
   for j in "${jobs[@]}"; do sw service logs "${MIGRATE_STACK}_$j" 2>&1 | tail -20 >&2 || true; done
