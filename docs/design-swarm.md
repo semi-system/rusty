@@ -1,13 +1,13 @@
 # Design: deploying on a Docker Swarm cluster
 
-Status: **plan for the owner's review** (2026-11-16). Nothing here is built. The goal the owner set: first build one Docker Swarm cluster, then deploy the platform onto it "by the model" (the five service images, the edge, the
+Status: **plan for the owner's review** (2026-11-16, updated the same day: local cluster first, no Prometheus in the cluster). Nothing here is built. The goal the owner set: first build one Docker Swarm cluster, then deploy the platform onto it "by the model" (the five service images, the edge, the
 filters, the replicas, the limits). This page is the deploy flow, step by step, and what has to change in the project to make it possible.
 
 ## 1. Decisions already taken (owner, 2026-11-16)
 
 | Question | Answer |
 |---|---|
-| Where the cluster runs | **Real machines or VMs that the owner provides** (not Docker-in-Docker on the test server). |
+| Where the cluster runs | **First a local test cluster** (section 3b: Docker-in-Docker nodes on the owner's machine); the real machines or VPS are looked for **only when the work is finished and passes there**. |
 | Where the public ports are open | **Only on the Manager node.** The edge (HAProxy) runs there and nowhere else. |
 | Message blobs | **An external S3 service**, always (no S3 server inside the cluster). |
 | The database | **An external, dedicated PostgreSQL** ("as separate as the S3"): it is not a swarm service. |
@@ -25,7 +25,7 @@ internet ──► DNS A/AAAA (mail.example.org, admin.example.org, ...) ──�
   │ Manager:  edge (HAProxy, ACME)          [label edge=true is the manager itself]              │
   │ Workers:  smtp-in x N, submission x N, imap x N, admin x N, gc x 1, outbound x N (labelled)   │
   │           filter helpers: clamd + freshclam (one node, label av), rspamd, resolver            │
-  │           valkey x 1, prometheus x 1 (label monitor)                                         │
+  │           valkey x 1                                                                          │
   └──────────────┬──────────────────────────────┬────────────────────────────────────────────────┘
                  ▼                              ▼
      external PostgreSQL (TLS, verify-full)   external S3 (HTTPS)       + the operator's machine (deploy tool, backups)
@@ -49,6 +49,25 @@ down, but nothing enters and nothing can be changed. Three managers with the edg
 | ports published to the host | the edge only, in **host mode** (the client address is kept, which PROXY v2, SPF checks and the per-address limits need); nothing else publishes a port |
 | `restart: unless-stopped` | `deploy.restart_policy`, `update_config`, `rollback_config` |
 
+## 3b. The local test cluster (the first target)
+
+Until the work is complete the cluster lives on the owner's own machine, as **Docker-in-Docker nodes**, with the two external dependencies as plain containers outside it, so the flow of section 6 runs unchanged
+against it:
+
+* **Nodes**: `rusty-m1` (the Manager) and `rusty-w1`, `rusty-w2` (workers), each a privileged `docker:dind` container on one Docker network (`rusty-cluster`); labels `outbound=true` on `w1` and `av=true` on `w2` stand
+  in for the real roles. The machine to use is the WSL2 Ubuntu of the owner's PC (16 CPUs, 16 GB, 100 GB limit set earlier), which has room for three nodes plus the helpers; the LAN test server (4 CPUs, 7 GB) is
+  the second choice.
+* **External PostgreSQL** and **external S3** (RustFS, the S3 server of the test suite) are ordinary containers on a second network (`rusty-ext`) that the nodes can reach, with their own certificates from a throw-away CA;
+  the database allows the nodes' addresses with the service roles exactly as it will on the real machine.
+* **The edge** is a host-mode task on the Manager: its ports exist inside `rusty-m1`, which publishes them to the machine on high ports (`10025`, `10587`, `10993`, `10443`, `10080`, ...); a test client uses those ports.
+  Certificates are self-signed (ACME cannot reach a local machine), so the certificate-sync of section 7 is exercised with that certificate.
+* **Mail to the outside** is a fake remote MTA container on `rusty-ext` that the `outbound` node reaches, with the DNS names the flow needs on a local resolver; real delivery, reverse DNS, IP reputation and port 25 are
+  what a real node adds and what the final acceptance run on the VPS is for.
+* `deploy/swarm/local-cluster.sh up | down | status | node-stop NAME | node-start NAME` creates, removes and shows it and stops a node (a node loss test). It is the only script that knows about the dind layout; every
+  other subcommand of `rusty-swarm` talks to a Manager over SSH or `docker -H`, so the same tool is used against the real cluster later.
+* **What a local cluster cannot prove**, to be re-checked on the real one: the encrypted overlay (it needs IPsec in the kernel, which the WSL2 kernel may lack: the local run then goes without it and a check on the real
+  nodes confirms it), the time and cost of the network between real machines, the real firewall rules, performance, and an outage of a whole machine.
+
 ## 4. The pieces, where they run and how many
 
 | Service | Replicas | Placement | Notes |
@@ -61,7 +80,6 @@ down, but nothing enters and nothing can be changed. Three managers with the edg
 | `clamd` + `freshclam` | 1 + 1 | one worker with the label `av=true` (they share a local volume) | signatures are re-downloaded when the node changes |
 | `rspamd`, `resolver` | 1 each | workers | the resolver is reached as `resolver` by rspamd and `[resolver] nameserver` of smtp-in (its address, resolved at start) |
 | `valkey` | 1 | worker | no persistence; TLS and ACL users as in the standalone profile |
-| `prometheus` | 1 | worker with the label `monitor=true` | scrapes `tasks.<service>:9100`; local volume |
 | (later) `webmail`, `rusty-dns` | N | workers; `rusty-dns` publishes 53/udp+tcp on the nodes that own the NS addresses | designed, not built |
 
 Everything uses the published images (`ghcr.io/semi-system/...:TAG`, pinned), with `docker stack deploy --with-registry-auth` when the registry is private.
@@ -95,7 +113,7 @@ Every step is a subcommand of one tool, `deploy/swarm/rusty-swarm` (a bash scrip
 5. `prepare secrets`: creates the swarm secrets with **versioned names** (`pg_imap_v1`, ...; a secret cannot be changed in place): the service passwords, the Valkey passwords, the unsealing key, the S3 keys, the TLS key and
    certificate (self-signed at first, or the edge's ACME certificate once it exists, section 7). A rotation makes `_v2` and a rolling update moves the service to it.
 6. `prepare configs`: renders the per-service TOML files from `deploy/standalone/templates/*.toml.in` (the same templates; the database host, the S3 section and the overlay subnet are the swarm's values), the HAProxy
-   configuration and the Prometheus files, and creates them as **configs named by their content hash**; a change in content is a new config and so a rolling update.
+   configuration, and creates them as **configs named by their content hash**; a change in content is a new config and so a rolling update.
 7. `prepare images`: pulls the images by tag on every node that will run them (so the first start is not a download), verifies the signatures (`cosign verify`, as `docker.md`).
 
 **Phase C: the database schema (`rusty-swarm migrate`)**
@@ -110,7 +128,7 @@ Every step is a subcommand of one tool, `deploy/swarm/rusty-swarm` (a bash scrip
 
 **Phase E: acceptance (`rusty-swarm verify`)**
 12. From outside: the edge answers on every public port; the TLS certificates are the expected ones; a message goes in through 25 and out through 587/465 and is read through 993; the filters refuse the standard test
-    messages (GTUBE, EICAR); the monitor page and Prometheus show every service and replica; a node is drained and the tasks move.
+    messages (GTUBE, EICAR); the monitor page shows every service and replica and `/metrics` answers on each task from the `metrics` network; a node is drained and the tasks move.
 
 ## 7. TLS certificates for STARTTLS
 
@@ -157,8 +175,8 @@ Why a timer on the host and not a service: a service that could create secrets a
 * **Limits**: `deploy/standalone/limits.sh` already reads the swarm (the sum of the Ready and Active nodes) and divides 80 % of it over the containers; the deploy tool turns that into `deploy.resources.limits` and
   `reservations` (reservations matter on a swarm: they are what the scheduler places by). The listener memory budget (`[limits] inflight_message_mib`) is set under each inbound service's limit.
 * **Logs**: `json-file` with `max-size` and `max-file` on every service; a log shipper is out of scope.
-* **Metrics**: the `[metrics]` listener of every service; Prometheus finds replicas with `dns_sd_configs: tasks.<service>`; the sample alert rules apply unchanged (`design-metrics.md`). The admin web's Monitor page needs
-  nothing new: the heartbeats come from every task's own database login.
+* **Metrics**: the `[metrics]` listener of every service on an attachable `metrics` overlay. **No Prometheus runs in the cluster** (owner's decision: the endpoints are enough); an operator's Prometheus that joins
+  the overlay scrapes `tasks.<service>:9100` and can use the sample rules (`design-metrics.md`). The admin web's Monitor page needs nothing new: the heartbeats come from every task's own database login.
 * **Backups** live where the data is: the external PostgreSQL is backed up with its own tools (`pg_dump`/`pgBackRest` on the database host or by `rusty-swarm backup`, which runs `pg_dump -Fc` from a one-shot job over
   TLS) and the S3 bucket by its versioning or replication. The sealing key pair and the swarm's autolock key are the two things that exist nowhere else: back them up apart. `docs/backup.md` is extended.
 
@@ -168,7 +186,7 @@ Why a timer on the host and not a service: a service that could create secrets a
 |---|---|---|
 | 1 | `deploy/swarm/`: `rusty-swarm` (cluster, prepare, migrate, deploy, verify, upgrade, certs, logs, ctl wrapper), `stack.yaml.in`, the parameter file's example | the deploy flow itself |
 | 2 | `rustyctl` and `migrate` through **replicated-job** services (`rusty-swarm ctl ...` runs one and prints its log), because a swarm has no `docker compose run` and the overlay is not attachable by default | operations |
-| 3 | Prometheus config and HAProxy backends using `tasks.<service>` | replicas visible one by one |
+| 3 | HAProxy backends using `tasks.<service>`, and the sample scrape configuration likewise | replicas visible one by one |
 | 4 | A check that the platform store can be **S3 only** for every role (no `blob_dir` on the nodes) and that the configuration validator says so clearly | the external S3 decision |
 | 5 | PROXY v2 **authentication TLV** (HAProxy and the three services) | closes the widened PROXY trust of section 9 |
 | 6 | **Schema compatibility range** in the migration metadata and the schema check | safe rolling updates and a meaningful swarm rollback |
@@ -184,19 +202,21 @@ addresses, which also have to be public).
 
 ## 13. Order of work
 
-1. `cluster` subcommands and `cluster check`/`verify`, tested against the machines the owner provides (nothing of the platform yet): **the first real result**.
+0. **The local test cluster** (section 3b) and the external PostgreSQL and S3 containers: `local-cluster.sh up` gives a Manager and two workers, healthy, with a working overlay.
+1. `cluster` subcommands and `cluster check`/`verify`, tested against the local cluster (nothing of the platform yet): **the first result**.
 2. The stack template with only `edge`, `smtp-in` and a configuration, a secrets and configs pipeline, the external-database preparation and the `migrate` job: the smallest thing that receives a message.
 3. The remaining services, the filters and Valkey, then the limits and the logging limits; the certificate sync.
 4. Monitoring (`tasks.<service>`), the Monitor page, `verify`.
 5. `upgrade`, rolling updates and a rollback drill on the cluster; the CI single-node swarm test; `docs/swarm.md`.
 6. The hardening items 5 and 6 of section 11 (small, independent PRs).
 
-Each step is a pull request with tests, and each phase ends with a run on the real cluster.
+Each step is a pull request with tests, and each phase ends with a run on the **local cluster**. When the whole flow passes there (including the failure drills: a node stopped, a task killed, an update, a
+rollback by restore), the owner finds the machines and the same flow is run on them as the acceptance of what a local cluster cannot prove.
 
-## 14. What the plan needs from the owner
+## 14. What the plan needs from the owner (at the end, for the real cluster; nothing is needed now)
 
 1. The machines: how many, their addresses, the SSH access (the same kind as the test server), which one is the Manager, which has the public address and open ports, which may send mail (port 25 outbound open,
-   reverse DNS settable) and which has the most disk and RAM (it will hold ClamAV and Prometheus).
+   reverse DNS settable) and which has the most disk and RAM (it will hold ClamAV).
 2. The external PostgreSQL: where it is, who runs it, a version (17 or 18 as the images assume), and a login that may create roles for the one-time preparation; whether the database host's firewall can be opened to the nodes.
 3. The external S3: endpoint, bucket, region, and keys.
 4. The public host names and the DNS control for them (including the platform domain's `autoconfig` and the ACME `HTTP-01` reachability on port 80 of the Manager).
