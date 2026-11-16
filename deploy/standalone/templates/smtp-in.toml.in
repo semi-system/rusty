@@ -18,6 +18,10 @@ trusted_proxies = ["10.77.0.2/32", "127.0.0.1/32"]
 #FILTER clamd_addr = "10.78.0.5:3310"
 #FILTER rspamd_url = "http://10.78.0.4:11333"
 
+# SPF, DKIM and DMARC of the mail it receives, against the validating resolver of the filter profile (the service has no route to the internet of its own).
+#FILTER [resolver]
+#FILTER nameserver = "10.78.0.3:53"
+
 # A tenant's bucket keys are sealed to this service's key (docs/blob-stores.md): every service that opens message bodies holds the private half.
 [unsealing]
 key_files = ["/etc/rusty-keys/unseal.key"]

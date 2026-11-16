@@ -27,6 +27,12 @@ impl DnsStack {
         Ok(DnsStack { resolver, checker })
     }
 
+    /// The live stack at `nameserver` (the system resolver when `None`): what the inbound service builds from `[resolver]`.
+    pub fn from_nameserver(nameserver: Option<std::net::SocketAddr>, hostname: &str) -> Result<DnsStack> {
+        let (resolver, checker) = adapter::dns::live_stack(nameserver, hostname)?;
+        Ok(DnsStack { resolver, checker })
+    }
+
     /// Answers from fixed records, never from the network: MX and address lookups from `dns`, and
     /// SPF/DKIM/DMARC records for the inbound checker. For tests of the worker and of verification.
     pub fn with_static(dns: StaticDns, hostname: &str) -> Result<DnsStack> {
