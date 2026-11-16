@@ -4,9 +4,11 @@
 //! implementation that fills the same [`PeerInfo`].
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use rusty_core::cidr::Cidr;
 use rusty_core::{Error, Result};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
@@ -82,5 +84,32 @@ impl Accept for DirectTls {
             Ok(Err(_)) => Err(Error::Invalid("TLS handshake failed".into())),
             Err(_) => Err(Error::Invalid("TLS handshake timed out".into())),
         }
+    }
+}
+
+/// Only the listed networks may connect: any other TCP peer is dropped before a byte is read. For a service that sits behind the edge, so that another container on the same
+/// network cannot reach it directly and skip what the edge enforces (the admin host's address allow-list).
+pub struct PeerAllow {
+    inner: Arc<dyn Accept>,
+    allowed: Vec<Cidr>,
+}
+
+impl PeerAllow {
+    pub fn new(inner: Arc<dyn Accept>, allowed: Vec<Cidr>) -> PeerAllow {
+        PeerAllow { inner, allowed }
+    }
+}
+
+#[async_trait]
+impl Accept for PeerAllow {
+    async fn accept(&self, tcp: TcpStream, addr: SocketAddr) -> Result<(BoxedStream, PeerInfo)> {
+        if !self.allowed.iter().any(|c| c.contains(addr.ip())) {
+            return Err(Error::Invalid("peer is not in the allowed networks".into()));
+        }
+        self.inner.accept(tcp, addr).await
+    }
+
+    fn per_ip_after_accept(&self) -> bool {
+        self.inner.per_ip_after_accept()
     }
 }

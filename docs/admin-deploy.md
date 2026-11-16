@@ -7,6 +7,7 @@ The admin web is **one service, one image**: `docker build --target admin -f dep
 
 Copy `admin.example.toml` to `/etc/rusty/admin.toml` and set at least `hostname`, `[admin] public_origin`, `[store]` and `[sealing]`. The service refuses any section that belongs to another
 service. `[admin] public_ips`, `spf_include` and `via_relay` are what the DNS page needs (the same values as the outbound service's `[outbound]`).
+`[admin] allowed_peers` lists the only networks that may connect (the edge, and loopback for the health probe): any other peer is dropped before a byte is read, so another container on the network cannot reach the admin web directly and skip the edge's address allow-list. Empty means any peer (development only); the standalone stack sets it.
 
 Use the database role **`rusty_app`** (the one the other services use). The admin service never migrates the schema (`rustyctl db migrate` does).
 
