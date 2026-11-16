@@ -80,7 +80,7 @@ secret_to_file() {
 }
 
 run_wizard() {
-  local out="$1" where host pubip mailhost adminhost contact allow dbmode s3mode
+  local out="$1" where host pubip mailhost adminhost contact allow dbmode s3mode tlsmode
   local nodes db s3
   local re_host='^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$' re_ip='^[0-9]{1,3}(\.[0-9]{1,3}){3}$'
   echo "No inventory at $out: a few questions first (nothing is changed until they are answered)." >&2
@@ -99,6 +99,10 @@ run_wizard() {
   contact="$(ask_valid "E-mail address for the certificate authority (Let's Encrypt writes to it)" "" '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$' "An e-mail address.")"
   allow="$(ask_valid "Networks that may open the admin web (an address or a block, separated by spaces; for example 203.0.113.5/32)" "" '^[0-9]{1,3}(\.[0-9]{1,3}){3}(/[0-9]{1,2})?( [0-9]{1,3}(\.[0-9]{1,3}){3}(/[0-9]{1,2})?)*$' "IPv4 addresses or blocks.")"
   case " $allow " in *" 0.0.0.0/0 "*) echo "rusty-swarm: 0.0.0.0/0 would open the admin web to everyone" >&2; wiz_abort ;; esac
+  tlsmode="$(ui_menu "Certificates for the mail and admin host names" acme "Let's Encrypt (the two names must point at this server and port 80 be open)" self "Self-signed (a test installation: clients will warn)")"
+
+  local filter=1
+  ui_yesno "Spam and virus filters (rspamd and ClamAV: they need about 3 GB of memory)?" y || filter=0
 
   dbmode="$(ui_menu "PostgreSQL" external "Use my own PostgreSQL (recommended)" stack "Run a default PostgreSQL in the cluster (one instance, no failover)")"
   db=""
@@ -151,6 +155,8 @@ STATE_DIR="$STATE_DIR"
 MAIL_HOST=$mailhost
 ADMIN_HOST=$adminhost
 CONTACT=$contact
+TLS_MODE=$tlsmode
+FILTER=$filter
 ADMIN_ALLOW="$allow"
 $db
 $s3

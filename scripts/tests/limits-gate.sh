@@ -43,6 +43,13 @@ if bash $L --total-mem-mib 8192 --total-cpus 4 --replicas "imap=0" >/dev/null 2>
 if bash $L --total-mem-mib 8192 --total-cpus 4 --replicas "Imap=2" >/dev/null 2>&1; then fail "a bad service name was accepted"; fi
 
 # The override is a Compose file that Compose accepts together with the stack's own.
+
+# The swarm form's profiles: nodb leaves the database out of the division (its share goes to the others), s3 adds the default S3 server.
+nodb="$(rows "$(bash $L --total-mem-mib 8192 --total-cpus 4 --profiles nodb)")"
+[ -z "$(mem_of "$nodb" db)" ] || fail "nodb still gave the database a share"
+[ "$(mem_of "$nodb" imap)" -gt "$(mem_of "$(rows "$(bash $L --total-mem-mib 8192 --total-cpus 4)")" imap)" ] || fail "nodb did not leave more for the others"
+s3="$(rows "$(bash $L --total-mem-mib 8192 --total-cpus 4 --profiles s3)")"
+[ "$(mem_of "$s3" s3)" -ge 256 ] || fail "the s3 profile gave the S3 server less than its minimum"
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   tmp="$(mktemp)"
   # The profiles the stack defines today (the override names only services the stack has).

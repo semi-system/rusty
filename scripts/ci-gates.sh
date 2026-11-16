@@ -32,6 +32,7 @@ case "${1:-}" in
     bash scripts/tests/limits-gate.sh
     bash scripts/tests/swarm-inventory.sh
     bash scripts/tests/swarm-wizard.sh
+    bash scripts/tests/swarm-stack.sh
     bash scripts/tests/package-deploy.sh
     bash scripts/tests/backup-restore.sh
     ;;

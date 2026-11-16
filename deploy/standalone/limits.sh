@@ -61,7 +61,10 @@ for p in "${PROF[@]:-}"; do
     "") ;;
     filter) SERVICES="$SERVICES clamd:60:2048:0 rspamd:15:256:0 resolver:5:64:0 freshclam:5:128:0" ;;
     valkey) SERVICES="$SERVICES valkey:5:64:0" ;;
-    *) echo "limits: unknown profile $p (filter, valkey)" >&2; exit 2 ;;
+    # The swarm form: the database may be the operator's own (nodb: no share for it), the S3 server may be the stack's (s3: a share for it).
+    nodb) SERVICES="${SERVICES/db:40:512:0 /}" ;;
+    s3) SERVICES="$SERVICES s3:20:256:0" ;;
+    *) echo "limits: unknown profile $p (filter, valkey, nodb, s3)" >&2; exit 2 ;;
   esac
 done
 

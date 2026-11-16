@@ -7,13 +7,20 @@
 #   ./rusty-swarm init                      with no swarm.env yet, in a terminal: a few questions (whiptail dialogs when the machine has whiptail, else plain prompts) write swarm.env and the
 #                                                files of the passwords given (mode 0600), then the flow below runs
 #   ./rusty-swarm [--env FILE] inventory    what the tool understood of the inventory
-#   ./rusty-swarm [--env FILE] init [--yes]   the whole flow, automatic: Docker is installed where it is missing (get.docker.com, as root), a swarm that is already there is offered for
+#   ./rusty-swarm [--env FILE] init [--yes]   the whole flow, automatic: Docker is installed where it is missing (Docker's apt repository, key checked), a swarm that is already there is offered for
 #                                                removal, then the check, the swarm, its proof and prepare db (the later steps join the chain as they are built); --yes answers the question with y
 #   ./rusty-swarm [--env FILE] cluster check     what is wrong on the nodes (prints, changes nothing)
-#   ./rusty-swarm [--env FILE] cluster install-docker   install Docker (get.docker.com, run as root) on the ssh nodes that have none (`init` does it by itself)
+#   ./rusty-swarm [--env FILE] cluster install-docker   install Docker (Docker's apt repository with its key checked, as root; get.docker.com on other systems) on the nodes that have none (`init` does it by itself)
 #   ./rusty-swarm [--env FILE] cluster init      start the swarm on the Manager, join the workers, set the labels (each part is skipped when it is already done)
 #   ./rusty-swarm [--env FILE] cluster verify    nodes Ready and Active, and a throw-away overlay with one task per node: the tasks list each other, reach each other
 #                                                (an encrypted overlay when the inventory says ENCRYPTED=1)
+#   ./rusty-swarm [--env FILE] logs SERVICE [LINES]   the log of a service (for example admin: the setup token of the first start); verify: the greeting of ports 25, 587 and 143 through the edge
+#   ./rusty-swarm [--env FILE] backup [DIR] [--with-keys] | restore FILE | upgrade [--no-backup]   a dump of the database (the sealing key only with --with-keys); the way back (a restore); a new release: backup, secrets, configs, migration, rolling update
+#   ./rusty-swarm [--env FILE] certs sync | certs install-timer   with TLS_MODE=acme: the edge's certificate to the mail services (rolling update when it is new) and a systemd timer that does it every six hours
+#   ./rusty-swarm [--env FILE] prune    remove the old secrets and configs that no service uses, and none a rollback would go back to (upgrade does it at the end)
+#   ./rusty-swarm [--env FILE] stack          print the stack file the next deploy would use
+#   ./rusty-swarm [--env FILE] prepare secrets | prepare configs | migrate | deploy   the next steps of the flow, each repeatable: the swarm secrets (versioned names) and configs (named by the
+#                                                hash of their content), the schema migration as a job, and the stack (the edge and the services)
 #   ./rusty-swarm [--env FILE] prepare db       with the one login of the inventory (DB_ADMIN_USER), create the roles of the services in the external PostgreSQL (deploy/db/roles.sql), give each a random
 #                                                password (kept in the state directory, mode 0600, for the next step) and prove that each of them can log in; run again, it changes no password
 #
@@ -105,8 +112,8 @@ cmd_inventory() {
   for n in $(node_names); do printf '  %s  %s  %s  labels=%s  address=%s
 ' "$n" "$(node_field "$n" 2)" "$(node_field "$n" 3)" "$(node_field "$n" 4)" "$(node_field "$n" 5)"; done
   echo "mail host: ${MAIL_HOST:-(not set)}  admin host: ${ADMIN_HOST:-(not set)}  admin allow: ${ADMIN_ALLOW:-(not set)}"
-  if [ -n "$DB_HOST" ]; then echo "PostgreSQL: external $DB_HOST:$DB_PORT/$DB_NAME as $DB_ADMIN_USER (tls=$DB_TLS)"; else echo "PostgreSQL: the default one, in the cluster"; fi
-  if [ -n "$S3_ENDPOINT" ]; then echo "S3: external $S3_ENDPOINT bucket $S3_BUCKET"; else echo "S3: the default RustFS, in the cluster"; fi
+  if [ "$DB_IN_STACK" = 0 ]; then echo "PostgreSQL: external $DB_HOST:$DB_PORT/$DB_NAME as $DB_ADMIN_USER (tls=$DB_TLS)"; else echo "PostgreSQL: the default one, in the cluster"; fi
+  if [ "$S3_IN_STACK" = 0 ]; then echo "S3: external $S3_ENDPOINT bucket $S3_BUCKET"; else echo "S3: the default RustFS, in the cluster"; fi
 }
 
 # ---- cluster check ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -201,14 +208,18 @@ node_addr() {
   printf '%s\n' "$a"
 }
 
+# The swarm names a node by the host name the node reports, which is not the name in the inventory.
+swarm_node_name() { dk "$1" info --format '{{.Name}}'; }
+
 cmd_label() {
-  local m n l kv; m="$(manager_name)"
+  local m n l kv sn; m="$(manager_name)"
   for n in $(node_names); do
     l="$(node_field "$n" 4)"
     [ -n "$l" ] || continue
+    sn="$(swarm_node_name "$n")"
     for kv in ${l//,/ }; do
       [[ "$kv" =~ ^[a-z][a-z0-9_.-]*=[A-Za-z0-9_.-]+$ ]] || die "node $n: label '$kv' is key=value"
-      dk "$m" node update --label-add "$kv" "$n" >/dev/null
+      dk "$m" node update --label-add "$kv" "$sn" >/dev/null
     done
   done
   echo "cluster init: labels set"
@@ -285,15 +296,19 @@ make_passwords() {
 
 # Run psql on the manager (the node reaches the database the way the services will). The first line of the standard input is the password, the rest is the SQL: the password is in no argument
 # and no environment variable of a process on the node. $1 is the user, $2 the file with its password; the SQL comes from the standard input.
-psql_as() {
-  local m user="$1" pwfile="$2" ca="/tmp/rusty-swarm-ca.pem" conn mount=()
+# psql_as USER PWFILE (the SQL on the standard input); pg_tool_as runs any client of the image (psql, pg_dump) the same way.
+psql_as() { pg_tool_as "psql -X -q -At -v ON_ERROR_STOP=1" "$@"; }
+pg_tool_as() {
+  local tool="$1" m user="$2" pwfile="$3" ca="/tmp/rusty-swarm-ca.pem" conn mount=() net=()
+  # The default PostgreSQL lives on the stack's network: the psql container joins it (the network is attachable).
+  [ "$DB_IN_STACK" != 1 ] || net=(--network "${STACK_NAME}_backend")
   m="$(manager_name)"
   conn="host=$DB_HOST port=$DB_PORT dbname=$DB_NAME user=$user"
   if [ "$DB_TLS" = 1 ]; then
     conn="$conn sslmode=verify-full"
     if [ -n "$DB_CA" ]; then
       conn="$conn sslrootcert=/ca.pem"
-      on "$m" sh -c "umask 077; cat > $ca" < "$DB_CA"
+      on "$m" sh -c "umask 022; cat > $ca" < "$DB_CA"   # a CA is public: the container (no capabilities) must be able to read a file of another user
       mount=(-v "$ca:/ca.pem:ro")
     else
       conn="$conn sslrootcert=system"
@@ -302,8 +317,8 @@ psql_as() {
     conn="$conn sslmode=disable"
   fi
   [ -z "$DB_HOSTADDR" ] || conn="$conn hostaddr=$DB_HOSTADDR"
-  { cat "$pwfile"; echo; cat; } | dk "$m" run --rm -i --cap-drop ALL --security-opt no-new-privileges:true "${mount[@]}" --entrypoint sh "$POSTGRES_IMAGE" \
-    -c 'IFS= read -r PGPASSWORD; export PGPASSWORD; exec psql -X -q -At -v ON_ERROR_STOP=1 "$0"' "$conn"
+  { cat "$pwfile"; echo; cat; } | dk "$m" run --rm -i --cap-drop ALL --security-opt no-new-privileges:true "${net[@]}" "${mount[@]}" --entrypoint sh "$POSTGRES_IMAGE" \
+    -c 'IFS= read -r PGPASSWORD; export PGPASSWORD; exec $1 "$0"' "$conn" "$tool"
 }
 
 cmd_prepare_db() {
@@ -325,7 +340,15 @@ cmd_prepare_db() {
     f="$(secret_file "$r")"
     sql="$sql"$'\n'"ALTER ROLE rusty_$r LOGIN PASSWORD '$(cat "$f")';"
   done
-  printf '%s\n' "$sql" | psql_as "$DB_ADMIN_USER" "$DB_ADMIN_PASSWORD_FILE" >/dev/null || die "prepare db: the roles could not be created (see the database message above: the login's rights, the TLS setting DB_TLS, DB_CA, or pg_hba for the nodes' addresses)"
+  # A database that was just started needs a moment: with the default PostgreSQL the first connection is tried for a minute.
+  local t ok=0 errf="$STATE_DIR/.psql.err"
+  for t in $(seq 1 20); do
+    if printf '%s\n' "$sql" | psql_as "$DB_ADMIN_USER" "$DB_ADMIN_PASSWORD_FILE" >/dev/null 2>"$errf"; then ok=1; break; fi
+    [ "$DB_IN_STACK" = 1 ] || break
+    sleep 3
+  done
+  if [ "$ok" != 1 ]; then cat "$errf" >&2; rm -f "$errf"; die "prepare db: the roles could not be created (see the database message above: the login's rights, the TLS setting DB_TLS, DB_CA, or pg_hba for the nodes' addresses)"; fi
+  rm -f "$errf"
   echo "prepare db: the roles of the services exist in $DB_NAME on $DB_HOST"
   # Each service role must be able to log in the way the services will (verified TLS, or plain with DB_TLS=0).
   for r in "${SERVICE_ROLES[@]}"; do
@@ -336,18 +359,53 @@ cmd_prepare_db() {
 }
 
 
+# shellcheck source=stack.sh
+. "$HERE/stack.sh"
+
 # ---- install docker --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 # Only where Docker is missing (owner's choice: automatic): get.docker.com is a script of the internet that runs as root. A node reached as a
 # container (the local test cluster) already has Docker and is skipped. The user of an ssh node must be root or be allowed `sudo` without a password.
+# Docker's own apt repository with its signing key checked against the fingerprint in Docker's documentation (Debian and Ubuntu); `get.docker.com` only on other systems, as before.
+DOCKER_APT_FINGERPRINT=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+docker_apt_script() {
+  cat <<'SCRIPT'
+set -e
+. /etc/os-release
+case "$ID" in ubuntu|debian) ;; *) exit 42 ;; esac
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq ca-certificates curl gnupg >/dev/null
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o /etc/apt/keyrings/docker.asc
+fpr="$(gpg --show-keys --with-colons /etc/apt/keyrings/docker.asc 2>/dev/null | awk -F: '/^fpr/ { print $10; exit }')"
+if [ "$fpr" != "__FPR__" ]; then rm -f /etc/apt/keyrings/docker.asc; echo "the Docker key has the fingerprint '$fpr', not the one in Docker's documentation" >&2; exit 43; fi
+chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$ID $VERSION_CODENAME stable" > /etc/apt/sources.list.d/docker.list
+apt-get update -qq
+apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null
+SCRIPT
+}
+
 cmd_install_docker() {
-  local n t
+  local n t rc script
+  script="$(docker_apt_script | sed "s/__FPR__/$DOCKER_APT_FINGERPRINT/")"
   for n in $(node_names); do
     t="$(node_field "$n" 2)"
     case "$t" in docker:*) echo "install docker: $n is a container, Docker is there"; continue ;; esac
     if dk "$n" version >/dev/null 2>&1; then echo "install docker: $n already has Docker ($(dk "$n" version --format '{{.Server.Version}}' 2>/dev/null))"; continue; fi
     on "$n" sh -c 'id -u | grep -qx 0 || sudo -n true' >/dev/null 2>&1 || die "install docker: on $n the user is not root and cannot sudo without a password"
-    echo "install docker: $n: running get.docker.com (as root) ..."
-    on "$n" sh -c 'S=""; [ "$(id -u)" = 0 ] || S="sudo -n"; command -v curl >/dev/null || { echo "curl is missing" >&2; exit 1; }; curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && $S sh /tmp/get-docker.sh >/dev/null && rm -f /tmp/get-docker.sh' || die "install docker: it failed on $n"
+    echo "install docker: $n: from Docker's apt repository (as root) ..."
+    rc=0
+    on "$n" sh -c 'if [ "$(id -u)" = 0 ]; then exec sh -c "$0"; else exec sudo -n sh -c "$0"; fi' "$script" || rc=$?
+    case "$rc" in
+      0) ;;
+      42)
+        echo "install docker: $n is not Debian or Ubuntu: using get.docker.com (a script from the internet, run as root)" >&2
+        on "$n" sh -c 'S=""; [ "$(id -u)" = 0 ] || S="sudo -n"; command -v curl >/dev/null || { echo "curl is missing" >&2; exit 1; }; curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && $S sh /tmp/get-docker.sh >/dev/null && rm -f /tmp/get-docker.sh' || die "install docker: it failed on $n"
+        ;;
+      43) die "install docker: the signing key Docker's server gave does not have the fingerprint of Docker's documentation: nothing was installed on $n" ;;
+      *) die "install docker: it failed on $n (exit $rc)" ;;
+    esac
     # The user of the transport must be able to use docker in the next ssh session.
     on "$n" sh -c 'id -u | grep -qx 0 || sudo -n usermod -aG docker "$(id -un)"' >/dev/null 2>&1 || true
     echo "install docker: $n done"
@@ -390,12 +448,28 @@ cmd_all() {
   cmd_check
   cmd_init
   cmd_verify
+  # The secrets and configs first (the passwords are made here); then the database: an external one is prepared as it is, the default one is started first (the stack with only its
+  # services), prepared when it answers, and so is the default S3 (its bucket is made by a job).
+  cmd_prepare_secrets
+  cmd_prepare_configs
+  if [ "$DB_IN_STACK" = 1 ] || [ "$S3_IN_STACK" = 1 ] || [ "$FILTER" = 1 ]; then
+    STACK_ONLY=1 cmd_deploy
+    # The resolver has its address now: the scanners' and smtp-in's configuration can name it.
+    [ "$FILTER" = 0 ] || cmd_prepare_configs
+  fi
   cmd_prepare_db
-  echo "init: done so far: Docker, the swarm and the database. (The stack is the next step of the tool.)"
+  cmd_migrate
+  cmd_deploy
+  # With ACME certificates: wait for the edge to get them, give them to the mail services, and keep them current (a timer when this machine is the Manager).
+  wait_acme
+  if [ "$TLS_MODE" = acme ]; then cmd_certs_install_timer || echo "init: no timer was installed: run '$0 certs sync' from cron every few hours" >&2; fi
+  echo "init: done: the stack is deployed (the first start: the admin web prints the setup token in its log: ./rusty-swarm logs admin)"
 }
 
 # ---- main ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 validate_inventory
+# The defaults of the stack (the passwords and keys it makes itself) are worked out before any step that needs them.
+case "${1:-}" in init|prepare|migrate|deploy|stack|logs|verify|backup|restore|upgrade|certs|prune) resolve_defaults ;; esac
 case "${1:-}:${2:-}" in
   init:*) shift; cmd_all "$@" ;;
   inventory:*) cmd_inventory ;;
@@ -404,5 +478,18 @@ case "${1:-}:${2:-}" in
   cluster:init) cmd_init ;;
   cluster:verify) cmd_verify ;;
   prepare:db) cmd_prepare_db ;;
+  prepare:secrets) cmd_prepare_secrets ;;
+  prepare:configs) cmd_prepare_configs ;;
+  migrate:*) cmd_migrate ;;
+  deploy:*) cmd_deploy ;;
+  stack:*) gen_stack ;;
+  logs:*) shift; cmd_logs "$@" ;;
+  backup:*) shift; cmd_backup "$@" ;;
+  restore:*) shift; cmd_restore "$@" ;;
+  upgrade:*) shift; cmd_upgrade "$@" ;;
+  certs:sync) cmd_certs_sync ;;
+  prune:*) read_names || true; cmd_prune ;;
+  certs:install-timer) cmd_certs_install_timer ;;
+  verify:*) cmd_verify_stack ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print } /^set / { exit }' "$0"; [ -z "${1:-}" ] || exit 2 ;;
 esac

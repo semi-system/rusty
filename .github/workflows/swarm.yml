@@ -1,0 +1,103 @@
+# The swarm form on a single-node swarm (deploy/swarm, docs/swarm.md): a PostgreSQL and an S3 server as plain containers OUTSIDE the stack (what an operator's own services look like), then
+# `rusty-swarm init`: Docker, the swarm, the roles, the secrets and configs, the migration job, the stack. The proof is the greeting of the mail ports through the edge (which only comes when the edge
+# reached a service and the service accepted the edge, found by NAME), then the same again after `upgrade`, and a backup.
+#
+# It runs the images docker.yml published: after every successful docker run on `main` (the images of that very commit, so the tool and the services are tried together), nightly, and by hand
+# (`image_tag` says which). A pull request's own images are not published, so a pull request that touches the tool runs against `main`'s; the static check of the stack file (scripts/tests/swarm-stack.sh)
+# is what guards a pull request. It is not a required check. Security rules as in ci.yml: actions pinned by SHA, read-only token, no secrets.
+name: swarm
+
+on:
+  schedule:
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "the image tag to deploy (main, a sha-... tag, a release)"
+        default: main
+  workflow_run:
+    workflows: [docker]
+    types: [completed]
+    branches: [main]
+  pull_request:
+    paths:
+      - "deploy/swarm/**"
+      - "deploy/standalone/limits.sh"
+      - ".github/workflows/swarm.yml"
+
+permissions: {}
+
+concurrency:
+  group: swarm-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  single-node:
+    name: single-node swarm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    # After a docker run that did not succeed there are no images of that commit to try.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    permissions:
+      contents: read
+    env:
+      EVENT: ${{ github.event_name }}
+      RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+      INPUT_TAG: ${{ github.event.inputs.image_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Which images
+        run: |
+          set -euo pipefail
+          tag=main
+          if [ "$EVENT" = workflow_run ]; then tag="sha-${RUN_SHA:0:7}"; elif [ -n "$INPUT_TAG" ]; then tag="$INPUT_TAG"; fi
+          [[ "$tag" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad image tag" >&2; exit 1; }
+          echo "IMAGE_TAG=$tag" >> "$GITHUB_ENV"
+          echo "images: $tag"
+      - name: The outside services (PostgreSQL over TLS and an S3 server)
+        run: |
+          set -euo pipefail
+          EXT_PUBLISH=1 bash deploy/swarm/local-cluster.sh ext up
+      - name: The inventory
+        run: |
+          set -euo pipefail
+          ext="$HOME/.rusty-swarm-local/ext"
+          # The runner's own address: tasks and the psql container reach the two services through the ports published on it.
+          host_ip="$(hostname -I | awk '{ print $1 }')"
+          cat > "$RUNNER_TEMP/swarm.env" <<ENV
+          NODES=("server|local|manager|outbound=true,av=true|")
+          STATE_DIR="$RUNNER_TEMP/state"
+          MAIL_HOST=mail.rusty.test
+          ADMIN_HOST=admin.rusty.test
+          CONTACT=ops@rusty.test
+          ADMIN_ALLOW="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 127.0.0.0/8"
+          DB_HOST=db.rusty.test
+          DB_HOSTADDR=$host_ip
+          DB_ADMIN_USER=postgres
+          DB_ADMIN_PASSWORD_FILE="$ext/pg.pw"
+          DB_CA="$ext/ca.pem"
+          S3_ENDPOINT=http://$host_ip:9000
+          S3_ACCESS_KEY=$(sed -n 's/^S3_ACCESS_KEY=//p' "$ext/s3.env")
+          S3_SECRET_KEY_FILE="$ext/s3.secret"
+          TLS_MODE=self
+          IMAGE_TAG=$IMAGE_TAG
+          ENV
+          bash deploy/swarm/rusty-swarm --env "$RUNNER_TEMP/swarm.env" inventory
+      - name: init, the whole flow
+        run: bash deploy/swarm/rusty-swarm --env "$RUNNER_TEMP/swarm.env" init --yes
+      - name: verify the greetings through the edge
+        run: bash deploy/swarm/rusty-swarm --env "$RUNNER_TEMP/swarm.env" verify
+      - name: upgrade (a backup, then the same release again, nothing moves and nothing breaks)
+        run: |
+          set -euo pipefail
+          bash deploy/swarm/rusty-swarm --env "$RUNNER_TEMP/swarm.env" upgrade
+          bash deploy/swarm/rusty-swarm --env "$RUNNER_TEMP/swarm.env" verify
+          ls -l "$RUNNER_TEMP"/state/backups/*/rusty.dump
+      - name: What ran (on failure)
+        if: failure()
+        run: |
+          docker service ls || true
+          for s in edge smtp-in submission imap outbound gc admin; do echo "--- $s"; docker service ps "rusty_$s" --no-trunc 2>&1 | head -5 || true; docker service logs --tail 15 "rusty_$s" 2>&1 | tail -15 || true; done
