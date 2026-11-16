@@ -326,3 +326,24 @@ wait_converged() {
   for line in $bad; do sw service logs --tail 20 "${line%%(*}" 2>&1 | tail -20 >&2 || true; done
   die "the stack did not converge in time"
 }
+
+# ---- logs and verify -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+cmd_logs() { # SERVICE [lines]
+  local svc="${1:?usage: logs SERVICE [LINES] (for example admin)}" lines="${2:-100}"
+  [[ "$svc" =~ ^[a-z][a-z-]*$ ]] || die "logs: a service name such as admin or smtp-in"
+  sw service logs --tail "$lines" "${STACK_NAME}_$svc" 2>&1
+}
+
+# What the edge shows to the world: the greeting of each mail port, which only comes when the edge reached a service and the service accepted the PROXY header from it (trusted by name).
+banner() { # PORT -> the first line the port sends (empty when none)
+  on "$(manager_name)" sh -c "if command -v nc >/dev/null 2>&1; then (sleep 2; echo QUIT) | nc -w 6 127.0.0.1 $1; elif command -v bash >/dev/null 2>&1; then bash -c 'exec 3<>/dev/tcp/127.0.0.1/$1; read -r -t 6 l <&3; printf \"%s\n\" \"\$l\"'; fi" 2>/dev/null | head -1 | tr -d '\r'
+}
+
+cmd_verify_stack() {
+  local bad=0 b
+  b="$(banner 25)"; case "$b" in "220 "*) echo "  ok    25: $b" ;; *) echo "  FAIL  25: no SMTP greeting through the edge ('$b')"; bad=1 ;; esac
+  b="$(banner 587)"; case "$b" in "220 "*) echo "  ok    587: $b" ;; *) echo "  FAIL  587: no SMTP greeting through the edge ('$b')"; bad=1 ;; esac
+  b="$(banner 143)"; case "$b" in "* OK"*) echo "  ok    143: $b" ;; *) echo "  FAIL  143: no IMAP greeting through the edge ('$b')"; bad=1 ;; esac
+  [ "$bad" = 0 ] || die "verify: a port does not answer as it should (./rusty-swarm logs edge, logs smtp-in ...)"
+  echo "verify: the edge reaches the services and they accept it"
+}

@@ -14,6 +14,7 @@
 #   ./rusty-swarm [--env FILE] cluster init      start the swarm on the Manager, join the workers, set the labels (each part is skipped when it is already done)
 #   ./rusty-swarm [--env FILE] cluster verify    nodes Ready and Active, and a throw-away overlay with one task per node: the tasks list each other, reach each other
 #                                                (an encrypted overlay when the inventory says ENCRYPTED=1)
+#   ./rusty-swarm [--env FILE] logs SERVICE [LINES]   the log of a service (for example admin: the setup token of the first start); verify: the greeting of ports 25, 587 and 143 through the edge
 #   ./rusty-swarm [--env FILE] stack          print the stack file the next deploy would use
 #   ./rusty-swarm [--env FILE] prepare secrets | prepare configs | migrate | deploy   the next steps of the flow, each repeatable: the swarm secrets (versioned names) and configs (named by the
 #                                                hash of their content), the schema migration as a job, and the stack (the edge and the services)
@@ -419,5 +420,7 @@ case "${1:-}:${2:-}" in
   migrate:*) cmd_migrate ;;
   deploy:*) cmd_deploy ;;
   stack:*) gen_stack ;;
+  logs:*) shift; cmd_logs "$@" ;;
+  verify:*) cmd_verify_stack ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print } /^set / { exit }' "$0"; [ -z "${1:-}" ] || exit 2 ;;
 esac
