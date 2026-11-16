@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # The deployment kit as ONE file to download: rusty-deploy-VERSION.tar.gz (deploy/ without the development and build-server parts, a launcher and the inventory example at the top).
 #
-#   scripts/package-deploy.sh VERSION [OUTDIR]        (OUTDIR defaults to ./dist)
+#   scripts/package-deploy.sh VERSION [OUTDIR [PINS]]        (OUTDIR defaults to ./dist)
+#
+# PINS is a file of image pins (scripts/pin-release-images.sh): its lines are appended to the kit's images.lock, so the kit names the exact images (by digest) built and signed for its release.
+# Without PINS the kit still has the pinned third-party images, and the Rusty images are by tag (a development kit).
 #
 # The operator downloads the file of a release, checks it against SHA256SUMS (signed with cosign, see docs/docker.md), unpacks it and runs `./rusty-swarm init`; nothing else is needed from the repository.
 # The archive is reproducible: the same tree and VERSION give the same bytes (sorted names, a fixed time, no owner).
@@ -9,6 +12,8 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 version="${1:?usage: package-deploy.sh VERSION [OUTDIR]}"
 out="${2:-dist}"
+pins="${3:-}"
+[ -z "$pins" ] || [ -s "$pins" ] || { echo "package-deploy: PINS $pins is missing or empty" >&2; exit 1; }
 [[ "$version" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "package-deploy: VERSION may hold letters, digits, . _ - only" >&2; exit 2; }
 name="rusty-deploy-$version"
 stage="$(mktemp -d)"
@@ -24,6 +29,11 @@ for p in deploy/swarm deploy/db deploy/standalone deploy/monitoring deploy/image
 done
 # The throw-away local test cluster and its inventory are for developers, not for a server.
 rm -f "$root/deploy/swarm/local-cluster.sh" "$root/deploy/swarm/local.env"
+# The release the kit belongs to; with PINS, the digests of its images follow the pins of the third-party images in images.lock.
+echo "$version" > "$root/deploy/RELEASE"
+if [ -n "$pins" ]; then
+  { echo; echo "# Images of release $version (digests of the images built and signed for it):"; cat "$pins"; } >> "$root/deploy/images.lock"
+fi
 
 cat > "$root/rusty-swarm" <<'LAUNCHER'
 #!/usr/bin/env bash
