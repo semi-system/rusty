@@ -1,7 +1,7 @@
 # The admin web front end (`web/admin`)
 
 Svelte 5 (runes) and TypeScript, built with Vite. No SvelteKit, no router library, no runtime dependency beyond Svelte's compiled output
-(design section 8: `docs/superpowers/plans/2026-11-14-admin-web-design.md`).
+(design section 8: `docs/design-admin-web.md`).
 
 ## What is there
 

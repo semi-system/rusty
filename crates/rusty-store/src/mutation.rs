@@ -56,7 +56,7 @@ const fn text(id: &'static str, dialect: Dialect, find: &'static str, replace: &
 use Dialect::Postgres as PG;
 
 /// The dialect and repository mutations of the committed table
-/// (`docs/superpowers/plans/2026-11-03-postgres-backend-mutation-table.md`).
+/// (`docs/postgres-mutation-table.md`).
 pub const TABLE: &[Mutation] = &[
     // ---- dialect translation (plan D5)
     text("D01-bare-int-in-union", PG, "CAST(1 AS BIGINT)", "1", "CAST(1 AS BIGINT) becomes a bare 1: Postgres types it integer, the decoder expects bigint"),

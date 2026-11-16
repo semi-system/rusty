@@ -1,4 +1,4 @@
-//! D2 clock policy (`docs/superpowers/specs/2026-11-03-rusty-clock-policy.md`): the DATABASE
+//! D2 clock policy (`docs/clock-policy.md`): the DATABASE
 //! clock decides every correctness-relevant timestamp; the Rust clock is display-only; values
 //! the protocol defines (client INTERNALDATE, `Date:` header) and the `_at(now)` test twins are
 //! caller data and are stored verbatim.

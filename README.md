@@ -16,16 +16,13 @@ What runs today (single process, `rusty d`):
 - IMAP (143 STARTTLS / 993 implicit TLS) with IDLE, UIDPLUS, NAMESPACE, SPECIAL-USE and more.
 - `rustyctl` administration (domains, accounts, aliases, DNS record hints, DKIM keys).
 - Outbound delivery with retries, bounces and DKIM signing.
-- PostgreSQL as the only database (repository traits, a migrator role and a runtime role); message bodies
-  are files on a volume (an S3-compatible blob store is the planned replacement, see the plans).
+- PostgreSQL as the only database (repository traits, a migrator role and a runtime role); message bodies in blob stores per tenant (S3-compatible, a plain directory, or a pool).
+- Spam and virus scanning (rspamd, ClamAV), an admin web, one image per service, a standalone Docker Compose stack with an HAProxy edge.
 
-Not done yet (see the plans): the admin web UI with DNS setup and validation, packaging, backup and
-restore, anti-spam/anti-virus, webmail/JMAP, calendar and contacts. Do not put real mail in a
+Not done yet (see [docs/roadmap.md](docs/roadmap.md)): webmail and JMAP, search, calendar and contacts, folder sharing, an authoritative DNS server, the Zimbra import tool. Do not put real mail in a
 development instance.
 
-Designs live in `docs/superpowers/specs/`, plans in `docs/superpowers/plans/` (index:
-[docs/README.md](docs/README.md)); the current work plan is
-`docs/superpowers/plans/2026-11-08-usable-mailserver.md`.
+Documentation is in [docs/](docs/README.md): the architecture, the roadmap, the designs and the operating guides.
 
 ## Try it locally
 

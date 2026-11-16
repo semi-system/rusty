@@ -218,7 +218,7 @@ async fn sqlx_rows(store: &rusty_store::PgStore, sql: &str) -> Vec<(String, Stri
 #[test]
 fn the_committed_mutation_table_lists_every_dialect_mutation() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/superpowers/plans/2026-11-03-postgres-backend-mutation-table.md");
+        .join("../../docs/postgres-mutation-table.md");
     let doc = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}; run scripts/pg-mutate.sh", path.display()));
     for m in TABLE {
         assert!(doc.contains(&format!("`{}`", m.id)), "mutation {} is not in the committed table; regenerate it", m.id);

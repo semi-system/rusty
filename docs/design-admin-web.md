@@ -2,12 +2,10 @@
 
 Status: **approved; section 14 (secrets, first administrator, per-tenant relay) was added later the same day and is also approved.** The owner answered the six questions of section 12 on 2026-11-14: Q1 its own binary from
 the first commit, Q2 `hyper` with our own router, Q3 sessions in `Kv`, Q4 no 2FA now, Q5 assets embedded in the binary, Q6 all
-user-facing text in message catalogues with placeholders (section 8). Owner decisions already taken (2026-11-14): the admin web and the webmail are written in
-**Svelte 5** (Solid was the alternative); the webmail is its own service and has its own design document later; the
+user-facing text in message catalogues with placeholders (section 8). Owner decisions already taken (2026-11-14): the admin web is written in
+**Svelte 5**; the webmail is its own service written in **SolidJS** (decided 2026-11-16, `design-webmail.md`); the
 platform is on-premises first; mail leaves through an SMTP relay when the operator chooses one (see `docs/relay.md`).
-This document replaces the "server-rendered HTML, no JS framework" line of task U10 in
-`2026-11-08-usable-mailserver.md`; everything else in U10 (the requirement that a new domain shows its DNS records ready to
-copy, the validation list, the auth rules) still stands and is repeated here only where it changes the design.
+Requirements that still stand from the first plan: a new domain shows its DNS records ready to copy, the validation list, the auth rules. They are repeated here only where they change the design.
 
 ## 1. Goal and scope of the first version
 

@@ -157,7 +157,7 @@ HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=3 \
 ENTRYPOINT ["/usr/local/bin/rusty-admin"]
 CMD ["--config", "/etc/rusty/admin.toml"]
 
-# ---- one image per service (docs/superpowers/plans/2026-11-14-per-service-images-design.md) ------------------------------
+# ---- one image per service (docs/design-per-service-images.md) ------------------------------
 # `docker build --target rusty-imap`, and so on: one static binary, no shell, numeric non-root user, a configuration file of its own that accepts only the sections the
 # service uses (`/etc/rusty/<service>.toml`). Services with a port have the HEALTHCHECK of that port; outbound and gc have no port and their check only loads the configuration.
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329 AS rusty-smtp-in

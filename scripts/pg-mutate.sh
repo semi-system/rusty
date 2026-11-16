@@ -218,7 +218,7 @@ case "$MODE" in
     one sqlite-only-trigger "a trigger on SQLite only" "sqlite|CREATE TRIGGER mut_trg BEFORE INSERT ON domains BEGIN SELECT 1; END" ;;
 
   table)
-    OUT="${1:-docs/superpowers/plans/2026-11-03-postgres-backend-mutation-table.md}"
+    OUT="${1:-docs/postgres-mutation-table.md}"
     WAIVERS="scripts/pg-mutate-waivers.tsv"
     {
       echo "# Postgres backend: mutation table"

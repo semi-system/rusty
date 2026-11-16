@@ -19,7 +19,7 @@ all_true() { printf 'code=true\nrust=true\ndocker=true\nworkflow=true\n'; }
 # Paths that need no build or test. The one document a test reads is NOT here.
 is_docs() {
   case "$1" in
-    docs/superpowers/plans/2026-11-03-postgres-backend-mutation-table.md) return 1 ;;
+    docs/postgres-mutation-table.md) return 1 ;;
     .github/ISSUE_TEMPLATE/*|.github/pull_request_template.md|.github/CODEOWNERS|.github/rulesets/*|.github/dependabot.yml) return 0 ;;
     docs/*|LICENSE|*.md) case "$1" in crates/*|tools/*|fuzz/*|deploy/*) return 1 ;; *) return 0 ;; esac ;;
     *) return 1 ;;
