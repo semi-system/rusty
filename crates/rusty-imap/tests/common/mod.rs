@@ -23,6 +23,8 @@ pub struct Backend {
     pub name: &'static str,
     pub store: Store,
     pub dir: Directory,
+    /// The directory as the operator sees it: tests create domains, accounts and lists through it, never through `dir` (the service under test, which may run as a narrower role).
+    pub seed: Directory,
     pub blobs: Arc<dyn BlobStore>,
     pub tmp: tempfile::TempDir,
     _db: Option<pg::PgTestDb>,
@@ -32,13 +34,14 @@ impl Drop for Backend {
     fn drop(&mut self) {}
 }
 
-async fn finish(name: &'static str, store: Store, tmp: tempfile::TempDir, db: Option<pg::PgTestDb>) -> Backend {
+async fn finish(name: &'static str, store: Store, seed_store: Store, tmp: tempfile::TempDir, db: Option<pg::PgTestDb>) -> Backend {
     let root = tmp.path().join("blobs");
     FsBlobStore::init(&root).await.unwrap();
     let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::open(&root).await.unwrap());
     Backend {
         name,
         dir: Directory::with_repo(store.repos().directory.clone()),
+        seed: Directory::with_repo(seed_store.repos().directory.clone()),
         store,
         blobs,
         tmp,
@@ -50,7 +53,8 @@ pub async fn pg_backend() -> Option<Backend> {
     let url = pg::pg_admin_url()?;
     let db = pg::PgTestDb::create(&url).await;
     let store = Store::open(StoreConfig::postgres(db.url())).await.unwrap();
-    Some(finish("postgres", store, tempfile::tempdir().unwrap(), Some(db)).await)
+    let seed_store = Store::open(StoreConfig::postgres(db.seed_url())).await.unwrap();
+    Some(finish("postgres", store, seed_store, tempfile::tempdir().unwrap(), Some(db)).await)
 }
 
 pub async fn backends() -> Vec<Backend> {
@@ -95,13 +99,13 @@ impl Backend {
     /// Create the domain of `addr` and the account in it, with `password`.
     pub async fn account(&self, addr: &str, password: &str) -> AccountId {
         let (local, domain) = addr.split_once('@').unwrap();
-        let dom = self.dir.create_domain(domain).await.unwrap();
+        let dom = self.seed.create_domain(domain).await.unwrap();
         self.account_in(dom, local, password).await
     }
 
     pub async fn account_in(&self, dom: rusty_core::DomainId, local: &str, password: &str) -> AccountId {
-        let acc = self.dir.create_account(local, dom, None, None).await.unwrap();
-        self.dir.set_password(acc, password).await.unwrap();
+        let acc = self.seed.create_account(local, dom, None, None).await.unwrap();
+        self.seed.set_password(acc, password).await.unwrap();
         acc
     }
 
@@ -301,7 +305,8 @@ where
         let cfg = StoreConfig::Postgres { url: db.url().to_owned(), pool: limits, security: rusty_store::PgSecurity::default() };
         let store = Store::open(cfg).await.unwrap();
         let fx = rusty_store::fixtures::Fixtures::admin_of(&db, &store).await;
+        let seed_store = Store::open(StoreConfig::postgres(db.seed_url())).await.unwrap();
         eprintln!("-- backend postgres");
-        f(finish("postgres", store, tempfile::tempdir().unwrap(), Some(db)).await, fx).await;
+        f(finish("postgres", store, seed_store, tempfile::tempdir().unwrap(), Some(db)).await, fx).await;
     }
 }

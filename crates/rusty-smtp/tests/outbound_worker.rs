@@ -641,11 +641,11 @@ async fn sealed_key_for_example_net(b: &Backend, seal_to: &rusty_seal::SealingKe
     let k = rusty_smtp::dkim::generate_key(tmp.path(), "example.net", "rusty").unwrap();
     let pem = std::fs::read(&k.key_file).unwrap();
     let dom = b.dir.find_domain("example.net").await.unwrap().unwrap();
-    let dns = rusty_store::DnsStore::with_repo(b.store.repos().dns.clone());
+    let dns = rusty_store::DnsStore::with_repo(b.seed_store.repos().dns.clone());
     dns.add_dkim_key(dom.id, &k.selector, "ed25519", &k.public_key_b64).await.unwrap();
     let purpose = rusty_smtp::dkim::sealed_purpose(&k.selector);
     let sealed = seal_to.seal(&rusty_seal::Context::new("domain", dom.id.0, &purpose).unwrap(), &pem).unwrap();
-    rusty_store::SealedWriter::with_repo(b.store.repos().sealed.clone()).put("domain", dom.id.0, &purpose, &seal_to.id().to_hex(), &sealed).await.unwrap();
+    rusty_store::SealedWriter::with_repo(b.seed_store.repos().sealed.clone()).put("domain", dom.id.0, &purpose, &seal_to.id().to_hex(), &sealed).await.unwrap();
     k
 }
 
@@ -948,7 +948,7 @@ async fn the_body_of_a_retrying_job_survives_the_blob_gc_after_the_default_grace
         // validates (>= max age + 1 day) leaves the queued body alone.
         let grace = rusty_core::config::StartupConfig::dev(r.b.tmp.path()).gc_grace_seconds;
         let later = std::time::SystemTime::now() + Duration::from_secs(5 * 86_400);
-        r.ctx.gc.collect_blobs_at(r.blobs.as_ref(), Duration::from_secs(grace), later).await.unwrap();
+        rusty_store::Gc::new(r.b.seed_store.repos().gc.clone()).collect_blobs_at(r.blobs.as_ref(), Duration::from_secs(grace), later).await.unwrap();
         assert!(r.blobs.get(&blob_hash).await.is_ok(), "the retrying job still has its body");
         r.stop().await;
     })
@@ -1032,7 +1032,7 @@ mod tenant {
 
     /// Enter the relay of `example.net` the way the admin web will: the row, and the password sealed to `pk` (`None`: no password stored).
     pub(super) async fn enter(r: &Rig, host: &str, port: u16, tls: RelayTls, user: Option<&str>, password: Option<&str>, pk: &SealingKey) {
-        let repos = r.b.store.repos();
+        let repos = r.b.seed_store.repos();
         let dom = r.b.dir.find_domain("example.net").await.unwrap().unwrap();
         let relay = validate_tenant_relay(host, port, tls, user).unwrap();
         RelayStore::with_repo(repos.relay.clone()).set(dom.id, &relay, None).await.unwrap();

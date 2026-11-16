@@ -43,6 +43,30 @@ Created by `deploy/db/roles.sql` (run once per database as a superuser, idempote
 | `rusty_ro` | optional reporting | `SELECT` on every table except `accounts.password_hash`; nothing else |
 | `rusty_admin` | the admin web service (`rusty-admin`) | DML on the tenant tables only (domains, accounts, aliases, lists, plans, capabilities, mailbox rows and system folders, DKIM and DNS state, relays, admin grants, jobs); **no** access to messages, keywords, blobs, deliveries or the change log; on `sealed_secrets` it may write and may read every column **except** the ciphertext (`sealed`), so a compromised admin cannot read a DKIM key or relay password back. Timeouts as `rusty_app` |
 
+### Roles of the services
+
+Each mail service has a database role of its own, so a compromised service cannot read or change what only another one should. `rusty_app` is the operator's role (`rustyctl`, the migration job) and what the
+test harness uses to set data up.
+
+| Role | Service | What it can do beyond reading the directory |
+|---|---|---|
+| `rusty_smtp_in` | inbound SMTP | write messages, their blobs and the outbound jobs; never delete; no password hashes |
+| `rusty_submission` | submission | check passwords; write messages, blobs, outbound jobs |
+| `rusty_imap` | IMAP | check passwords; read and change messages and folders, expunge |
+| `rusty_outbound` | delivery worker | run the job queue, read the message and the DKIM and relay settings, write the DNS check state, deliver bounces to local senders; no password hashes |
+| `rusty_gc` | garbage collection | delete what is no longer referenced; the blob store leases, backends and locations; never create a message |
+
+Rules the matrix keeps (`crates/rusty-store/tests/pg_service_roles.rs` checks them from the catalogs and with real forbidden statements):
+
+* None of them has DDL, `TEMP`, `TRUNCATE`, `TRIGGER` or `REFERENCES`, and none writes the address registry, the migration history, sealed secrets, admin grants or the tenant settings (the admin web writes those).
+* Only submission and IMAP can read `accounts.password_hash`. The others read `accounts.password_set` (migration 0026) to know that an account has a password.
+* A row lock (`SELECT .. FOR UPDATE`) needs `UPDATE` on one column: where a service only locks a row it does not change it gets `UPDATE (created_at)`.
+* The standalone stack gives each role its own password secret (`pg_smtp_in`, `pg_submission`, `pg_imap`, `pg_outbound`, `pg_gc`), and `pg_hba.conf` allows each role only from its own container
+  (`docker.md`, database allow-list).
+
+`scripts/pg-role-suites.sh` runs each service's integration suites logged in as that service's own role (`RUSTY_TEST_PG_ROLES=1 RUSTY_TEST_PG_ROLE=rusty_imap`): a missing grant shows as a failing test.
+Data the service does not create in production is set up through `b.seed` (the operator's role) in those tests.
+
 Roles are created `NOLOGIN`: the operator enables each login on purpose (`ALTER ROLE .. LOGIN PASSWORD ..`, or a
 certificate rule in `pg_hba.conf`). `PUBLIC` loses `CONNECT`/`TEMP` on the database and everything on schema `public`.
 

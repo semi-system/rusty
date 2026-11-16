@@ -87,3 +87,24 @@ BEGIN
 END
 $admin_db$;
 GRANT USAGE ON SCHEMA public TO rusty_admin;
+
+-- One role per service (docs/postgres-production.md, "Roles of the services"): each holds only what its service needs (grants_pg.sql), so a compromised service
+-- cannot read or change what another one alone should. rusty_app stays as the operator's role (`rustyctl`) and for the test harness. Same timeouts as the other runtime roles.
+DO $services$
+DECLARE
+  r text;
+BEGIN
+  FOREACH r IN ARRAY ARRAY['rusty_smtp_in', 'rusty_submission', 'rusty_imap', 'rusty_outbound', 'rusty_gc'] LOOP
+    IF to_regrole(r) IS NULL THEN
+      BEGIN
+        EXECUTE format('CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT', r);
+      EXCEPTION WHEN duplicate_object THEN NULL;
+      END;
+    END IF;
+    EXECUTE format('ALTER ROLE %I SET statement_timeout = ''30s''', r);
+    EXECUTE format('ALTER ROLE %I SET idle_in_transaction_session_timeout = ''30s''', r);
+    EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', current_database(), r);
+    EXECUTE format('GRANT USAGE ON SCHEMA public TO %I', r);
+  END LOOP;
+END
+$services$;

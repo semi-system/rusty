@@ -8,6 +8,7 @@ COLUMN accounts.password_hash text nullable=YES identity=NO/ collation= default=
 COLUMN accounts.status text nullable=NO identity=NO/ collation= default=
 COLUMN accounts.config jsonb nullable=NO identity=NO/ collation= default='{}'::jsonb
 COLUMN accounts.created_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN accounts.password_set boolean nullable=YES identity=NO/ collation= default=
 COLUMN address_owners.domain_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN address_owners.local_part text nullable=NO identity=NO/ collation=C default=
 COLUMN address_owners.owner_kind text nullable=NO identity=NO/ collation= default=

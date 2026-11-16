@@ -41,7 +41,7 @@ services:
     read_only: true
     restart: "no"
     entrypoint: [/bin/sh, /db-init.sh]
-    secrets: [pg_postgres, pg_app, pg_admin, pg_migrator]
+    secrets: [pg_postgres, pg_app, pg_admin, pg_migrator, pg_smtp_in, pg_submission, pg_imap, pg_outbound, pg_gc]
     volumes:
       - ./db-init.sh:/db-init.sh:ro
       - ../db/roles.sql:/roles.sql:ro
@@ -70,7 +70,7 @@ services:
     restart: "no"
     entrypoint: [/usr/local/bin/rustyctl]
     command: [--config, /etc/rusty/gc.toml, blobs, init]
-    secrets: [pg_app]
+    secrets: [pg_gc]
     volumes:
       - ${RUSTY_STATE:?run ./setup.sh first}/etc:/etc/rusty:ro
       - mail-data:/var/lib/rusty
@@ -81,7 +81,7 @@ services:
     image: ${RUSTY_REGISTRY:-ghcr.io/semi-system}/rusty-smtp-in:${RUSTY_TAG:-main}
     <<: *hardened
     tmpfs: [/tmp]
-    secrets: [pg_app]
+    secrets: [pg_smtp_in]
     volumes:
       - ${RUSTY_STATE:?run ./setup.sh first}/etc:/etc/rusty:ro
       - ${RUSTY_STATE:?run ./setup.sh first}/tls:/etc/rusty-tls:ro
@@ -102,7 +102,7 @@ services:
     image: ${RUSTY_REGISTRY:-ghcr.io/semi-system}/rusty-submission:${RUSTY_TAG:-main}
     <<: *hardened
     tmpfs: [/tmp]
-    secrets: [pg_app]
+    secrets: [pg_submission]
     volumes:
       - ${RUSTY_STATE:?run ./setup.sh first}/etc:/etc/rusty:ro
       - ${RUSTY_STATE:?run ./setup.sh first}/tls:/etc/rusty-tls:ro
@@ -122,7 +122,7 @@ services:
     image: ${RUSTY_REGISTRY:-ghcr.io/semi-system}/rusty-imap:${RUSTY_TAG:-main}
     <<: *hardened
     tmpfs: [/tmp]
-    secrets: [pg_app]
+    secrets: [pg_imap]
     volumes:
       - ${RUSTY_STATE:?run ./setup.sh first}/etc:/etc/rusty:ro
       - ${RUSTY_STATE:?run ./setup.sh first}/tls:/etc/rusty-tls:ro
@@ -142,7 +142,7 @@ services:
     image: ${RUSTY_REGISTRY:-ghcr.io/semi-system}/rusty-outbound:${RUSTY_TAG:-main}
     <<: *hardened
     tmpfs: [/tmp]
-    secrets: [pg_app]
+    secrets: [pg_outbound]
     volumes:
       - ${RUSTY_STATE:?run ./setup.sh first}/etc:/etc/rusty:ro
       - ${RUSTY_STATE:?run ./setup.sh first}/keys:/etc/rusty-keys:ro
@@ -160,7 +160,7 @@ services:
     image: ${RUSTY_REGISTRY:-ghcr.io/semi-system}/rusty-gc:${RUSTY_TAG:-main}
     <<: *hardened
     tmpfs: [/tmp]
-    secrets: [pg_app]
+    secrets: [pg_gc]
     volumes:
       - ${RUSTY_STATE:?run ./setup.sh first}/etc:/etc/rusty:ro
       - ${RUSTY_STATE:?run ./setup.sh first}/keys:/etc/rusty-keys:ro
@@ -327,6 +327,11 @@ secrets:
   pg_app: { file: "${RUSTY_STATE:?run ./setup.sh first}/secrets/pg_app" }
   pg_admin: { file: "${RUSTY_STATE:?run ./setup.sh first}/secrets/pg_admin" }
   pg_migrator: { file: "${RUSTY_STATE:?run ./setup.sh first}/secrets/pg_migrator" }
+  pg_smtp_in: { file: "${RUSTY_STATE:?run ./setup.sh first}/secrets/pg_smtp_in" }
+  pg_submission: { file: "${RUSTY_STATE:?run ./setup.sh first}/secrets/pg_submission" }
+  pg_imap: { file: "${RUSTY_STATE:?run ./setup.sh first}/secrets/pg_imap" }
+  pg_outbound: { file: "${RUSTY_STATE:?run ./setup.sh first}/secrets/pg_outbound" }
+  pg_gc: { file: "${RUSTY_STATE:?run ./setup.sh first}/secrets/pg_gc" }
 
 volumes:
   pgdata:

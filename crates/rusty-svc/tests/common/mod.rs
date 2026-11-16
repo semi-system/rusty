@@ -150,6 +150,8 @@ use rusty_store::{BlobStore, FsBlobStore, Store, StoreConfig};
 /// A store on a fresh Postgres database plus a blob store in a temp dir (the composition-root way: `Store::open`).
 pub struct Parts {
     pub store: Store,
+    /// The operator's store (`rusty_app` in roles mode): for the setup a test does that the service under test does not.
+    pub seed_store: Store,
     pub blobs: Arc<dyn BlobStore>,
     pub dir: tempfile::TempDir,
     _db: PgTestDb,
@@ -160,10 +162,11 @@ pub async fn parts() -> Parts {
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let admin = pg_admin_url().expect("a Postgres test server (RUSTY_TEST_PG_URL)");
     let db = PgTestDb::create(&admin).await;
+    let seed_store = Store::open(StoreConfig::postgres(db.seed_url())).await.unwrap();
     let store = Store::open(StoreConfig::postgres(db.url())).await.unwrap();
     FsBlobStore::init(dir.path().join("blobs")).await.unwrap();
     let blobs: Arc<dyn BlobStore> = Arc::new(FsBlobStore::open(dir.path().join("blobs")).await.unwrap());
-    Parts { store, blobs, dir, _db: db }
+    Parts { store, seed_store, blobs, dir, _db: db }
 }
 
 /// Dev configuration under the parts' directory with every listener on an ephemeral port.

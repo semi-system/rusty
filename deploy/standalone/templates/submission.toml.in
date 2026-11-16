@@ -22,7 +22,7 @@ public_ips = ["@PUBLIC_IP@"]
 key_files = ["/etc/rusty-keys/unseal.key"]
 
 [store]
-url = "postgres://rusty_app@db:5432/rusty"
-password_file = "/run/secrets/pg_app"
+url = "postgres://rusty_submission@db:5432/rusty"
+password_file = "/run/secrets/pg_submission"
 sslmode = "verify-full"
 ca_bundle = "/etc/rusty/db-ca.pem"

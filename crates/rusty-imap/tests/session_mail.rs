@@ -283,7 +283,7 @@ async fn append_copy_and_move() {
 #[tokio::test]
 async fn one_account_cannot_reach_anothers_mailbox() {
     for_each_backend(|b| async move {
-        let dom = b.dir.create_domain("a.test").await.unwrap();
+        let dom = b.seed.create_domain("a.test").await.unwrap();
         let alice = b.account_in(dom, "alice", "pw").await;
         b.account_in(dom, "bob", "pw").await;
         let ctx = b.ctx().await;

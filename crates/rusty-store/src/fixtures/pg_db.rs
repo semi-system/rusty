@@ -22,6 +22,33 @@ pub const TEST_MIGRATOR_PASSWORD: &str = "rusty-test-migrator";
 pub const TEST_RO_PASSWORD: &str = "rusty-test-ro";
 pub const TEST_ADMIN_PASSWORD: &str = "rusty-test-admin";
 
+/// The roles of the services (deploy/db/roles.sql) and their test passwords.
+pub const SERVICE_ROLES: [(&str, &str); 5] = [
+    ("rusty_smtp_in", "rusty-test-smtp-in"),
+    ("rusty_submission", "rusty-test-submission"),
+    ("rusty_imap", "rusty-test-imap"),
+    ("rusty_outbound", "rusty-test-outbound"),
+    ("rusty_gc", "rusty-test-gc"),
+];
+
+/// `RUSTY_TEST_PG_ROLE=rusty_imap` (with `RUSTY_TEST_PG_ROLES=1`): `url()` logs in as that service role instead of `rusty_app`, so a suite shows what the service really needs.
+pub fn runtime_role() -> &'static str {
+    match env::var("RUSTY_TEST_PG_ROLE").ok().as_deref() {
+        None | Some("") | Some("rusty_app") => "rusty_app",
+        Some(r) => SERVICE_ROLES.iter().map(|(n, _)| *n).find(|n| *n == r).unwrap_or_else(|| panic!("RUSTY_TEST_PG_ROLE names no service role: {r}")),
+    }
+}
+
+fn role_password(role: &str) -> &'static str {
+    match role {
+        "rusty_app" => TEST_APP_PASSWORD,
+        "rusty_migrator" => TEST_MIGRATOR_PASSWORD,
+        "rusty_ro" => TEST_RO_PASSWORD,
+        "rusty_admin" => TEST_ADMIN_PASSWORD,
+        other => SERVICE_ROLES.iter().find(|(n, _)| *n == other).map(|(_, p)| *p).expect("unknown test role"),
+    }
+}
+
 /// deploy/db/roles.sql: the same file the operator runs.
 const ROLES_SQL: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/db/roles.sql"));
 
@@ -51,7 +78,7 @@ async fn apply_roles(admin_db_url: &str) {
     // The password of a role is set only while it has none: the roles are shared by every test database of the server, and a password set again is a new verifier (a new
     // salt) that a connection pooler in front of the server (RUSTY_TEST_PG_POOLED) would still hold the old one of.
     let mut logins = String::new();
-    for (role, password) in [("rusty_migrator", TEST_MIGRATOR_PASSWORD), ("rusty_app", TEST_APP_PASSWORD), ("rusty_ro", TEST_RO_PASSWORD), ("rusty_admin", TEST_ADMIN_PASSWORD)] {
+    for (role, password) in [("rusty_migrator", TEST_MIGRATOR_PASSWORD), ("rusty_app", TEST_APP_PASSWORD), ("rusty_ro", TEST_RO_PASSWORD), ("rusty_admin", TEST_ADMIN_PASSWORD)].into_iter().chain(SERVICE_ROLES) {
         logins.push_str(&format!(
             "DO $login$ BEGIN IF (SELECT rolpassword IS NULL FROM pg_authid WHERE rolname = '{role}') THEN ALTER ROLE {role} PASSWORD '{password}'; END IF; END $login$; ALTER ROLE {role} LOGIN; "
         ));
@@ -184,7 +211,7 @@ impl PgTestDb {
                 .await
                 .expect("migrate the isolated Postgres test database");
         }
-        db.url = through_pooler(if roles { url_for(&admin_db_url, "rusty_app", TEST_APP_PASSWORD) } else { admin_db_url.clone() });
+        db.url = through_pooler(if roles { url_for(&admin_db_url, runtime_role(), role_password(runtime_role())) } else { admin_db_url.clone() });
         db
     }
 
@@ -195,13 +222,7 @@ impl PgTestDb {
 
     /// Login URL of one of the test roles in this database (`rusty_app`, `rusty_migrator`, `rusty_ro`).
     pub fn role_url(&self, role: &str) -> String {
-        let pw = match role {
-            "rusty_app" => TEST_APP_PASSWORD,
-            "rusty_migrator" => TEST_MIGRATOR_PASSWORD,
-            "rusty_ro" => TEST_RO_PASSWORD,
-            "rusty_admin" => TEST_ADMIN_PASSWORD,
-            _ => panic!("unknown test role"),
-        };
+        let pw = role_password(role);
         let url = url_for(&self.admin_db_url, role, pw);
         if role == "rusty_migrator" { url } else { through_pooler(url) }
     }
@@ -220,7 +241,8 @@ impl PgTestDb {
         // beats a database setting: override it for this database only, as an operator would per database.
         if roles_mode() {
             sqlx::query(sqlx::AssertSqlSafe(format!(
-                "ALTER ROLE rusty_app IN DATABASE \"{}\" SET {name} = '{value}'",
+                "ALTER ROLE {} IN DATABASE \"{}\" SET {name} = '{value}'",
+                runtime_role(),
                 self.name
             )))
             .execute(&admin)
@@ -236,6 +258,12 @@ impl PgTestDb {
 
     pub fn url(&self) -> &str {
         &self.url
+    }
+
+    /// The login a test uses to SET UP data (domains, accounts, lists) that the service under test only reads: `rusty_app` in roles mode, so a service role never needs the
+    /// grants of a seeding step it does not perform in production. Without roles mode it is `url()`.
+    pub fn seed_url(&self) -> String {
+        if roles_mode() { self.role_url("rusty_app") } else { self.url.clone() }
     }
 
     /// This database as the daemon's configuration wants it: `(postgres://user@host:port/database, password)`.

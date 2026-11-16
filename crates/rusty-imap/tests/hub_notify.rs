@@ -10,7 +10,7 @@ use common::*;
 #[tokio::test]
 async fn a_write_through_the_hub_wakes_subscribers_of_that_mailbox_only() {
     for_each_backend(|b| async move {
-        let dom = b.dir.create_domain("n.test").await.unwrap();
+        let dom = b.seed.create_domain("n.test").await.unwrap();
         let alice = b.account_in(dom, "alice", "pw").await;
         let bob = b.account_in(dom, "bob", "pw").await;
         let ctx = b.ctx().await;

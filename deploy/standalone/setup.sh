@@ -69,7 +69,7 @@ RUSTY_TAG=%s
 ' "$STATE" "$profiles" "$REGISTRY" "$TAG" > .env
 [ -z "$compose_file" ] || printf 'COMPOSE_FILE=%s
 ' "$compose_file" >> .env
-R 'cd /s/secrets && for s in pg_postgres pg_app pg_admin pg_migrator; do [ -s "$s" ] || (umask 077; head -c 32 /dev/urandom | od -An -tx1 | tr -d " \n" > "$s"); done'
+R 'cd /s/secrets && for s in pg_postgres pg_app pg_admin pg_migrator pg_smtp_in pg_submission pg_imap pg_outbound pg_gc; do [ -s "$s" ] || (umask 077; head -c 32 /dev/urandom | od -An -tx1 | tr -d " \n" > "$s"); done'
 
 # The database CA and the server certificate for the name `db` (clients verify it: sslmode verify-full). Made once.
 if ! RP 'test -s /s/pgtls/server.key'; then

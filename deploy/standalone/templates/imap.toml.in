@@ -18,7 +18,7 @@ trusted_proxies = ["10.77.0.2/32", "127.0.0.1/32"]
 key_files = ["/etc/rusty-keys/unseal.key"]
 
 [store]
-url = "postgres://rusty_app@db:5432/rusty"
-password_file = "/run/secrets/pg_app"
+url = "postgres://rusty_imap@db:5432/rusty"
+password_file = "/run/secrets/pg_imap"
 sslmode = "verify-full"
 ca_bundle = "/etc/rusty/db-ca.pem"

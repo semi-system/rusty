@@ -342,11 +342,11 @@ pub(crate) mod sql {
     pub const UPDATE_DOMAIN_STATUS: &str = "UPDATE domains SET status = $1 WHERE id = $2";
     /// `has_password` as a bigint 0/1 so both backends decode it the same way.
     pub const FIND_ACCOUNT: &str = "SELECT a.id, a.domain_id, a.local_part, a.status, \
-        CASE WHEN a.password_hash IS NULL THEN CAST(0 AS BIGINT) ELSE CAST(1 AS BIGINT) END, \
+        CASE WHEN a.password_set THEN CAST(1 AS BIGINT) ELSE CAST(0 AS BIGINT) END, \
         a.created_at FROM accounts a JOIN domains d ON d.id = a.domain_id \
         WHERE d.name = $1 AND a.local_part = $2";
     pub const LIST_ACCOUNTS: &str = "SELECT id, domain_id, local_part, status, \
-        CASE WHEN password_hash IS NULL THEN CAST(0 AS BIGINT) ELSE CAST(1 AS BIGINT) END, \
+        CASE WHEN password_set THEN CAST(1 AS BIGINT) ELSE CAST(0 AS BIGINT) END, \
         created_at FROM accounts \
         WHERE domain_id = $1 AND id > COALESCE(CAST($2 AS BIGINT), 0) ORDER BY id LIMIT $3";
     pub const LIST_ALIASES: &str = "SELECT al.id, al.local_part, a.id, a.local_part, d.name \
