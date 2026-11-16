@@ -164,3 +164,32 @@ async fn without_valkey_a_session_belongs_to_one_process() {
     let elsewhere = common::Client { addr: second.addr, cookie: client.cookie.clone(), csrf: client.csrf.clone() };
     assert_eq!(elsewhere.get("/api/v1/session").await.status, 401, "the memory store is not shared");
 }
+
+#[tokio::test]
+async fn with_a_metrics_section_the_admin_web_serves_the_platform_figures_to_the_allowed_scraper() {
+    let (store, _db) = store().await;
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let cfg = config(&format!(
+        "[admin]\nlisten = \"127.0.0.1:0\"\npublic_origin = \"https://admin.example.org\"\n[metrics]\nlisten = \"127.0.0.1:{port}\"\nallowed_peers = [\"127.0.0.1/32\"]\n"
+    ));
+    let stop = CancellationToken::new();
+    let r = start(&cfg, &store, stop.clone()).await.unwrap();
+    // The admin web beats at once; the gauges that read the heartbeats show it as up.
+    let mut body = String::new();
+    for _ in 0..40 {
+        body = get(format!("127.0.0.1:{port}").parse().unwrap(), "/metrics").await.1;
+        if body.contains("rusty_service_up{service=\"admin\"} 1") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(body.contains("rusty_build_info{service=\"admin\","), "{body}");
+    assert!(body.contains("rusty_service_up{service=\"admin\"} 1"), "{body}");
+    assert!(body.contains("rusty_service_up{service=\"imap\"} 0"), "a service that never beat is down: {body}");
+    assert!(body.contains("rusty_outbound_queue_jobs{state=\"queued\"} 0"), "{body}");
+    assert!(body.contains("rusty_dns_problem_domains 0"), "{body}");
+    // The metrics port is not the admin port: the admin listener does not serve it.
+    assert!(!get(r.addr, "/metrics").await.1.contains("rusty_build_info"), "the admin listener does not serve the metrics");
+    stop.cancel();
+    assert!(tokio::time::timeout(Duration::from_secs(10), r.task).await.is_ok());
+}

@@ -16,6 +16,7 @@ pub use crate::config_admin::{valid_origin, AdminConfig};
 pub use crate::config_sealing::{SealingConfig, UnsealingConfig, MAX_UNSEALING_KEYS};
 pub use crate::config_blob_s3::{BlobS3Config, DEFAULT_BLOB_S3_CONCURRENT};
 pub use crate::config_filter::{FilterConfig, OnError};
+pub use crate::config_metrics::MetricsConfig;
 pub use crate::config_resolver::ResolverConfig;
 pub use crate::config_valkey::ValkeyConfig;
 pub use crate::config_store::{
@@ -102,6 +103,9 @@ pub struct StartupConfig {
     /// `[resolver]`: the DNS resolver of the inbound SMTP service for its SPF, DKIM and DMARC checks (absent: no inbound checks).
     #[serde(default)]
     pub resolver: Option<ResolverConfig>,
+    /// `[metrics]`: the Prometheus endpoint of the service (absent: none).
+    #[serde(default)]
+    pub metrics: Option<MetricsConfig>,
     /// `[blob_s3]`: the platform blob store in an S3 bucket instead of the `blob_dir` directory.
     #[serde(default)]
     pub blob_s3: Option<BlobS3Config>,
@@ -229,6 +233,9 @@ impl StartupConfig {
         }
         if let Some(f) = &self.filter {
             f.validate()?;
+        }
+        if let Some(m) = &self.metrics {
+            m.validate()?;
         }
         self.limits.validate()
     }
@@ -383,6 +390,7 @@ impl StartupConfig {
             blob_s3: None,
             filter: None,
             resolver: None,
+            metrics: None,
             admin: None,
         }
     }

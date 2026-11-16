@@ -17,6 +17,9 @@ use tokio::net::TcpStream;
 
 use crate::filter::{FilterContext, FilterVerdict, InboundFilter, QuarantineFolder};
 
+/// Told what every scan came to: (scanner, result), both from fixed sets (`clean`, `spam`, `virus`, `deferred`, `skipped`, `unknown`, `error`). The daemon counts them for the metrics page.
+pub type Observer = std::sync::Arc<dyn Fn(&'static str, &'static str) + Send + Sync>;
+
 /// The longest reply read from a scanner.
 const MAX_REPLY: usize = 1024 * 1024;
 /// clamd's `INSTREAM` chunk size.
@@ -48,11 +51,23 @@ pub struct ClamdFilter {
     timeout: Duration,
     max_bytes: u64,
     on_error: OnError,
+    observer: Option<Observer>,
 }
 
 impl ClamdFilter {
     pub fn new(addr: &str, timeout: Duration, max_bytes: u64, on_error: OnError) -> ClamdFilter {
-        ClamdFilter { addr: addr.to_owned(), timeout, max_bytes, on_error }
+        ClamdFilter { addr: addr.to_owned(), timeout, max_bytes, on_error, observer: None }
+    }
+
+    pub fn with_observer(mut self, observer: Observer) -> ClamdFilter {
+        self.observer = Some(observer);
+        self
+    }
+
+    fn note(&self, result: &'static str) {
+        if let Some(o) = &self.observer {
+            o("clamd", result);
+        }
     }
 
     async fn scan(&self, data: &[u8]) -> std::io::Result<Reply> {
@@ -98,15 +113,23 @@ pub(crate) fn parse_clamd(reply: &[u8]) -> Reply {
 impl InboundFilter for ClamdFilter {
     async fn check(&self, ctx: &FilterContext<'_>) -> FilterVerdict {
         if ctx.data.len() as u64 > self.max_bytes {
+            self.note("skipped");
             return tag("X-Scan-Status", "skipped-size");
         }
         match self.scan(ctx.data).await {
-            Ok(Reply::Clean) => tag("X-Virus-Scan", "clean"),
+            Ok(Reply::Clean) => {
+                self.note("clean");
+                tag("X-Virus-Scan", "clean")
+            }
             Ok(Reply::Found) => {
+                self.note("virus");
                 tracing::info!(scanner = "clamd", "a message was refused: virus");
                 FilterVerdict::Reject { code: 550, enhanced: "5.7.1", text: "Message refused: it contains a virus".to_owned() }
             }
-            Ok(Reply::Error) | Err(_) => error_verdict("clamd", self.on_error, "X-Virus-Scan"),
+            Ok(Reply::Error) | Err(_) => {
+                self.note("error");
+                error_verdict("clamd", self.on_error, "X-Virus-Scan")
+            }
         }
     }
 }
@@ -120,6 +143,7 @@ pub struct RspamdFilter {
     timeout: Duration,
     max_bytes: u64,
     on_error: OnError,
+    observer: Option<Observer>,
 }
 
 /// An rspamd verdict, reduced to what the SMTP session needs.
@@ -146,7 +170,18 @@ fn clean(v: &str) -> String {
 impl RspamdFilter {
     pub fn new(url: &str, timeout: Duration, max_bytes: u64, on_error: OnError) -> RspamdFilter {
         let addr = url.trim_start_matches("http://").trim_end_matches('/').to_owned();
-        RspamdFilter { addr, timeout, max_bytes, on_error }
+        RspamdFilter { addr, timeout, max_bytes, on_error, observer: None }
+    }
+
+    pub fn with_observer(mut self, observer: Observer) -> RspamdFilter {
+        self.observer = Some(observer);
+        self
+    }
+
+    fn note(&self, result: &'static str) {
+        if let Some(o) = &self.observer {
+            o("rspamd", result);
+        }
     }
 
     async fn scan(&self, ctx: &FilterContext<'_>) -> std::io::Result<Scored> {
@@ -194,12 +229,22 @@ impl RspamdFilter {
 impl InboundFilter for RspamdFilter {
     async fn check(&self, ctx: &FilterContext<'_>) -> FilterVerdict {
         if ctx.data.len() as u64 > self.max_bytes {
+            self.note("skipped");
             return tag("X-Scan-Status", "skipped-size");
         }
         let r = match self.scan(ctx).await {
             Ok(r) => r,
-            Err(_) => return error_verdict("rspamd", self.on_error, "X-Spam-Status"),
+            Err(_) => {
+                self.note("error");
+                return error_verdict("rspamd", self.on_error, "X-Spam-Status");
+            }
         };
+        self.note(match r.action.as_str() {
+            "no action" => "clean",
+            "reject" | "add header" | "rewrite subject" => "spam",
+            "soft reject" | "greylist" => "deferred",
+            _ => "unknown",
+        });
         tracing::info!(scanner = "rspamd", action = %clean(&r.action), score = r.score, "a message was scored");
         let status = |verdict: &str| {
             FilterVerdict::Tag(vec![

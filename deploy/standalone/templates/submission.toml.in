@@ -27,6 +27,10 @@ password_file = "/run/secrets/pg_submission"
 sslmode = "verify-full"
 ca_bundle = "/etc/rusty/db-ca.pem"
 
+# The Prometheus endpoint (./setup.sh --metrics-allow CIDR): only the networks named there may scrape it.
+#METRICS [metrics]
+#METRICS listen = "0.0.0.0:9100"
+#METRICS allowed_peers = [@METRICS_ALLOW@]
 # The shared key-value store (./setup.sh --valkey): the sessions, the login throttle and the sending budget are then one for every replica.
 #VALKEY [valkey]
 #VALKEY host = "valkey"

@@ -1,0 +1,104 @@
+# Sample alert rules (docs/design-metrics.md). Tune the thresholds to the installation. The rules of the last group need exporters that are not part of Rusty: node_exporter (the disk),
+# blackbox_exporter probing the public HTTPS and mail host names (the certificates) and postgres_exporter (the database server).
+groups:
+  - name: rusty-services
+    rules:
+      - alert: RustyServiceDown
+        expr: min by (service) (rusty_service_up) == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "No instance of {{ $labels.service }} is beating"
+          description: "The admin web sees no live heartbeat of the service. Mail that needs it waits or is refused."
+      - alert: RustyReplicaLost
+        expr: max by (service) (rusty_service_instances{state="stale"}) > 0
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "A replica of {{ $labels.service }} stopped beating"
+      - alert: RustyScrapeTargetDown
+        expr: up{job=~"rusty-.*"} == 0
+        for: 3m
+        labels: { severity: warning }
+        annotations:
+          summary: "The metrics of {{ $labels.service }} ({{ $labels.instance }}) cannot be scraped"
+      - alert: RustySessionPanics
+        expr: sum by (service, listener) (increase(rusty_session_panics_total[15m])) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "A session of {{ $labels.listener }} ended in a panic"
+
+  - name: rusty-mail-flow
+    rules:
+      - alert: RustyOutboundQueueGrowing
+        expr: max(rusty_outbound_queue_jobs{state="queued"}) > 500
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "More than 500 messages wait in the outbound queue"
+      - alert: RustyOutboundQueueStuck
+        expr: max(rusty_outbound_queue_oldest_due_seconds) > 1800
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "A message that is due has waited more than 30 minutes: no delivery worker takes it"
+      - alert: RustyOutboundDeadJobs
+        expr: max(rusty_outbound_queue_jobs{state="dead"}) > 0
+        for: 1h
+        labels: { severity: info }
+        annotations:
+          summary: "Outgoing messages were given up (bounced); look at the reasons"
+      - alert: RustyScannerFailing
+        expr: sum by (scanner) (rate(rusty_filter_results_total{result="error"}[5m])) > 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "The {{ $labels.scanner }} scanner cannot be asked (clamd down holds incoming mail with a temporary error)"
+      - alert: RustyAuthenticationStorm
+        expr: sum by (listener) (rate(rusty_auth_attempts_total{result="failed"}[5m])) > 5
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Many failed logins on {{ $labels.listener }}: a password guessing run?"
+      - alert: RustyConnectionLimitsHit
+        expr: sum by (listener, reason) (rate(rusty_connections_rejected_total{reason!="handshake_failed"}[5m])) > 1
+        for: 10m
+        labels: { severity: info }
+        annotations:
+          summary: "{{ $labels.listener }} keeps refusing connections ({{ $labels.reason }})"
+
+  - name: rusty-configuration
+    rules:
+      - alert: RustyStorageChecksFailing
+        expr: max(rusty_storage_stores{status!~"ok|unchecked"}) > 0
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "A domain's blob store fails its check"
+      - alert: RustyDnsProblems
+        expr: max(rusty_dns_problem_domains) > 0
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "Some domains have a missing or wrong DNS record"
+
+  - name: rusty-infrastructure
+    rules:
+      - alert: CertificateExpiresSoon
+        expr: probe_ssl_earliest_cert_expiry - time() < 14 * 86400
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "The certificate of {{ $labels.instance }} expires in less than 14 days (blackbox_exporter)"
+      - alert: DiskFilling
+        expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.10
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Less than 10 % of the disk is free on {{ $labels.instance }} (node_exporter)"
+      - alert: DatabaseDown
+        expr: pg_up == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "PostgreSQL does not answer (postgres_exporter)"

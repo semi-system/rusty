@@ -19,7 +19,7 @@ PG_IMG="$(pin postgres:18)"; HA_IMG="$(pin haproxy:3.4.7-alpine3.24)"
 [ -n "$PG_IMG" ] && [ -n "$HA_IMG" ] || { echo "setup: images are not pinned in deploy/images.lock" >&2; exit 1; }
 
 SAVED_ARGS=("$@")   # kept in the state directory for upgrade.sh
-STATE="${RUSTY_STATE:-$HOME/rusty-state}"; MAIL_HOST=""; ADMIN_HOST=""; CONTACT=""; PUBLIC_IP=""; STAGING=0; SELF=0; FILTER=0; BUILD=0; VALKEY=0; MAX_REPLICAS=4; TAG=main; REGISTRY=ghcr.io/semi-system; ALLOW=()
+STATE="${RUSTY_STATE:-$HOME/rusty-state}"; MAIL_HOST=""; ADMIN_HOST=""; CONTACT=""; PUBLIC_IP=""; STAGING=0; SELF=0; FILTER=0; BUILD=0; VALKEY=0; METRICS_ALLOW=(); MAX_REPLICAS=4; TAG=main; REGISTRY=ghcr.io/semi-system; ALLOW=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --mail-host) MAIL_HOST="${2:-}"; shift 2 ;;
@@ -32,6 +32,7 @@ while [ $# -gt 0 ]; do
     --filter) FILTER=1; shift ;;
     --build) BUILD=1; shift ;;
     --valkey) VALKEY=1; shift ;;
+    --metrics-allow) METRICS_ALLOW+=("${2:-}"); shift 2 ;;
     --max-replicas) MAX_REPLICAS="${2:-}"; shift 2 ;;
     --image-tag) TAG="${2:-}"; shift 2 ;;
     --registry) REGISTRY="${2:-}"; shift 2 ;;
@@ -40,6 +41,15 @@ while [ $# -gt 0 ]; do
   esac
 done
 die() { echo "setup: $*" >&2; exit 2; }
+METRICS_LIST=""
+if [ "${#METRICS_ALLOW[@]}" -gt 0 ]; then
+  [ "${#METRICS_ALLOW[@]}" -le 16 ] || die "--metrics-allow: at most 16 networks"
+  for c in "${METRICS_ALLOW[@]}"; do
+    [[ "$c" =~ ^[0-9a-fA-F:.]+/[0-9]{1,3}$ ]] || die "--metrics-allow wants a network such as 10.0.0.5/32 or 192.168.1.0/24, got '$c'"
+    case "$c" in 0.0.0.0/0|::/0|0/0) die "--metrics-allow must not hold every address: the endpoint has no login" ;; esac
+    METRICS_LIST="${METRICS_LIST:+$METRICS_LIST, }\"$c\""
+  done
+fi
 [[ "$MAX_REPLICAS" =~ ^[1-9][0-9]?$ ]] || die "--max-replicas must be a number from 1 to 99 (the replicas of a service the database allows)"
 [[ "$TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || die "--image-tag must be a registry tag (a release such as 1.2.3, sha-abcdef0, or main)"
 [[ "$REGISTRY" =~ ^[a-z0-9.:/_-]+$ ]] || die "--registry must be a registry path such as ghcr.io/semi-system"
@@ -96,9 +106,9 @@ fi
 R 'cp /s/pgtls/ca.pem /s/etc/db-ca.pem && chown "$HOSTID" /s/etc/db-ca.pem && chmod 0644 /s/etc/db-ca.pem'
 
 render() { # template -> file: the values were validated above, none holds a character that matters to sed (| is never in them)
-  local keep drop fkeep="#NOFILTER_" vkeep="#NOVALKEY_"; [ "$FILTER" = 1 ] && fkeep="#FILTER "; [ "$VALKEY" = 1 ] && vkeep="#VALKEY "; if [ "$SELF" = 1 ]; then keep="#SELF "; drop="#ACME"; else keep="#ACME"; drop="#SELF "; fi
-  sed -e "s|^${fkeep}||" -e "s|^${vkeep}||" -e "/^${drop}/d" -e "s|^${keep}||" -e "s|@MAIL_HOST@|$MAIL_HOST|g" -e "s|@ADMIN_HOST@|$ADMIN_HOST|g" -e "s|@CONTACT@|$CONTACT|g" -e "s|@PUBLIC_IP@|$PUBLIC_IP|g" \
-      -e "s|@SEAL_PUBLIC@|$SEAL_PUBLIC|g" -e "s|@ACME_DIRECTORY@|$ACME_DIR|g" -e "s|@ADMIN_ALLOW@|${ALLOW[*]}|g" "templates/$1.in" > "$STATE/etc/$1"
+  local keep drop fkeep="#NOFILTER_" vkeep="#NOVALKEY_" mkeep="#NOMETRICS_"; [ "$FILTER" = 1 ] && fkeep="#FILTER "; [ "$VALKEY" = 1 ] && vkeep="#VALKEY "; [ "${#METRICS_ALLOW[@]}" -gt 0 ] && mkeep="#METRICS "; if [ "$SELF" = 1 ]; then keep="#SELF "; drop="#ACME"; else keep="#ACME"; drop="#SELF "; fi
+  sed -e "s|^${fkeep}||" -e "s|^${vkeep}||" -e "s|^${mkeep}||" -e "/^${drop}/d" -e "s|^${keep}||" -e "s|@MAIL_HOST@|$MAIL_HOST|g" -e "s|@ADMIN_HOST@|$ADMIN_HOST|g" -e "s|@CONTACT@|$CONTACT|g" -e "s|@PUBLIC_IP@|$PUBLIC_IP|g" \
+      -e "s|@SEAL_PUBLIC@|$SEAL_PUBLIC|g" -e "s|@ACME_DIRECTORY@|$ACME_DIR|g" -e "s|@ADMIN_ALLOW@|${ALLOW[*]}|g" -e "s|@METRICS_ALLOW@|$METRICS_LIST|g" "templates/$1.in" > "$STATE/etc/$1"
 }
 # The sealing key pair: the private half stays in state/keys (mail uid only); the public half goes to both configurations.
 mail_ctl() { docker run --rm --user 65532:65532 --entrypoint /usr/local/bin/rustyctl -v "$STATE/keys:/etc/rusty-keys" "$REGISTRY/rusty:$TAG" "$@"; }

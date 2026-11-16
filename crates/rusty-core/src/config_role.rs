@@ -39,7 +39,7 @@ pub enum Role {
 /// could mistake for real storage. It disappears when blobs move to S3.
 pub const UNUSED_BLOB_DIR: &str = "/nonexistent/rusty-no-blob-dir";
 
-const SHARED: [&str; 5] = ["hostname", "log_level", "log_format", "store", "limits"];
+const SHARED: [&str; 6] = ["hostname", "log_level", "log_format", "store", "limits", "metrics"];
 
 impl Role {
     /// The name used in file names (`/etc/rusty/<name>.toml`), logs and images.
@@ -82,8 +82,8 @@ impl Role {
 
 /// Every top-level key of the schema. Only these are named in a refusal: a key that is not one of them is
 /// reported as unknown, so nothing the operator typed (or pasted by mistake) is echoed.
-const SCHEMA_KEYS: [&str; 20] = [
-    "blob_dir", "blob_s3", "filter", "resolver", "log_level", "log_format", "hostname", "max_message_bytes", "gc_grace_seconds", "store", "tls", "smtp", "imap", "outbound",
+const SCHEMA_KEYS: [&str; 21] = [
+    "blob_dir", "blob_s3", "filter", "resolver", "metrics", "log_level", "log_format", "hostname", "max_message_bytes", "gc_grace_seconds", "store", "tls", "smtp", "imap", "outbound",
     "limits", "dns_check", "valkey", "sealing", "unsealing", "admin",
 ];
 
