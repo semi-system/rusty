@@ -48,7 +48,7 @@ ui_yesno() {
 ui_menu() {
   local text="$1" v i=0 n; shift
   if [ "$UI" = whiptail ]; then
-    v="$(whiptail --title "Rusty Mail Server" --menu "$text" 16 78 6 "$@" 3>&1 1>&2 2>&3)" || wiz_abort
+    v="$(whiptail --title "Rusty Mail Server" --notags --menu "$text" 16 78 6 "$@" 3>&1 1>&2 2>&3)" || wiz_abort
     printf '%s\n' "$v"; return
   fi
   local tags=() items=()
