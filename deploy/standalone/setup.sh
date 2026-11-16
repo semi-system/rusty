@@ -85,7 +85,7 @@ if ! R 'test -e /s/keys/unseal.key'; then mail_ctl seal keygen /etc/rusty-keys/u
 SEAL_PUBLIC="$(mail_ctl seal show /etc/rusty-keys/unseal.key | grep -o 'rusty-seal-v1:[0-9a-f]\{64\}' | head -1)"
 [ -n "$SEAL_PUBLIC" ] || die "could not read the sealing public key"
 
-for f in smtp-in.toml submission.toml imap.toml outbound.toml gc.toml ctl.toml admin.toml haproxy.cfg; do render $f; done
+for f in smtp-in.toml submission.toml imap.toml outbound.toml gc.toml ctl.toml admin.toml haproxy.cfg pg_hba.conf; do render $f; done
 # Self-signed certificates for the two names (made once; a name change makes new ones): ECDSA P-256, with the names as subject alternative names. HAProxy loads
 # a file holding the key then the certificate; the mail services read the certificate and the key of the mail name from state/tls.
 if [ "$SELF" = 1 ]; then
