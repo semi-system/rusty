@@ -40,7 +40,7 @@ fn allowed(role: Role) -> &'static [&'static str] {
         Role::SmtpIn => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "smtp"],
         Role::Submission => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "smtp", "outbound", "valkey"],
         Role::Imap => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "imap", "valkey"],
-        Role::Outbound => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "blob_s3", "outbound", "unsealing"],
+        Role::Outbound => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "blob_s3", "outbound", "unsealing", "dns_check"],
         Role::Gc => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "blob_s3", "unsealing", "gc_grace_seconds", "dns_check"],
         Role::Admin => &["hostname", "log_level", "log_format", "store", "limits", "tls", "valkey", "sealing", "admin"],
     }
