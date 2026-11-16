@@ -2,7 +2,7 @@
 # Runs each service's integration suites logged in as that service's own database role (RUSTY_TEST_PG_ROLE), so a missing grant shows as a failing test and a grant nobody
 # needs can be removed. Needs RUSTY_TEST_PG_URL (a superuser URL of a throw-away server). Usage: scripts/pg-role-suites.sh [role ...]   (default: every service role)
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 CARGO="${CARGO:-cargo}"
 declare -A SUITES=(
   [rusty_smtp_in]="-p rusty-smtp --test inbound --test message --test scan --test session --test busy_e2e"
