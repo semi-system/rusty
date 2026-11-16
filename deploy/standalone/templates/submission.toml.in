@@ -26,3 +26,8 @@ url = "postgres://rusty_submission@db:5432/rusty"
 password_file = "/run/secrets/pg_submission"
 sslmode = "verify-full"
 ca_bundle = "/etc/rusty/db-ca.pem"
+
+# The Prometheus endpoint (./setup.sh --monitoring): only the Prometheus of the monitoring profile may scrape it.
+#MONITORING [metrics]
+#MONITORING listen = "0.0.0.0:9100"
+#MONITORING allowed_peers = ["10.79.0.2/32"]

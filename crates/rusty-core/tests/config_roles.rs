@@ -33,18 +33,19 @@ secret_key_file = \"/run/secrets/s\"
 "),
     ("filter", "[filter]\nclamd_addr = \"clamd:3310\"\n"),
     ("resolver", "[resolver]\nnameserver = \"10.78.0.3:53\"\n"),
+    ("metrics", "[metrics]\nlisten = \"0.0.0.0:9100\"\nallowed_peers = [\"10.79.0.2/32\"]\n"),
     ("admin", "[admin]\npublic_origin = \"https://admin.example.org\"\n"),
 ];
 
 fn allowed(role: Role) -> &'static [&'static str] {
     // Written out per role (not computed): the point of the matrix is to be an independent statement.
     match role {
-        Role::SmtpIn => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "smtp", "filter", "resolver"],
-        Role::Submission => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "smtp", "outbound", "valkey"],
-        Role::Imap => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "imap", "valkey"],
-        Role::Outbound => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "blob_s3", "outbound", "unsealing", "dns_check"],
-        Role::Gc => &["hostname", "log_level", "log_format", "store", "limits", "blob_dir", "blob_s3", "unsealing", "gc_grace_seconds", "dns_check"],
-        Role::Admin => &["hostname", "log_level", "log_format", "store", "limits", "tls", "valkey", "sealing", "admin"],
+        Role::SmtpIn => &["hostname", "log_level", "log_format", "store", "limits", "metrics", "blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "smtp", "filter", "resolver"],
+        Role::Submission => &["hostname", "log_level", "log_format", "store", "limits", "metrics", "blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "smtp", "outbound", "valkey"],
+        Role::Imap => &["hostname", "log_level", "log_format", "store", "limits", "metrics", "blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "imap", "valkey"],
+        Role::Outbound => &["hostname", "log_level", "log_format", "store", "limits", "metrics", "blob_dir", "blob_s3", "outbound", "unsealing", "dns_check"],
+        Role::Gc => &["hostname", "log_level", "log_format", "store", "limits", "metrics", "blob_dir", "blob_s3", "unsealing", "gc_grace_seconds", "dns_check"],
+        Role::Admin => &["hostname", "log_level", "log_format", "store", "limits", "metrics", "tls", "valkey", "sealing", "admin"],
     }
 }
 

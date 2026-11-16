@@ -89,6 +89,7 @@ services:
       - mail-data:/var/lib/rusty
     networks:
       db: {}
+      metrics: {}
       app: {}
       filter: {}
     depends_on:
@@ -110,6 +111,7 @@ services:
       - mail-data:/var/lib/rusty
     networks:
       db: {}
+      metrics: {}
       app: {}
     depends_on:
       migrate: { condition: service_completed_successfully }
@@ -130,6 +132,7 @@ services:
       - mail-data:/var/lib/rusty
     networks:
       db: {}
+      metrics: {}
       app: {}
     depends_on:
       migrate: { condition: service_completed_successfully }
@@ -149,6 +152,7 @@ services:
       - mail-data:/var/lib/rusty
     networks:
       db: {}
+      metrics: {}
       egress: {}
     depends_on:
       migrate: { condition: service_completed_successfully }
@@ -165,7 +169,9 @@ services:
       - ${RUSTY_STATE:?run ./setup.sh first}/etc:/etc/rusty:ro
       - ${RUSTY_STATE:?run ./setup.sh first}/keys:/etc/rusty-keys:ro
       - mail-data:/var/lib/rusty
-    networks: [db]
+    networks:
+      db: {}
+      metrics: {}
     depends_on:
       migrate: { condition: service_completed_successfully }
       blobs-init: { condition: service_completed_successfully }
@@ -237,6 +243,27 @@ services:
       - clamdb:/var/lib/clamav
     networks: [egress]
 
+  # ---- the `monitoring` profile (docs/design-metrics.md): a Prometheus that scrapes every replica of every service and evaluates the sample alert rules of deploy/monitoring. Start with `./setup.sh --monitoring ...`.
+  # No port is published: reach it with `docker compose exec prometheus ...` or add a port in an override file; send the alerts to your own Alertmanager or remote receiver.
+  prometheus:
+    profiles: [monitoring]
+    image: prom/prometheus@sha256:1f0f50f06acaceb0f5670d2c8a658a599affe7b0d8e78b898c1035653849a702
+    <<: *hardened
+    user: "65534:65534"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.listen-address=0.0.0.0:9090
+    tmpfs: [/tmp]
+    volumes:
+      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../monitoring/rusty.rules.yml:/etc/prometheus/rusty.rules.yml:ro
+      - promdata:/prometheus
+    networks:
+      # The one scraper the services allow (`[metrics] allowed_peers`): it keeps an address.
+      metrics: { ipv4_address: 10.79.0.2 }
+
   # rustyctl for the operator: `docker compose run --rm --name rusty-ctl-1 ctl domain add example.org` (docs/first-mail.md; the name is what the database allows). Not started by `up`.
   ctl:
     profiles: [tools]
@@ -262,6 +289,7 @@ services:
       - ${RUSTY_STATE:?run ./setup.sh first}/etc:/etc/rusty:ro
     networks:
       db: {}
+      metrics: {}
       app: {}
     depends_on:
       migrate: { condition: service_completed_successfully }
@@ -336,6 +364,7 @@ secrets:
 volumes:
   pgdata:
   mail-data:
+  promdata:
   clamdb:
 
 networks:
@@ -349,5 +378,9 @@ networks:
   filter:
     internal: true
     ipam: { config: [{ subnet: 10.78.0.0/24 }] }
+  # The metrics endpoints and the Prometheus that scrapes them, nothing else.
+  metrics:
+    internal: true
+    ipam: { config: [{ subnet: 10.79.0.0/24 }] }
   # Out to the internet: the edge (ACME, inbound ports) and the mail service (outbound delivery).
   egress: {}

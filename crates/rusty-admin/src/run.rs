@@ -143,6 +143,16 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     let bound = BoundListener::bind(spec).await?;
     let addr = bound.local_addr();
     let grace = Duration::from_secs(cfg.limits.shutdown_grace_secs);
-    let task = tokio::spawn(async move { bound.serve(accept, handler, Arc::new(TracingEvents), shutdown, grace).await });
+    // `[metrics]`: the counters of the listener and the platform's figures (heartbeats, queue, storage, DNS), on a listener of its own for the allowed scrapers (docs/design-metrics.md).
+    let events: Arc<dyn rusty_svc::ServiceEvents> = match &cfg.metrics {
+        Some(m) => {
+            let registry = Arc::new(rusty_metrics::Registry::new("admin", env!("CARGO_PKG_VERSION")));
+            registry.add_collector(Arc::new(crate::monitor::PlatformCollector { monitor: repos.heartbeat.clone(), jobs: rusty_store::JobQueue::with_repo(repos.jobs.clone()) }));
+            rusty_metrics::serve(m.listen, registry.clone(), m.allowed_peers.clone(), shutdown.clone()).await?;
+            Arc::new(rusty_metrics::MetricsEvents::new(registry))
+        }
+        None => Arc::new(TracingEvents),
+    };
+    let task = tokio::spawn(async move { bound.serve(accept, handler, events, shutdown, grace).await });
     Ok(Running { addr, setup_token, tls, task })
 }
