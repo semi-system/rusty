@@ -13,6 +13,7 @@ rusty-store = { path = "../rusty-store" }
 rusty-svc = { path = "../rusty-svc" }
 rusty-valkey = { path = "../rusty-valkey" }
 rusty-http = { path = "../rusty-http" }
+rusty-metrics = { path = "../rusty-metrics" }
 rusty-seal = { path = "../rusty-seal" }
 rusty-smtp = { path = "../rusty-smtp", default-features = false }
 rusty-runtime = { path = "../rusty-runtime" }

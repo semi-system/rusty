@@ -1,0 +1,19 @@
+[package]
+name = "rusty-metrics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+rusty-core = { path = "../rusty-core" }
+rusty-svc = { path = "../rusty-svc", default-features = false }
+rusty-http = { path = "../rusty-http" }
+async-trait.workspace = true
+tokio = { workspace = true, features = ["rt", "time", "sync", "macros"] }
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }

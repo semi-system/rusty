@@ -413,3 +413,38 @@ fn only_the_listeners_of_a_role_need_tls_and_count_as_services() {
     assert_eq!(cfg.service_count_for(Some(Role::Imap)), 4);
     assert_eq!(cfg.service_count_for(None), 7);
 }
+
+#[tokio::test]
+async fn the_metrics_listener_counts_what_the_service_listeners_report_and_answers_the_allowed_scraper_only() {
+    let tmp = private_tmp();
+    let data = tmp.path().join("data");
+    let pg = pg_dev().await;
+    let mut cfg = pg.config(&data);
+    // A free port for the metrics listener (the service logs it; the test needs it before the start).
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    cfg.metrics = Some(rusty_core::config::MetricsConfig { listen: format!("127.0.0.1:{port}").parse().unwrap(), allowed_peers: vec!["127.0.0.1/32".parse().unwrap()] });
+    let token = CancellationToken::new();
+    let run = start(cfg, Profile::Dev, token.clone()).await.unwrap();
+    // One connection to the SMTP port, so there is something to count.
+    let mut c = TcpStream::connect(addr_of(&run, ListenerKind::Smtp25)).await.unwrap();
+    assert!(read_line(&mut c).await.starts_with("220 "));
+    drop(c);
+    let mut text = String::new();
+    for _ in 0..30 {
+        let mut s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        s.write_all(b"GET /metrics HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").await.unwrap();
+        let mut out = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_secs(3), s.read_to_end(&mut out)).await;
+        text = String::from_utf8_lossy(&out).into_owned();
+        if text.contains("rusty_connections_closed_total") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(text.starts_with("HTTP/1.1 200"), "{text}");
+    assert!(text.contains("rusty_build_info{service=\"rusty\","), "{text}");
+    assert!(text.contains("rusty_connections_accepted_total{listener=\"smtp-25\"} 1"), "{text}");
+    assert!(text.contains("rusty_connections_closed_total{listener=\"smtp-25\"} 1"), "{text}");
+    token.cancel();
+    run.wait().await.unwrap();
+}

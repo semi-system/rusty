@@ -283,3 +283,11 @@ What a replica needs:
 * **Message storage reachable from every replica.** Replicas on one host share the `mail-data` volume; replicas on several hosts need an S3-compatible blob store (`blob-stores.md`).
 * **Shared limits need Valkey.** Without `[valkey]` the sending budget per account and the login throttle are counted per process, so the effective limit grows with the replicas (`valkey.md`).
 * **Database connections add up.** Every replica opens its own pool (`[store] max_connections`); put PgBouncer in front when the sum nears the server's `max_connections` (`postgres-production.md`).
+
+## Metrics
+
+`./setup.sh --metrics-allow 192.168.1.10/32 ...` (repeatable: one to sixteen networks, never every address) gives every service a `[metrics]` listener on port 9100 that serves `GET /metrics` in the Prometheus text
+format to those networks only; the listeners sit on the internal `metrics` network (`rusty_metrics`), which no port of the host reaches. The stack does **not** run a Prometheus: yours joins that network
+(`docker run --network rusty_metrics ...`, or an override file) and scrapes `smtp-in:9100`, `submission:9100`, `imap:9100`, `outbound:9100`, `gc:9100` and `admin:9100`: Docker's resolver returns every replica of a
+service, so `deploy/monitoring/prometheus.yml` (a sample scrape configuration with `dns_sd_configs`) finds each of them. `deploy/monitoring/rusty.rules.yml` has sample alert rules; `docs/design-metrics.md` lists
+every metric. `scripts/check-prom-rules.sh` runs `promtool` on both samples in CI.

@@ -285,3 +285,33 @@ async fn a_header_value_cannot_carry_a_line_break_to_the_scanner() {
     let (head, _) = seen.lock().unwrap().clone();
     assert!(!head.lines().any(|l| l.starts_with("X-Injected") || l.starts_with("Bcc")), "{head}");
 }
+
+// ------------------------------------------------------------------------------------------------ what the scans came to (for the metrics)
+
+#[tokio::test]
+async fn every_scan_is_told_to_the_observer_as_a_scanner_and_a_fixed_result_word() {
+    let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let obs: rusty_smtp::scan::Observer = {
+        let seen = seen.clone();
+        Arc::new(move |scanner, result| seen.lock().unwrap().push((scanner.to_owned(), result.to_owned())))
+    };
+    for (mode, want) in [(Clam::Ok, "clean"), (Clam::Found, "virus"), (Clam::Error, "error"), (Clam::Close, "error")] {
+        let (addr, _) = clamd(mode).await;
+        clam_filter(&addr, OnError::Accept).with_observer(obs.clone()).check(&ctx(MSG, &rcpt())).await;
+        assert_eq!(seen.lock().unwrap().pop(), Some(("clamd".to_owned(), want.to_owned())));
+    }
+    for (action, want) in [("no action", "clean"), ("reject", "spam"), ("add header", "spam"), ("soft reject", "deferred"), ("something new", "unknown")] {
+        let json: &'static str = Box::leak(format!(r#"{{"action":"{action}","score":9.0,"required_score":6.0}}"#).into_boxed_str());
+        let (url, _) = rspamd(Rs::Json(json)).await;
+        rs_filter(&url, OnError::Accept).with_observer(obs.clone()).check(&ctx(MSG, &rcpt())).await;
+        assert_eq!(seen.lock().unwrap().pop(), Some(("rspamd".to_owned(), want.to_owned())), "{action}");
+    }
+    let (url, _) = rspamd(Rs::Status(500)).await;
+    rs_filter(&url, OnError::Accept).with_observer(obs.clone()).check(&ctx(MSG, &rcpt())).await;
+    assert_eq!(seen.lock().unwrap().pop(), Some(("rspamd".to_owned(), "error".to_owned())), "a scanner that fails is an error result");
+    // A scan skipped for size is told too, and nothing is told when nobody observes.
+    let big = vec![b'x'; 100];
+    let (addr, _) = clamd(Clam::Ok).await;
+    ClamdFilter::new(&addr, Duration::from_secs(2), 10, OnError::Accept).with_observer(obs).check(&ctx(&big, &rcpt())).await;
+    assert_eq!(seen.lock().unwrap().pop(), Some(("clamd".to_owned(), "skipped".to_owned())));
+}
