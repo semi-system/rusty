@@ -11,7 +11,7 @@
 //! - Time: the DATABASE clock decides (`{NOW}`: `unixepoch()` / `rs_now()`). The only way to
 //!   substitute a time is the explicit `now: Option<i64>` parameter of the capability methods
 //!   (the `_at(now)` test twins of the facade); `None` means the database clock. See
-//!   `docs/superpowers/specs/2026-11-03-rusty-clock-policy.md`.
+//!   `docs/clock-policy.md`.
 //! - Locking: single-statement operations need no explicit lock. Read-then-write operations
 //!   lock first: `add_list_member` locks the list row (member count + per-list `seq`),
 //!   `issue_capability`, `revoke_all_capabilities`, `set_status` and `set_password_hash` lock

@@ -2,7 +2,7 @@
 
 A secret that the web creates or receives (a DKIM private key, a tenant's relay password) is **sealed** (`rusty-seal`, HPKE) to the outbound
 service's public key before it is stored, so that the admin service can write it and **cannot read it back**. This page is about the
-storage; the sealing is described in `docs/superpowers/plans/2026-11-14-admin-web-design.md` (section 14.1).
+storage; the sealing is described in `docs/design-admin-web.md` (section 14.1).
 
 ## The table
 

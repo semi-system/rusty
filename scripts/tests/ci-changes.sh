@@ -24,7 +24,7 @@ expect true  false true  true  .github/workflows/docker.yml
 expect true  false true  false deploy/docker/Dockerfile
 expect true  false false false .github/workflows/release.yml
 expect true  true  true  true  docs/a.md .github/workflows/docker.yml crates/rusty-core/src/lib.rs
-expect true  true  false false docs/superpowers/plans/2026-11-03-postgres-backend-mutation-table.md
+expect true  true  false false docs/postgres-mutation-table.md
 expect true  true  true  false crates/rusty-core/README.md      # crate docs can be include_str!-ed
 expect true  true  false false rusty.example.toml
 # an empty list is not "nothing changed": fail safe

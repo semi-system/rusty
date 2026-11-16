@@ -1,7 +1,7 @@
 # Design: blob storage on S3, one store per tenant
 
 Status: **approved in principle** (decided 2026-11-15: S3, a store of its own for each tenant, not one S3 for the whole system; **tenant = domain**). Nothing here is built.
-Builds on `docs/superpowers/plans/2026-11-14-per-service-images-design.md` (blobs on S3 only, any S3-compatible server, RustFS in tests, credentials per service).
+Builds on `docs/design-per-service-images.md` (blobs on S3 only, any S3-compatible server, RustFS in tests, credentials per service).
 
 ## 1. What changes, in one paragraph
 

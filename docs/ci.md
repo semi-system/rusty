@@ -39,7 +39,7 @@ reads `git diff HEAD^1 HEAD` (the merge commit GitHub checks out for a pull requ
 
 Fail-safe rules: only pull requests are filtered. Pushes to main, tags, the nightly schedule and
 manual runs always run everything (they seed the caches and are the release gate). An empty or unreadable
-diff runs everything. One document is read by a test (`docs/superpowers/plans/2026-11-03-postgres-backend-mutation-table.md`)
+diff runs everything. One document is read by a test (`docs/postgres-mutation-table.md`)
 and is therefore classified as code. A docs-only pull request skips every heavy job and still ends with
 a green `ci-ok`.
 

@@ -1,4 +1,4 @@
-//! `rusty-submission`: the rusty-submission service on its own (docs/superpowers/plans/2026-11-14-per-service-images-design.md). All logic is in the library (`rusty::cli`).
+//! `rusty-submission`: the rusty-submission service on its own (docs/design-per-service-images.md). All logic is in the library (`rusty::cli`).
 #![forbid(unsafe_code)]
 
 fn main() -> std::process::ExitCode {
