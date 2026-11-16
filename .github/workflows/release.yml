@@ -1,4 +1,4 @@
-# Release on a version tag: musl binaries (amd64, arm64) + SHA256SUMS + the compose file and the
+# Release on a version tag: musl binaries (amd64, arm64) + the deployment kit (rusty-deploy-TAG.tar.gz) + SHA256SUMS + the compose file and the
 # installer (when present in the tree), all signed keyless with cosign (OIDC). The image itself is
 # built, signed and attested by docker.yml on the same tag. Notes are generated from the git log.
 name: release
@@ -76,8 +76,13 @@ jobs:
           merge-multiple: true
       - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
       - name: Assemble, checksum and sign
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          # The deployment kit as one file (scripts/package-deploy.sh); SHA256SUMS below covers it.
+          bash scripts/package-deploy.sh "$TAG" dist
+          rm -f "dist/rusty-deploy-$TAG.tar.gz.sha256"
           cp deploy/compose/compose.yaml dist/compose.yaml
           [ ! -f deploy/standalone/install.sh ] || cp deploy/standalone/install.sh dist/install.sh
           cd dist

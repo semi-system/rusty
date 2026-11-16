@@ -292,3 +292,16 @@ resolver returns them all) and serves everything on `admin:9100`, each sample la
 `--metrics-allow` may read the admin web's endpoint. The stack does **not** run a Prometheus: yours joins the `rusty_metrics` network (`docker run --network rusty_metrics ...`, or an override file) and has ONE
 target, `admin:9100` (`deploy/monitoring/prometheus.yml`), so no service can be missed. `deploy/monitoring/rusty.rules.yml` has sample alert rules; `docs/design-metrics.md` lists every metric.
 `scripts/check-prom-rules.sh` runs `promtool` on both samples in CI.
+
+## The deployment kit (one file to download)
+
+Every release has `rusty-deploy-TAG.tar.gz`: the `deploy/` directory without the development and build-server parts, `swarm.env.example`, and a launcher `rusty-swarm`. It is listed in `SHA256SUMS`, which is signed with cosign
+like the binaries (verify the signature, then the sum; `cosign verify-blob` as above). The setup is two commands and nothing else is taken from the repository:
+
+```
+tar xzf rusty-deploy-TAG.tar.gz && cd rusty-deploy-TAG
+cp swarm.env.example swarm.env      # the nodes and the database; the file stays yours
+./rusty-swarm init                  # Docker where it is missing, the swarm, the database roles
+```
+
+The archive is reproducible (sorted names, a fixed time, no owner): the same tree and tag give the same bytes. `scripts/package-deploy.sh TAG [OUTDIR]` makes it by hand; `scripts/tests/package-deploy.sh` is its gate.
