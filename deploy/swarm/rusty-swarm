@@ -15,6 +15,7 @@
 #   ./rusty-swarm [--env FILE] cluster verify    nodes Ready and Active, and a throw-away overlay with one task per node: the tasks list each other, reach each other
 #                                                (an encrypted overlay when the inventory says ENCRYPTED=1)
 #   ./rusty-swarm [--env FILE] logs SERVICE [LINES]   the log of a service (for example admin: the setup token of the first start); verify: the greeting of ports 25, 587 and 143 through the edge
+#   ./rusty-swarm [--env FILE] backup [DIR] | restore FILE | upgrade [--no-backup]   a dump of the database and the sealing key; the way back (a restore); a new release: backup, secrets, configs, migration, rolling update
 #   ./rusty-swarm [--env FILE] stack          print the stack file the next deploy would use
 #   ./rusty-swarm [--env FILE] prepare secrets | prepare configs | migrate | deploy   the next steps of the flow, each repeatable: the swarm secrets (versioned names) and configs (named by the
 #                                                hash of their content), the schema migration as a job, and the stack (the edge and the services)
@@ -289,8 +290,10 @@ make_passwords() {
 
 # Run psql on the manager (the node reaches the database the way the services will). The first line of the standard input is the password, the rest is the SQL: the password is in no argument
 # and no environment variable of a process on the node. $1 is the user, $2 the file with its password; the SQL comes from the standard input.
-psql_as() {
-  local m user="$1" pwfile="$2" ca="/tmp/rusty-swarm-ca.pem" conn mount=() net=()
+# psql_as USER PWFILE (the SQL on the standard input); pg_tool_as runs any client of the image (psql, pg_dump) the same way.
+psql_as() { pg_tool_as "psql -X -q -At -v ON_ERROR_STOP=1" "$@"; }
+pg_tool_as() {
+  local tool="$1" m user="$2" pwfile="$3" ca="/tmp/rusty-swarm-ca.pem" conn mount=() net=()
   # The default PostgreSQL lives on the stack's network: the psql container joins it (the network is attachable).
   [ "$DB_IN_STACK" != 1 ] || net=(--network "${STACK_NAME}_backend")
   m="$(manager_name)"
@@ -309,7 +312,7 @@ psql_as() {
   fi
   [ -z "$DB_HOSTADDR" ] || conn="$conn hostaddr=$DB_HOSTADDR"
   { cat "$pwfile"; echo; cat; } | dk "$m" run --rm -i --cap-drop ALL --security-opt no-new-privileges:true "${net[@]}" "${mount[@]}" --entrypoint sh "$POSTGRES_IMAGE" \
-    -c 'IFS= read -r PGPASSWORD; export PGPASSWORD; exec psql -X -q -At -v ON_ERROR_STOP=1 "$0"' "$conn"
+    -c 'IFS= read -r PGPASSWORD; export PGPASSWORD; exec $1 "$0"' "$conn" "$tool"
 }
 
 cmd_prepare_db() {
@@ -423,7 +426,7 @@ cmd_all() {
 # ---- main ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 validate_inventory
 # The defaults of the stack (the passwords and keys it makes itself) are worked out before any step that needs them.
-case "${1:-}" in init|prepare|migrate|deploy|stack|logs|verify) resolve_defaults ;; esac
+case "${1:-}" in init|prepare|migrate|deploy|stack|logs|verify|backup|restore|upgrade) resolve_defaults ;; esac
 case "${1:-}:${2:-}" in
   init:*) shift; cmd_all "$@" ;;
   inventory:*) cmd_inventory ;;
@@ -438,6 +441,9 @@ case "${1:-}:${2:-}" in
   deploy:*) cmd_deploy ;;
   stack:*) gen_stack ;;
   logs:*) shift; cmd_logs "$@" ;;
+  backup:*) shift; cmd_backup "$@" ;;
+  restore:*) shift; cmd_restore "$@" ;;
+  upgrade:*) shift; cmd_upgrade "$@" ;;
   verify:*) cmd_verify_stack ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print } /^set / { exit }' "$0"; [ -z "${1:-}" ] || exit 2 ;;
 esac

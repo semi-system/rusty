@@ -503,3 +503,39 @@ cmd_verify_stack() {
   [ "$bad" = 0 ] || die "verify: a port does not answer as it should (./rusty-swarm logs edge, logs smtp-in ...)"
   echo "verify: the edge reaches the services and they accept it"
 }
+
+# ---- backup, restore, upgrade ----------------------------------------------------------------------------------------------------------------------------------------------------------------
+# A dump of the database with the login that stays yours (pg_dump -Fc, from a container on a node: the same road the services take) and the sealing key. The S3 bucket is not in it: it is yours
+# (or, with the default RustFS, the volume `s3data` on the node labelled s3=true): copy it the way you copy any bucket.
+# shellcheck disable=SC2120 # called without a directory by upgrade
+cmd_backup() { # [DIR]
+  local dir
+  dir="${1:-$STATE_DIR/backups}/$(date -u +%Y%m%dT%H%M%SZ)"
+  [ -r "$DB_ADMIN_PASSWORD_FILE" ] || die "backup: DB_ADMIN_PASSWORD_FILE is not readable"
+  ( umask 077; mkdir -p "$dir" )
+  ( umask 077; pg_tool_as "pg_dump -Fc --no-owner" "$DB_ADMIN_USER" "$DB_ADMIN_PASSWORD_FILE" < /dev/null > "$dir/rusty.dump" ) || { rm -rf "$dir"; die "backup: pg_dump failed"; }
+  [ -s "$dir/rusty.dump" ] || { rm -rf "$dir"; die "backup: the dump is empty"; }
+  [ ! -d "$STATE_DIR/keys" ] || ( umask 077; cp -R "$STATE_DIR/keys" "$dir/keys" )
+  echo "backup: $dir ($(wc -c < "$dir/rusty.dump") bytes of database, and the sealing key). The S3 bucket is not in it."
+}
+
+cmd_restore() { # DUMP-FILE: into the database of the inventory; the services should be stopped (docker stack rm rusty) while it runs
+  local f="${1:?usage: restore FILE (a rusty.dump made by backup)}"
+  [ -s "$f" ] || die "restore: $f is not a file"
+  [ -r "$DB_ADMIN_PASSWORD_FILE" ] || die "restore: DB_ADMIN_PASSWORD_FILE is not readable"
+  pg_tool_as "pg_restore --clean --if-exists --no-owner -d" "$DB_ADMIN_USER" "$DB_ADMIN_PASSWORD_FILE" < "$f" || die "restore: pg_restore reported errors (see above)"
+  echo "restore: done; run 'prepare db' (the roles' rights), 'migrate' and 'deploy'"
+}
+
+# A new release: unpack its kit over the same swarm.env and STATE_DIR and run this. A backup first (a migration is forward only: the way back is a restore), then the secrets and configs that
+# changed, the migration job (on the new image, before any service moves), then a rolling update that goes back by itself when a service does not come up.
+cmd_upgrade() {
+  local backup=1
+  while [ $# -gt 0 ]; do case "$1" in --no-backup) backup=0; shift ;; *) die "upgrade: unknown argument $1 (only --no-backup)" ;; esac; done
+  [ "$backup" = 0 ] || cmd_backup
+  cmd_prepare_secrets
+  cmd_prepare_configs
+  cmd_migrate
+  cmd_deploy
+  echo "upgrade: done"
+}
