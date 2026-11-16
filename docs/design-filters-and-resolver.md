@@ -47,3 +47,10 @@ All of it is added to `deploy/standalone` as optional compose profiles (`--profi
 * Greylisting (rspamd's greylist module needs Redis/Valkey; Valkey is already planned for sessions, so it can share an instance with a separate database number).
 * Training (Bayes) from users moving mail to Junk: needs the IMAP side and per-user storage; later.
 * An **authoritative** DNS server for the hosted domains (answering for tenants' zones) is a different and much bigger service; this document is only about the recursive resolver. Say if the authoritative one is wanted.
+
+## Inbound message checks and `[resolver]` (built)
+
+The inbound SMTP service checks SPF, DKIM and DMARC of the mail it receives when it has a resolver: `[resolver]` with an optional `nameserver = "host:port"` (the validating Unbound of the `filter`
+profile in the standalone stack; without `nameserver`, the system resolver). Without the section the checks are off, because the service in the standalone stack sits on private networks with no
+route out and has no DNS of its own. `./setup.sh --filter` writes `[resolver] nameserver = "10.78.0.3:53"` into its configuration. The results go into `Authentication-Results` and are inputs of
+rspamd. The delivery worker keeps its own `[outbound] nameserver`.

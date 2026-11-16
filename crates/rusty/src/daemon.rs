@@ -168,7 +168,14 @@ async fn build(
     // that lets a fresh submission skip the poll delay. Without it, submission refuses remote recipients.
     let wake = Wake::default();
     // The resolver stack serves the inbound checks (smtp-in) and the worker (outbound); no other service needs it.
-    let dns = if cfg.outbound.enabled && (runs(Role::SmtpIn) || runs(Role::Outbound)) { Some(DnsStack::from_config(&cfg.outbound, hostname)?) } else { None };
+    // `[resolver]` (the inbound service's own section) wins over `[outbound] nameserver` for the checks of inbound mail.
+    let dns = if cfg.outbound.enabled && (runs(Role::SmtpIn) || runs(Role::Outbound)) {
+        Some(DnsStack::from_nameserver(cfg.resolver.as_ref().and_then(|r| r.nameserver).or(cfg.outbound.nameserver), hostname)?)
+    } else if let Some(r) = cfg.resolver.as_ref().filter(|_| runs(Role::SmtpIn)) {
+        Some(DnsStack::from_nameserver(r.nameserver, hostname)?)
+    } else {
+        None
+    };
     let secrets = Arc::new(FileSecretSource::new());
     // The scanners of the inbound listener (`[filter]`): the virus scan first (a virus is refused before anything else is asked), then the spam scorer.
     let mut inbound_filters: Vec<Arc<dyn rusty_smtp::filter::InboundFilter>> = Vec::new();
