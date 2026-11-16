@@ -103,10 +103,15 @@ blk_blob() {
 blk_unseal() { printf '[unsealing]\nkey_files = ["/etc/rusty-keys/unseal.key"]\n\n'; }
 blk_tls() { printf '[tls]\ncert_file = "/etc/rusty-tls/cert.pem"\nkey_file = "/etc/rusty-tls/key.pem"\n\n'; }
 blk_metrics() { printf '[metrics]\nlisten = "0.0.0.0:9100"\nallowed_hosts = ["tasks.admin", "admin"]\n\n'; }
+# The inbound listeners hold messages in memory: their budget follows the container's limit (limits.sh).
+blk_limits() { local v; v="$(inflight_of "$1")"; [ -z "$v" ] || printf '[limits]
+inflight_message_mib = %s
+
+' "$v"; }
 head_common() { printf 'hostname = "%s"\nblob_dir = "/var/lib/rusty/blobs"\n\n' "$MAIL_HOST"; }
 
-conf_smtp_in() { head_common; printf '[smtp]\nlisten_25 = "0.0.0.0:2525"\nproxy_protocol = true\ntrusted_proxies = ["127.0.0.1/32"]\ntrusted_proxy_hosts = ["tasks.edge", "edge"]\n\n'; blk_tls; blk_unseal; blk_blob; blk_store smtp_in; blk_metrics; }
-conf_submission() { head_common; printf '[smtp]\nlisten_587 = "0.0.0.0:5587"\nlisten_465 = "0.0.0.0:4465"\nproxy_protocol = true\ntrusted_proxies = ["127.0.0.1/32"]\ntrusted_proxy_hosts = ["tasks.edge", "edge"]\n\n[outbound]\npublic_ips = ["%s"]\n\n' "$(manager_public_ip)"; blk_tls; blk_unseal; blk_blob; blk_store submission; blk_metrics; }
+conf_smtp_in() { head_common; printf '[smtp]\nlisten_25 = "0.0.0.0:2525"\nproxy_protocol = true\ntrusted_proxies = ["127.0.0.1/32"]\ntrusted_proxy_hosts = ["tasks.edge", "edge"]\n\n'; blk_tls; blk_unseal; blk_blob; blk_store smtp_in; blk_limits smtp-in; blk_metrics; }
+conf_submission() { head_common; printf '[smtp]\nlisten_587 = "0.0.0.0:5587"\nlisten_465 = "0.0.0.0:4465"\nproxy_protocol = true\ntrusted_proxies = ["127.0.0.1/32"]\ntrusted_proxy_hosts = ["tasks.edge", "edge"]\n\n[outbound]\npublic_ips = ["%s"]\n\n' "$(manager_public_ip)"; blk_tls; blk_unseal; blk_blob; blk_store submission; blk_limits submission; blk_metrics; }
 conf_imap() { head_common; printf '[imap]\nlisten_143 = "0.0.0.0:1143"\nlisten_993 = "0.0.0.0:1993"\nproxy_protocol = true\ntrusted_proxies = ["127.0.0.1/32"]\ntrusted_proxy_hosts = ["tasks.edge", "edge"]\n\n'; blk_tls; blk_unseal; blk_blob; blk_store imap; blk_metrics; }
 conf_outbound() { head_common; printf '[outbound]\ndkim_dir = "/var/lib/rusty/dkim"\npublic_ips = ["%s"]\n\n' "$(manager_public_ip)"; blk_unseal; blk_blob; blk_store outbound; blk_metrics; }
 conf_gc() { head_common; printf 'gc_grace_seconds = 604800\n\n[dns_check]\nenabled = true\n\n'; blk_unseal; blk_blob; blk_store gc; blk_metrics; }
@@ -183,7 +188,7 @@ gen_db_service() {
   printf '    environment:\n      POSTGRES_DB: %s\n      POSTGRES_PASSWORD_FILE: /run/secrets/pg_postgres\n      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --data-checksums"\n' "$DB_NAME"
   printf '    command: [postgres, -c, ssl=on, -c, ssl_cert_file=/run/secrets/db_server_crt, -c, ssl_key_file=/run/secrets/db_server_key, -c, ssl_min_protocol_version=TLSv1.3, -c, hba_file=/etc/postgresql-hba/pg_hba.conf]\n'
   printf '    volumes:\n      - pgdata:/var/lib/postgresql\n'
-  y_deploy 1 'node.labels.db == true' stop-first | sed 's/rollback_config: { parallelism: 1, order: stop-first }/rollback_config: { parallelism: 1, order: stop-first }/'
+  y_deploy 1 "node.labels.db == true" stop-first db
   printf '    secrets:\n'
   y_secret pg_postgres pg_postgres 0
   y_secret db_server_crt db_server_crt 999
@@ -197,12 +202,37 @@ gen_s3_service() {
   printf '  s3:\n    image: %s\n    read_only: true\n    cap_drop: [ALL]\n    command: ["/data"]\n' "$(lock_ref 'rustfs/rustfs:latest')"
   printf '    environment:\n      RUSTFS_ACCESS_KEY_FILE: /run/secrets/s3_access\n      RUSTFS_SECRET_KEY_FILE: /run/secrets/s3_secret\n'
   printf '    volumes:\n      - s3data:/data\n      - type: tmpfs\n        target: /logs\n        tmpfs: { mode: 1777 }\n      - type: tmpfs\n        target: /tmp\n        tmpfs: { mode: 1777 }\n'
-  y_deploy 1 'node.labels.s3 == true' stop-first
+  y_deploy 1 "node.labels.s3 == true" stop-first s3
   printf '    secrets:\n'
   y_secret s3_access s3_access 0
   y_secret s3_secret s3_secret 0
   printf '    networks:\n      - backend\n'
 }
+
+# ---- resource limits -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# limits.sh of the standalone stack divides 80 % of the memory and CPUs of the Ready nodes (read from the Manager) over the services by weight; its answer goes into `deploy.resources` and, for the
+# inbound listeners, into `[limits] inflight_message_mib` (which must stay well under the container's memory). Run again after nodes join or leave.
+LIMITS_FILE=""
+gen_limits() {
+  local mem cpus id st av n m profiles="" reps="" s
+  mem=0; cpus=0
+  while read -r id st av; do
+    [ "$st" = Ready ] && [ "$av" = Active ] || continue
+    read -r n m < <(sw node inspect "$id" --format '{{.Description.Resources.NanoCPUs}} {{.Description.Resources.MemoryBytes}}')
+    cpus=$((cpus + n)); mem=$((mem + m))
+  done < <(sw node ls --format '{{.ID}} {{.Status}} {{.Availability}}')
+  [ "$mem" -gt 0 ] || die "limits: no Ready and Active node"
+  [ "$DB_IN_STACK" = 1 ] || profiles="nodb"
+  [ "$S3_IN_STACK" = 0 ] || profiles="${profiles:+$profiles,}s3"
+  if [ "$REPLICAS_DEFAULT" != 1 ]; then for s in smtp-in submission imap outbound gc admin; do reps="${reps:+$reps,}$s=$REPLICAS_DEFAULT"; done; fi
+  LIMITS_FILE="$STATE_DIR/stack/limits.yaml"
+  bash "$HERE/../standalone/limits.sh" --total-mem-mib "$((mem / 1048576))" --total-cpus "$(awk -v n="$cpus" 'BEGIN { printf "%.2f", n / 1000000000 }')" ${profiles:+--profiles "$profiles"} ${reps:+--replicas "$reps"} \
+    --out "$LIMITS_FILE" > "$STATE_DIR/stack/limits.txt" || { cat "$STATE_DIR/stack/limits.txt" >&2; die "limits: the services do not fit in the nodes (see above)"; }
+}
+# The memory ceiling of the inbound listeners' in-flight messages for a service, from the table limits.sh printed (empty when there is none).
+inflight_of() { awk -v n="$1" '$1 == n { for (i = 1; i <= NF; i++) if ($i == "<=") print $(i + 1) }' "$STATE_DIR/stack/limits.txt" 2>/dev/null; }
+# The `resources` lines of a service in the file limits.sh wrote (nothing when the service has none).
+y_limits() { [ -s "$STATE_DIR/stack/limits.yaml" ] && awk -v n="  $1:" '$0 == n { f = 1; next } f && /limits:/ { sub(/^ +/, ""); print "      resources:"; print "        " $0; exit } f && /^  [a-z]/ { exit }' "$STATE_DIR/stack/limits.yaml"; return 0; }
 
 # ---- prepare secrets and prepare configs --------------------------------------------------------------------------------------------------------------------------------------------------
 require_stack_inputs() {
@@ -243,6 +273,7 @@ cmd_prepare_configs() {
   [ -s "$STATE_DIR/keys/seal.pub" ] || die "no sealing key yet: run 'prepare secrets' first"
   local d="$STATE_DIR/stack/etc" s
   mkdir -p "$d"; chmod 0700 "$STATE_DIR/stack" "$d"
+  gen_limits
   for s in smtp_in submission imap outbound gc admin migrate; do
     ( umask 077; "conf_$s" > "$d/$s.toml" )
     ensure_config "$s" "$d/$s.toml"
@@ -290,16 +321,17 @@ load_names() { # the versioned names, from the manager
 y_service_common() { # NAME IMAGE REPLICAS
   printf '  %s:\n    image: %s\n    read_only: true\n    cap_drop: [ALL]\n    stop_grace_period: 45s\n    volumes:\n      - type: tmpfs\n        target: /tmp\n' "$1" "$2"
 }
-y_deploy() { # REPLICAS [CONSTRAINT] [ORDER]
+y_deploy() { # REPLICAS [CONSTRAINT] [ORDER] [SERVICE: its resource limits]
   printf '    deploy:\n      replicas: %s\n      restart_policy: { condition: any, delay: 5s }\n      update_config: { parallelism: 1, order: %s, delay: 10s, monitor: 20s, failure_action: rollback }\n      rollback_config: { parallelism: 1, order: %s }\n' "$1" "${3:-start-first}" "${3:-start-first}"
   [ -z "${2:-}" ] || printf '      placement:\n        constraints: ["%s"]\n' "$2"
+  [ -z "${4:-}" ] || y_limits "$4"
 }
 y_hosts() { [ -z "$DB_HOSTADDR" ] || printf '    extra_hosts:\n      - "%s:%s"\n' "$DB_HOST" "$DB_HOSTADDR"; }
 
 gen_rusty_service() { # NAME ROLE-OF-DB NETWORKS(space) [TLS] [UNSEAL] [CONSTRAINT]
   local name="$1" role="$2" nets="$3" tls="${4:-}" unseal="${5:-}" constraint="${6:-}" n key
   y_service_common "$name" "$(rusty_image "$name")"
-  y_deploy "$REPLICAS_DEFAULT" "$constraint"
+  y_deploy "$REPLICAS_DEFAULT" "$constraint" start-first "$name"
   y_hosts
   printf '    secrets:\n'
   y_secret "pg_$role"
@@ -315,6 +347,7 @@ gen_rusty_service() { # NAME ROLE-OF-DB NETWORKS(space) [TLS] [UNSEAL] [CONSTRAI
 }
 
 gen_stack() {
+  gen_limits
   load_names
   {
     printf 'version: "3.9"\nservices:\n'
@@ -326,7 +359,7 @@ gen_stack() {
       printf '    sysctls: { net.ipv4.ip_unprivileged_port_start: 0 }\n    ports:\n'
       local p
       for p in 25 80 143 443 465 587 993; do printf '      - { target: %s, published: %s, protocol: tcp, mode: host }\n' "$p" "$p"; done
-      y_deploy 1 'node.role == manager' stop-first
+      y_deploy 1 "node.role == manager" stop-first edge
       printf '    secrets:\n'
       y_secret edge_mail_pem /var/lib/haproxy/certs/mail.pem 99
       y_secret edge_admin_pem /var/lib/haproxy/certs/admin.pem 99
