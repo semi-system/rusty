@@ -2,7 +2,7 @@
 # A throw-away Docker Swarm cluster on one machine, for testing the swarm deployment (docs/design-swarm.md, section 3b): the nodes are privileged `docker:dind` containers on one Docker network.
 # Run it where Docker runs (the WSL2 Ubuntu of the owner's PC, or any Linux with Docker).
 #
-#   ./local-cluster.sh up [--workers N]        create the Manager `rusty-m1` and N workers (default 2) `rusty-w1`..., join them, set the labels
+#   ./local-cluster.sh up [--workers N]        create the Manager `rusty-m1` (a swarm of one node: the default, and what the project tests on) and, with --workers, N more nodes `rusty-w1`... joined to it
 #   ./local-cluster.sh status                  the nodes, their labels and the ports the Manager publishes to this machine
 #   ./local-cluster.sh verify [--encrypted]    prove the data path: a task on every node, `tasks.<service>` lists them all, a ping crosses nodes (an encrypted overlay with --encrypted)
 #   ./local-cluster.sh node-stop NAME          stop a node (a node loss) / node-start NAME starts it again
@@ -15,7 +15,7 @@
 #   ./local-cluster.sh down [--purge]          remove the nodes and the network (--purge also removes their volumes)
 #
 # The Manager publishes the edge's ports to this machine on high ports (10025 for 25, 10080 for 80, 10143, 10443, 10465, 10587, 10993): the edge is a host-mode task on the Manager, its ports exist inside
-# `rusty-m1`. Labels: `outbound=true` on the first worker and `av=true` on the second (the first when there is only one), standing in for the real roles.
+# `rusty-m1`. Labels: `outbound=true` and `av=true` on the Manager when there is no worker (it then runs everything); with workers, `outbound=true` on the first and `av=true` on the second (the first when there is only one), standing in for the real roles.
 # What a local cluster cannot prove (the encrypted overlay needs IPsec states the nested nodes may not create, real firewalls, real network timing) is for the run on real machines.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -40,14 +40,14 @@ start_node() { # name, extra docker run arguments...
 }
 
 cmd_up() {
-  local workers=2
+  local workers=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --workers) workers="${2:-}"; shift 2 ;;
       *) die "up: unknown argument $1" ;;
     esac
   done
-  [[ "$workers" =~ ^[1-9]$ ]] || die "--workers is a number from 1 to 9"
+  [[ "$workers" =~ ^[0-9]$ ]] || die "--workers is a number from 0 to 9"
   need_docker
   docker network inspect "$NET" >/dev/null 2>&1 || docker network create "$NET" >/dev/null
   local pubs=(); for p in "${EDGE_PORTS[@]}"; do pubs+=(-p "10$(printf '%03d' "$p"):$p"); done
@@ -71,8 +71,11 @@ cmd_up() {
       echo "local-cluster: $w joined"
     fi
   done
-  mgr node update --label-add outbound=true rusty-w1 >/dev/null
-  if [ "$workers" -ge 2 ]; then mgr node update --label-add av=true rusty-w2 >/dev/null; else mgr node update --label-add av=true rusty-w1 >/dev/null; fi
+  local ob="$MGR" av="$MGR"
+  if [ "$workers" -ge 1 ]; then ob=rusty-w1; av=rusty-w1; fi
+  if [ "$workers" -ge 2 ]; then av=rusty-w2; fi
+  mgr node update --label-add outbound=true "$ob" >/dev/null
+  mgr node update --label-add av=true "$av" >/dev/null
   cmd_status
 }
 
