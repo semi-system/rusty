@@ -18,7 +18,7 @@ pin() { awk -v n="$1" '$1 == n { print $2 }' "$ROOT/deploy/images.lock"; }
 PG_IMG="$(pin postgres:18)"; HA_IMG="$(pin haproxy:3.4.7-alpine3.24)"
 [ -n "$PG_IMG" ] && [ -n "$HA_IMG" ] || { echo "setup: images are not pinned in deploy/images.lock" >&2; exit 1; }
 
-STATE="${RUSTY_STATE:-$HOME/rusty-state}"; MAIL_HOST=""; ADMIN_HOST=""; CONTACT=""; PUBLIC_IP=""; STAGING=0; SELF=0; FILTER=0; BUILD=0; TAG=main; REGISTRY=ghcr.io/semi-system; ALLOW=()
+STATE="${RUSTY_STATE:-$HOME/rusty-state}"; MAIL_HOST=""; ADMIN_HOST=""; CONTACT=""; PUBLIC_IP=""; STAGING=0; SELF=0; FILTER=0; BUILD=0; MAX_REPLICAS=4; TAG=main; REGISTRY=ghcr.io/semi-system; ALLOW=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --mail-host) MAIL_HOST="${2:-}"; shift 2 ;;
@@ -30,6 +30,7 @@ while [ $# -gt 0 ]; do
     --self-signed) SELF=1; shift ;;
     --filter) FILTER=1; shift ;;
     --build) BUILD=1; shift ;;
+    --max-replicas) MAX_REPLICAS="${2:-}"; shift 2 ;;
     --image-tag) TAG="${2:-}"; shift 2 ;;
     --registry) REGISTRY="${2:-}"; shift 2 ;;
     --state-dir) STATE="${2:-}"; shift 2 ;;
@@ -37,6 +38,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 die() { echo "setup: $*" >&2; exit 2; }
+[[ "$MAX_REPLICAS" =~ ^[1-9][0-9]?$ ]] || die "--max-replicas must be a number from 1 to 99 (the replicas of a service the database allows)"
 [[ "$TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || die "--image-tag must be a registry tag (a release such as 1.2.3, sha-abcdef0, or main)"
 [[ "$REGISTRY" =~ ^[a-z0-9.:/_-]+$ ]] || die "--registry must be a registry path such as ghcr.io/semi-system"
 host_re='^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
@@ -99,6 +101,8 @@ SEAL_PUBLIC="$(mail_ctl seal show /etc/rusty-keys/unseal.key | grep -o 'rusty-se
 [ -n "$SEAL_PUBLIC" ] || die "could not read the sealing public key"
 
 for f in smtp-in.toml submission.toml imap.toml outbound.toml gc.toml ctl.toml admin.toml haproxy.cfg pg_hba.conf; do render $f; done
+# The database allow-list names every replica (rusty-<service>-1, -2, ...): a #REPLICAS line becomes one line per number up to --max-replicas.
+awk -v max="$MAX_REPLICAS" '/^#REPLICAS / { l = substr($0, 11); for (n = 1; n <= max; n++) { o = l; gsub(/@N@/, n, o); print o } next } { print }' "$STATE/etc/pg_hba.conf" > "$STATE/etc/pg_hba.conf.new" && mv "$STATE/etc/pg_hba.conf.new" "$STATE/etc/pg_hba.conf"
 # Self-signed certificates for the two names (made once; a name change makes new ones): ECDSA P-256, with the names as subject alternative names. HAProxy loads
 # a file holding the key then the certificate; the mail services read the certificate and the key of the mail name from state/tls.
 if [ "$SELF" = 1 ]; then

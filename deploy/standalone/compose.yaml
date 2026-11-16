@@ -89,8 +89,8 @@ services:
       - mail-data:/var/lib/rusty
     networks:
       db: {}
-      app: { ipv4_address: 10.77.0.10 }
-      filter: { ipv4_address: 10.78.0.6 }
+      app: {}
+      filter: {}
     depends_on:
       migrate: { condition: service_completed_successfully }
       blobs-init: { condition: service_completed_successfully }
@@ -110,7 +110,7 @@ services:
       - mail-data:/var/lib/rusty
     networks:
       db: {}
-      app: { ipv4_address: 10.77.0.12 }
+      app: {}
     depends_on:
       migrate: { condition: service_completed_successfully }
       blobs-init: { condition: service_completed_successfully }
@@ -130,7 +130,7 @@ services:
       - mail-data:/var/lib/rusty
     networks:
       db: {}
-      app: { ipv4_address: 10.77.0.13 }
+      app: {}
     depends_on:
       migrate: { condition: service_completed_successfully }
       blobs-init: { condition: service_completed_successfully }
@@ -183,7 +183,7 @@ services:
     volumes:
       - ./filter/unbound.conf:/etc/unbound/unbound.conf:ro
     networks:
-      filter: { ipv4_address: 10.78.0.3 }
+      filter: { ipv4_address: 10.78.0.3 }   # rspamd takes its nameserver as an address: the resolver keeps one
       egress: {}
 
   rspamd:
@@ -194,7 +194,7 @@ services:
     volumes:
       - ./filter/rspamd:/etc/rspamd/local.d:ro
     networks:
-      filter: { ipv4_address: 10.78.0.4 }
+      filter: {}
     depends_on: [resolver]
 
   clamd:
@@ -212,7 +212,7 @@ services:
       - ./filter/clamd.conf:/etc/clamav/clamd.conf:ro
       - clamdb:/var/lib/clamav
     networks:
-      filter: { ipv4_address: 10.78.0.5 }
+      filter: {}
     healthcheck:
       # The image's own check pings `localhost`, which resolves to ::1 here while clamd listens on IPv4 only.
       test: [CMD-SHELL, "[ \"$$(echo PING | nc 127.0.0.1 3310)\" = PONG ]"]
@@ -262,7 +262,7 @@ services:
       - ${RUSTY_STATE:?run ./setup.sh first}/etc:/etc/rusty:ro
     networks:
       db: {}
-      app: { ipv4_address: 10.77.0.11 }
+      app: {}
     depends_on:
       migrate: { condition: service_completed_successfully }
 
@@ -279,7 +279,7 @@ services:
       - ${RUSTY_STATE:?run ./setup.sh first}/edge:/var/lib/haproxy
       - ${RUSTY_STATE:?run ./setup.sh first}/run:/run/ha
     networks:
-      app: { ipv4_address: 10.77.0.2 }
+      app: { ipv4_address: 10.77.0.2 }   # the edge keeps its address: it owns the host ports (one per host), and the services accept the PROXY header and the admin web connections from it only
       egress: {}
 
   # Copies the certificate the edge obtained to the files the mail services read for STARTTLS (docs/acme.md). Runs as the mail uid, no network.

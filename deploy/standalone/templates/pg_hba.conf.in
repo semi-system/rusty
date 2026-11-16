@@ -11,13 +11,13 @@ hostssl  rusty     postgres        rusty-db-init-1.rusty_db   scram-sha-256
 # migrations
 hostssl  rusty     rusty_migrator  rusty-migrate-1.rusty_db   scram-sha-256
 # the admin web
-hostssl  rusty     rusty_admin     rusty-admin-1.rusty_db     scram-sha-256
-# one role per mail service; the blob directory job runs as the collector
-hostssl  rusty     rusty_smtp_in  rusty-smtp-in-1.rusty_db  scram-sha-256
-hostssl  rusty     rusty_submission  rusty-submission-1.rusty_db  scram-sha-256
-hostssl  rusty     rusty_imap  rusty-imap-1.rusty_db  scram-sha-256
-hostssl  rusty     rusty_outbound  rusty-outbound-1.rusty_db  scram-sha-256
-hostssl  rusty     rusty_gc  rusty-gc-1.rusty_db  scram-sha-256
+#REPLICAS hostssl  rusty     rusty_admin     rusty-admin-@N@.rusty_db     scram-sha-256
+# one role per mail service, a line for every replica number up to --max-replicas (setup.sh expands the #REPLICAS lines); the blob directory job runs as the collector
+#REPLICAS hostssl  rusty     rusty_smtp_in  rusty-smtp-in-@N@.rusty_db  scram-sha-256
+#REPLICAS hostssl  rusty     rusty_submission  rusty-submission-@N@.rusty_db  scram-sha-256
+#REPLICAS hostssl  rusty     rusty_imap  rusty-imap-@N@.rusty_db  scram-sha-256
+#REPLICAS hostssl  rusty     rusty_outbound  rusty-outbound-@N@.rusty_db  scram-sha-256
+#REPLICAS hostssl  rusty     rusty_gc  rusty-gc-@N@.rusty_db  scram-sha-256
 hostssl  rusty     rusty_app       rusty-migrate-1.rusty_db     scram-sha-256
 hostssl  rusty     rusty_gc  rusty-blobs-init-1.rusty_db  scram-sha-256
 # the operator's tools keep the operator role (rustyctl, and the migration job's second login): `docker compose run --rm --name rusty-ctl-1 ctl ...` (a name has to be given: the default one is random)

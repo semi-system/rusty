@@ -15,8 +15,8 @@ trusted_proxies = ["10.77.0.2/32", "127.0.0.1/32"]
 
 # The scanners of the `filter` profile (./setup.sh --filter): the virus scan first, then the spam scorer. The virus scan holds mail while clamd is down (451); the spam scorer lets it through.
 #FILTER [filter]
-#FILTER clamd_addr = "10.78.0.5:3310"
-#FILTER rspamd_url = "http://10.78.0.4:11333"
+#FILTER clamd_addr = "clamd:3310"
+#FILTER rspamd_url = "http://rspamd:11333"
 
 # A tenant's bucket keys are sealed to this service's key (docs/blob-stores.md): every service that opens message bodies holds the private half.
 [unsealing]

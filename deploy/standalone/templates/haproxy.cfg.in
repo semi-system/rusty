@@ -12,6 +12,17 @@ global
 #ACME    # The runtime socket cert-sync reads the certificate from: group-only access (the sidecar joins the group).
 #ACME    stats socket /run/ha/admin.sock mode 660 level admin
 
+# Docker's embedded resolver: the names of the services, and every replica of one.
+resolvers docker
+    nameserver dns 127.0.0.11:53
+    resolve_retries 3
+    timeout resolve 1s
+    timeout retry 1s
+    hold valid 5s
+    hold other 5s
+    hold nx 3s
+    accepted_payload_size 4096
+
 defaults
     log global
     mode tcp
@@ -79,23 +90,24 @@ frontend admin_https
     http-request deny deny_status 403 unless admin_net
     default_backend be_admin
 
-# The services by their fixed addresses on the private network the edge shares with them (compose.yaml): a name could resolve to another network the edge is
-# on, and the PROXY header is only accepted from the edge's address on this one.
+# The services by NAME, through Docker's resolver, so replicas (`docker compose up -d --scale smtp-in=3`) join and leave by themselves: each A record of the name is one server of the
+# template, re-resolved every few seconds, and a replica that does not accept a connection is taken out (`check`). The edge shares only the `app` network with them, so the names
+# resolve to addresses on it, and the PROXY header is accepted from the edge's address on this network only (the edge is the one container with a fixed address).
 backend be_smtp
-    server smtp-in 10.77.0.10:2525 send-proxy-v2
+    server-template smtp-in 1-8 smtp-in:2525 resolvers docker init-addr none check inter 5s send-proxy-v2
 
 backend be_submission
-    server submission 10.77.0.12:5587 send-proxy-v2
+    server-template submission 1-8 submission:5587 resolvers docker init-addr none check inter 5s send-proxy-v2
 
 backend be_smtps
-    server submission 10.77.0.12:4465 send-proxy-v2
+    server-template submission 1-8 submission:4465 resolvers docker init-addr none check inter 5s send-proxy-v2
 
 backend be_imap
-    server imap 10.77.0.13:1143 send-proxy-v2
+    server-template imap 1-8 imap:1143 resolvers docker init-addr none check inter 5s send-proxy-v2
 
 backend be_imaps
-    server imap 10.77.0.13:1993 send-proxy-v2
+    server-template imap 1-8 imap:1993 resolvers docker init-addr none check inter 5s send-proxy-v2
 
 backend be_admin
     mode http
-    server admin 10.77.0.11:8080 check
+    server-template admin 1-4 admin:8080 resolvers docker init-addr none check inter 5s
