@@ -164,6 +164,10 @@ attach_ext() { # the nodes join the external network (a node that is not there y
 
 ext_up() {
   need_docker
+  # EXT_PUBLISH=1: the two services are also published on this machine's ports 5432 and 9000. Containers on the default bridge network (a CI runner with no nodes attached) cannot reach the
+  # address of the user-defined network `rusty-ext`, but they can reach the host's own address.
+  local PUB_PG=() PUB_S3=()
+  if [ "${EXT_PUBLISH:-0}" = 1 ]; then PUB_PG=(-p 5432:5432); PUB_S3=(-p 9000:9000); fi
   [ -n "$PG_IMAGE" ] && [ -n "$S3_IMAGE" ] || die "postgres:18 and rustfs/rustfs must be pinned in deploy/images.lock"
   umask 077; mkdir -p "$EXT_DIR"; chmod 0700 "$EXT_DIR"
   docker network inspect "$EXT_NET" >/dev/null 2>&1 || docker network create --subnet "$EXT_SUBNET" "$EXT_NET" >/dev/null
@@ -184,7 +188,7 @@ ext_up() {
   # The password is read from a file by the image's entrypoint; the file is not in the environment of the container.
   sed -n 's/^PGPASSWORD=//p' "$EXT_DIR/pg.env" > "$EXT_DIR/pg.pw"; chmod 0644 "$EXT_DIR/pg.pw"
   if ! docker inspect "$PG_NAME" >/dev/null 2>&1; then
-    docker run -d --name "$PG_NAME" --network "$EXT_NET" --ip "$PG_IP" --restart unless-stopped \
+    docker run -d --name "$PG_NAME" --network "$EXT_NET" --ip "$PG_IP" --restart unless-stopped "${PUB_PG[@]}" \
       -e POSTGRES_PASSWORD_FILE=/run/pg.pw -e POSTGRES_DB=rusty -e POSTGRES_INITDB_ARGS="--auth-host=scram-sha-256 --data-checksums" \
       -v rusty-ext-pg-data:/var/lib/postgresql -v rusty-ext-pg-tls:/tls:ro -v "$EXT_DIR/pg.pw:/run/pg.pw:ro" -v "$EXT_DIR/pg_hba.conf:/etc/pg_hba.conf:ro" \
       "$PG_IMAGE" postgres -c listen_addresses='*' -c ssl=on -c ssl_cert_file=/tls/server.crt -c ssl_key_file=/tls/server.key -c ssl_min_protocol_version=TLSv1.3 -c hba_file=/etc/pg_hba.conf >/dev/null
@@ -198,7 +202,7 @@ ext_up() {
   # The secret key alone in a file (mode 0600): rusty-swarm reads a key from a file, never from the environment.
   ( umask 077; printf '%s' "$secret" > "$EXT_DIR/s3.secret" )
   if ! docker inspect "$S3_NAME" >/dev/null 2>&1; then
-    docker run -d --name "$S3_NAME" --network "$EXT_NET" --ip "$S3_IP" --restart unless-stopped \
+    docker run -d --name "$S3_NAME" --network "$EXT_NET" --ip "$S3_IP" --restart unless-stopped "${PUB_S3[@]}" \
       -e RUSTFS_ACCESS_KEY="$key" -e RUSTFS_SECRET_KEY="$secret" -v rusty-ext-s3-data:/data --tmpfs /logs:mode=1777 --tmpfs /tmp:mode=1777 \
       "$S3_IMAGE" /data >/dev/null
   else
