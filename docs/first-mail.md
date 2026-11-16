@@ -42,7 +42,7 @@ docker compose logs admin | tail -3       # one line: a 64-character setup token
 ```
 
 Open `https://admin.example.org/` from the allowed network, enter the token and the address and password of the first platform administrator. The page is gone for good
-once an administrator exists. Lost access? `docker compose run --rm ctl admin grant <address>`.
+once an administrator exists. Lost access? `docker compose run --rm --name rusty-ctl-1 ctl admin grant <address>`.
 
 ## 4. A domain, an account, DNS
 
@@ -51,9 +51,9 @@ shows (MX, SPF, DKIM, DMARC, the domain-ownership record). The page checks them 
 `gc.toml`) the gc service queues a check of every domain once a day and shows drift.
 
 ```sh
-docker compose run --rm ctl domain add example.org
-printf '%s' 'a-long-password' | docker compose run --rm -T ctl account add me@example.org --password-stdin
-docker compose run --rm ctl domain dns example.org      # the records to publish
+docker compose run --rm --name rusty-ctl-1 ctl domain add example.org
+printf '%s' 'a-long-password' | docker compose run --rm -T --name rusty-ctl-1 ctl account add me@example.org --password-stdin
+docker compose run --rm --name rusty-ctl-1 ctl domain dns example.org      # the records to publish
 ```
 
 ## 5. Use it
