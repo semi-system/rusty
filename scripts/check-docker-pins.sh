@@ -32,7 +32,11 @@ while IFS= read -r line; do
   for i in "${!w[@]}"; do
     case "${w[$i]}" in [Aa][Ss]) name="${w[$((i + 1))]:-}" ;; esac
   done
-  if [ "$ref" != scratch ] && ! grep -qxF "$ref" <<<"$stages"; then
+  if [ "$ref" = '${SERVICE}' ]; then
+    # The selector stage: `ARG SERVICE=<stage>` before the first FROM must default to a stage of this file (never to an outside image).
+    def="$(sed -n 's/^ARG SERVICE=\(.*\)$/\1/p' "$DOCKERFILE" | head -1)"
+    grep -qxF "$def" <<<"$stages" || bad "$DOCKERFILE: ARG SERVICE defaults to '$def', which is not a stage of the file"
+  elif [ "$ref" != scratch ] && ! grep -qxF "$ref" <<<"$stages"; then
     if [[ "$ref" =~ @sha256:([0-9a-f]{64})$ ]]; then
       in_lock "${BASH_REMATCH[1]}" || bad "$DOCKERFILE: digest of '$ref' is not in $LOCK"
     else

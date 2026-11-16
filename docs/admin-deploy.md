@@ -1,7 +1,7 @@
 # Deploying the admin web
 
 The admin web is **one service, one image**: `docker build --target admin -f deploy/docker/Dockerfile .` makes `rusty-admin`, a static binary with the API and the front end embedded
-(a distroless image, numeric non-root user, no shell, no volume but `/etc/rusty`). It holds no mail data; it needs the database and, to seal secrets, the **public** sealing key.
+(a baseless-static image, numeric non-root user, no shell, no volume but `/etc/rusty`). It holds no mail data; it needs the database and, to seal secrets, the **public** sealing key.
 
 ## 1. Configuration
 

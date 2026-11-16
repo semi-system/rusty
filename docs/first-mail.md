@@ -23,8 +23,8 @@ cd deploy/standalone
 For a LAN test host: `./setup.sh --self-signed --mail-host mail.lan --admin-host admin.lan --public-ip 192.168.1.10 --admin-allow 192.168.1.0/24`.
 
 `setup.sh` makes, under `~/rusty-state` (`--state-dir` or `RUSTY_STATE` to change it; it lives outside the repository on purpose: an image build reads the repository, and it cannot read what belongs to the service users): the database passwords (one for each of the four database roles), a private CA and certificate for the database link (clients verify it),
-the sealing key pair (the private half stays with the services that open message bodies), and the configuration file of every service (and one for `rustyctl`) from `templates/`. It builds the images (`docker compose build`,
-BuildKit needed; `SKIP_BUILD=1` when they already exist). Nothing is sent anywhere. Run it again to change a setting: existing secrets and keys are kept.
+the sealing key pair (the private half stays with the services that open message bodies), and the configuration file of every service (and one for `rustyctl`) from `templates/`. It pulls the images from the registry (`docker compose pull`; `--image-tag 1.2.3` picks a release, the default is `main`; `--build` builds them from the checkout instead, BuildKit needed;
+`SKIP_BUILD=1` when they already exist). Nothing is sent anywhere. Run it again to change a setting: existing secrets and keys are kept.
 
 ## 2. Start it
 
@@ -65,7 +65,7 @@ docker compose run --rm ctl domain dns example.org      # the records to publish
 ## 6. Day two
 
 * Backups: `scripts/backup.sh` / `restore.sh` (database first, then blobs), `docs/backup.md`.
-* Upgrade: pull, `./setup.sh ...` again, `docker compose build && docker compose up -d` (the migration runs first).
+* Upgrade: `./setup.sh ... --image-tag <new version>` again (it pulls), then `docker compose up -d` (the migration runs first).
 * Certificates (ACME mode): the edge renews them itself; `cert-sync` copies the certificate for the STARTTLS ports and `cert-keep-*` keeps the files so a restarted edge does not
   order new ones (`docs/acme.md`). Self-signed mode: valid 825 days; run `setup.sh` again after deleting `state/edge/certs/*` and `state/tls/*` to make new ones.
 * Sessions of the admin web live in the admin process (a restart signs everyone out); add `[valkey]` to `admin.toml` to keep them in Valkey (`docs/admin-deploy.md`).

@@ -1,0 +1,18 @@
+# Development override: build the images from this checkout instead of pulling them from the registry.
+# `./setup.sh --build ...` writes COMPOSE_FILE=compose.yaml:compose.build.yaml into .env, so plain `docker compose build` and `up` use it. Production does not use this file.
+# Every image keeps the name compose.yaml gives it (registry/name:tag), so what is built here is what runs.
+services:
+  migrate:
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile }
+  smtp-in:
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: rusty-smtp-in }
+  submission:
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: rusty-submission }
+  imap:
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: rusty-imap }
+  outbound:
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: rusty-outbound }
+  gc:
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: rusty-gc }
+  admin:
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: admin }

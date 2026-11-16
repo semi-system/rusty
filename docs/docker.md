@@ -18,7 +18,7 @@ from `github.repository` (lower-cased for the registry). The crates and binaries
   as the C compiler and linker for the musl target (tarballs pinned by SHA-256 in the Dockerfile).
   Dependencies are resolved with `--locked`; `SOURCE_DATE_EPOCH` (the commit time) and
   `--remap-path-prefix` make the build reproducible as far as the toolchain allows.
-* **Final stage** `gcr.io/distroless/static-debian13:nonroot` (pinned by digest): CA certificates, no
+* **Final stage** `ghcr.io/semi-system/baseless-static` (the baseless base, pinned by digest in `deploy/images.lock`; linux/amd64 only for now): CA certificates, tzdata, no
   shell, no package manager. The process runs as numeric user `65532:65532`. State lives in two
   volumes: `/var/lib/rusty` (database, blobs, DKIM keys; mode 0700) and `/etc/rusty` (configuration and
   certificates). The root filesystem can be read-only.
@@ -244,3 +244,21 @@ What could not be verified:
 ## Spam and virus filters (the `filter` profile)
 
 `./setup.sh --filter ...` (with the usual arguments) adds a validating resolver (Unbound), rspamd, ClamAV (clamd) and its signature updater (freshclam) to the standalone stack, and writes a `[filter]` section into the inbound SMTP service's configuration. The scanners sit on the `filter` network (10.78.0.0/24), which has no route to the internet and no access to the database; only the resolver and freshclam also join `egress`. Inbound mail is scanned for viruses first (a message is held with 451 while clamd is down), then scored (a message gets through when rspamd is down). Spam goes to the Spam folder, virus mail is refused with 550. No greylisting: `greylist` in `filter/rspamd/actions.conf` is out of reach on purpose. The first start takes a few minutes while clamd waits for its first signatures. Design: docs/design-filters-and-resolver.md.
+
+## One image per service, published to ghcr
+
+The last stage of the Dockerfile is selected by the `SERVICE` build argument (default `rusty`, the multi-call mail image). CI builds one image per stage and publishes each to its own
+package, signs it (cosign, keyless), attaches an SBOM and scans it: `ghcr.io/semi-system/rusty` (multi-call, used by the one-shot jobs), `rusty-smtp-in`, `rusty-submission`,
+`rusty-imap`, `rusty-outbound`, `rusty-gc` and `rusty-admin`. Tags: `sha-<short>`, the branch name, and `1.2.3` / `1.2` for a release tag.
+
+A server never builds. `deploy/standalone/setup.sh` pulls (`docker compose pull`) the images of the tag in `.env` (`--image-tag 1.2.3`, default `main`; `--registry` for a mirror), and an
+upgrade is: set the new tag, `./setup.sh ...` again, `docker compose up -d` (the migration runs first). Verify an image before you run it:
+
+```sh
+cosign verify \
+  --certificate-identity-regexp '^https://github.com/semi-system/rusty/\.github/workflows/docker\.yml@' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/semi-system/rusty-smtp-in:1.2.3
+```
+
+For development, `./setup.sh --build ...` writes `COMPOSE_FILE=compose.yaml:compose.build.yaml` into `.env`: the same image names, built from the checkout.
