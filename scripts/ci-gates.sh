@@ -30,6 +30,7 @@ case "${1:-}" in
     bash scripts/check-docker-pins.sh
     bash scripts/check-prom-rules.sh
     bash scripts/tests/limits-gate.sh
+    bash scripts/tests/swarm-inventory.sh
     bash scripts/tests/backup-restore.sh
     ;;
   symbols)

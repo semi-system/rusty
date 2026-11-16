@@ -1,0 +1,236 @@
+#!/usr/bin/env bash
+# The deploy tool of the swarm form of Rusty Mail Server (docs/design-swarm.md, section 6). Run it from the operator's machine; it reaches every node of the inventory through a transport:
+#   ssh:USER@HOST      over SSH (a key; the node's `docker` must answer for that user)
+#   docker:CONTAINER   a node that is a container of this machine (the local test cluster, deploy/swarm/local-cluster.sh)
+#
+#   ./rusty-swarm [--env FILE] cluster check     what is wrong on the nodes (prints, changes nothing)
+#   ./rusty-swarm [--env FILE] cluster init      start the swarm on the Manager, join the workers, set the labels (each part is skipped when it is already done)
+#   ./rusty-swarm [--env FILE] cluster verify    nodes Ready and Active, and a throw-away overlay with one task per node: the tasks list each other, reach each other
+#                                                (an encrypted overlay when the inventory says ENCRYPTED=1)
+#
+# The inventory is a file of shell variables (default: swarm.env next to this script, or $RUSTY_SWARM_ENV); `local.env` is the one of the local test cluster. It is the operator's own file and is never
+# kept in the repository (swarm.env.example shows it):
+#   NODES=("name|transport|role|labels|public_address" ...)    role: manager or worker; labels: comma-separated `key=value` (may be empty); public_address may be empty
+#   ENCRYPTED=1                                                the overlays of the stack are encrypted (IPsec); needs the ESP protocol between the nodes
+#   MIN_DOCKER_MAJOR=25                                        the oldest Docker major the stack is tested with
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+die() { echo "rusty-swarm: $*" >&2; exit 1; }
+
+ENV_FILE="${RUSTY_SWARM_ENV:-$HERE/swarm.env}"
+if [ "${1:-}" = "--env" ]; then ENV_FILE="${2:?--env needs a file}"; shift 2; fi
+[ -r "$ENV_FILE" ] || die "no inventory at $ENV_FILE (copy swarm.env.example, or use --env local.env)"
+NODES=(); ENCRYPTED=0; MIN_DOCKER_MAJOR=25
+# shellcheck source=/dev/null
+. "$ENV_FILE"
+[ "${#NODES[@]}" -gt 0 ] || die "$ENV_FILE has no NODES"
+
+# ---- the inventory ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+node_field() { # NAME FIELD(1..5) -> value
+  local line
+  for line in "${NODES[@]}"; do
+    if [ "${line%%|*}" = "$1" ]; then printf '%s\n' "$line" | cut -d'|' -f"$2"; return 0; fi
+  done
+  die "no node called $1"
+}
+node_names() { local line; for line in "${NODES[@]}"; do printf '%s\n' "${line%%|*}"; done; }
+manager_name() {
+  local n found=""
+  for n in $(node_names); do
+    if [ "$(node_field "$n" 3)" = manager ]; then [ -z "$found" ] || die "the inventory has more than one manager (this plan has one: the single entrance)"; found="$n"; fi
+  done
+  [ -n "$found" ] || die "the inventory has no manager"
+  printf '%s\n' "$found"
+}
+validate_inventory() {
+  local line n t r seen=" "
+  for line in "${NODES[@]}"; do
+    [ "$(printf '%s' "$line" | tr -cd '|' | wc -c)" = 4 ] || die "a NODES entry needs five fields name|transport|role|labels|public_address: $line"
+    n="$(printf '%s' "$line" | cut -d'|' -f1)"; t="$(printf '%s' "$line" | cut -d'|' -f2)"; r="$(printf '%s' "$line" | cut -d'|' -f3)"
+    [[ "$n" =~ ^[a-z][a-z0-9-]{0,30}$ ]] || die "node name '$n': lower case letters, digits and '-'"
+    case "$seen" in *" $n "*) die "node '$n' appears twice" ;; esac
+    seen="$seen$n "
+    [[ "$t" =~ ^(ssh:[A-Za-z0-9._-]+@[A-Za-z0-9._:-]+|docker:[A-Za-z0-9._-]+)$ ]] || die "node $n: transport '$t' is ssh:USER@HOST or docker:CONTAINER"
+    case "$r" in manager|worker) ;; *) die "node $n: role is manager or worker" ;; esac
+  done
+  manager_name >/dev/null
+}
+
+# ---- the transports --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# `on NAME COMMAND...` runs a command on a node; `dk NAME ARGS...` runs the node's docker.
+on() {
+  local n="$1" t; shift
+  t="$(node_field "$n" 2)"
+  case "$t" in
+    ssh:*) ssh -o BatchMode=yes -o ConnectTimeout=10 "${t#ssh:}" "$@" ;;
+    docker:*) docker exec "${t#docker:}" "$@" ;;
+  esac
+}
+dk() { local n="$1"; shift; on "$n" docker "$@"; }
+
+# ---- cluster check ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+BAD=0
+ok() { printf '  ok    %s\n' "$*"; }
+warn() { printf '  WARN  %s\n' "$*"; }
+bad() { printf '  FAIL  %s\n' "$*"; BAD=1; }
+
+check_node() {
+  local n="$1" role v major mem free
+  role="$(node_field "$n" 3)"
+  echo "$n ($role, $(node_field "$n" 2)):"
+  if ! on "$n" true >/dev/null 2>&1; then bad "cannot reach the node over its transport"; return; fi
+  if v="$(dk "$n" version --format '{{.Server.Version}}' 2>/dev/null)" && [ -n "$v" ]; then
+    major="${v%%.*}"
+    if [[ "$major" =~ ^[0-9]+$ ]] && [ "$major" -ge "$MIN_DOCKER_MAJOR" ]; then ok "Docker $v"; else bad "Docker $v is older than $MIN_DOCKER_MAJOR (replicated-job, cap-drop on services and encrypted overlays are needed)"; fi
+  else
+    bad "docker does not answer on the node (the user must be able to run it)"; return
+  fi
+  if [ "$(on "$n" uname -m 2>/dev/null)" = x86_64 ]; then ok "x86_64 (the images are amd64 only)"; else bad "not x86_64: the images are amd64 only"; fi
+  free="$(on "$n" df -Pk /var/lib/docker 2>/dev/null | awk 'NR == 2 { print int($4 / 1024 / 1024) }' || true)"
+  if [[ "${free:-}" =~ ^[0-9]+$ ]]; then
+    if [ "$free" -ge 10 ]; then ok "${free} GiB free for Docker"; else bad "only ${free} GiB free in /var/lib/docker (10 GiB at least)"; fi
+  else
+    warn "free disk space could not be read"
+  fi
+  mem="$(on "$n" awk '/MemTotal/ { print int($2 / 1024) }' /proc/meminfo 2>/dev/null || true)"
+  if [[ "${mem:-}" =~ ^[0-9]+$ ]]; then
+    if [ "$mem" -ge 2000 ]; then ok "${mem} MiB of memory"; else warn "${mem} MiB of memory: little for the services (docs/docker.md, limits.sh)"; fi
+  fi
+  # The kernel: IPVS balances the virtual IPs of services; IPsec (xfrm, esp4) encrypts an overlay.
+  if on "$n" sh -c 'grep -q "^ip_vs" /proc/modules || [ -d /sys/module/ip_vs ]' >/dev/null 2>&1; then ok "IPVS (ip_vs) is available"; else warn "ip_vs is not loaded (swarm loads it when needed; the kernel must have it)"; fi
+  if [ "$ENCRYPTED" = 1 ]; then
+    if on "$n" sh -c 'grep -qE "^(esp4|xfrm_user)" /proc/modules || [ -d /sys/module/xfrm_user ] || [ -d /sys/module/esp4 ]' >/dev/null 2>&1; then ok "IPsec (xfrm, esp4) is available for the encrypted overlay"; else bad "ENCRYPTED=1 and the kernel shows no xfrm_user/esp4"; fi
+  fi
+  # Time: certificates and the database's clock logic care.
+  if on "$n" sh -c 'command -v timedatectl >/dev/null' >/dev/null 2>&1; then
+    if [ "$(on "$n" timedatectl show -p NTPSynchronized --value 2>/dev/null || true)" = yes ]; then ok "the clock is synchronised"; else bad "the clock is not NTP-synchronised"; fi
+  else
+    warn "no timedatectl: the clock's synchronisation could not be checked"
+  fi
+  local state; state="$(dk "$n" info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null || true)"
+  case "$state" in
+    active) ok "already in a swarm" ;;
+    inactive) ok "not in a swarm yet" ;;
+    *) warn "swarm state: ${state:-unknown}" ;;
+  esac
+  if [ "$role" = manager ]; then
+    warn "from outside: 25 80 143 443 465 587 993 must reach this node; between nodes 2377/tcp 7946/tcp+udp 4789/udp (and protocol 50, ESP, when ENCRYPTED=1). A node cannot test its own firewall: 'cluster verify' proves the data path"
+  fi
+}
+
+cmd_check() {
+  local n
+  for n in $(node_names); do check_node "$n"; done
+  [ "$BAD" = 0 ] || die "cluster check: something is wrong (see FAIL above)"
+  echo "cluster check: nothing is wrong that this check can see"
+}
+
+# ---- cluster init ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+node_state() { dk "$1" info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null || true; }
+
+cmd_init() {
+  local m n state addr token
+  m="$(manager_name)"
+  state="$(node_state "$m")"
+  addr="$(node_addr "$m")"
+  if [ "$state" != active ]; then
+    dk "$m" swarm init --advertise-addr "$addr" >/dev/null
+    echo "cluster init: $m started the swarm on $addr"
+  else
+    echo "cluster init: $m already has a swarm"
+  fi
+  token="$(dk "$m" swarm join-token -q worker)"
+  for n in $(node_names); do
+    [ "$n" = "$m" ] && continue
+    if [ "$(node_state "$n")" != active ]; then
+      dk "$n" swarm join --token "$token" "$addr:2377" >/dev/null
+      echo "cluster init: $n joined"
+    fi
+  done
+  cmd_label
+}
+
+# The address the other nodes reach a node at: the public address of the inventory when there is one, else what the node says its own address is.
+node_addr() {
+  local a; a="$(node_field "$1" 5)"
+  if [ -n "$a" ]; then printf '%s\n' "$a"; return; fi
+  a="$(dk "$1" info --format '{{.Swarm.NodeAddr}}' 2>/dev/null || true)"
+  [ -n "$a" ] && [ "$a" != "<nil>" ] || a="$(on "$1" hostname -i 2>/dev/null | awk '{ print $1 }')"
+  [ -n "$a" ] || die "no address for $1: give the public_address field"
+  printf '%s\n' "$a"
+}
+
+cmd_label() {
+  local m n l kv; m="$(manager_name)"
+  for n in $(node_names); do
+    l="$(node_field "$n" 4)"
+    [ -n "$l" ] || continue
+    for kv in ${l//,/ }; do
+      [[ "$kv" =~ ^[a-z][a-z0-9_.-]*=[A-Za-z0-9_.-]+$ ]] || die "node $n: label '$kv' is key=value"
+      dk "$m" node update --label-add "$kv" "$n" >/dev/null
+    done
+  done
+  echo "cluster init: labels set"
+}
+
+# ---- cluster verify --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+cmd_verify() {
+  local m svc=rs-verify-probe net=rs-verify-net opts=() total up n bad=0 line
+  m="$(manager_name)"
+  [ "$ENCRYPTED" != 1 ] || opts=(--opt encrypted)
+  # Every node Ready and Active.
+  total="$(node_names | wc -l)"
+  while IFS= read -r line; do
+    case "$line" in "Ready Active"*) ;; *) echo "  FAIL  a node is not Ready and Active: $line"; bad=1 ;; esac
+  done < <(dk "$m" node ls --format '{{.Status}} {{.Availability}} {{.Hostname}}')
+  [ "$(dk "$m" node ls -q | wc -l)" = "$total" ] || { echo "  FAIL  the swarm has $(dk "$m" node ls -q | wc -l) nodes, the inventory $total"; bad=1; }
+  [ "$bad" = 0 ] || die "cluster verify: not every node is Ready and Active"
+  echo "  ok    $total node(s) Ready and Active"
+  probe_clean "$m" "$svc" "$net"
+  dk "$m" network create -d overlay --attachable "${opts[@]}" "$net" >/dev/null
+  dk "$m" service create --name "$svc" --mode global --network "$net" busybox sleep 3600 >/dev/null
+  up=0
+  for _ in $(seq 1 60); do
+    up="$(dk "$m" service ps "$svc" --filter desired-state=running --format '{{.CurrentState}}' | grep -c '^Running' || true)"
+    [ "$up" = "$total" ] && break
+    sleep 2
+  done
+  if [ "$up" != "$total" ]; then dk "$m" service ps "$svc" --no-trunc >&2 || true; probe_clean "$m" "$svc" "$net"; die "cluster verify: only $up of $total probe tasks run"; fi
+  echo "  ok    a task runs on every node"
+  local c ips o oc oip
+  for n in $(node_names); do
+    c="$(dk "$n" ps -q --filter "name=$svc" | head -1)"
+    [ -n "$c" ] || { echo "  FAIL  no probe task on $n"; bad=1; continue; }
+    ips="$(dk "$n" exec "$c" nslookup "tasks.$svc" 2>/dev/null | awk '/^Address/ && $2 ~ /^[0-9]/ { print $2 }' | grep -vc '^127\.' || true)"
+    if [ "$ips" = "$total" ]; then echo "  ok    on $n, tasks.$svc lists all $total task(s)"; else echo "  FAIL  on $n, tasks.$svc lists $ips address(es), expected $total"; bad=1; fi
+    for o in $(node_names); do
+      [ "$o" = "$n" ] && continue
+      oc="$(dk "$o" ps -q --filter "name=$svc" | head -1)"; oip="$(dk "$o" exec "$oc" hostname -i | head -1)"
+      if dk "$n" exec "$c" ping -c2 -W2 "$oip" >/dev/null 2>&1; then echo "  ok    $n reaches the task on $o"; else echo "  FAIL  $n cannot reach the task on $o ($oip)"; bad=1; fi
+    done
+  done
+  probe_clean "$m" "$svc" "$net"
+  [ "$bad" = 0 ] || die "cluster verify: the data path between the nodes does not work"
+  echo "cluster verify: the cluster works${opts:+ (encrypted overlay)}"
+}
+
+probe_clean() { # the network cannot go while the last task is still shutting down: it is tried until it does
+  local m="$1" svc="$2" net="$3" i
+  dk "$m" service rm "$svc" >/dev/null 2>&1 || true
+  for i in $(seq 1 30); do
+    dk "$m" network rm "$net" >/dev/null 2>&1 && return 0
+    dk "$m" network inspect "$net" >/dev/null 2>&1 || return 0
+    sleep 2
+  done
+  die "the probe network $net could not be removed"
+}
+
+# ---- main ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+validate_inventory
+case "${1:-}:${2:-}" in
+  cluster:check) cmd_check ;;
+  cluster:init) cmd_init ;;
+  cluster:verify) cmd_verify ;;
+  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; [ -z "${1:-}" ] || exit 2 ;;
+esac
