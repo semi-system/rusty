@@ -170,7 +170,7 @@ async fn build(
     });
     if let Some(m) = &cfg.metrics {
         ctx = ctx.with_events(Arc::new(rusty_metrics::MetricsEvents::new(registry.clone())));
-        let (addr, _task) = rusty_metrics::serve(m.listen, registry.clone(), m.allowed_peers.clone(), shutdown.clone()).await?;
+        let (addr, _task) = rusty_metrics::serve_allowing(m.listen, registry.clone(), m.allowed_peers.clone(), m.allowed_hosts.clone(), shutdown.clone()).await?;
         tracing::info!(service = "metrics", %addr, "listening");
     }
 

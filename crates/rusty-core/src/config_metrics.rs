@@ -16,7 +16,11 @@ pub struct MetricsConfig {
     /// Where the endpoint listens (`0.0.0.0:9100` in a container).
     pub listen: SocketAddr,
     /// The networks that may scrape it.
+    #[serde(default)]
     pub allowed_peers: Vec<Cidr>,
+    /// DNS names whose addresses may scrape it, resolved again every few seconds (Docker's DNS: `admin` in compose, `tasks.admin` in a swarm). No address is fixed anywhere.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
     /// The services this process reads and serves in its own exposition (the admin web only: the one place to scrape). Empty: none.
     #[serde(default)]
     pub scrape: Vec<ScrapeTarget>,
@@ -37,21 +41,25 @@ fn name_ok(s: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
+fn host_ok(host: &str) -> bool {
+    (1..=253).contains(&host.len()) && host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+}
+
 fn address_ok(s: &str) -> bool {
     let Some((host, port)) = s.rsplit_once(':') else {
         return false;
     };
-    (1..=253).contains(&host.len())
-        && host
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+    host_ok(host)
         && port.parse::<u16>().is_ok_and(|p| p != 0)
 }
 
 impl MetricsConfig {
     pub(crate) fn validate(&self) -> Result<()> {
-        if self.allowed_peers.is_empty() || self.allowed_peers.len() > 16 || self.allowed_peers.iter().any(Cidr::is_everything) {
-            return Err(Error::Invalid("metrics.allowed_peers must name one to sixteen address blocks and none may hold every address".into()));
+        if (self.allowed_peers.is_empty() && self.allowed_hosts.is_empty()) || self.allowed_peers.len() > 16 || self.allowed_hosts.len() > 8 || self.allowed_peers.iter().any(Cidr::is_everything) {
+            return Err(Error::Invalid("metrics needs allowed_peers (one to sixteen address blocks, none holding every address) or allowed_hosts (one to eight names), or both".into()));
+        }
+        if !self.allowed_hosts.iter().all(|h| host_ok(h)) {
+            return Err(Error::Invalid("metrics.allowed_hosts holds a name that is not a DNS name".into()));
         }
         if self.scrape.len() > 32 {
             return Err(Error::Invalid(
@@ -99,5 +107,11 @@ mod tests {
         assert!(parse(&format!("listen = \"0.0.0.0:9100\"\nallowed_peers = [{many}]")).is_err(), "at most sixteen");
         assert!(parse("listen = \"nonsense\"\nallowed_peers = [\"10.0.0.1/32\"]").is_err());
         assert!(parse("listen = \"0.0.0.0:9100\"\nallowed_peers = [\"10.0.0.1/32\"]\nextra = 1").is_err(), "unknown keys are refused");
+        let h = parse("listen = \"0.0.0.0:9100\"\nallowed_hosts = [\"tasks.admin\", \"admin\"]").unwrap();
+        assert_eq!((h.allowed_hosts.len(), h.allowed_peers.len()), (2, 0), "names alone are enough");
+        assert!(parse("listen = \"0.0.0.0:9100\"\nallowed_hosts = [\"a b\"]").is_err(), "a name is a DNS name");
+        assert!(parse("listen = \"0.0.0.0:9100\"\nallowed_hosts = []").is_err(), "no names and no networks");
+        let nine = (0..9).map(|i| format!("\"h{i}\"")).collect::<Vec<_>>().join(", ");
+        assert!(parse(&format!("listen = \"0.0.0.0:9100\"\nallowed_hosts = [{nine}]")).is_err(), "at most eight names");
     }
 }

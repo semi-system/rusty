@@ -266,3 +266,23 @@ async fn a_name_that_resolves_to_many_addresses_is_many_instances() {
         "the instance is the address, not the name: {text}"
     );
 }
+
+#[tokio::test]
+async fn a_peer_may_be_allowed_by_name_and_a_name_that_does_not_resolve_lets_nobody_in() {
+    let reg = Arc::new(Registry::new("imap", "2"));
+    let any: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    // `localhost` resolves to the address the test connects from.
+    let stop = CancellationToken::new();
+    let (addr, task) = rusty_metrics::serve_allowing(any, reg.clone(), vec![], vec!["localhost".into()], stop.clone()).await.unwrap();
+    assert!(get(addr, "/metrics").await.starts_with("HTTP/1.1 200"), "the address of an allowed name is let in");
+    stop.cancel();
+    let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+
+    let stop = CancellationToken::new();
+    let (addr, task) = rusty_metrics::serve_allowing(any, reg.clone(), vec![], vec!["no-such-service.invalid".into()], stop.clone()).await.unwrap();
+    assert_eq!(get(addr, "/metrics").await, "", "a name that does not resolve admits no one");
+    stop.cancel();
+    let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+
+    assert!(rusty_metrics::serve_allowing(any, reg, vec![], vec![], CancellationToken::new()).await.is_err(), "neither networks nor names");
+}
