@@ -7,6 +7,11 @@
 #   ./local-cluster.sh verify [--encrypted]    prove the data path: a task on every node, `tasks.<service>` lists them all, a ping crosses nodes (an encrypted overlay with --encrypted)
 #   ./local-cluster.sh node-stop NAME          stop a node (a node loss) / node-start NAME starts it again
 #   ./local-cluster.sh docker [ARGS...]        run `docker ARGS` against the Manager (for example: ./local-cluster.sh docker node ls)
+#   ./local-cluster.sh ext up | status | verify | down [--purge]
+#                                              the EXTERNAL dependencies of the cluster, as plain containers outside the swarm on the network `rusty-ext` (172.30.0.0/24): a PostgreSQL 18 that accepts
+#                                              TLS only (172.30.0.10, name db.rusty.test, a throw-away CA) and a RustFS S3 server (172.30.0.11:9000, bucket rusty-mail); the nodes are attached to the
+#                                              network, so a task reaches them from its node's address, as it will reach a real database and a real bucket. Their settings are in
+#                                              $RUSTY_LOCAL_DIR/ext (default ~/.rusty-swarm-local/ext, mode 0700): ca.pem, pg.env, s3.env
 #   ./local-cluster.sh down [--purge]          remove the nodes and the network (--purge also removes their volumes)
 #
 # The Manager publishes the edge's ports to this machine on high ports (10025 for 25, 10080 for 80, 10143, 10443, 10465, 10587, 10993): the edge is a host-mode task on the Manager, its ports exist inside
@@ -60,6 +65,7 @@ cmd_up() {
     local w="rusty-w$i"
     start_node "$w"
     wait_ready "$w"
+    attach_ext
     if [ "$(inner "$w" info --format '{{.Swarm.LocalNodeState}}')" != active ]; then
       inner "$w" swarm join --token "$token" "$ip:2377" >/dev/null
       echo "local-cluster: $w joined"
@@ -136,9 +142,129 @@ cmd_down() {
   if [ "$purge" = 1 ]; then echo "local-cluster: removed (volumes too)"; else echo "local-cluster: removed"; fi
 }
 
+# ---------------------------------------------------------------------------------------- the external PostgreSQL and S3
+
+EXT_NET=rusty-ext; EXT_SUBNET=172.30.0.0/24; PG_NAME=rusty-ext-pg; PG_IP=172.30.0.10; PG_HOST=db.rusty.test; S3_NAME=rusty-ext-s3; S3_IP=172.30.0.11; BUCKET=rusty-mail
+EXT_DIR="${RUSTY_LOCAL_DIR:-$HOME/.rusty-swarm-local}/ext"
+PG_IMAGE="$(awk '$1 == "postgres:18" { print $2 }' "$ROOT/deploy/images.lock")"
+S3_IMAGE="$(awk '$1 == "rustfs/rustfs:latest" { print $2 }' "$ROOT/deploy/images.lock")"
+
+rand_hex() { od -An -N"$1" -tx1 /dev/urandom | tr -d ' \n'; }
+
+attach_ext() { # the nodes join the external network (a node that is not there yet is skipped)
+  docker network inspect "$EXT_NET" >/dev/null 2>&1 || return 0
+  local n
+  for n in $(nodes); do
+    [ "$(docker inspect -f "{{if index .NetworkSettings.Networks \"$EXT_NET\"}}yes{{end}}" "$n")" = yes ] || docker network connect "$EXT_NET" "$n"
+  done
+}
+
+ext_up() {
+  need_docker
+  [ -n "$PG_IMAGE" ] && [ -n "$S3_IMAGE" ] || die "postgres:18 and rustfs/rustfs must be pinned in deploy/images.lock"
+  umask 077; mkdir -p "$EXT_DIR"; chmod 0700 "$EXT_DIR"
+  docker network inspect "$EXT_NET" >/dev/null 2>&1 || docker network create --subnet "$EXT_SUBNET" "$EXT_NET" >/dev/null
+
+  # PostgreSQL: a throw-away CA and a server certificate for the name and the address, the superuser password, TLS 1.3 only, and a pg_hba that accepts TLS connections only.
+  [ -s "$EXT_DIR/pg.env" ] || printf 'PGUSER=postgres\nPGPASSWORD=%s\nPGDATABASE=rusty\nPGHOST=%s\nPGHOSTADDR=%s\n' "$(rand_hex 24)" "$PG_HOST" "$PG_IP" > "$EXT_DIR/pg.env"
+  if ! docker volume inspect rusty-ext-pg-tls >/dev/null 2>&1 || [ ! -s "$EXT_DIR/ca.pem" ]; then
+    docker volume rm -f rusty-ext-pg-tls >/dev/null 2>&1 || true
+    docker run --rm -v rusty-ext-pg-tls:/tls --entrypoint sh "$PG_IMAGE" -c "set -e; umask 077; cd /tls
+      openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-384 -nodes -days 3650 -subj '/CN=rusty local CA' -keyout ca.key -out ca.pem 2>/dev/null
+      openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-384 -nodes -subj '/CN=$PG_HOST' -keyout server.key -out server.csr 2>/dev/null
+      printf 'subjectAltName=DNS:$PG_HOST,IP:$PG_IP\nextendedKeyUsage=serverAuth\n' > ext.cnf
+      openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 3650 -extfile ext.cnf -out server.crt 2>/dev/null
+      rm -f server.csr ext.cnf ca.srl ca.key; chown 999:999 /tls/server.key /tls/server.crt /tls/ca.pem; chmod 0600 /tls/server.key; chmod 0644 /tls/server.crt /tls/ca.pem"
+    docker run --rm -v rusty-ext-pg-tls:/tls:ro --entrypoint cat "$PG_IMAGE" /tls/ca.pem > "$EXT_DIR/ca.pem"
+  fi
+  printf 'local all all trust\nhostssl all all all scram-sha-256\nhost all all all reject\n' > "$EXT_DIR/pg_hba.conf"; chmod 0644 "$EXT_DIR/pg_hba.conf"
+  # The password is read from a file by the image's entrypoint; the file is not in the environment of the container.
+  sed -n 's/^PGPASSWORD=//p' "$EXT_DIR/pg.env" > "$EXT_DIR/pg.pw"; chmod 0644 "$EXT_DIR/pg.pw"
+  if ! docker inspect "$PG_NAME" >/dev/null 2>&1; then
+    docker run -d --name "$PG_NAME" --network "$EXT_NET" --ip "$PG_IP" --restart unless-stopped \
+      -e POSTGRES_PASSWORD_FILE=/run/pg.pw -e POSTGRES_DB=rusty -e POSTGRES_INITDB_ARGS="--auth-host=scram-sha-256 --data-checksums" \
+      -v rusty-ext-pg-data:/var/lib/postgresql -v rusty-ext-pg-tls:/tls:ro -v "$EXT_DIR/pg.pw:/run/pg.pw:ro" -v "$EXT_DIR/pg_hba.conf:/etc/pg_hba.conf:ro" \
+      "$PG_IMAGE" postgres -c listen_addresses='*' -c ssl=on -c ssl_cert_file=/tls/server.crt -c ssl_key_file=/tls/server.key -c ssl_min_protocol_version=TLSv1.3 -c hba_file=/etc/pg_hba.conf >/dev/null
+  else
+    docker start "$PG_NAME" >/dev/null 2>&1 || true
+  fi
+
+  # RustFS (S3): a key pair, a data volume that survives a restart, and the bucket.
+  [ -s "$EXT_DIR/s3.env" ] || printf 'S3_ENDPOINT=http://%s:9000\nS3_REGION=us-east-1\nS3_BUCKET=%s\nS3_ACCESS_KEY=%s\nS3_SECRET_KEY=%s\n' "$S3_IP" "$BUCKET" "$(rand_hex 10)" "$(rand_hex 24)" > "$EXT_DIR/s3.env"
+  local key secret; key="$(sed -n 's/^S3_ACCESS_KEY=//p' "$EXT_DIR/s3.env")"; secret="$(sed -n 's/^S3_SECRET_KEY=//p' "$EXT_DIR/s3.env")"
+  if ! docker inspect "$S3_NAME" >/dev/null 2>&1; then
+    docker run -d --name "$S3_NAME" --network "$EXT_NET" --ip "$S3_IP" --restart unless-stopped \
+      -e RUSTFS_ACCESS_KEY="$key" -e RUSTFS_SECRET_KEY="$secret" -v rusty-ext-s3-data:/data --tmpfs /logs:mode=1777 --tmpfs /tmp:mode=1777 \
+      "$S3_IMAGE" /data >/dev/null
+  else
+    docker start "$S3_NAME" >/dev/null 2>&1 || true
+  fi
+  local i
+  for i in $(seq 1 60); do
+    docker exec "$PG_NAME" pg_isready -q -h 127.0.0.1 >/dev/null 2>&1 && break; sleep 2
+  done
+  docker exec "$PG_NAME" pg_isready -q -h 127.0.0.1 >/dev/null 2>&1 || die "PostgreSQL did not become ready (docker logs $PG_NAME)"
+  docker exec "$PG_NAME" psql -U postgres -At -c "select 1 from pg_database where datname = 'rusty'" | grep -q 1 || docker exec "$PG_NAME" createdb -U postgres rusty
+  for i in $(seq 1 60); do
+    [ -n "$(curl -s -o /dev/null -w '%{http_code}' "http://$S3_IP:9000/" 2>/dev/null | grep -E '^[234]' || true)" ] && break; sleep 2
+  done
+  local code; code="$(curl -s -o /dev/null -w '%{http_code}' --aws-sigv4 "aws:amz:us-east-1:s3" --user "$key:$secret" -X PUT "http://$S3_IP:9000/$BUCKET" || true)"
+  case "$code" in 200|409) ;; *) die "could not create the bucket $BUCKET (HTTP $code; docker logs $S3_NAME)" ;; esac
+  attach_ext
+  echo "local-cluster: the external PostgreSQL ($PG_HOST = $PG_IP, TLS only) and S3 ($S3_IP:9000, bucket $BUCKET) are up; settings in $EXT_DIR"
+}
+
+ext_status() {
+  need_docker
+  local n
+  for n in "$PG_NAME" "$S3_NAME"; do printf '  %s: %s\n' "$n" "$(docker inspect -f '{{.State.Status}} {{.NetworkSettings.Networks}}' "$n" 2>/dev/null | cut -d' ' -f1 || echo absent)"; done
+  echo "  nodes on $EXT_NET: $(docker network inspect "$EXT_NET" --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null)"
+  echo "  files: $(ls "$EXT_DIR" 2>/dev/null | tr '\n' ' ')"
+}
+
+ext_verify() {
+  need_docker
+  [ -s "$EXT_DIR/ca.pem" ] && [ -s "$EXT_DIR/pg.env" ] || die "ext verify: no external services here (run: $0 ext up)"
+  # shellcheck source=/dev/null
+  . "$EXT_DIR/pg.env"
+  local n fail=0 out
+  for n in $(nodes); do
+    docker exec "$n" rm -rf /tmp/ext-ca.pem; docker exec -i "$n" sh -c "cat > /tmp/ext-ca.pem" < "$EXT_DIR/ca.pem"
+    # From the node, as a task would: TLS with the name checked (verify-full), and what address the database sees.
+    out="$(inner "$n" run --rm -e PGPASSWORD="$PGPASSWORD" -v /tmp/ext-ca.pem:/ca.pem:ro "$PG_IMAGE" psql -At "host=$PG_HOST hostaddr=$PG_IP dbname=rusty user=postgres sslmode=verify-full sslrootcert=/ca.pem" -c "select 'tls=' || ssl || ' from ' || inet_client_addr() from pg_stat_ssl where pid = pg_backend_pid()" 2>&1 | tail -1 || true)"
+    case "$out" in tls=t*) echo "ok: $n -> PostgreSQL over TLS (verify-full), seen as ${out##* from }" ;; *) echo "FAIL: $n -> PostgreSQL: $out"; fail=1 ;; esac
+    out="$(inner "$n" run --rm -e PGPASSWORD="$PGPASSWORD" "$PG_IMAGE" psql -At "host=$PG_IP dbname=rusty user=postgres sslmode=disable" -c "select 1" 2>&1 | tail -1 || true)"
+    case "$out" in *"no encryption"*|*"rejects"*|*"SSL"*) echo "ok: $n -> a connection without TLS is refused" ;; *) echo "FAIL: $n -> a connection without TLS was not refused: $out"; fail=1 ;; esac
+    out="$(inner "$n" run --rm --entrypoint bash "$PG_IMAGE" -c "exec 3<>/dev/tcp/$S3_IP/9000 && printf 'GET / HTTP/1.0\r\n\r\n' >&3 && head -1 <&3" 2>&1 | tr -d '\r' | tail -1)"
+    case "$out" in HTTP/*) echo "ok: $n -> S3 answers ($out)" ;; *) echo "FAIL: $n -> S3: $out"; fail=1 ;; esac
+  done
+  [ "$fail" = 0 ] || die "ext verify: a node cannot use the external services"
+  echo "ext verify: every node reaches the external PostgreSQL (TLS only) and S3"
+}
+
+ext_down() {
+  local purge=0; [ "${1:-}" = "--purge" ] && purge=1
+  need_docker
+  docker rm -f "$PG_NAME" "$S3_NAME" >/dev/null 2>&1 || true
+  local n; for n in $(nodes); do docker network disconnect "$EXT_NET" "$n" >/dev/null 2>&1 || true; done
+  docker network rm "$EXT_NET" >/dev/null 2>&1 || true
+  if [ "$purge" = 1 ]; then docker volume rm rusty-ext-pg-data rusty-ext-pg-tls rusty-ext-s3-data >/dev/null 2>&1 || true; rm -rf "$EXT_DIR"; echo "local-cluster: the external services and their data were removed"; else echo "local-cluster: the external services were stopped and removed (the data volumes and $EXT_DIR are kept)"; fi
+}
+
+cmd_ext() {
+  case "${1:-}" in
+    up) ext_up ;;
+    status) ext_status ;;
+    verify) ext_verify ;;
+    down) shift; ext_down "$@" ;;
+    *) die "ext: up | status | verify | down [--purge]" ;;
+  esac
+}
+
 case "${1:-}" in
   up) shift; cmd_up "$@" ;;
   status) cmd_status ;;
+  ext) shift; cmd_ext "$@" ;;
   verify) shift; cmd_verify "$@" ;;
   node-stop) cmd_node stop "${2:-}" ;;
   node-start) cmd_node start "${2:-}" ;;
