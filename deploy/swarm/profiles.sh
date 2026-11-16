@@ -114,7 +114,7 @@ gen_scanner_services() {
   y_config rspamd_options_inc /etc/rspamd/local.d/options.inc
   printf '    networks:\n      - filter\n'
   # The virus scanner and its updater share the signature volume: one node (av=true).
-  y_service_common clamd "$(lock_ref 'clamav/clamav:stable')"
+  y_service_common clamd "$(lock_ref 'clamav/clamav:stable')" false   # ClamAV writes to /var/lock and /run/clamav: as in the standalone stack its root file system is writable
   printf '      - clamdb:/var/lib/clamav\n      - type: tmpfs\n        target: /run/clamav\n'
   printf '    cap_add: [SETUID, SETGID, CHOWN, DAC_OVERRIDE, FOWNER]\n    environment:\n      CLAMAV_NO_FRESHCLAMD: "true"\n      CLAMAV_NO_MILTERD: "true"\n'
   y_deploy 1 "node.labels.av == true" stop-first clamd
@@ -123,7 +123,7 @@ gen_scanner_services() {
   # The image's own check pings `localhost`, which resolves to ::1 while clamd listens on IPv4 only.
   # shellcheck disable=SC2016
   printf '    healthcheck:\n      test: [CMD-SHELL, "[ \\"$$(echo PING | nc 127.0.0.1 3310)\\" = PONG ]"]\n      interval: 30s\n      timeout: 10s\n      retries: 10\n      start_period: 120s\n    networks:\n      - filter\n'
-  y_service_common freshclam "$(lock_ref 'clamav/clamav:stable')"
+  y_service_common freshclam "$(lock_ref 'clamav/clamav:stable')" false
   printf '      - clamdb:/var/lib/clamav\n    cap_add: [SETUID, SETGID, CHOWN, DAC_OVERRIDE, FOWNER]\n    environment:\n      CLAMAV_NO_CLAMD: "true"\n      CLAMAV_NO_MILTERD: "true"\n'
   y_deploy 1 "node.labels.av == true" stop-first freshclam
   printf '    networks:\n      - backend\n'

@@ -387,8 +387,16 @@ load_names() {
   if [ "$DB_IN_STACK" != 1 ]; then unset 'SECRET_NAME[pg_postgres]' 'SECRET_NAME[db_server_crt]' 'SECRET_NAME[db_server_key]' 'CONFIG_NAME[pg_hba]'; fi
 }
 
-y_service_common() { # NAME IMAGE REPLICAS
-  printf '  %s:\n    image: %s\n    read_only: true\n    cap_drop: [ALL]\n    stop_grace_period: 45s\n    volumes:\n      - type: tmpfs\n        target: /tmp\n' "$1" "$2"
+y_service_common() { # NAME IMAGE [READ-ONLY: true (default) or false, for an image that writes to its root file system]
+  printf '  %s:
+    image: %s
+    read_only: %s
+    cap_drop: [ALL]
+    stop_grace_period: 45s
+    volumes:
+      - type: tmpfs
+        target: /tmp
+' "$1" "$2" "${3:-true}"
 }
 y_deploy() { # REPLICAS [CONSTRAINT] [ORDER] [SERVICE: its resource limits]
   printf '    deploy:\n      replicas: %s\n      restart_policy: { condition: any, delay: 5s }\n      update_config: { parallelism: 1, order: %s, delay: 10s, monitor: 20s, failure_action: rollback }\n      rollback_config: { parallelism: 1, order: %s }\n' "$1" "${3:-start-first}" "${3:-start-first}"
