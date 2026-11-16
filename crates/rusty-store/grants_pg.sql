@@ -130,6 +130,8 @@ BEGIN
   IF to_regrole('rusty_gc') IS NOT NULL THEN
     EXECUTE format('GRANT SELECT (%s) ON accounts TO rusty_gc', cols);
     GRANT SELECT ON domains, mailboxes, folders, deliveries, sealed_secrets TO rusty_gc;
+    GRANT SELECT ON domain_dns_state TO rusty_gc;   -- the periodic DNS check asks which domains are due...
+    GRANT UPDATE (created_at) ON domains TO rusty_gc;   -- ...and locks the domain row it queues a check for
     GRANT SELECT, DELETE ON messages, keywords, change_log TO rusty_gc;
     GRANT SELECT, UPDATE, DELETE ON capabilities TO rusty_gc;
     GRANT SELECT, UPDATE, DELETE ON blobs, deliveries TO rusty_gc;
