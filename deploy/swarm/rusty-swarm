@@ -7,10 +7,10 @@
 #   ./rusty-swarm init                      with no swarm.env yet, in a terminal: a few questions (whiptail dialogs when the machine has whiptail, else plain prompts) write swarm.env and the
 #                                                files of the passwords given (mode 0600), then the flow below runs
 #   ./rusty-swarm [--env FILE] inventory    what the tool understood of the inventory
-#   ./rusty-swarm [--env FILE] init [--yes]   the whole flow, automatic: Docker is installed where it is missing (get.docker.com, as root), a swarm that is already there is offered for
+#   ./rusty-swarm [--env FILE] init [--yes]   the whole flow, automatic: Docker is installed where it is missing (Docker's apt repository, key checked), a swarm that is already there is offered for
 #                                                removal, then the check, the swarm, its proof and prepare db (the later steps join the chain as they are built); --yes answers the question with y
 #   ./rusty-swarm [--env FILE] cluster check     what is wrong on the nodes (prints, changes nothing)
-#   ./rusty-swarm [--env FILE] cluster install-docker   install Docker (get.docker.com, run as root) on the ssh nodes that have none (`init` does it by itself)
+#   ./rusty-swarm [--env FILE] cluster install-docker   install Docker (Docker's apt repository with its key checked, as root; get.docker.com on other systems) on the nodes that have none (`init` does it by itself)
 #   ./rusty-swarm [--env FILE] cluster init      start the swarm on the Manager, join the workers, set the labels (each part is skipped when it is already done)
 #   ./rusty-swarm [--env FILE] cluster verify    nodes Ready and Active, and a throw-away overlay with one task per node: the tasks list each other, reach each other
 #                                                (an encrypted overlay when the inventory says ENCRYPTED=1)
@@ -364,15 +364,47 @@ cmd_prepare_db() {
 # ---- install docker --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 # Only where Docker is missing (owner's choice: automatic): get.docker.com is a script of the internet that runs as root. A node reached as a
 # container (the local test cluster) already has Docker and is skipped. The user of an ssh node must be root or be allowed `sudo` without a password.
+# Docker's own apt repository with its signing key checked against the fingerprint in Docker's documentation (Debian and Ubuntu); `get.docker.com` only on other systems, as before.
+DOCKER_APT_FINGERPRINT=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+docker_apt_script() {
+  cat <<'SCRIPT'
+set -e
+. /etc/os-release
+case "$ID" in ubuntu|debian) ;; *) exit 42 ;; esac
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq ca-certificates curl gnupg >/dev/null
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o /etc/apt/keyrings/docker.asc
+fpr="$(gpg --show-keys --with-colons /etc/apt/keyrings/docker.asc 2>/dev/null | awk -F: '/^fpr/ { print $10; exit }')"
+if [ "$fpr" != "__FPR__" ]; then rm -f /etc/apt/keyrings/docker.asc; echo "the Docker key has the fingerprint '$fpr', not the one in Docker's documentation" >&2; exit 43; fi
+chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$ID $VERSION_CODENAME stable" > /etc/apt/sources.list.d/docker.list
+apt-get update -qq
+apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null
+SCRIPT
+}
+
 cmd_install_docker() {
-  local n t
+  local n t rc script
+  script="$(docker_apt_script | sed "s/__FPR__/$DOCKER_APT_FINGERPRINT/")"
   for n in $(node_names); do
     t="$(node_field "$n" 2)"
     case "$t" in docker:*) echo "install docker: $n is a container, Docker is there"; continue ;; esac
     if dk "$n" version >/dev/null 2>&1; then echo "install docker: $n already has Docker ($(dk "$n" version --format '{{.Server.Version}}' 2>/dev/null))"; continue; fi
     on "$n" sh -c 'id -u | grep -qx 0 || sudo -n true' >/dev/null 2>&1 || die "install docker: on $n the user is not root and cannot sudo without a password"
-    echo "install docker: $n: running get.docker.com (as root) ..."
-    on "$n" sh -c 'S=""; [ "$(id -u)" = 0 ] || S="sudo -n"; command -v curl >/dev/null || { echo "curl is missing" >&2; exit 1; }; curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && $S sh /tmp/get-docker.sh >/dev/null && rm -f /tmp/get-docker.sh' || die "install docker: it failed on $n"
+    echo "install docker: $n: from Docker's apt repository (as root) ..."
+    rc=0
+    on "$n" sh -c 'if [ "$(id -u)" = 0 ]; then exec sh -c "$0"; else exec sudo -n sh -c "$0"; fi' "$script" || rc=$?
+    case "$rc" in
+      0) ;;
+      42)
+        echo "install docker: $n is not Debian or Ubuntu: using get.docker.com (a script from the internet, run as root)" >&2
+        on "$n" sh -c 'S=""; [ "$(id -u)" = 0 ] || S="sudo -n"; command -v curl >/dev/null || { echo "curl is missing" >&2; exit 1; }; curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && $S sh /tmp/get-docker.sh >/dev/null && rm -f /tmp/get-docker.sh' || die "install docker: it failed on $n"
+        ;;
+      43) die "install docker: the signing key Docker's server gave does not have the fingerprint of Docker's documentation: nothing was installed on $n" ;;
+      *) die "install docker: it failed on $n (exit $rc)" ;;
+    esac
     # The user of the transport must be able to use docker in the next ssh session.
     on "$n" sh -c 'id -u | grep -qx 0 || sudo -n usermod -aG docker "$(id -un)"' >/dev/null 2>&1 || true
     echo "install docker: $n done"

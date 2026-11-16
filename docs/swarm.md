@@ -16,7 +16,7 @@ tar xzf rusty-deploy-TAG.tar.gz && cd rusty-deploy-TAG
 On a machine with a terminal and no `swarm.env` yet, `init` asks what it needs (dialogs when `whiptail` is installed, plain questions otherwise) and writes `swarm.env` (mode 0600). Without a
 terminal it reads `swarm.env` (copy `swarm.env.example`). Then it does, in order, and stops at the first thing that is wrong:
 
-1. **Docker**: installed (`get.docker.com`, as root) on the nodes that have none; left alone where it is.
+1. **Docker**: installed on the nodes that have none (Docker's own apt repository, its signing key checked against the fingerprint of Docker's documentation; `get.docker.com` only on systems that are not Debian or Ubuntu); left alone where it is.
 2. **A swarm that exists**: offered for removal (`[y/N]`; `--yes` answers y, no terminal keeps it).
 3. `cluster check` (what is wrong on the nodes), the swarm and its labels, `cluster verify` (a task on every node, they reach each other).
 4. **Secrets** (swarm secrets with versioned names: `pg_imap_v1`; a change is `_v2`) and **configs** (named by the hash of their content): the service passwords, the sealing key, the S3 keys, the

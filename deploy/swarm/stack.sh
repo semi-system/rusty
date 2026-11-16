@@ -13,6 +13,8 @@ IMAGE_TAG="${IMAGE_TAG:-main}"
 TLS_MODE="${TLS_MODE:-acme}"
 REPLICAS_DEFAULT="${REPLICAS_DEFAULT:-1}"
 declare -A SECRET_NAME=() CONFIG_NAME=()
+# shellcheck source=validate.sh
+. "$HERE/validate.sh"
 # shellcheck source=profiles.sh
 . "$HERE/profiles.sh"
 
@@ -167,23 +169,24 @@ resolve_defaults() {
   fi
 }
 
-# The CA and the server certificate of the default PostgreSQL (the name `db`), made once.
-make_db_tls() {
-  local dir="$STATE_DIR/dbtls" out
+# A CA of its own and a server certificate for one name, made once in DIR (ca.pem, server.key, server.crt). The default PostgreSQL and the key-value store both use it.
+make_ca_signed() { # DIR CA-NAME HOST
+  local dir="$1" ca="$2" host="$3" out
   mkdir -p "$dir"; chmod 0700 "$dir"
   if [ -s "$dir/ca.pem" ] && [ -s "$dir/server.crt" ] && [ -s "$dir/server.key" ]; then return 0; fi
-  out="$(sw run --rm --cap-drop ALL --entrypoint sh "$POSTGRES_IMAGE" -c 'set -e; cd /tmp
-    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-384 -nodes -days 3650 -subj "/CN=rusty db CA" -keyout ca.key -out ca.pem 2>/dev/null
-    openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-384 -nodes -subj "/CN=db" -keyout server.key -out server.csr 2>/dev/null
-    printf "subjectAltName=DNS:db\nextendedKeyUsage=serverAuth\n" > ext.cnf
+  out="$(sw run --rm --cap-drop ALL --entrypoint sh "$POSTGRES_IMAGE" -c "set -e; cd /tmp
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-384 -nodes -days 3650 -subj '/CN=$ca' -keyout ca.key -out ca.pem 2>/dev/null
+    openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-384 -nodes -subj '/CN=$host' -keyout server.key -out server.csr 2>/dev/null
+    printf 'subjectAltName=DNS:$host\nextendedKeyUsage=serverAuth\n' > ext.cnf
     openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 3650 -extfile ext.cnf -out server.crt 2>/dev/null
-    cat ca.pem; echo ----SPLIT----; cat server.key; echo ----SPLIT----; cat server.crt')"
+    cat ca.pem; echo ----SPLIT----; cat server.key; echo ----SPLIT----; cat server.crt")"
   ( umask 077
     printf '%s\n' "$out" | awk 'BEGIN { n = 0 } /^----SPLIT----$/ { n++; next } n == 0 { print }' > "$dir/ca.pem"
     printf '%s\n' "$out" | awk 'BEGIN { n = 0 } /^----SPLIT----$/ { n++; next } n == 1 { print }' > "$dir/server.key"
     printf '%s\n' "$out" | awk 'BEGIN { n = 0 } /^----SPLIT----$/ { n++; next } n == 2 { print }' > "$dir/server.crt" )
-  grep -q 'BEGIN CERTIFICATE' "$dir/ca.pem" && grep -q 'PRIVATE KEY' "$dir/server.key" && grep -q 'BEGIN CERTIFICATE' "$dir/server.crt" || die "could not make the certificates of the default PostgreSQL"
+  grep -q 'BEGIN CERTIFICATE' "$dir/ca.pem" && grep -q 'PRIVATE KEY' "$dir/server.key" && grep -q 'BEGIN CERTIFICATE' "$dir/server.crt" || die "could not make the certificates for $host"
 }
+make_db_tls() { make_ca_signed "$STATE_DIR/dbtls" "rusty db CA" db; }
 
 conf_pg_hba() { printf 'local all all trust\nhostssl all all all scram-sha-256\nhost all all all reject\n'; }
 
@@ -250,6 +253,7 @@ require_stack_inputs() {
     acme) [[ "${CONTACT:-}" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]] || die "TLS_MODE=acme needs CONTACT (an e-mail address: the certificate authority writes to it)" ;;
     *) die "TLS_MODE is self (self-signed certificates) or acme (certificates from Let's Encrypt)" ;;
   esac
+  check_inputs
   make_passwords
 }
 
@@ -621,7 +625,6 @@ cmd_certs_sync() {
     printf '%s\n' "$pem" | awk '/^-----BEGIN / { d = ($0 ~ /PRIVATE KEY/) ? "k" : "c" } d == "k" { print } /^-----END / { d = "" }' > "$dir/$name.acme.key.new"
     printf '%s\n' "$pem" | awk '/^-----BEGIN / { d = ($0 ~ /PRIVATE KEY/) ? "k" : "c" } d == "c" { print } /^-----END / { d = "" }' > "$dir/$name.acme.crt.new"
     cat "$dir/$name.acme.key.new" "$dir/$name.acme.crt.new" > "$dir/$name.acme.pem.new"
-    printf '%s\n' "$pem" >/dev/null
     sw exec -i -u 99 "$c" sh -c "umask 077; mkdir -p /var/lib/haproxy/certs && cat > /var/lib/haproxy/certs/$name.pem.new && mv /var/lib/haproxy/certs/$name.pem.new /var/lib/haproxy/certs/$name.pem" < "$dir/$name.acme.pem.new" || echo "certs sync: the edge could not keep the $name certificate" >&2
     if [ "$name" = mail ] && ! cmp -s "$dir/mail.acme.crt.new" "$dir/mail.crt"; then
       ( umask 077; cp "$dir/mail.acme.key.new" "$dir/mail.key"; cp "$dir/mail.acme.crt.new" "$dir/mail.crt" )

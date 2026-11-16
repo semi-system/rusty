@@ -53,22 +53,9 @@ conf_valkey_acl() {
 # ---- secrets and configs --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 # The CA and server certificate of the key-value store (the name `valkey`), made once, and the three passwords.
 make_valkey_secrets() {
-  local dir="$STATE_DIR/kvtls" r out
-  mkdir -p "$dir"; chmod 0700 "$dir"
+  local r
   for r in "${KV_ROLES[@]}"; do [ -s "$STATE_DIR/secrets/kv_$r" ] || ( umask 077; rand_hex 24 > "$STATE_DIR/secrets/kv_$r" ); done
-  if [ ! -s "$dir/ca.pem" ] || [ ! -s "$dir/server.crt" ] || [ ! -s "$dir/server.key" ]; then
-    out="$(sw run --rm --cap-drop ALL --entrypoint sh "$POSTGRES_IMAGE" -c 'set -e; cd /tmp
-      openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-384 -nodes -days 3650 -subj "/CN=rusty kv CA" -keyout ca.key -out ca.pem 2>/dev/null
-      openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-384 -nodes -subj "/CN=valkey" -keyout server.key -out server.csr 2>/dev/null
-      printf "subjectAltName=DNS:valkey\nextendedKeyUsage=serverAuth\n" > ext.cnf
-      openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 3650 -extfile ext.cnf -out server.crt 2>/dev/null
-      cat ca.pem; echo ----SPLIT----; cat server.key; echo ----SPLIT----; cat server.crt')"
-    ( umask 077
-      printf '%s\n' "$out" | awk 'BEGIN { n = 0 } /^----SPLIT----$/ { n++; next } n == 0 { print }' > "$dir/ca.pem"
-      printf '%s\n' "$out" | awk 'BEGIN { n = 0 } /^----SPLIT----$/ { n++; next } n == 1 { print }' > "$dir/server.key"
-      printf '%s\n' "$out" | awk 'BEGIN { n = 0 } /^----SPLIT----$/ { n++; next } n == 2 { print }' > "$dir/server.crt" )
-    grep -q 'PRIVATE KEY' "$dir/server.key" || die "could not make the certificates of the key-value store"
-  fi
+  make_ca_signed "$STATE_DIR/kvtls" "rusty kv CA" valkey
 }
 
 profile_secrets() {
