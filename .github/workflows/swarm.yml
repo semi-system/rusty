@@ -2,14 +2,23 @@
 # `rusty-swarm init`: Docker, the swarm, the roles, the secrets and configs, the migration job, the stack. The proof is the greeting of the mail ports through the edge (which only comes when the edge
 # reached a service and the service accepted the edge, found by NAME), then the same again after `upgrade`, and a backup.
 #
-# It runs the images that docker.yml published for `main` (a pull request's own images are not published), so it is a nightly and a manual run, and on pull requests that touch the tool.
-# It is not a required check. Security rules as in ci.yml: actions pinned by SHA, read-only token, no secrets.
+# It runs the images docker.yml published: after every successful docker run on `main` (the images of that very commit, so the tool and the services are tried together), nightly, and by hand
+# (`image_tag` says which). A pull request's own images are not published, so a pull request that touches the tool runs against `main`'s; the static check of the stack file (scripts/tests/swarm-stack.sh)
+# is what guards a pull request. It is not a required check. Security rules as in ci.yml: actions pinned by SHA, read-only token, no secrets.
 name: swarm
 
 on:
   schedule:
     - cron: "41 3 * * *"
   workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "the image tag to deploy (main, a sha-... tag, a release)"
+        default: main
+  workflow_run:
+    workflows: [docker]
+    types: [completed]
+    branches: [main]
   pull_request:
     paths:
       - "deploy/swarm/**"
@@ -27,12 +36,27 @@ jobs:
     name: single-node swarm
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    # After a docker run that did not succeed there are no images of that commit to try.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     permissions:
       contents: read
+    env:
+      EVENT: ${{ github.event_name }}
+      RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+      INPUT_TAG: ${{ github.event.inputs.image_tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Which images
+        run: |
+          set -euo pipefail
+          tag=main
+          if [ "$EVENT" = workflow_run ]; then tag="sha-${RUN_SHA:0:7}"; elif [ -n "$INPUT_TAG" ]; then tag="$INPUT_TAG"; fi
+          [[ "$tag" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad image tag" >&2; exit 1; }
+          echo "IMAGE_TAG=$tag" >> "$GITHUB_ENV"
+          echo "images: $tag"
       - name: The outside services (PostgreSQL over TLS and an S3 server)
         run: |
           set -euo pipefail
@@ -57,6 +81,7 @@ jobs:
           S3_ACCESS_KEY=$(sed -n 's/^S3_ACCESS_KEY=//p' "$ext/s3.env")
           S3_SECRET_KEY_FILE="$ext/s3.secret"
           TLS_MODE=self
+          IMAGE_TAG=$IMAGE_TAG
           ENV
           bash deploy/swarm/rusty-swarm --env "$RUNNER_TEMP/swarm.env" inventory
       - name: init, the whole flow
