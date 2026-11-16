@@ -8,7 +8,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 mem_of() { awk -v n="$2" '$1 == n { print $2 }' <<< "$1"; }   # memory MiB of a container in a table
 rows() { sed -n '/^container/,/^$/p' <<< "$1" | tail -n +2; }
 
-out="$(bash $L --total-mem-mib 8192 --total-cpus 4 --profiles filter,valkey,monitoring --replicas imap=2,smtp-in=3)"
+out="$(bash $L --total-mem-mib 8192 --total-cpus 4 --profiles filter,valkey --replicas imap=2,smtp-in=3)"
 t="$(rows "$out")"
 budget=$((8192 * 80 / 100))
 sum=0

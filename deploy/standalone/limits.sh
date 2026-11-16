@@ -2,7 +2,7 @@
 # Works out the memory and CPU limit of every container of the stack from what the machine (or the swarm) has: it takes the total, keeps 80 % of it for the stack (the rest is the host's, Docker's and
 # the page cache's), and divides that over the containers by weight, every container first getting its minimum.
 #
-#   ./limits.sh [--percent 80] [--profiles filter,valkey,monitoring] [--replicas imap=2,smtp-in=3]
+#   ./limits.sh [--percent 80] [--profiles filter,valkey] [--replicas imap=2,smtp-in=3]
 #               [--equal] [--out compose.limits.yaml] [--total-mem-mib N --total-cpus N]
 #
 # Where the totals come from: a swarm manager adds up the Ready and Active nodes (`docker node inspect`); anything else reads this machine (/proc/meminfo, nproc). `--total-mem-mib` and
@@ -61,8 +61,7 @@ for p in "${PROF[@]:-}"; do
     "") ;;
     filter) SERVICES="$SERVICES clamd:60:2048:0 rspamd:15:256:0 resolver:5:64:0 freshclam:5:128:0" ;;
     valkey) SERVICES="$SERVICES valkey:5:64:0" ;;
-    monitoring) SERVICES="$SERVICES prometheus:15:256:0" ;;
-    *) echo "limits: unknown profile $p (filter, valkey, monitoring)" >&2; exit 2 ;;
+    *) echo "limits: unknown profile $p (filter, valkey)" >&2; exit 2 ;;
   esac
 done
 
