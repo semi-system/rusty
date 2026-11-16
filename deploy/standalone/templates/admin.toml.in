@@ -22,6 +22,22 @@ public_key = "@SEAL_PUBLIC@"
 #METRICS [metrics]
 #METRICS listen = "0.0.0.0:9100"
 #METRICS allowed_peers = [@METRICS_ALLOW@]
+#METRICS # The one place to scrape: this process reads the other services and serves them all, labelled, on this listener.
+#METRICS [[metrics.scrape]]
+#METRICS service = "smtp-in"
+#METRICS address = "smtp-in:9100"
+#METRICS [[metrics.scrape]]
+#METRICS service = "submission"
+#METRICS address = "submission:9100"
+#METRICS [[metrics.scrape]]
+#METRICS service = "imap"
+#METRICS address = "imap:9100"
+#METRICS [[metrics.scrape]]
+#METRICS service = "outbound"
+#METRICS address = "outbound:9100"
+#METRICS [[metrics.scrape]]
+#METRICS service = "gc"
+#METRICS address = "gc:9100"
 # The shared key-value store (./setup.sh --valkey): the sessions, the login throttle and the sending budget are then one for every replica.
 #VALKEY [valkey]
 #VALKEY host = "valkey"

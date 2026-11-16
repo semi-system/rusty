@@ -286,8 +286,9 @@ What a replica needs:
 
 ## Metrics
 
-`./setup.sh --metrics-allow 192.168.1.10/32 ...` (repeatable: one to sixteen networks, never every address) gives every service a `[metrics]` listener on port 9100 that serves `GET /metrics` in the Prometheus text
-format to those networks only; the listeners sit on the internal `metrics` network (`rusty_metrics`), which no port of the host reaches. The stack does **not** run a Prometheus: yours joins that network
-(`docker run --network rusty_metrics ...`, or an override file) and scrapes `smtp-in:9100`, `submission:9100`, `imap:9100`, `outbound:9100`, `gc:9100` and `admin:9100`: Docker's resolver returns every replica of a
-service, so `deploy/monitoring/prometheus.yml` (a sample scrape configuration with `dns_sd_configs`) finds each of them. `deploy/monitoring/rusty.rules.yml` has sample alert rules; `docs/design-metrics.md` lists
-every metric. `scripts/check-prom-rules.sh` runs `promtool` on both samples in CI.
+`./setup.sh --metrics-allow 192.168.1.10/32 ...` (repeatable: one to sixteen networks, never every address) turns the metrics on. Every service then has a `[metrics]` listener on port 9100 (the internal `metrics` network,
+`rusty_metrics`, which no port of the host reaches) that only the admin web, at the fixed address 10.79.0.2, may read; the admin web is the **central endpoint**: it reads every replica of every service (Docker's
+resolver returns them all) and serves everything on `admin:9100`, each sample labelled `service` and `instance`, plus `rusty_scrape_target_up` (0 for a service that cannot be read). Only the networks named by
+`--metrics-allow` may read the admin web's endpoint. The stack does **not** run a Prometheus: yours joins the `rusty_metrics` network (`docker run --network rusty_metrics ...`, or an override file) and has ONE
+target, `admin:9100` (`deploy/monitoring/prometheus.yml`), so no service can be missed. `deploy/monitoring/rusty.rules.yml` has sample alert rules; `docs/design-metrics.md` lists every metric.
+`scripts/check-prom-rules.sh` runs `promtool` on both samples in CI.

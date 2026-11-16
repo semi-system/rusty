@@ -166,3 +166,103 @@ async fn an_empty_or_unbounded_allow_list_is_refused() {
     assert!(serve("127.0.0.1:0".parse().unwrap(), reg.clone(), vec![], CancellationToken::new()).await.is_err());
     assert!(serve("127.0.0.1:0".parse().unwrap(), reg, vec![cidr("0.0.0.0/0")], CancellationToken::new()).await.is_err());
 }
+
+/// A tiny HTTP server that answers every request with `status` and `body`, for the central endpoint to read.
+async fn fake_service(status: &'static str, body: &'static str) -> SocketAddr {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut s, _)) = l.accept().await else {
+                return;
+            };
+            let mut buf = [0u8; 512];
+            let _ = s.read(&mut buf).await;
+            let _ = s
+                .write_all(
+                    format!("HTTP/1.0 {status}\r\ncontent-type: text/plain\r\n\r\n{body}")
+                        .as_bytes(),
+                )
+                .await;
+        }
+    });
+    addr
+}
+
+#[tokio::test]
+async fn the_central_endpoint_serves_every_service_with_labels_and_shows_a_dead_one_as_down() {
+    let imap = fake_service("200 OK", "# HELP rusty_connections_accepted_total Accepted.\n# TYPE rusty_connections_accepted_total counter\nrusty_connections_accepted_total{listener=\"imap\"} 7\nrusty_process_uptime_seconds 5\n").await;
+    let sick = fake_service("500 Internal Server Error", "boom\n").await;
+    let dead = {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        l.local_addr().unwrap()
+    };
+    let reg = Registry::new("admin", "1");
+    reg.inc("rusty_connections_accepted_total", &[("listener", "admin")]);
+    let target = |service: &str, a: SocketAddr| rusty_metrics::Target {
+        service: service.into(),
+        address: a.to_string(),
+    };
+    reg.set_federation(rusty_metrics::Federation::new(vec![
+        target("imap", imap),
+        target("sick", sick),
+        target("gone", dead),
+    ]));
+    let text = reg.render().await;
+    assert!(text.contains(&format!("rusty_connections_accepted_total{{instance=\"{imap}\",service=\"imap\",listener=\"imap\"}} 7\n")), "{text}");
+    assert!(text.contains("rusty_connections_accepted_total{instance=\"local\",service=\"admin\",listener=\"admin\"} 1\n"), "own samples are labelled too: {text}");
+    assert!(
+        text.contains(&format!(
+            "rusty_process_uptime_seconds{{instance=\"{imap}\",service=\"imap\"}} 5\n"
+        )),
+        "a sample with no labels gets them: {text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "rusty_scrape_target_up{{instance=\"{imap}\",service=\"imap\"}} 1\n"
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "rusty_scrape_target_up{{instance=\"{sick}\",service=\"sick\"}} 0\n"
+        )),
+        "a bad status is down: {text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "rusty_scrape_target_up{{instance=\"{dead}\",service=\"gone\"}} 0\n"
+        )),
+        "a refused connection is down: {text}"
+    );
+    assert_eq!(
+        text.matches("# TYPE rusty_connections_accepted_total ")
+            .count(),
+        1,
+        "one TYPE per name across services: {text}"
+    );
+    assert!(!text.contains("boom"));
+    for line in text.lines().filter(|l| !l.starts_with('#')) {
+        assert!(
+            line.contains("service=\""),
+            "every sample names its service: {line}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_name_that_resolves_to_many_addresses_is_many_instances() {
+    let a = fake_service("200 OK", "x_total 1\n").await;
+    let reg = Registry::new("admin", "1");
+    reg.set_federation(rusty_metrics::Federation::new(vec![
+        rusty_metrics::Target {
+            service: "svc".into(),
+            address: format!("localhost:{}", a.port()),
+        },
+    ]));
+    let text = reg.render().await;
+    assert!(
+        text.contains("rusty_scrape_target_up{instance=\"127.0.0.1:"),
+        "the instance is the address, not the name: {text}"
+    );
+}

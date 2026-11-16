@@ -17,12 +17,61 @@ pub struct MetricsConfig {
     pub listen: SocketAddr,
     /// The networks that may scrape it.
     pub allowed_peers: Vec<Cidr>,
+    /// The services this process reads and serves in its own exposition (the admin web only: the one place to scrape). Empty: none.
+    #[serde(default)]
+    pub scrape: Vec<ScrapeTarget>,
+}
+
+/// `[[metrics.scrape]]`: a service to read, by name and by `host:port` of its metrics listener (the host may resolve to many addresses: each is an instance).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScrapeTarget {
+    pub service: String,
+    pub address: String,
+}
+
+fn name_ok(s: &str) -> bool {
+    (1..=32).contains(&s.len())
+        && s.starts_with(|c: char| c.is_ascii_lowercase())
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
+fn address_ok(s: &str) -> bool {
+    let Some((host, port)) = s.rsplit_once(':') else {
+        return false;
+    };
+    (1..=253).contains(&host.len())
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+        && port.parse::<u16>().is_ok_and(|p| p != 0)
 }
 
 impl MetricsConfig {
     pub(crate) fn validate(&self) -> Result<()> {
         if self.allowed_peers.is_empty() || self.allowed_peers.len() > 16 || self.allowed_peers.iter().any(Cidr::is_everything) {
             return Err(Error::Invalid("metrics.allowed_peers must name one to sixteen address blocks and none may hold every address".into()));
+        }
+        if self.scrape.len() > 32 {
+            return Err(Error::Invalid(
+                "metrics.scrape holds at most 32 targets".into(),
+            ));
+        }
+        for t in &self.scrape {
+            if !name_ok(&t.service) || !address_ok(&t.address) {
+                return Err(Error::Invalid("a metrics.scrape target needs a service name (a-z, 0-9, - and _) and an address host:port".into()));
+            }
+        }
+        if self
+            .scrape
+            .iter()
+            .enumerate()
+            .any(|(i, t)| self.scrape[..i].iter().any(|u| u.service == t.service))
+        {
+            return Err(Error::Invalid(
+                "metrics.scrape names a service twice".into(),
+            ));
         }
         Ok(())
     }

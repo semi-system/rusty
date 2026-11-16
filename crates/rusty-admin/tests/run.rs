@@ -193,3 +193,47 @@ async fn with_a_metrics_section_the_admin_web_serves_the_platform_figures_to_the
     stop.cancel();
     assert!(tokio::time::timeout(Duration::from_secs(10), r.task).await.is_ok());
 }
+
+#[tokio::test]
+async fn with_scrape_targets_the_admin_web_is_the_one_endpoint_for_every_service() {
+    let (store, _db) = store().await;
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let dead = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let cfg = config(&format!(
+        "[admin]\nlisten = \"127.0.0.1:0\"\npublic_origin = \"https://admin.example.org\"\n[metrics]\nlisten = \"127.0.0.1:{port}\"\nallowed_peers = [\"127.0.0.1/32\"]\n\
+         [[metrics.scrape]]\nservice = \"self\"\naddress = \"127.0.0.1:{port}\"\n[[metrics.scrape]]\nservice = \"imap\"\naddress = \"127.0.0.1:{dead}\"\n"
+    ));
+    let stop = CancellationToken::new();
+    let r = start(&cfg, &store, stop.clone()).await.unwrap();
+    let body = get(format!("127.0.0.1:{port}").parse().unwrap(), "/metrics")
+        .await
+        .1;
+    assert!(
+        body.contains(&format!(
+            "rusty_scrape_target_up{{instance=\"127.0.0.1:{port}\",service=\"self\"}} 1"
+        )),
+        "the endpoint reads a service it can reach: {body}"
+    );
+    assert!(
+        body.contains(&format!(
+            "rusty_scrape_target_up{{instance=\"127.0.0.1:{dead}\",service=\"imap\"}} 0"
+        )),
+        "a service it cannot reach is down, not missing: {body}"
+    );
+    assert!(
+        body.contains("rusty_build_info{instance=\"local\",service=\"admin\",version="),
+        "its own samples are labelled: {body}"
+    );
+    stop.cancel();
+    assert!(tokio::time::timeout(Duration::from_secs(10), r.task)
+        .await
+        .is_ok());
+}

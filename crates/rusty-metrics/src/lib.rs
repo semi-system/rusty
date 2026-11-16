@@ -6,6 +6,9 @@
 
 #![forbid(unsafe_code)]
 
+mod federate;
+pub use federate::{Federation, Target};
+
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -73,6 +76,7 @@ pub struct Registry {
     started: Instant,
     counters: Mutex<BTreeMap<CounterKey, u64>>,
     collectors: Mutex<Vec<Arc<dyn Collector>>>,
+    federation: Mutex<Option<Federation>>,
     timeout: Duration,
 }
 
@@ -92,12 +96,20 @@ fn help_of(name: &str) -> &'static str {
 
 impl Registry {
     pub fn new(service: &'static str, version: &str) -> Registry {
-        Registry { service, version: version.to_owned(), started: Instant::now(), counters: Mutex::new(BTreeMap::new()), collectors: Mutex::new(Vec::new()), timeout: COLLECTOR_TIMEOUT }
+        Registry { service, version: version.to_owned(), started: Instant::now(), counters: Mutex::new(BTreeMap::new()), collectors: Mutex::new(Vec::new()), federation: Mutex::new(None), timeout: COLLECTOR_TIMEOUT }
     }
 
     pub fn with_collector_timeout(mut self, timeout: Duration) -> Registry {
         self.timeout = timeout;
         self
+    }
+
+    /// Make this registry the central endpoint: a scrape also reads the targets and serves their samples with `service` and `instance` labels.
+    pub fn set_federation(&self, f: Federation) {
+        *self
+            .federation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(f);
     }
 
     pub fn add_collector(&self, c: Arc<dyn Collector>) {
@@ -132,7 +144,16 @@ impl Registry {
             all.push(Sample { name, help: help_of(name), kind: Kind::Counter, labels: labels.clone(), value: *n as f64 });
         }
         all.extend(gathered);
-        encode(&all)
+        let own = encode(&all);
+        let federation = self
+            .federation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        match federation {
+            Some(f) => f.merge_with(self.service, &own).await,
+            None => own,
+        }
     }
 }
 

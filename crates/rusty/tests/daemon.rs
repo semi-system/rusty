@@ -422,7 +422,7 @@ async fn the_metrics_listener_counts_what_the_service_listeners_report_and_answe
     let mut cfg = pg.config(&data);
     // A free port for the metrics listener (the service logs it; the test needs it before the start).
     let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-    cfg.metrics = Some(rusty_core::config::MetricsConfig { listen: format!("127.0.0.1:{port}").parse().unwrap(), allowed_peers: vec!["127.0.0.1/32".parse().unwrap()] });
+    cfg.metrics = Some(rusty_core::config::MetricsConfig { listen: format!("127.0.0.1:{port}").parse().unwrap(), allowed_peers: vec!["127.0.0.1/32".parse().unwrap()], scrape: Vec::new() });
     let token = CancellationToken::new();
     let run = start(cfg, Profile::Dev, token.clone()).await.unwrap();
     // One connection to the SMTP port, so there is something to count.
@@ -447,4 +447,26 @@ async fn the_metrics_listener_counts_what_the_service_listeners_report_and_answe
     assert!(text.contains("rusty_connections_closed_total{listener=\"smtp-25\"} 1"), "{text}");
     token.cancel();
     run.wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_service_other_than_the_admin_web_refuses_metrics_scrape() {
+    let tmp = private_tmp();
+    let data = tmp.path().join("data");
+    let pg = pg_dev().await;
+    let mut cfg = pg.config(&data);
+    cfg.metrics = Some(rusty_core::config::MetricsConfig {
+        listen: "127.0.0.1:0".parse().unwrap(),
+        allowed_peers: vec!["127.0.0.1/32".parse().unwrap()],
+        scrape: vec![rusty_core::config::ScrapeTarget {
+            service: "imap".into(),
+            address: "imap:9100".into(),
+        }],
+    });
+    assert!(
+        start(cfg, Profile::Dev, CancellationToken::new())
+            .await
+            .is_err(),
+        "only the admin web reads the other services"
+    );
 }

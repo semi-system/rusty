@@ -17,11 +17,17 @@ groups:
         annotations:
           summary: "A replica of {{ $labels.service }} stopped beating"
       - alert: RustyScrapeTargetDown
-        expr: up{job=~"rusty-.*"} == 0
+        expr: rusty_scrape_target_up == 0
         for: 3m
         labels: { severity: warning }
         annotations:
-          summary: "The metrics of {{ $labels.service }} ({{ $labels.instance }}) cannot be scraped"
+          summary: "The central endpoint cannot read the metrics of {{ $labels.service }} ({{ $labels.instance }})"
+      - alert: RustyCentralEndpointDown
+        expr: up{job="rusty"} == 0
+        for: 3m
+        labels: { severity: critical }
+        annotations:
+          summary: "The central metrics endpoint (the admin web) cannot be scraped: no service is being watched"
       - alert: RustySessionPanics
         expr: sum by (service, listener) (increase(rusty_session_panics_total[15m])) > 0
         labels: { severity: warning }

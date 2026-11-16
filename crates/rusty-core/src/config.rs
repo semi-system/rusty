@@ -16,7 +16,7 @@ pub use crate::config_admin::{valid_origin, AdminConfig};
 pub use crate::config_sealing::{SealingConfig, UnsealingConfig, MAX_UNSEALING_KEYS};
 pub use crate::config_blob_s3::{BlobS3Config, DEFAULT_BLOB_S3_CONCURRENT};
 pub use crate::config_filter::{FilterConfig, OnError};
-pub use crate::config_metrics::MetricsConfig;
+pub use crate::config_metrics::{MetricsConfig, ScrapeTarget};
 pub use crate::config_resolver::ResolverConfig;
 pub use crate::config_valkey::ValkeyConfig;
 pub use crate::config_store::{

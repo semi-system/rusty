@@ -11,7 +11,7 @@ rusty-core = { path = "../rusty-core" }
 rusty-svc = { path = "../rusty-svc", default-features = false }
 rusty-http = { path = "../rusty-http" }
 async-trait.workspace = true
-tokio = { workspace = true, features = ["rt", "time", "sync", "macros"] }
+tokio = { workspace = true, features = ["rt", "time", "sync", "macros", "net", "io-util"] }
 tokio-util.workspace = true
 tracing.workspace = true
 

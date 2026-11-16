@@ -160,6 +160,9 @@ async fn build(
     }
 
     // `[metrics]`: the counters of what the listeners report and of what the scanners decide, served on a listener of its own to the allowed scrapers only (docs/design-metrics.md).
+    if cfg.metrics.as_ref().is_some_and(|m| !m.scrape.is_empty()) {
+        return Err(rusty_core::Error::Invalid("metrics.scrape belongs to the admin web: it is the one place that reads the other services".into()));
+    }
     let registry = Arc::new(rusty_metrics::Registry::new(role.map_or("rusty", |r| r.name()), env!("CARGO_PKG_VERSION")));
     let scan_observer: Option<rusty_smtp::scan::Observer> = cfg.metrics.as_ref().map(|_| {
         let registry = registry.clone();
