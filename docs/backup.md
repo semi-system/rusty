@@ -24,3 +24,28 @@ rustyctl --config /etc/rusty/rusty.toml blobs verify                            
 
 Not covered: continuous archiving / point-in-time recovery (`pg_basebackup` with WAL archiving is the PostgreSQL way and is compatible with this layout), and S3 blob stores (when blobs move to S3,
 versioning or replication of the bucket replaces the file copy; `blobs verify` will need an S3 reader).
+
+## The standalone stack (Docker Compose)
+
+`deploy/standalone/backup.sh` and `restore.sh` do the same for the stack `setup.sh` installs (the commands above are for a database and a blob directory you run yourself).
+
+```sh
+./backup.sh --out /backup/2026-11-16 --with-keys        # the services keep running
+# ...a new host, or the same one after `docker compose down -v`:
+./setup.sh ...the same arguments...                      # then
+./restore.sh --from /backup/2026-11-16 --with-keys
+docker compose up -d && docker compose run --rm --name rusty-ctl-1 ctl blobs verify
+```
+
+* The database is dumped first (`pg_dump -Fc`, one consistent snapshot) and the blob volume (`mail-data`) copied after, for the reason given above. The files are written by whoever runs the script, mode 0600,
+  with `SHA256SUMS` and a `MANIFEST`.
+* `--with-keys` adds the sealing key pair. **Without it the sealed DKIM keys, relay passwords and S3 keys in the database can never be opened again**; keep that copy apart from the rest.
+* `restore.sh` checks `SHA256SUMS` first, makes the roles (`db-init`), refuses a database that already has tables and a blob volume that is not empty, restores the dump **as the schema owner**
+  (`rusty_migrator`, so the `SECURITY DEFINER` functions have the right owner), and unpacks the blobs. The next `up` runs the migration job, which applies the privileges again.
+* A blob store on S3 is not copied: the bucket's own versioning or replication does that. After any restore `rustyctl blobs verify` reads every store and reports a referenced object that is missing.
+* The names matter: `docker compose run` gives containers random names and the database allows its clients by name (`docker.md`), so the scripts and the commands above pass `--name`.
+
+**The drill (2026-11-16, the LAN test server).** A stack with 49 messages, 5 accounts and one domain was backed up, every volume was removed (`down -v`), the stack was restored from the backup alone and
+started: the same 49 messages, accounts and blobs came back, IMAP showed the same 28 messages in the mailbox of the test account, `blobs verify` found 49 of 49 blobs, and new mail was accepted and
+delivered. Two defects of the first draft of the scripts showed up only in this run (backup files owned by root; the role-creating job started under a random container name and was refused by the
+database) and are fixed. Repeat the drill after any change to the stack, on a copy.
