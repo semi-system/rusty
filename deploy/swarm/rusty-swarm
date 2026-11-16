@@ -16,6 +16,7 @@
 #                                                (an encrypted overlay when the inventory says ENCRYPTED=1)
 #   ./rusty-swarm [--env FILE] logs SERVICE [LINES]   the log of a service (for example admin: the setup token of the first start); verify: the greeting of ports 25, 587 and 143 through the edge
 #   ./rusty-swarm [--env FILE] backup [DIR] | restore FILE | upgrade [--no-backup]   a dump of the database and the sealing key; the way back (a restore); a new release: backup, secrets, configs, migration, rolling update
+#   ./rusty-swarm [--env FILE] certs sync | certs install-timer   with TLS_MODE=acme: the edge's certificate to the mail services (rolling update when it is new) and a systemd timer that does it every six hours
 #   ./rusty-swarm [--env FILE] stack          print the stack file the next deploy would use
 #   ./rusty-swarm [--env FILE] prepare secrets | prepare configs | migrate | deploy   the next steps of the flow, each repeatable: the swarm secrets (versioned names) and configs (named by the
 #                                                hash of their content), the schema migration as a job, and the stack (the edge and the services)
@@ -420,13 +421,16 @@ cmd_all() {
   cmd_prepare_db
   cmd_migrate
   cmd_deploy
+  # With ACME certificates: wait for the edge to get them, give them to the mail services, and keep them current (a timer when this machine is the Manager).
+  wait_acme
+  if [ "$TLS_MODE" = acme ]; then cmd_certs_install_timer || echo "init: no timer was installed: run '$0 certs sync' from cron every few hours" >&2; fi
   echo "init: done: the stack is deployed (the first start: the admin web prints the setup token in its log: ./rusty-swarm logs admin)"
 }
 
 # ---- main ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 validate_inventory
 # The defaults of the stack (the passwords and keys it makes itself) are worked out before any step that needs them.
-case "${1:-}" in init|prepare|migrate|deploy|stack|logs|verify|backup|restore|upgrade) resolve_defaults ;; esac
+case "${1:-}" in init|prepare|migrate|deploy|stack|logs|verify|backup|restore|upgrade|certs) resolve_defaults ;; esac
 case "${1:-}:${2:-}" in
   init:*) shift; cmd_all "$@" ;;
   inventory:*) cmd_inventory ;;
@@ -444,6 +448,8 @@ case "${1:-}:${2:-}" in
   backup:*) shift; cmd_backup "$@" ;;
   restore:*) shift; cmd_restore "$@" ;;
   upgrade:*) shift; cmd_upgrade "$@" ;;
+  certs:sync) cmd_certs_sync ;;
+  certs:install-timer) cmd_certs_install_timer ;;
   verify:*) cmd_verify_stack ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print } /^set / { exit }' "$0"; [ -z "${1:-}" ] || exit 2 ;;
 esac

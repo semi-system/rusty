@@ -130,10 +130,11 @@ conf_migrate() { head_common; printf 'gc_grace_seconds = 604800\n\n'; blk_blob; 
 
 # The edge's configuration: the standalone template with the swarm's backends (every task of a service by `tasks.<service>`) and the certificates it has (self-signed here).
 conf_haproxy() {
-  local allow="$ADMIN_ALLOW"
-  sed -e '/^#ACME/d' -e 's/^#SELF //' \
+  local allow="$ADMIN_ALLOW" keep="#SELF " drop="#ACME" dir="${ACME_DIRECTORY:-https://acme-v02.api.letsencrypt.org/directory}"
+  if [ "$TLS_MODE" = acme ]; then keep="#ACME"; drop="#SELF "; fi
+  sed -e "/^${drop}/d" -e "s|^${keep}||" \
       -e 's/\(server-template [a-z-]* [0-9]-[0-9]\) \([a-z-]*\):/\1 tasks.\2:/' \
-      -e "s|@MAIL_HOST@|$MAIL_HOST|g" -e "s|@ADMIN_HOST@|$ADMIN_HOST|g" -e "s|@ADMIN_ALLOW@|$allow|g" -e "s|@CONTACT@|${CONTACT:-}|g" -e "s|@ACME_DIRECTORY@||g" \
+      -e "s|@MAIL_HOST@|$MAIL_HOST|g" -e "s|@ADMIN_HOST@|$ADMIN_HOST|g" -e "s|@ADMIN_ALLOW@|$allow|g" -e "s|@CONTACT@|${CONTACT:-}|g" -e "s|@ACME_DIRECTORY@|$dir|g" \
       "$HERE/../standalone/templates/haproxy.cfg.in"
 }
 
@@ -239,12 +240,17 @@ require_stack_inputs() {
   resolve_defaults
   [ -n "$MAIL_HOST" ] && [ -n "$ADMIN_HOST" ] && [ -n "$ADMIN_ALLOW" ] || die "the inventory needs MAIL_HOST, ADMIN_HOST and ADMIN_ALLOW"
   [ -n "$S3_ACCESS_KEY" ] && [ -r "$S3_SECRET_KEY_FILE" ] || die "S3_ENDPOINT is set but S3_ACCESS_KEY or S3_SECRET_KEY_FILE is not"
-  [ "$TLS_MODE" = self ] || die "TLS_MODE=$TLS_MODE: only self (self-signed certificates) is built so far; ACME and the certificate sync are a later step"
+  case "$TLS_MODE" in
+    self) ;;
+    acme) [[ "${CONTACT:-}" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]] || die "TLS_MODE=acme needs CONTACT (an e-mail address: the certificate authority writes to it)" ;;
+    *) die "TLS_MODE is self (self-signed certificates) or acme (certificates from Let's Encrypt)" ;;
+  esac
   make_passwords
 }
 
 cmd_prepare_secrets() {
   require_stack_inputs
+  read_names || true
   local r d="$STATE_DIR/stack"
   mkdir -p "$d"; chmod 0700 "$d"
   make_sealing_key
@@ -257,19 +263,23 @@ cmd_prepare_secrets() {
   ensure_secret unseal_key "$STATE_DIR/keys/unseal.key"
   ensure_secret tls_cert "$STATE_DIR/tls/mail.crt"
   ensure_secret tls_key "$STATE_DIR/tls/mail.key"
-  ensure_secret edge_mail_pem "$STATE_DIR/tls/mail.pem"
-  ensure_secret edge_admin_pem "$STATE_DIR/tls/admin.pem"
+  if [ "$TLS_MODE" = self ]; then
+    ensure_secret edge_mail_pem "$STATE_DIR/tls/mail.pem"
+    ensure_secret edge_admin_pem "$STATE_DIR/tls/admin.pem"
+  fi
   if [ "$DB_IN_STACK" = 1 ]; then
     make_db_tls
     ensure_secret pg_postgres "$DB_ADMIN_PASSWORD_FILE"
     ensure_secret db_server_crt "$STATE_DIR/dbtls/server.crt"
     ensure_secret db_server_key "$STATE_DIR/dbtls/server.key"
   fi
+  save_names
   echo "prepare secrets: done"
 }
 
 cmd_prepare_configs() {
   require_stack_inputs
+  read_names || true
   [ -s "$STATE_DIR/keys/seal.pub" ] || die "no sealing key yet: run 'prepare secrets' first"
   local d="$STATE_DIR/stack/etc" s
   mkdir -p "$d"; chmod 0700 "$STATE_DIR/stack" "$d"
@@ -282,6 +292,7 @@ cmd_prepare_configs() {
   ensure_config haproxy "$d/haproxy.cfg"
   if [ "$DB_IN_STACK" = 1 ]; then make_db_tls; ( umask 077; conf_pg_hba > "$d/pg_hba.conf" ); ensure_config pg_hba "$d/pg_hba.conf"; fi
   if [ -n "$DB_CA" ]; then ensure_config db_ca "$DB_CA"; fi
+  save_names
   echo "prepare configs: done"
 }
 
@@ -294,28 +305,39 @@ y_config() { # BASE TARGET
   printf '      - source: %s\n        target: %s\n        mode: 0444\n' "${CONFIG_NAME[$1]}" "$2"
 }
 
-load_names() { # the versioned names, from the manager
-  local base n
-  for base in "${SERVICE_ROLES[@]/#/pg_}" s3_access s3_secret unseal_key tls_cert tls_key edge_mail_pem edge_admin_pem; do
-    n="$(sw secret ls --filter "label=rusty.base=$base" --format '{{.Name}}' | sed "s/^${base}_v//" | sort -n | tail -1)"
-    [ -n "$n" ] || die "the secret $base is missing: run 'prepare secrets'"
-    SECRET_NAME[$base]="${base}_v$n"
+# The names the stack uses are those the last `prepare secrets` and `prepare configs` chose (a file in the state directory), not "the newest object": going back to an older content picks the old
+# object again, and a name that no longer exists on the Manager is reported before anything is deployed.
+names_file() { printf '%s/stack/names\n' "$STATE_DIR"; }
+save_names() {
+  local k f; f="$(names_file)"
+  { for k in "${!SECRET_NAME[@]}"; do echo "S $k ${SECRET_NAME[$k]}"; done; for k in "${!CONFIG_NAME[@]}"; do echo "C $k ${CONFIG_NAME[$k]}"; done; } | sort > "$f.new" && mv "$f.new" "$f"
+}
+read_names() {
+  local t k v
+  [ -s "$(names_file)" ] || return 1
+  while read -r t k v; do
+    case "$t" in S) SECRET_NAME[$k]="$v" ;; C) CONFIG_NAME[$k]="$v" ;; esac
+  done < "$(names_file)"
+}
+load_names() {
+  local base need_s need_c
+  read_names || die "nothing was prepared yet: run 'prepare secrets' and 'prepare configs'"
+  need_s="${SERVICE_ROLES[*]/#/pg_} s3_access s3_secret unseal_key tls_cert tls_key"
+  [ "$TLS_MODE" != self ] || need_s="$need_s edge_mail_pem edge_admin_pem"
+  [ "$DB_IN_STACK" != 1 ] || need_s="$need_s pg_postgres db_server_crt db_server_key"
+  need_c="smtp_in submission imap outbound gc admin migrate haproxy"
+  [ "$DB_IN_STACK" != 1 ] || need_c="$need_c pg_hba"
+  [ -z "$DB_CA" ] || need_c="$need_c db_ca"
+  for base in $need_s; do
+    [ -n "${SECRET_NAME[$base]:-}" ] && sw secret inspect "${SECRET_NAME[$base]}" >/dev/null 2>&1 || die "the secret $base is missing on the Manager: run 'prepare secrets'"
   done
-  if [ "$DB_IN_STACK" = 1 ]; then
-    for base in pg_postgres db_server_crt db_server_key; do
-      n="$(sw secret ls --filter "label=rusty.base=$base" --format '{{.Name}}' | sed "s/^${base}_v//" | sort -n | tail -1)"
-      [ -n "$n" ] || die "the secret $base is missing: run 'prepare secrets'"
-      SECRET_NAME[$base]="${base}_v$n"
-    done
-    n="$(sw config ls --filter "label=rusty.base=pg_hba" --format '{{.Name}} {{.CreatedAt}}' | sort -k2 | tail -1 | cut -d' ' -f1)"
-    [ -n "$n" ] || die "the config pg_hba is missing: run 'prepare configs'"
-    CONFIG_NAME[pg_hba]="$n"
-  fi
-  for base in smtp_in submission imap outbound gc admin migrate haproxy db_ca; do
-    n="$(sw config ls --filter "label=rusty.base=$base" --format '{{.Name}} {{.CreatedAt}}' | sort -k2 | tail -1 | cut -d' ' -f1)"
-    [ -n "$n" ] || { [ "$base" = db_ca ] && continue; die "the config $base is missing: run 'prepare configs'"; }
-    CONFIG_NAME[$base]="$n"
+  for base in $need_c; do
+    [ -n "${CONFIG_NAME[$base]:-}" ] && sw config inspect "${CONFIG_NAME[$base]}" >/dev/null 2>&1 || die "the config $base is missing on the Manager: run 'prepare configs'"
   done
+  # A name of a thing this inventory does not use must not reach the stack file.
+  [ -n "$DB_CA" ] || unset 'CONFIG_NAME[db_ca]'
+  if [ "$TLS_MODE" != self ]; then unset 'SECRET_NAME[edge_mail_pem]' 'SECRET_NAME[edge_admin_pem]'; fi
+  if [ "$DB_IN_STACK" != 1 ]; then unset 'SECRET_NAME[pg_postgres]' 'SECRET_NAME[db_server_crt]' 'SECRET_NAME[db_server_key]' 'CONFIG_NAME[pg_hba]'; fi
 }
 
 y_service_common() { # NAME IMAGE REPLICAS
@@ -356,13 +378,19 @@ gen_stack() {
     if [ -z "$STACK_ONLY" ]; then
       # The edge: the one public entrance, on the Manager, its ports on the host (no routing mesh: the clients' addresses are kept).
       y_service_common edge "$(lock_ref 'haproxy:3.4.7-alpine3.24')"
+      if [ "$TLS_MODE" = acme ]; then
+        # The account key and the certificates the edge keeps live in a volume on the Manager; the runtime socket (cert sync reads the certificate from it) is a tmpfs.
+        printf '      - edgedata:/var/lib/haproxy\n      - type: tmpfs\n        target: /run/ha\n        tmpfs: { mode: 1777 }\n'
+      fi
       printf '    sysctls: { net.ipv4.ip_unprivileged_port_start: 0 }\n    ports:\n'
       local p
       for p in 25 80 143 443 465 587 993; do printf '      - { target: %s, published: %s, protocol: tcp, mode: host }\n' "$p" "$p"; done
       y_deploy 1 "node.role == manager" stop-first edge
-      printf '    secrets:\n'
-      y_secret edge_mail_pem /var/lib/haproxy/certs/mail.pem 99
-      y_secret edge_admin_pem /var/lib/haproxy/certs/admin.pem 99
+      if [ "$TLS_MODE" = self ]; then
+        printf '    secrets:\n'
+        y_secret edge_mail_pem /var/lib/haproxy/certs/mail.pem 99
+        y_secret edge_admin_pem /var/lib/haproxy/certs/admin.pem 99
+      fi
       printf '    configs:\n'
       y_config haproxy /usr/local/etc/haproxy/haproxy.cfg
       printf '    networks:\n      - app\n      - backend\n'
@@ -374,10 +402,11 @@ gen_stack() {
       gen_rusty_service admin admin "app backend metrics" 0 0
     fi
     printf 'networks:\n  app: { driver: overlay, internal: true }\n  backend: { driver: overlay, attachable: true }\n  metrics: { driver: overlay, internal: true }\n'
-    if [ "$DB_IN_STACK" = 1 ] || [ "$S3_IN_STACK" = 1 ]; then
+    if [ "$DB_IN_STACK" = 1 ] || [ "$S3_IN_STACK" = 1 ] || [ "$TLS_MODE" = acme ]; then
       printf 'volumes:\n'
       [ "$DB_IN_STACK" = 0 ] || printf '  pgdata:\n'
       [ "$S3_IN_STACK" = 0 ] || printf '  s3data:\n'
+      [ "$TLS_MODE" != acme ] || printf '  edgedata:\n'
     fi
     gen_externals
   }
@@ -538,4 +567,67 @@ cmd_upgrade() {
   cmd_migrate
   cmd_deploy
   echo "upgrade: done"
+}
+
+# ---- certificates from Let's Encrypt (TLS_MODE=acme) -----------------------------------------------------------------------------------------------------------------------------------------
+# The edge gets and renews the certificates of the two host names itself (HTTP-01 on port 80). The mail services carry STARTTLS themselves (ports 25, 587, 143 pass the edge untouched), so they need
+# the certificate of MAIL_HOST as files: `certs sync` asks the edge for it (its runtime socket, from inside the edge container), and when it is new makes the next version of the secrets tls_cert and
+# tls_key and rolls the services onto it. It also keeps both certificates in the edge's volume, so a restarted edge starts with them instead of ordering new ones (no rate-limit risk).
+# Run it after the first deploy (init does, until the certificate is there) and then every few hours: `certs install-timer` makes a systemd timer on a Manager that runs this tool.
+edge_container() { sw ps -q --filter "label=com.docker.swarm.service.name=${STACK_NAME}_edge" --filter status=running | head -1; }
+
+cmd_certs_sync() {
+  if [ "$TLS_MODE" != acme ]; then echo "certs sync: TLS_MODE is $TLS_MODE: nothing to do"; return 0; fi
+  local c name host pem changed=0 dir="$STATE_DIR/tls"
+  read_names || true
+  c="$(edge_container)"
+  [ -n "$c" ] || { echo "certs sync: the edge is not running yet" >&2; return 1; }
+  mkdir -p "$dir"; chmod 0700 "$dir"
+  for name in mail admin; do
+    host="$MAIL_HOST"; [ "$name" = admin ] && host="$ADMIN_HOST"
+    pem="$(sw exec -i "$c" sh -c "echo 'dump ssl cert @certs/$name.pem' | socat -t5 - UNIX-CONNECT:/run/ha/admin.sock" 2>/dev/null || true)"
+    if ! printf '%s\n' "$pem" | grep -q 'PRIVATE KEY' || ! printf '%s\n' "$pem" | grep -q 'BEGIN CERTIFICATE'; then
+      echo "certs sync: the edge has no certificate for $host yet" >&2; return 1
+    fi
+    # The key and the chain apart; a combined file (the format HAProxy loads) is what the edge keeps.
+    printf '%s\n' "$pem" | awk '/^-----BEGIN / { d = ($0 ~ /PRIVATE KEY/) ? "k" : "c" } d == "k" { print } /^-----END / { d = "" }' > "$dir/$name.acme.key.new"
+    printf '%s\n' "$pem" | awk '/^-----BEGIN / { d = ($0 ~ /PRIVATE KEY/) ? "k" : "c" } d == "c" { print } /^-----END / { d = "" }' > "$dir/$name.acme.crt.new"
+    cat "$dir/$name.acme.key.new" "$dir/$name.acme.crt.new" > "$dir/$name.acme.pem.new"
+    printf '%s\n' "$pem" >/dev/null
+    sw exec -i -u 99 "$c" sh -c "umask 077; mkdir -p /var/lib/haproxy/certs && cat > /var/lib/haproxy/certs/$name.pem.new && mv /var/lib/haproxy/certs/$name.pem.new /var/lib/haproxy/certs/$name.pem" < "$dir/$name.acme.pem.new" || echo "certs sync: the edge could not keep the $name certificate" >&2
+    if [ "$name" = mail ] && ! cmp -s "$dir/mail.acme.crt.new" "$dir/mail.crt"; then
+      ( umask 077; cp "$dir/mail.acme.key.new" "$dir/mail.key"; cp "$dir/mail.acme.crt.new" "$dir/mail.crt" )
+      ensure_secret tls_cert "$dir/mail.crt"
+      ensure_secret tls_key "$dir/mail.key"
+      save_names
+      changed=1
+    fi
+    rm -f "$dir/$name.acme.key.new" "$dir/$name.acme.crt.new" "$dir/$name.acme.pem.new"
+  done
+  if [ "$changed" = 1 ]; then echo "certs sync: a new certificate for $MAIL_HOST; the mail services move onto it"; cmd_deploy; else echo "certs sync: the certificates are current"; fi
+}
+
+# After the first deploy the edge needs a minute to get its certificates: try until they are there.
+wait_acme() {
+  local _
+  [ "$TLS_MODE" = acme ] || return 0
+  for _ in $(seq 1 40); do
+    if cmd_certs_sync 2>/dev/null; then return 0; fi
+    sleep 15
+  done
+  echo "certs sync: the edge has no certificate after 10 minutes: are $MAIL_HOST and $ADMIN_HOST pointing at this server and port 80 open? (./rusty-swarm logs edge). The services run on a self-signed certificate until it comes; run 'certs sync' again later." >&2
+  return 0
+}
+
+# A systemd timer on this machine (a Manager reached as `local`) that runs `certs sync` every six hours.
+cmd_certs_install_timer() {
+  local self env_file s="" unit=/etc/systemd/system/rusty-swarm-certs
+  [ "$(node_field "$(manager_name)" 2)" = local ] || die "certs install-timer: only for a Manager reached as 'local' (run this tool on it). From elsewhere: run '$0 certs sync' from cron every few hours"
+  command -v systemctl >/dev/null 2>&1 || die "certs install-timer: no systemd here: run 'certs sync' from cron"
+  [ "$(id -u)" = 0 ] || s="sudo -n"
+  self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"; env_file="$(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
+  printf '[Unit]\nDescription=Rusty swarm: certificates from the edge to the mail services\n\n[Service]\nType=oneshot\nEnvironment=HOME=%s\nExecStart=%s --env %s certs sync\n' "$HOME" "$self" "$env_file" | $s tee "$unit.service" >/dev/null
+  printf '[Unit]\nDescription=Rusty swarm: certificate sync every six hours\n\n[Timer]\nOnCalendar=*-*-* 00/6:17:00\nPersistent=true\nRandomizedDelaySec=600\n\n[Install]\nWantedBy=timers.target\n' | $s tee "$unit.timer" >/dev/null
+  $s systemctl daemon-reload && $s systemctl enable --now rusty-swarm-certs.timer >/dev/null
+  echo "certs install-timer: rusty-swarm-certs.timer runs 'certs sync' every six hours"
 }
