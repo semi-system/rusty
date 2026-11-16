@@ -41,7 +41,8 @@ fn name_ok(s: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
-fn host_ok(host: &str) -> bool {
+/// A DNS name as a host of a service: letters, digits, `.`, `-` and `_`, one to 253 characters.
+pub(crate) fn host_ok(host: &str) -> bool {
     (1..=253).contains(&host.len()) && host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
 }
 

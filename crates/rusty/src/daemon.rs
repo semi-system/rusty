@@ -216,13 +216,15 @@ async fn build(
         addrs.push((planned.kind, bound.local_addr()));
         // Behind the edge (PROXY v2 from a trusted proxy) the client address comes from the header and, on an implicit-TLS port, TLS ended at the edge;
         // otherwise the service accepts the connection itself.
-        let (proxied, trusted) = if planned.kind.is_imap() {
-            (cfg.imap.proxy_protocol, &cfg.imap.trusted_proxies)
+        let (proxied, trusted, hosts) = if planned.kind.is_imap() {
+            (cfg.imap.proxy_protocol, &cfg.imap.trusted_proxies, &cfg.imap.trusted_proxy_hosts)
         } else {
-            (cfg.smtp.proxy_protocol, &cfg.smtp.trusted_proxies)
+            (cfg.smtp.proxy_protocol, &cfg.smtp.trusted_proxies, &cfg.smtp.trusted_proxy_hosts)
         };
         let accept: Arc<dyn Accept> = if proxied {
-            Arc::new(rusty_svc::proxy::EdgeAccept::new(trusted.clone(), planned.kind.implicit_tls()))
+            // The edge may be named (a swarm has no fixed address): its addresses are resolved again every few seconds.
+            let named = rusty_svc::NamedPeers::start(hosts.clone(), rusty_svc::NAMED_PEERS_REFRESH, shutdown.clone()).await;
+            Arc::new(rusty_svc::proxy::EdgeAccept::new(trusted.clone(), planned.kind.implicit_tls()).with_named(named))
         } else if planned.kind.implicit_tls() {
             Arc::new(DirectTls::new(tls.clone()))
         } else {

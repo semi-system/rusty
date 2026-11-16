@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use rusty_core::cidr::Cidr;
 use rusty_core::{Error, Result};
 use rusty_http::{handler, HttpConfig, HttpHandler, Method, Request, Response, Router};
-use rusty_svc::{Accept, BoundListener, DirectTcp, ListenerSpec, RejectReason, ServiceEvent, ServiceEvents, TracingEvents};
+use rusty_svc::{Accept, BoundListener, DirectTcp, ListenerSpec, PeerAllow, RejectReason, ServiceEvent, ServiceEvents, TracingEvents};
 use tokio_util::sync::CancellationToken;
 
 /// How long a collector (a read of the database, say) may take before the scrape goes on without it.
@@ -246,45 +246,6 @@ async fn metrics_get(registry: &Registry, req: Request) -> Response {
     Response::new(200).with_header("content-type", "text/plain; version=0.0.4; charset=utf-8").with_header("cache-control", "no-store").with_body(registry.render().await)
 }
 
-/// How often the names of `allowed_hosts` are resolved again (a task of a swarm service comes and goes).
-pub const HOSTS_REFRESH: Duration = Duration::from_secs(5);
-
-type IpSet = std::collections::HashSet<std::net::IpAddr>;
-
-/// Who may connect: address blocks, and the addresses that DNS names resolve to right now (Docker's DNS: a service name, `tasks.<service>` in a swarm). A peer in neither is dropped before a byte
-/// is read; before the first resolution, and while no name resolves, no named peer is let in.
-struct AllowPeers {
-    inner: Arc<dyn Accept>,
-    cidrs: Vec<Cidr>,
-    named: Arc<std::sync::RwLock<IpSet>>,
-}
-
-#[async_trait]
-impl Accept for AllowPeers {
-    async fn accept(&self, tcp: tokio::net::TcpStream, addr: SocketAddr) -> Result<(rusty_svc::BoxedStream, rusty_svc::PeerInfo)> {
-        let ip = addr.ip();
-        let named = self.named.read().unwrap_or_else(std::sync::PoisonError::into_inner).contains(&ip);
-        if !named && !self.cidrs.iter().any(|c| c.contains(ip)) {
-            return Err(Error::Invalid("peer is not allowed".into()));
-        }
-        self.inner.accept(tcp, addr).await
-    }
-
-    fn per_ip_after_accept(&self) -> bool {
-        self.inner.per_ip_after_accept()
-    }
-}
-
-/// Resolve every name; a name that fails keeps what it gave last time (a lookup that hiccups must not lock the scraper out), a name that answers replaces it.
-async fn refresh(names: &[String], last: &mut [IpSet], into: &std::sync::RwLock<IpSet>) {
-    for (i, n) in names.iter().enumerate() {
-        if let Ok(Ok(it)) = tokio::time::timeout(Duration::from_secs(2), tokio::net::lookup_host((n.as_str(), 0))).await {
-            last[i] = it.map(|a| a.ip()).collect();
-        }
-    }
-    *into.write().unwrap_or_else(std::sync::PoisonError::into_inner) = last.iter().flatten().copied().collect();
-}
-
 /// Serve `GET /metrics` on `addr` to the peers in `allowed` only (any other peer is dropped before a byte is read). The list must name one to sixteen blocks and none that holds every
 /// address: the endpoint has no login. Returns the bound address and the task that serves until `shutdown`.
 pub async fn serve(addr: SocketAddr, registry: Arc<Registry>, allowed: Vec<Cidr>, shutdown: CancellationToken) -> Result<(SocketAddr, tokio::task::JoinHandle<Result<()>>)> {
@@ -308,21 +269,9 @@ pub async fn serve_allowing(addr: SocketAddr, registry: Arc<Registry>, allowed: 
         }),
     );
     let http = Arc::new(HttpHandler::new(router, HttpConfig::default()));
-    let named = Arc::new(std::sync::RwLock::new(IpSet::new()));
-    if !hosts.is_empty() {
-        let mut last = vec![IpSet::new(); hosts.len()];
-        refresh(&hosts, &mut last, &named).await;
-        let (named, shutdown) = (named.clone(), shutdown.clone());
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    () = shutdown.cancelled() => return,
-                    () = tokio::time::sleep(HOSTS_REFRESH) => refresh(&hosts, &mut last, &named).await,
-                }
-            }
-        });
-    }
-    let accept: Arc<dyn Accept> = Arc::new(AllowPeers { inner: Arc::new(DirectTcp), cidrs: allowed, named });
+    // The admin web (or whoever is named) is found by name, resolved again every few seconds; until a name resolves nobody named is let in.
+    let named = rusty_svc::NamedPeers::start(hosts, rusty_svc::NAMED_PEERS_REFRESH, shutdown.clone()).await;
+    let accept: Arc<dyn Accept> = Arc::new(PeerAllow::new(Arc::new(DirectTcp), allowed).with_named(named));
     let bound = BoundListener::bind(ListenerSpec { name: "metrics", addr, max_connections: 16, max_per_ip: 8 }).await?;
     let local = bound.local_addr();
     // The listener's own events are not counted in the registry it serves.

@@ -172,13 +172,20 @@ pub fn encode(source: SocketAddr, dest: SocketAddr, ssl: bool) -> Vec<u8> {
 #[derive(Debug, Clone)]
 pub struct EdgeAccept {
     trusted: Vec<Cidr>,
+    named: crate::NamedPeers,
     edge_terminates_tls: bool,
     timeout: Duration,
 }
 
 impl EdgeAccept {
     pub fn new(trusted: Vec<Cidr>, edge_terminates_tls: bool) -> EdgeAccept {
-        EdgeAccept { trusted, edge_terminates_tls, timeout: DEFAULT_HEADER_TIMEOUT }
+        EdgeAccept { trusted, named: crate::NamedPeers::none(), edge_terminates_tls, timeout: DEFAULT_HEADER_TIMEOUT }
+    }
+
+    /// Also trust the addresses of these names (a swarm has no fixed address: the edge is found by its service name).
+    pub fn with_named(mut self, named: crate::NamedPeers) -> EdgeAccept {
+        self.named = named;
+        self
     }
 
     pub fn with_header_timeout(mut self, timeout: Duration) -> EdgeAccept {
@@ -187,7 +194,7 @@ impl EdgeAccept {
     }
 
     fn is_trusted(&self, ip: IpAddr) -> bool {
-        self.trusted.iter().any(|c| c.contains(ip))
+        self.trusted.iter().any(|c| c.contains(ip)) || self.named.contains(ip)
     }
 }
 

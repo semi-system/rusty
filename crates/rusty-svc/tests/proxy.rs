@@ -326,3 +326,37 @@ proptest::proptest! {
         rusty_svc::proxy::check_invariants(&data);
     }
 }
+
+/// An edge that trusts the addresses of a name (no block at all).
+async fn edge_named(names: Vec<String>) -> Edge {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let live = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let spec = ListenerSpec { name: "edge-named", addr: sa("127.0.0.1:0"), max_connections: 64, max_per_ip: 8 };
+    let bound = BoundListener::bind(spec).await.unwrap();
+    let addr = bound.local_addr();
+    let stop = CancellationToken::new();
+    let s = stop.clone();
+    let named = rusty_svc::NamedPeers::start(names, Duration::from_secs(60), stop.clone()).await;
+    let accept = Arc::new(EdgeAccept::new(Vec::new(), false).with_named(named));
+    let handler = Arc::new(Probe { seen: tx, live: live.clone() });
+    tokio::spawn(async move {
+        let _ = bound.serve(accept, handler, Arc::new(TracingEvents), s, Duration::from_secs(2)).await;
+    });
+    Edge { addr, seen: rx, live, stop }
+}
+
+#[tokio::test]
+async fn the_edge_may_be_trusted_by_its_name_and_a_name_that_is_not_the_peer_is_not_trusted() {
+    // `localhost` is where the test connects from: its header is believed.
+    let mut e = edge_named(vec!["localhost".into()]).await;
+    let mut c = TcpStream::connect(e.addr).await.unwrap();
+    c.write_all(&[encode(sa("203.0.113.9:4000"), sa("192.0.2.1:25"), false), b"hello\r\n".to_vec()].concat()).await.unwrap();
+    let (peer, line) = next(&mut e).await.expect("a session");
+    assert_eq!((peer.addr, line.as_str()), (sa("203.0.113.9:4000"), "hello"));
+    // A name that does not resolve trusts nobody: the header is never read.
+    let mut e2 = edge_named(vec!["no-such-service.invalid".into()]).await;
+    let mut c2 = TcpStream::connect(e2.addr).await.unwrap();
+    let _ = c2.write_all(&[encode(sa("203.0.113.9:4000"), sa("192.0.2.1:25"), false), b"hello\r\n".to_vec()].concat()).await;
+    assert!(closed(c2).await);
+    assert!(nothing_arrives(&mut e2).await);
+}

@@ -34,6 +34,9 @@ pub struct AdminConfig {
     /// At most 16 blocks, never one that holds every address.
     #[serde(default)]
     pub allowed_peers: Vec<crate::cidr::Cidr>,
+    /// DNS names whose addresses may connect as well (the edge, found by its service name: `edge` in compose, `tasks.edge` in a swarm), resolved again every few seconds. At most 8.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
 }
 
 impl AdminConfig {
@@ -49,6 +52,9 @@ impl AdminConfig {
         }
         if self.allowed_peers.len() > 16 || self.allowed_peers.iter().any(|c| c.is_everything()) {
             return Err(Error::Invalid("admin.allowed_peers must be at most 16 address blocks and none may hold every address (leave it empty to allow any peer)".into()));
+        }
+        if self.allowed_hosts.len() > 8 || !self.allowed_hosts.iter().all(|h| crate::config_metrics::host_ok(h)) {
+            return Err(Error::Invalid("admin.allowed_hosts must be at most 8 DNS names".into()));
         }
         Ok(())
     }
@@ -91,6 +97,14 @@ mod tests {
         let many = (0..17).map(|i| format!("\"10.0.{i}.0/24\"")).collect::<Vec<_>>().join(", ");
         assert!(parse(&format!("allowed_peers = [{many}]")).is_err(), "at most sixteen");
         assert!(parse("allowed_peers = [\"not a network\"]").is_err());
+    }
+
+    #[test]
+    fn allowed_hosts_are_dns_names_and_at_most_eight() {
+        assert_eq!(parse("allowed_hosts = [\"edge\", \"tasks.edge\"]").unwrap().allowed_hosts.len(), 2);
+        assert!(parse("allowed_hosts = [\"a b\"]").is_err());
+        let nine = (0..9).map(|i| format!("\"h{i}\"")).collect::<Vec<_>>().join(", ");
+        assert!(parse(&format!("allowed_hosts = [{nine}]")).is_err(), "at most eight");
     }
 
     #[test]

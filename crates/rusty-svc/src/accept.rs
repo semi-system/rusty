@@ -92,18 +92,25 @@ impl Accept for DirectTls {
 pub struct PeerAllow {
     inner: Arc<dyn Accept>,
     allowed: Vec<Cidr>,
+    named: crate::NamedPeers,
 }
 
 impl PeerAllow {
     pub fn new(inner: Arc<dyn Accept>, allowed: Vec<Cidr>) -> PeerAllow {
-        PeerAllow { inner, allowed }
+        PeerAllow { inner, allowed, named: crate::NamedPeers::none() }
+    }
+
+    /// Also let in the addresses of these names (resolved again every few seconds; until one resolves nobody named is let in).
+    pub fn with_named(mut self, named: crate::NamedPeers) -> PeerAllow {
+        self.named = named;
+        self
     }
 }
 
 #[async_trait]
 impl Accept for PeerAllow {
     async fn accept(&self, tcp: TcpStream, addr: SocketAddr) -> Result<(BoxedStream, PeerInfo)> {
-        if !self.allowed.iter().any(|c| c.contains(addr.ip())) {
+        if !(self.allowed.iter().any(|c| c.contains(addr.ip())) || self.named.contains(addr.ip())) {
             return Err(Error::Invalid("peer is not in the allowed networks".into()));
         }
         self.inner.accept(tcp, addr).await
