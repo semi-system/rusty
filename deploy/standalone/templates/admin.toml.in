@@ -17,3 +17,12 @@ ca_bundle = "/etc/rusty/db-ca.pem"
 
 [sealing]
 public_key = "@SEAL_PUBLIC@"
+
+# The shared key-value store (./setup.sh --valkey): the sessions, the login throttle and the sending budget are then one for every replica.
+#VALKEY [valkey]
+#VALKEY host = "valkey"
+#VALKEY tls = true
+#VALKEY ca_bundle = "/etc/rusty/db-ca.pem"
+#VALKEY username = "rusty_admin"
+#VALKEY password_file = "/run/secrets/kv_admin"
+#VALKEY key_prefix = "rusty:"
