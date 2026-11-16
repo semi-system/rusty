@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # The deploy tool of the swarm form of Rusty Mail Server (docs/design-swarm.md, section 6). Run it from the operator's machine; it reaches every node of the inventory through a transport:
+#   local              the machine this tool runs on (a single server: the user must be able to run docker, and to sudo for installing it)
 #   ssh:USER@HOST      over SSH (a key; the node's `docker` must answer for that user)
 #   docker:CONTAINER   a node that is a container of this machine (the local test cluster, deploy/swarm/local-cluster.sh)
 #
+#   ./rusty-swarm init                      with no swarm.env yet, in a terminal: a few questions (whiptail dialogs when the machine has whiptail, else plain prompts) write swarm.env and the
+#                                                files of the passwords given (mode 0600), then the flow below runs
+#   ./rusty-swarm [--env FILE] inventory    what the tool understood of the inventory
 #   ./rusty-swarm [--env FILE] init [--yes]   the whole flow, automatic: Docker is installed where it is missing (get.docker.com, as root), a swarm that is already there is offered for
 #                                                removal, then the check, the swarm, its proof and prepare db (the later steps join the chain as they are built); --yes answers the question with y
 #   ./rusty-swarm [--env FILE] cluster check     what is wrong on the nodes (prints, changes nothing)
@@ -32,9 +36,20 @@ usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print } /^set / { exit }' "$0";
 ENV_FILE="${RUSTY_SWARM_ENV:-$HERE/swarm.env}"
 case "${1:-}" in -h|--help|help|"") usage; exit 0 ;; esac
 if [ "${1:-}" = "--env" ]; then ENV_FILE="${2:?--env needs a file}"; shift 2; fi
-[ -r "$ENV_FILE" ] || die "no inventory at $ENV_FILE (copy swarm.env.example, or use --env local.env)"
 NODES=(); ENCRYPTED=0; MIN_DOCKER_MAJOR=25
 DB_HOST=""; DB_PORT=5432; DB_NAME=rusty; DB_ADMIN_USER=""; DB_ADMIN_PASSWORD_FILE=""; DB_CA=""; DB_TLS=1; DB_HOSTADDR=""; STATE_DIR="$HOME/.rusty-swarm"
+MAIL_HOST=""; ADMIN_HOST=""; CONTACT=""; ADMIN_ALLOW=""
+S3_ENDPOINT=""; S3_REGION=us-east-1; S3_BUCKET=rusty-mail; S3_ACCESS_KEY=""; S3_SECRET_KEY_FILE=""
+if [ ! -r "$ENV_FILE" ]; then
+  # No inventory: `init` asks for what it needs (a dialog, or plain prompts) and writes it; every other command needs the file.
+  if [ "${1:-}" = init ] && { [ -t 0 ] || [ "${RUSTY_SWARM_UI:-}" = plain ]; }; then
+    # shellcheck source=wizard.sh
+    . "$HERE/wizard.sh"
+    run_wizard "$ENV_FILE"
+  else
+    die "no inventory at $ENV_FILE (run `init` in a terminal to be asked, or copy swarm.env.example, or use --env local.env)"
+  fi
+fi
 # shellcheck source=/dev/null
 . "$ENV_FILE"
 [ "${#NODES[@]}" -gt 0 ] || die "$ENV_FILE has no NODES"
@@ -64,7 +79,7 @@ validate_inventory() {
     [[ "$n" =~ ^[a-z][a-z0-9-]{0,30}$ ]] || die "node name '$n': lower case letters, digits and '-'"
     case "$seen" in *" $n "*) die "node '$n' appears twice" ;; esac
     seen="$seen$n "
-    [[ "$t" =~ ^(ssh:[A-Za-z0-9._-]+@[A-Za-z0-9._:-]+|docker:[A-Za-z0-9._-]+)$ ]] || die "node $n: transport '$t' is ssh:USER@HOST or docker:CONTAINER"
+    [[ "$t" =~ ^(local|ssh:[A-Za-z0-9._-]+@[A-Za-z0-9._:-]+|docker:[A-Za-z0-9._-]+)$ ]] || die "node $n: transport '$t' is local, ssh:USER@HOST or docker:CONTAINER"
     case "$r" in manager|worker) ;; *) die "node $n: role is manager or worker" ;; esac
   done
   manager_name >/dev/null
@@ -78,9 +93,21 @@ on() {
   case "$t" in
     ssh:*) ssh -o BatchMode=yes -o ConnectTimeout=10 "${t#ssh:}" "$(printf '%q ' "$@")" ;;
     docker:*) docker exec -i "${t#docker:}" "$@" ;;
+    local) "$@" ;;
   esac
 }
 dk() { local n="$1"; shift; on "$n" docker "$@"; }
+
+# What the tool understood of the inventory (and a proof that it is valid).
+cmd_inventory() {
+  local n
+  echo "nodes:"
+  for n in $(node_names); do printf '  %s  %s  %s  labels=%s  address=%s
+' "$n" "$(node_field "$n" 2)" "$(node_field "$n" 3)" "$(node_field "$n" 4)" "$(node_field "$n" 5)"; done
+  echo "mail host: ${MAIL_HOST:-(not set)}  admin host: ${ADMIN_HOST:-(not set)}  admin allow: ${ADMIN_ALLOW:-(not set)}"
+  if [ -n "$DB_HOST" ]; then echo "PostgreSQL: external $DB_HOST:$DB_PORT/$DB_NAME as $DB_ADMIN_USER (tls=$DB_TLS)"; else echo "PostgreSQL: the default one, in the cluster"; fi
+  if [ -n "$S3_ENDPOINT" ]; then echo "S3: external $S3_ENDPOINT bucket $S3_BUCKET"; else echo "S3: the default RustFS, in the cluster"; fi
+}
 
 # ---- cluster check ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 BAD=0
@@ -281,6 +308,7 @@ psql_as() {
 
 cmd_prepare_db() {
   local r f sql
+  if [ -z "$DB_HOST" ]; then echo "prepare db: no DB_HOST: the default PostgreSQL of the stack is prepared once it runs (a later step)"; return 0; fi
   [ -n "$DB_HOST" ] && [ -n "$DB_ADMIN_USER" ] && [ -r "$DB_ADMIN_PASSWORD_FILE" ] || die "prepare db: the inventory needs DB_HOST, DB_ADMIN_USER and DB_ADMIN_PASSWORD_FILE (a readable file)"
   case "$DB_TLS" in
     1) ;;
@@ -370,6 +398,7 @@ cmd_all() {
 validate_inventory
 case "${1:-}:${2:-}" in
   init:*) shift; cmd_all "$@" ;;
+  inventory:*) cmd_inventory ;;
   cluster:check) cmd_check ;;
   cluster:install-docker) cmd_install_docker ;;
   cluster:init) cmd_init ;;
