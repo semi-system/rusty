@@ -4,6 +4,8 @@
 //! Nothing here is a third-party exposition library: the format is a few lines, and every name and label key is a fixed string of the code. Label VALUES come from fixed sets as well
 //! (a listener name, a result word): an address, a user or a domain is never a label, so the cardinality is bounded by the code, not by the traffic.
 
+#![forbid(unsafe_code)]
+
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
