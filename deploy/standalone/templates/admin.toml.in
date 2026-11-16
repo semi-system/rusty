@@ -18,10 +18,10 @@ ca_bundle = "/etc/rusty/db-ca.pem"
 [sealing]
 public_key = "@SEAL_PUBLIC@"
 
-# The Prometheus endpoint (./setup.sh --monitoring): only the Prometheus of the monitoring profile may scrape it.
-#MONITORING [metrics]
-#MONITORING listen = "0.0.0.0:9100"
-#MONITORING allowed_peers = ["10.79.0.2/32"]
+# The Prometheus endpoint (./setup.sh --metrics-allow CIDR): only the networks named there may scrape it.
+#METRICS [metrics]
+#METRICS listen = "0.0.0.0:9100"
+#METRICS allowed_peers = [@METRICS_ALLOW@]
 # The shared key-value store (./setup.sh --valkey): the sessions, the login throttle and the sending budget are then one for every replica.
 #VALKEY [valkey]
 #VALKEY host = "valkey"

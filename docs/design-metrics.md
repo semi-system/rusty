@@ -30,8 +30,8 @@ against the public host names), the database server (`postgres_exporter`).
 ## Alerts
 
 `deploy/monitoring/rusty.rules.yml` holds sample Prometheus rules (a service down, a replica lost, the queue growing or too old, dead jobs, a scanner failing, an authentication storm, storage checks failing,
-DNS problems, a certificate close to expiry, the disk filling) and `deploy/monitoring/prometheus.yml` a scrape configuration that finds every replica through Docker's DNS. The standalone stack has an optional
-`monitoring` profile that runs a Prometheus with them (no port published; the operator adds Alertmanager or a remote receiver).
+DNS problems, a certificate close to expiry, the disk filling) and `deploy/monitoring/prometheus.yml` a scrape configuration that finds every replica through Docker's DNS. The stack does not run a Prometheus (owner's decision, 2026-11-16: the
+endpoints are enough): `./setup.sh --metrics-allow CIDR` turns the listeners on for the networks named, and the operator's own Prometheus scrapes them (`docker.md`).
 
 ## Tests
 

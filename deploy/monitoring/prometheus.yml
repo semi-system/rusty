@@ -1,5 +1,5 @@
-# A Prometheus scrape configuration for the standalone stack (docs/design-metrics.md). Docker's resolver returns every replica of a service under its name, so a scaled service is scraped on
-# every replica without a change here. The services allow only the Prometheus of the `monitoring` profile to connect (`[metrics] allowed_peers`).
+# A sample Prometheus scrape configuration for the standalone stack (docs/design-metrics.md). Run your Prometheus on the `rusty_metrics` network (docs/docker.md): Docker's resolver returns every
+# replica of a service under its name, so a scaled service is scraped on every replica without a change here. The services allow only the networks given to `./setup.sh --metrics-allow` (`[metrics] allowed_peers`).
 global:
   scrape_interval: 30s
   evaluation_interval: 30s
