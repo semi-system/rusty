@@ -7,12 +7,17 @@
 #   ./rusty-swarm [--env FILE] cluster init      start the swarm on the Manager, join the workers, set the labels (each part is skipped when it is already done)
 #   ./rusty-swarm [--env FILE] cluster verify    nodes Ready and Active, and a throw-away overlay with one task per node: the tasks list each other, reach each other
 #                                                (an encrypted overlay when the inventory says ENCRYPTED=1)
+#   ./rusty-swarm [--env FILE] prepare db       with the one login of the inventory (DB_ADMIN_USER), create the roles of the services in the external PostgreSQL (deploy/db/roles.sql), give each a random
+#                                                password (kept in the state directory, mode 0600, for the next step) and prove that each of them can log in; run again, it changes no password
 #
 # The inventory is a file of shell variables (default: swarm.env next to this script, or $RUSTY_SWARM_ENV); `local.env` is the one of the local test cluster. It is the operator's own file and is never
 # kept in the repository (swarm.env.example shows it):
 #   NODES=("name|transport|role|labels|public_address" ...)    role: manager or worker; labels: comma-separated `key=value` (may be empty); public_address may be empty
 #   ENCRYPTED=1                                                the overlays of the stack are encrypted (IPsec); needs the ESP protocol between the nodes
 #   MIN_DOCKER_MAJOR=25                                        the oldest Docker major the stack is tested with
+#   DB_HOST DB_PORT DB_NAME DB_ADMIN_USER DB_ADMIN_PASSWORD_FILE DB_CA   the external PostgreSQL: where, which database, the login for the one-time preparation and the file that holds its password,
+#                                                the CA that signed its certificate (verify-full); DB_HOSTADDR (optional) connects to that address while the certificate is checked against DB_HOST
+#   STATE_DIR=$HOME/.rusty-swarm                where this tool keeps what it generates (the service passwords), mode 0700
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -22,6 +27,7 @@ ENV_FILE="${RUSTY_SWARM_ENV:-$HERE/swarm.env}"
 if [ "${1:-}" = "--env" ]; then ENV_FILE="${2:?--env needs a file}"; shift 2; fi
 [ -r "$ENV_FILE" ] || die "no inventory at $ENV_FILE (copy swarm.env.example, or use --env local.env)"
 NODES=(); ENCRYPTED=0; MIN_DOCKER_MAJOR=25
+DB_HOST=""; DB_PORT=5432; DB_NAME=rusty; DB_ADMIN_USER=""; DB_ADMIN_PASSWORD_FILE=""; DB_CA=""; DB_HOSTADDR=""; STATE_DIR="$HOME/.rusty-swarm"
 # shellcheck source=/dev/null
 . "$ENV_FILE"
 [ "${#NODES[@]}" -gt 0 ] || die "$ENV_FILE has no NODES"
@@ -63,8 +69,8 @@ on() {
   local n="$1" t; shift
   t="$(node_field "$n" 2)"
   case "$t" in
-    ssh:*) ssh -o BatchMode=yes -o ConnectTimeout=10 "${t#ssh:}" "$@" ;;
-    docker:*) docker exec "${t#docker:}" "$@" ;;
+    ssh:*) ssh -o BatchMode=yes -o ConnectTimeout=10 "${t#ssh:}" "$(printf '%q ' "$@")" ;;
+    docker:*) docker exec -i "${t#docker:}" "$@" ;;
   esac
 }
 dk() { local n="$1"; shift; on "$n" docker "$@"; }
@@ -226,11 +232,64 @@ probe_clean() { # the network cannot go while the last task is still shutting do
   die "the probe network $net could not be removed"
 }
 
+# ---- prepare db ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SERVICE_ROLES=(app admin migrator smtp_in submission imap outbound gc)
+POSTGRES_IMAGE="$(awk '$1 == "postgres:18" { print $2 }' "$HERE/../images.lock")"
+
+secret_file() { printf '%s/secrets/pg_%s\n' "$STATE_DIR" "$1"; }
+
+# Make the state directory and give every role a password that does not exist yet (a password that exists is never replaced).
+make_passwords() {
+  local r f
+  umask 077
+  mkdir -p "$STATE_DIR/secrets"; chmod 0700 "$STATE_DIR" "$STATE_DIR/secrets"
+  for r in "${SERVICE_ROLES[@]}"; do
+    f="$(secret_file "$r")"
+    [ -s "$f" ] || od -An -N24 -tx1 /dev/urandom | tr -d ' \n' > "$f"
+  done
+}
+
+# Run psql on the manager (the node reaches the database the way the services will). The first line of the standard input is the password, the rest is the SQL: the password is in no argument
+# and no environment variable of a process on the node. $1 is the user, $2 the file with its password; the SQL comes from the standard input.
+psql_as() {
+  local m user="$1" pwfile="$2" ca="/tmp/rusty-swarm-ca.pem" conn
+  m="$(manager_name)"
+  conn="host=$DB_HOST port=$DB_PORT dbname=$DB_NAME user=$user sslmode=verify-full sslrootcert=/ca.pem"
+  [ -z "$DB_HOSTADDR" ] || conn="$conn hostaddr=$DB_HOSTADDR"
+  on "$m" sh -c "umask 077; cat > $ca" < "$DB_CA"
+  { cat "$pwfile"; echo; cat; } | dk "$m" run --rm -i --cap-drop ALL --security-opt no-new-privileges:true -v "$ca:/ca.pem:ro" --entrypoint sh "$POSTGRES_IMAGE" \
+    -c 'IFS= read -r PGPASSWORD; export PGPASSWORD; exec psql -X -q -At -v ON_ERROR_STOP=1 "$0"' "$conn"
+}
+
+cmd_prepare_db() {
+  local r f sql
+  [ -n "$DB_HOST" ] && [ -n "$DB_ADMIN_USER" ] && [ -r "$DB_ADMIN_PASSWORD_FILE" ] && [ -r "$DB_CA" ] || die "prepare db: the inventory needs DB_HOST, DB_ADMIN_USER, DB_ADMIN_PASSWORD_FILE (a readable file) and DB_CA (a readable file)"
+  [[ "$DB_PORT" =~ ^[0-9]+$ ]] && [[ "$DB_NAME" =~ ^[a-z][a-z0-9_]{0,62}$ ]] && [[ "$DB_HOST" =~ ^[A-Za-z0-9.-]+$ ]] && [[ "$DB_ADMIN_USER" =~ ^[A-Za-z][A-Za-z0-9_]{0,62}$ ]] || die "prepare db: DB_HOST, DB_PORT, DB_NAME or DB_ADMIN_USER has a character that does not belong in one"
+  [ -n "$POSTGRES_IMAGE" ] || die "postgres:18 is not pinned in deploy/images.lock"
+  make_passwords
+  # The roles (NOLOGIN, idempotent), then the passwords of the ones that log in. A password that is already set is set again to the same value: nothing changes.
+  sql="$(cat "$HERE/../db/roles.sql")"$'\n'
+  for r in "${SERVICE_ROLES[@]}"; do
+    f="$(secret_file "$r")"
+    sql="$sql"$'\n'"ALTER ROLE rusty_$r LOGIN PASSWORD '$(cat "$f")';"
+  done
+  printf '%s\n' "$sql" | psql_as "$DB_ADMIN_USER" "$DB_ADMIN_PASSWORD_FILE" >/dev/null || die "prepare db: the roles could not be created (is the login allowed to create roles in $DB_NAME?)"
+  echo "prepare db: the roles of the services exist in $DB_NAME on $DB_HOST"
+  # Each service role must be able to log in over verified TLS.
+  for r in "${SERVICE_ROLES[@]}"; do
+    f="$(secret_file "$r")"
+    if [ "$(echo "select current_user" | psql_as "rusty_$r" "$f" 2>/dev/null)" = "rusty_$r" ]; then echo "  ok    rusty_$r logs in"; else die "prepare db: rusty_$r cannot log in (does pg_hba allow the nodes' addresses with TLS and scram-sha-256?)"; fi
+  done
+  echo "prepare db: done; the passwords are in $STATE_DIR/secrets (mode 0600)"
+}
+
+
 # ---- main ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 validate_inventory
 case "${1:-}:${2:-}" in
   cluster:check) cmd_check ;;
   cluster:init) cmd_init ;;
   cluster:verify) cmd_verify ;;
+  prepare:db) cmd_prepare_db ;;
   *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; [ -z "${1:-}" ] || exit 2 ;;
 esac
