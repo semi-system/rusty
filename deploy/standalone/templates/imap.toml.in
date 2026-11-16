@@ -22,3 +22,12 @@ url = "postgres://rusty_imap@db:5432/rusty"
 password_file = "/run/secrets/pg_imap"
 sslmode = "verify-full"
 ca_bundle = "/etc/rusty/db-ca.pem"
+
+# The shared key-value store (./setup.sh --valkey): the sessions, the login throttle and the sending budget are then one for every replica.
+#VALKEY [valkey]
+#VALKEY host = "valkey"
+#VALKEY tls = true
+#VALKEY ca_bundle = "/etc/rusty/db-ca.pem"
+#VALKEY username = "rusty_imap"
+#VALKEY password_file = "/run/secrets/kv_imap"
+#VALKEY key_prefix = "rusty:"

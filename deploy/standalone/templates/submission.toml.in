@@ -26,3 +26,12 @@ url = "postgres://rusty_submission@db:5432/rusty"
 password_file = "/run/secrets/pg_submission"
 sslmode = "verify-full"
 ca_bundle = "/etc/rusty/db-ca.pem"
+
+# The shared key-value store (./setup.sh --valkey): the sessions, the login throttle and the sending budget are then one for every replica.
+#VALKEY [valkey]
+#VALKEY host = "valkey"
+#VALKEY tls = true
+#VALKEY ca_bundle = "/etc/rusty/db-ca.pem"
+#VALKEY username = "rusty_submission"
+#VALKEY password_file = "/run/secrets/kv_submission"
+#VALKEY key_prefix = "rusty:"

@@ -1,0 +1,4 @@
+user default off
+user rusty_submission on #@KV_SUBMISSION_HASH@ ~rusty:* +@all -@dangerous -@admin
+user rusty_imap on #@KV_IMAP_HASH@ ~rusty:* +@all -@dangerous -@admin
+user rusty_admin on #@KV_ADMIN_HASH@ ~rusty:* +@all -@dangerous -@admin
