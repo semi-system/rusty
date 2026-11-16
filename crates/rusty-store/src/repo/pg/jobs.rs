@@ -475,6 +475,14 @@ impl JobRepo for PgRepo {
         rows.iter().map(|x| Ok((x.try_get::<String, _>(0)?, x.try_get::<i64, _>(1)?))).collect::<std::result::Result<Vec<_>, sqlx::Error>>().map_err(map_db_error)
     }
 
+    async fn queue_figures(&self, kind: &str) -> Result<(Vec<(String, i64)>, i64)> {
+        use sqlx::Row;
+        let rows = sqlx::query(r(sql::COUNT_ALL_BY_STATE)).bind(kind).fetch_all(self.store.pool()).await.map_err(map_db_error)?;
+        let counts = rows.iter().map(|x| Ok((x.try_get::<String, _>(0)?, x.try_get::<i64, _>(1)?))).collect::<std::result::Result<Vec<_>, sqlx::Error>>().map_err(map_db_error)?;
+        let oldest: i64 = sqlx::query_scalar(r(sql::OLDEST_DUE)).bind(kind).fetch_one(self.store.pool()).await.map_err(map_db_error)?;
+        Ok((counts, oldest))
+    }
+
     async fn purge_finished_batch(&self, older_than: i64, limit: i64) -> Result<u64> {
         let n = tx_retry!(self, None, |c| {
             {

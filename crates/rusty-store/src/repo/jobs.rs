@@ -135,10 +135,15 @@ pub trait JobRepo: Send + Sync {
     async fn purge_finished_batch(&self, older_than: i64, limit: i64) -> Result<u64>;
     /// How many jobs of `kind` for `domain` are in each state (only states that have jobs), ordered by state name.
     async fn count_by_state(&self, kind: &str, domain: i64) -> Result<Vec<(String, i64)>>;
+    /// Every domain together: how many jobs of `kind` are in each state, and how long (seconds, by the database clock) the oldest queued job that is already due has been waiting (0: none).
+    /// For the admin's monitor.
+    async fn queue_figures(&self, kind: &str) -> Result<(Vec<(String, i64)>, i64)>;
 }
 
 /// Statement text shared by both backends (`{NOW}` = database clock, `$N` placeholders).
 pub(crate) mod sql {
+    pub const COUNT_ALL_BY_STATE: &str = "SELECT state, CAST(count(*) AS BIGINT) FROM jobs WHERE kind = $1 GROUP BY state ORDER BY state";
+    pub const OLDEST_DUE: &str = "SELECT CAST(COALESCE(MAX({NOW} - run_after), 0) AS BIGINT) FROM jobs WHERE kind = $1 AND state = 'queued' AND run_after <= {NOW}";
     pub const COUNT_BY_STATE: &str = "SELECT state, CAST(count(*) AS BIGINT) FROM jobs WHERE kind = $1 AND domain_id = $2 GROUP BY state ORDER BY state";
     pub const HEARTBEAT: &str = "UPDATE jobs SET lease_expires_at = COALESCE($4, {NOW}) + $3, \
         updated_at = COALESCE($4, {NOW}) \

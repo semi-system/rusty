@@ -42,6 +42,15 @@ impl HeartbeatRepo for PgRepo {
             .map_err(map_db_error)
     }
 
+    async fn storage_check_counts(&self) -> Result<Vec<(String, i64)>> {
+        let rows = sqlx::query(sql::STORAGE_CHECKS).fetch_all(self.store.pool()).await.map_err(map_db_error)?;
+        rows.iter().map(|x| Ok((x.try_get::<String, _>(0)?, x.try_get::<i64, _>(1)?))).collect::<std::result::Result<Vec<_>, sqlx::Error>>().map_err(map_db_error)
+    }
+
+    async fn dns_problem_domains(&self) -> Result<i64> {
+        sqlx::query_scalar(sql::DNS_PROBLEMS).fetch_one(self.store.pool()).await.map_err(map_db_error)
+    }
+
     async fn prune(&self, older_than_secs: i64) -> Result<u64> {
         let done = sqlx::query(sql::PRUNE).bind(older_than_secs).execute(self.store.pool()).await.map_err(map_db_error)?;
         Ok(done.rows_affected())

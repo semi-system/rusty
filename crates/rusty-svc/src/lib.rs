@@ -15,6 +15,7 @@ mod change_feed;
 mod context;
 mod events;
 mod gc;
+mod heartbeat;
 mod maintain;
 mod hub;
 mod listener;
@@ -36,6 +37,7 @@ pub use accept::{Accept, AsyncStream, BoxedStream, DirectTcp, DirectTls, PeerAll
 pub use context::Context;
 pub use events::{RejectReason, ServiceEvent, ServiceEvents, TracingEvents};
 pub use gc::{GcService, GcSummary};
+pub use heartbeat::{instance_name, HeartbeatService, BEAT_EVERY};
 pub use maintain::MaintainService;
 pub use hub::MailboxHub;
 pub use listener::{BoundListener, ListenerSpec, SessionHandler};

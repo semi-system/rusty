@@ -40,7 +40,12 @@
     "Queued": { "queued": "boolean" },
     "DnsRecord": { "name": "string", "type": "string", "value": "string", "ttl": "integer", "purpose": "string", "required": "string", "status": "string", "seen": "string|null", "last_checked_at": "integer|null" },
     "DnsRecords": { "records": "DnsRecord[]", "warnings": "string[]" },
-    "Queue": { "queued": "integer", "running": "integer", "failed": "integer", "dead": "integer" }
+    "Queue": { "queued": "integer", "running": "integer", "failed": "integer", "dead": "integer" },
+    "MonitorInstance": { "instance": "string", "version": "string", "uptime_secs": "integer", "age_secs": "integer", "stale": "boolean", "status": "string", "listeners": "integer|null" },
+    "MonitorService": { "service": "string", "status": "string", "instances": "MonitorInstance[]" },
+    "MonitorQueue": { "queued": "integer", "running": "integer", "failed": "integer", "dead": "integer", "oldest_due_secs": "integer" },
+    "MonitorCount": { "status": "string", "count": "integer" },
+    "Monitor": { "services": "MonitorService[]", "queue": "MonitorQueue", "storage": "MonitorCount[]", "dns_problem_domains": "integer" }
   },
   "endpoints": [
     { "method": "GET", "path": "/mail/config-v1.1.xml", "auth": "none", "request": { "emailaddress": "string (query, optional)" }, "response": null, "status": 200, "note": "Mozilla autoconfig XML for mail clients (the platform's IMAP and submission servers), whatever the domain; served on port 80 for hosts autoconfig.*; 404 when no mail host is configured" },
@@ -77,6 +82,7 @@
     { "method": "DELETE", "path": "/api/v1/domains/{d}/storage/backends/{b}", "auth": "platform", "request": null, "response": "Empty", "status": 200, "note": "409 while the backend holds an object: drain it first" },
     { "method": "GET", "path": "/api/v1/domains/{d}/outbound", "auth": "admin", "request": null, "response": "Queue", "status": 200, "note": "outgoing messages of this domain by state; mail waiting for a failing relay shows as queued" },
     { "method": "GET", "path": "/api/v1/domains/{d}/dns", "auth": "admin", "request": null, "response": "DnsRecords", "status": 200, "note": "status is the last check of the record as it is now, or unchecked; 503 unavailable when no host name is configured" },
-    { "method": "POST", "path": "/api/v1/domains/{d}/dns/check", "auth": "admin", "request": null, "response": "Queued", "status": 200, "note": "the service that can query DNS runs it; the result shows in GET dns" }
+    { "method": "POST", "path": "/api/v1/domains/{d}/dns/check", "auth": "admin", "request": null, "response": "Queued", "status": 200, "note": "the service that can query DNS runs it; the result shows in GET dns" },
+    { "method": "GET", "path": "/api/v1/monitor", "auth": "platform", "request": null, "response": "Monitor", "status": 200, "note": "the services (ok, degraded or down by their heartbeats, per instance), the outbound queue of every domain, the storage check states and the domains with DNS problems; computed on the server" }
   ]
 }

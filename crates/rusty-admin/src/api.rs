@@ -48,6 +48,8 @@ pub struct Services {
     pub pools: rusty_store::BlobPoolAdmin,
     pub sealed: rusty_store::SealedWriter,
     pub jobs: rusty_store::JobQueue,
+    /// The heartbeats and the figures of the monitor page (docs/design-admin-monitor.md).
+    pub monitor: Arc<dyn rusty_store::HeartbeatRepo>,
     /// `[sealing] public_key`: what secrets are sealed to. `None`: nothing can be sealed, the endpoints that need it answer `503 unavailable`.
     pub sealing: Option<rusty_seal::SealingKey>,
     /// `None` (no host name configured): the DNS page answers `503 unavailable`.

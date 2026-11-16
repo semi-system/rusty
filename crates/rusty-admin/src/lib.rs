@@ -13,6 +13,7 @@ pub mod autoconfig;
 pub mod dns;
 pub mod health;
 pub mod manage;
+pub mod monitor;
 pub mod outbound;
 pub mod run;
 pub mod session;

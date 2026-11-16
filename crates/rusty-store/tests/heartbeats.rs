@@ -82,3 +82,35 @@ async fn a_service_role_writes_only_its_own_service_whatever_it_passes() {
     // Only the collector deletes, through the cleanup; the admin web only reads.
     assert!(admin_role.prune(0).await.is_err(), "the admin web does not clean up");
 }
+
+#[tokio::test]
+async fn the_monitor_counts_the_check_states_of_domain_stores_and_the_domains_with_dns_problems() {
+    let Some(url) = pg_admin_url() else { return };
+    let db = PgTestDb::create(&url).await;
+    let r = repo(db.url()).await;
+    assert_eq!(r.storage_check_counts().await.unwrap(), vec![]);
+    assert_eq!(r.dns_problem_domains().await.unwrap(), 0);
+    let admin = PgPoolOptions::new().max_connections(1).connect(db.admin_db_url()).await.unwrap();
+    for (name, store_kind, status) in [("a.test", "fs", "ok"), ("b.test", "fs", "failed"), ("c.test", "fs", "ok")] {
+        let d: i64 = sqlx::query_scalar("INSERT INTO domains (name, created_at) VALUES ($1, rs_now()) RETURNING id").bind(name).fetch_one(&admin).await.unwrap();
+        sqlx::query("INSERT INTO blob_stores (domain_id, kind, config, check_status, created_at) VALUES ($1, $2, '{}', $3, rs_now())").bind(d).bind(store_kind).bind(status).execute(&admin).await.unwrap();
+        // two bad records in the first domain (it counts once), none in the others
+        let states: &[&str] = match name {
+            "a.test" => &["missing", "mismatch"],
+            "b.test" => &["ok", "pending"],
+            _ => &["ok"],
+        };
+        for (n, st) in states.iter().enumerate() {
+            sqlx::query("INSERT INTO domain_dns_state (domain_id, record_name, record_type, purpose, expected_value_hash, last_status, last_checked_at, status_since) VALUES ($1, $2, 'TXT', 'spf', $3, $4, 0, 0)")
+                .bind(d)
+                .bind(format!("r{n}.{name}"))
+                .bind("0".repeat(64))
+                .bind(*st)
+                .execute(&admin)
+                .await
+                .unwrap();
+        }
+    }
+    assert_eq!(r.storage_check_counts().await.unwrap(), vec![("failed".to_string(), 1), ("ok".to_string(), 2)]);
+    assert_eq!(r.dns_problem_domains().await.unwrap(), 1, "a domain with two bad records counts once");
+}
