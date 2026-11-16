@@ -161,3 +161,39 @@ export interface Queue {
   failed: number;
   dead: number;
 }
+
+export interface MonitorInstance {
+  instance: string;
+  version: string;
+  uptime_secs: number;
+  age_secs: number;
+  stale: boolean;
+  status: string;
+  listeners: number | null;
+}
+
+export interface MonitorService {
+  service: string;
+  status: string;
+  instances: MonitorInstance[];
+}
+
+export interface MonitorQueue {
+  queued: number;
+  running: number;
+  failed: number;
+  dead: number;
+  oldest_due_secs: number;
+}
+
+export interface MonitorCount {
+  status: string;
+  count: number;
+}
+
+export interface Monitor {
+  services: MonitorService[];
+  queue: MonitorQueue;
+  storage: MonitorCount[];
+  dns_problem_domains: number;
+}

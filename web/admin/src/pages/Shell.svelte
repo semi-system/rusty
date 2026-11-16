@@ -12,15 +12,17 @@
   import Dns from './Dns.svelte';
   import Relay from './Relay.svelte';
   import Storage from './Storage.svelte';
+  import MonitorPage from './Monitor.svelte';
   import NotFound from './NotFound.svelte';
   import Link from '../lib/Link.svelte';
 
   let { app, me }: { app: App; me: Me } = $props();
 
   // A route never ends in a domain name: the server answers a path that looks like a file with 404 (see docs/admin-web-frontend.md).
-  type Page = 'domains' | 'overview' | 'accounts' | 'aliases' | 'dkim' | 'dns' | 'relay' | 'storage';
+  type Page = 'domains' | 'overview' | 'accounts' | 'aliases' | 'dkim' | 'dns' | 'relay' | 'storage' | 'monitor';
   const routes: Route<Page>[] = [
     { pattern: '/', value: 'domains' },
+    { pattern: '/monitor', value: 'monitor' },
     { pattern: '/domains/{name}/overview', value: 'overview' },
     { pattern: '/domains/{name}/accounts', value: 'accounts' },
     { pattern: '/domains/{name}/aliases', value: 'aliases' },
@@ -37,6 +39,7 @@
   <nav aria-label={t('nav.main')}>
     <strong>{t('app.title')}</strong>
     <Link href="/" current={nav.path === '/'}>{t('nav.domains')}</Link>
+    {#if me.scope === 'platform'}<Link href="/monitor" current={nav.path === '/monitor'}>{t('nav.monitor')}</Link>{/if}
   </nav>
   <span>
     <span class="muted">{t('home.signedInAs', { address: me.address })} · {me.scope === 'platform' ? t('home.scopePlatform') : t('home.scopeDomain')}</span>
@@ -48,6 +51,9 @@
   <NotFound />
 {:else if match.value === 'domains'}
   <Domains {app} {me} />
+{:else if match.value === 'monitor'}
+  <!-- Only for platform administrators: for anyone else the page does not exist (the API says 403 as well). -->
+  {#if me.scope === 'platform'}<MonitorPage {app} />{:else}<NotFound />{/if}
 {:else}
   <!-- Keyed by the domain and the page: moving to another domain starts the page afresh. -->
   {#key nav.path}

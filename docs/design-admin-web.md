@@ -88,6 +88,7 @@ carry backend text, SQL, paths or what the user sent.
 | `GET /domains/{d}/aliases`, `POST ...`, `DELETE /aliases/{a}` | aliases |
 | `POST /domains/{d}/dkim` | generate a key, return the public record only |
 | `GET /outbound` | relay state and queue figures |
+| `GET /monitor` | platform administrators only: the services (ok, degraded or down by their heartbeats, per instance), the outbound queue of every domain, the storage check states, the domains with DNS problems (`design-admin-monitor.md`) |
 
 Pagination by `after` cursor and a fixed page size, as `Directory` does today. The JSON shapes are the contract between the two
 halves (section 8).

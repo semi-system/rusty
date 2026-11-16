@@ -1,6 +1,6 @@
 # Design: the basic monitor in the admin web
 
-Status: design, being built. The owner asked for a basic monitor inside the admin page to watch the services (2026-11-16). It is a first look, not a metrics system: Prometheus metrics and alerts
+Status: built (the migration, the heartbeat task of every service, the API and the page). The owner asked for a basic monitor inside the admin page to watch the services (2026-11-16). It is a first look, not a metrics system: Prometheus metrics and alerts
 come later (`roadmap.md`) and will not replace this page.
 
 ## What it shows
