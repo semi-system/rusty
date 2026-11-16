@@ -13,6 +13,20 @@ exposed and how it is kept safe.
 * A scrape never blocks a service: the counters are atomics read at scrape time, and a collector that needs the database (below) has a two-second limit; if it fails the scrape still answers
   and `rusty_scrape_errors_total{collector}` counts it.
 
+## One place to scrape
+
+Owner's choice (2026-11-16): the operator's Prometheus reads ONE endpoint, so that no service is missed and the scrape configuration does not grow with the services. The admin web is that endpoint (it already
+sees the platform; no new container). `[[metrics.scrape]]` (admin web only; a service of another role refuses it) lists the services to read: `service` (a label value) and `address` (`host:port` of the
+service's `[metrics]` listener). A name that resolves to many addresses (Docker's DNS name of a scaled service, `tasks.<service>` in a swarm) is many instances, up to 64 per target.
+
+* A scrape of the admin web reads every instance in parallel (plain HTTP/1.0, two seconds and 1 MiB each) and answers with its own samples and theirs in one exposition: one HELP and TYPE per name, every
+  sample with `instance` (the address read; `local` for the admin web's own) and `service`.
+* `rusty_scrape_target_up{service,instance}` is 1 when the read worked and 0 when it did not (a bad status, a refusal, a timeout, an oversized or unreadable body, a name that does not resolve: the
+  instance is then the configured address). A dead service shows as 0, never as nothing.
+* A line that already names an `instance` is dropped; one that names a `service` (`rusty_build_info`, the admin web's `rusty_service_up{service}`) keeps its own.
+* The services allow the admin web by its NAME (`[metrics] allowed_hosts = ["tasks.admin", "admin"]`: `tasks.admin` is the swarm form, `admin` the compose one). The names are resolved again every five seconds, a name that fails keeps its last answer, and until a name resolves nobody is let in; no address or subnet is fixed anywhere. The admin web's own endpoint allows the operator's networks (`allowed_peers`) or names (`allowed_hosts`, for a Prometheus that is a service itself). Prometheus scrapes it with `honor_labels: true`.
+* If the admin web is down nothing is watched: `RustyCentralEndpointDown` (on `up{job="rusty"}`) is the alert for it, and the only one that needs an outside check.
+
 ## What is measured
 
 Every service: `rusty_build_info{service,version}`, `rusty_process_uptime_seconds`, `rusty_connections_accepted_total{listener}`, `rusty_connections_rejected_total{listener,reason}`,

@@ -1,5 +1,7 @@
-# A sample Prometheus scrape configuration for the standalone stack (docs/design-metrics.md). Run your Prometheus on the `rusty_metrics` network (docs/docker.md): Docker's resolver returns every
-# replica of a service under its name, so a scaled service is scraped on every replica without a change here. The services allow only the networks given to `./setup.sh --metrics-allow` (`[metrics] allowed_peers`).
+# A sample Prometheus scrape configuration for the standalone stack (docs/design-metrics.md): ONE target. The admin web is the central endpoint: it reads the /metrics of every other service
+# (every replica of each, found through Docker's DNS) and serves them all on its own listener, each sample labelled `service` and `instance`, with `rusty_scrape_target_up` for each instance, so
+# a service that is down shows as 0 and a service cannot be left out of the scrape configuration by mistake. Run your Prometheus on the `rusty_metrics` network (docs/docker.md); the admin web
+# allows the networks given to `./setup.sh --metrics-allow` (`[metrics] allowed_peers`).
 global:
   scrape_interval: 30s
   evaluation_interval: 30s
@@ -8,22 +10,8 @@ rule_files:
   - /etc/prometheus/rusty.rules.yml
 
 scrape_configs:
-  - job_name: rusty-smtp-in
-    dns_sd_configs: [{ names: [smtp-in], type: A, port: 9100 }]
-    relabel_configs: [{ target_label: service, replacement: smtp-in }]
-  - job_name: rusty-submission
-    dns_sd_configs: [{ names: [submission], type: A, port: 9100 }]
-    relabel_configs: [{ target_label: service, replacement: submission }]
-  - job_name: rusty-imap
-    dns_sd_configs: [{ names: [imap], type: A, port: 9100 }]
-    relabel_configs: [{ target_label: service, replacement: imap }]
-  - job_name: rusty-outbound
-    dns_sd_configs: [{ names: [outbound], type: A, port: 9100 }]
-    relabel_configs: [{ target_label: service, replacement: outbound }]
-  - job_name: rusty-gc
-    dns_sd_configs: [{ names: [gc], type: A, port: 9100 }]
-    relabel_configs: [{ target_label: service, replacement: gc }]
-  # The admin web is also the one that sees the whole platform: the heartbeats of every service, the outbound queue, the storage checks, the DNS problems.
-  - job_name: rusty-admin
-    dns_sd_configs: [{ names: [admin], type: A, port: 9100 }]
-    relabel_configs: [{ target_label: service, replacement: admin }]
+  - job_name: rusty
+    # honor_labels: the samples carry their own `service` and `instance` (the instance of the service, not of the admin web).
+    honor_labels: true
+    static_configs:
+      - targets: ["admin:9100"]

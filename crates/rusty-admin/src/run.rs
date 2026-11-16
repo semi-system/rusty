@@ -148,7 +148,10 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
         Some(m) => {
             let registry = Arc::new(rusty_metrics::Registry::new("admin", env!("CARGO_PKG_VERSION")));
             registry.add_collector(Arc::new(crate::monitor::PlatformCollector { monitor: repos.heartbeat.clone(), jobs: rusty_store::JobQueue::with_repo(repos.jobs.clone()) }));
-            rusty_metrics::serve(m.listen, registry.clone(), m.allowed_peers.clone(), shutdown.clone()).await?;
+            if !m.scrape.is_empty() {
+                registry.set_federation(rusty_metrics::Federation::new(m.scrape.iter().map(|t| rusty_metrics::Target { service: t.service.clone(), address: t.address.clone() }).collect()));
+            }
+            rusty_metrics::serve_allowing(m.listen, registry.clone(), m.allowed_peers.clone(), m.allowed_hosts.clone(), shutdown.clone()).await?;
             Arc::new(rusty_metrics::MetricsEvents::new(registry))
         }
         None => Arc::new(TracingEvents),

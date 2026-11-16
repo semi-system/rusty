@@ -17,7 +17,7 @@ password_file = "/run/secrets/pg_outbound"
 sslmode = "verify-full"
 ca_bundle = "/etc/rusty/db-ca.pem"
 
-# The Prometheus endpoint (./setup.sh --metrics-allow CIDR): only the networks named there may scrape it.
+# The Prometheus endpoint (./setup.sh --metrics-allow CIDR): only the admin web (the central endpoint) may read it, found by its service name.
 #METRICS [metrics]
 #METRICS listen = "0.0.0.0:9100"
-#METRICS allowed_peers = [@METRICS_ALLOW@]
+#METRICS allowed_hosts = ["tasks.admin", "admin"]
