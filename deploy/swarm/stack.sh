@@ -538,7 +538,12 @@ cmd_migrate() {
       esac
     done
     if [ -n "$failed" ]; then
-      for j in $failed; do echo "migrate: the job $j failed; its log:" >&2; sw service logs "${MIGRATE_STACK}_$j" 2>&1 | tail -20 >&2; done
+      for j in $failed; do
+        echo "migrate: the job $j failed. The swarm says:" >&2
+        sw service ps "${MIGRATE_STACK}_$j" --no-trunc --format '{{.CurrentState}}: {{.Error}}' 2>&1 | head -5 >&2
+        echo "migrate: its log:" >&2
+        sw service logs "${MIGRATE_STACK}_$j" 2>&1 | tail -20 >&2
+      done
       sw stack rm "$MIGRATE_STACK" >/dev/null 2>&1 || true
       die "a job failed: nothing was deployed"
     fi
