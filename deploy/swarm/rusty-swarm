@@ -207,14 +207,18 @@ node_addr() {
   printf '%s\n' "$a"
 }
 
+# The swarm names a node by the host name the node reports, which is not the name in the inventory.
+swarm_node_name() { dk "$1" info --format '{{.Name}}'; }
+
 cmd_label() {
-  local m n l kv; m="$(manager_name)"
+  local m n l kv sn; m="$(manager_name)"
   for n in $(node_names); do
     l="$(node_field "$n" 4)"
     [ -n "$l" ] || continue
+    sn="$(swarm_node_name "$n")"
     for kv in ${l//,/ }; do
       [[ "$kv" =~ ^[a-z][a-z0-9_.-]*=[A-Za-z0-9_.-]+$ ]] || die "node $n: label '$kv' is key=value"
-      dk "$m" node update --label-add "$kv" "$n" >/dev/null
+      dk "$m" node update --label-add "$kv" "$sn" >/dev/null
     done
   done
   echo "cluster init: labels set"
