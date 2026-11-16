@@ -14,6 +14,9 @@
 #   ./rusty-swarm [--env FILE] cluster init      start the swarm on the Manager, join the workers, set the labels (each part is skipped when it is already done)
 #   ./rusty-swarm [--env FILE] cluster verify    nodes Ready and Active, and a throw-away overlay with one task per node: the tasks list each other, reach each other
 #                                                (an encrypted overlay when the inventory says ENCRYPTED=1)
+#   ./rusty-swarm [--env FILE] stack          print the stack file the next deploy would use
+#   ./rusty-swarm [--env FILE] prepare secrets | prepare configs | migrate | deploy   the next steps of the flow, each repeatable: the swarm secrets (versioned names) and configs (named by the
+#                                                hash of their content), the schema migration as a job, and the stack (the edge and the services)
 #   ./rusty-swarm [--env FILE] prepare db       with the one login of the inventory (DB_ADMIN_USER), create the roles of the services in the external PostgreSQL (deploy/db/roles.sql), give each a random
 #                                                password (kept in the state directory, mode 0600, for the next step) and prove that each of them can log in; run again, it changes no password
 #
@@ -336,6 +339,9 @@ cmd_prepare_db() {
 }
 
 
+# shellcheck source=stack.sh
+. "$HERE/stack.sh"
+
 # ---- install docker --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 # Only where Docker is missing (owner's choice: automatic): get.docker.com is a script of the internet that runs as root. A node reached as a
 # container (the local test cluster) already has Docker and is skipped. The user of an ssh node must be root or be allowed `sudo` without a password.
@@ -391,7 +397,11 @@ cmd_all() {
   cmd_init
   cmd_verify
   cmd_prepare_db
-  echo "init: done so far: Docker, the swarm and the database. (The stack is the next step of the tool.)"
+  cmd_prepare_secrets
+  cmd_prepare_configs
+  cmd_migrate
+  cmd_deploy
+  echo "init: done: the stack is deployed (the first start: the admin web prints the setup token in its log: ./rusty-swarm logs admin)"
 }
 
 # ---- main ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -404,5 +414,10 @@ case "${1:-}:${2:-}" in
   cluster:init) cmd_init ;;
   cluster:verify) cmd_verify ;;
   prepare:db) cmd_prepare_db ;;
+  prepare:secrets) cmd_prepare_secrets ;;
+  prepare:configs) cmd_prepare_configs ;;
+  migrate:*) cmd_migrate ;;
+  deploy:*) cmd_deploy ;;
+  stack:*) gen_stack ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print } /^set / { exit }' "$0"; [ -z "${1:-}" ] || exit 2 ;;
 esac

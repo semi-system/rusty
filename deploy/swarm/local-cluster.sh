@@ -195,6 +195,8 @@ ext_up() {
   # RustFS (S3): a key pair, a data volume that survives a restart, and the bucket.
   [ -s "$EXT_DIR/s3.env" ] || printf 'S3_ENDPOINT=http://%s:9000\nS3_REGION=us-east-1\nS3_BUCKET=%s\nS3_ACCESS_KEY=%s\nS3_SECRET_KEY=%s\n' "$S3_IP" "$BUCKET" "$(rand_hex 10)" "$(rand_hex 24)" > "$EXT_DIR/s3.env"
   local key secret; key="$(sed -n 's/^S3_ACCESS_KEY=//p' "$EXT_DIR/s3.env")"; secret="$(sed -n 's/^S3_SECRET_KEY=//p' "$EXT_DIR/s3.env")"
+  # The secret key alone in a file (mode 0600): rusty-swarm reads a key from a file, never from the environment.
+  ( umask 077; printf '%s' "$secret" > "$EXT_DIR/s3.secret" )
   if ! docker inspect "$S3_NAME" >/dev/null 2>&1; then
     docker run -d --name "$S3_NAME" --network "$EXT_NET" --ip "$S3_IP" --restart unless-stopped \
       -e RUSTFS_ACCESS_KEY="$key" -e RUSTFS_SECRET_KEY="$secret" -v rusty-ext-s3-data:/data --tmpfs /logs:mode=1777 --tmpfs /tmp:mode=1777 \
