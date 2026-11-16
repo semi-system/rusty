@@ -163,9 +163,8 @@ Why a timer on the host and not a service: a service that could create secrets a
   `internal` (the same split as today: `app`, `filter`, `kv`, `metrics`); the services that need the internet (`outbound`, `freshclam`, the edge, the resolver) also join an `egress` network.
 * **The database allow-list** is now by **address and role**: the PostgreSQL host allows the swarm nodes' addresses, each role has its own password, and the host's firewall allows nothing else. The by-name list of the
   standalone stack cannot be used for an external server. A compromised service can still only do what its role can (`pg_service_roles.rs` is the contract).
-* **The PROXY header** is accepted from the `app` overlay's subnet because the edge has no fixed address on a swarm. That widens "only the edge may say who the client is" to "any task on that network may". The
-  hardening that closes it is a shared-secret TLV in the PROXY v2 header (HAProxy writes it, the services check it); it is a small code change and is listed in section 11. Until then the `app` network holds only the
-  edge and the services that need it.
+* **The PROXY header** is accepted from the edge only, found by its service NAME (`trusted_proxy_hosts = ["tasks.edge", "edge"]`, resolved again every few seconds; until a name resolves nobody is trusted). The
+  widening to a whole subnet that this section once expected did not happen, so the shared-secret TLV in the PROXY v2 header (item 5 of section 11) is no longer needed and is dropped.
 * **The Manager** holds the Docker API, every secret and the only public entrance: keep it patched, SSH by key only, the Docker API not exposed, and use `ufw`/nftables as `cluster check` verifies.
 * The task hardening of the standalone stack (`read_only`, `cap_drop: ALL`, non-root users, tmpfs) carries over where `docker stack deploy` supports it. **`no-new-privileges` (`security_opt`) is not supported for swarm
   services in the versions the plan assumes: to be verified on the cluster** (the baseless images carry no setuid binary, which makes this a defence in depth rather than the only line).
@@ -188,7 +187,7 @@ Why a timer on the host and not a service: a service that could create secrets a
 | 2 | `rustyctl` and `migrate` through **replicated-job** services (`rusty-swarm ctl ...` runs one and prints its log), because a swarm has no `docker compose run` and the overlay is not attachable by default | operations |
 | 3 | HAProxy backends using `tasks.<service>`, and the sample scrape configuration likewise | replicas visible one by one |
 | 4 | A check that the platform store can be **S3 only** for every role (no `blob_dir` on the nodes) and that the configuration validator says so clearly | the external S3 decision |
-| 5 | PROXY v2 **authentication TLV** (HAProxy and the three services) | closes the widened PROXY trust of section 9 |
+| 5 | ~~PROXY v2 authentication TLV~~ | dropped: the edge is trusted by name (section 9), no subnet is trusted |
 | 6 | **Schema compatibility range** in the migration metadata and the schema check | safe rolling updates and a meaningful swarm rollback |
 | 7 | `limits.sh` writing the swarm form (`deploy.resources` with reservations) and reading the labelled nodes | already half there |
 | 8 | An end-to-end test in CI on a **single-node swarm** with PostgreSQL and an S3 server as plain containers outside the stack: deploy, send mail, update, scale, drain, node-down is out | proves the deploy flow without a cluster |
