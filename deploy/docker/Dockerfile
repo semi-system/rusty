@@ -13,8 +13,11 @@
 #  * Every base image is pinned by digest (deploy/images.lock; scripts/check-docker-pins.sh keeps
 #    this file and the lock in step). zig is pinned by SHA-256.
 #  * Dependencies are resolved with `--locked`: a stale Cargo.lock fails the build.
-#  * The final image is distroless "static": no shell, no package manager, a numeric non-root user,
+#  * The final image is baseless "static" (ghcr.io/semi-system/baseless-static): no shell, no package manager, a numeric non-root user,
 #    CA certificates, nothing else. It runs with `--read-only` (data lives in the two volumes).
+
+# Which image the build ends with (a stage name below): `--build-arg SERVICE=rusty-smtp-in` builds that service image as the default target, which is how CI publishes one image per service.
+ARG SERVICE=rusty
 
 # ---- front end stage -------------------------------------------------------------------------
 # The admin web (web/admin): installed from the lockfile with no package script, checked by the same
@@ -126,7 +129,7 @@ COPY --from=build /rootfs/usr/local/bin/rusty /rusty
 # binary. Same base as the mail image; it holds no mail data and needs no volume. TLS ends at the edge
 # (listen address and public origin come from /etc/rusty/admin.toml). Not the default target: the last
 # stage below is.
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329 AS admin
+FROM ghcr.io/semi-system/baseless-static@sha256:0818dee927a7fdd28e358e3337c891b878ebc58e9e20094d236ae3fe03a09f1b AS admin
 
 ARG VERSION=dev
 ARG REVISION=unknown
@@ -140,7 +143,7 @@ LABEL org.opencontainers.image.title="rusty-admin" \
       org.opencontainers.image.revision="$REVISION" \
       org.opencontainers.image.source="$SOURCE_URL" \
       org.opencontainers.image.created="$CREATED" \
-      org.opencontainers.image.base.name="gcr.io/distroless/static-debian13:nonroot"
+      org.opencontainers.image.base.name="ghcr.io/semi-system/baseless-static"
 
 COPY --from=build --chown=65532:65532 /rootfs-admin/etc/rusty /etc/rusty
 COPY --from=build /rootfs-admin/usr/local/bin/ /usr/local/bin/
@@ -160,7 +163,7 @@ CMD ["--config", "/etc/rusty/admin.toml"]
 # ---- one image per service (docs/design-per-service-images.md) ------------------------------
 # `docker build --target rusty-imap`, and so on: one static binary, no shell, numeric non-root user, a configuration file of its own that accepts only the sections the
 # service uses (`/etc/rusty/<service>.toml`). Services with a port have the HEALTHCHECK of that port; outbound and gc have no port and their check only loads the configuration.
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329 AS rusty-smtp-in
+FROM ghcr.io/semi-system/baseless-static@sha256:0818dee927a7fdd28e358e3337c891b878ebc58e9e20094d236ae3fe03a09f1b AS rusty-smtp-in
 
 ARG VERSION=dev
 ARG REVISION=unknown
@@ -174,7 +177,7 @@ LABEL org.opencontainers.image.title="rusty-smtp-in" \
       org.opencontainers.image.revision="$REVISION" \
       org.opencontainers.image.source="$SOURCE_URL" \
       org.opencontainers.image.created="$CREATED" \
-      org.opencontainers.image.base.name="gcr.io/distroless/static-debian13:nonroot"
+      org.opencontainers.image.base.name="ghcr.io/semi-system/baseless-static"
 
 COPY --from=build --chown=65532:65532 /rootfs-smtp-in/etc/rusty /etc/rusty
 COPY --from=build /rootfs-smtp-in/usr/local/bin/ /usr/local/bin/
@@ -189,7 +192,7 @@ HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=3 \
 ENTRYPOINT ["/usr/local/bin/rusty-smtp-in"]
 CMD ["--config", "/etc/rusty/smtp-in.toml"]
 
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329 AS rusty-submission
+FROM ghcr.io/semi-system/baseless-static@sha256:0818dee927a7fdd28e358e3337c891b878ebc58e9e20094d236ae3fe03a09f1b AS rusty-submission
 
 ARG VERSION=dev
 ARG REVISION=unknown
@@ -203,7 +206,7 @@ LABEL org.opencontainers.image.title="rusty-submission" \
       org.opencontainers.image.revision="$REVISION" \
       org.opencontainers.image.source="$SOURCE_URL" \
       org.opencontainers.image.created="$CREATED" \
-      org.opencontainers.image.base.name="gcr.io/distroless/static-debian13:nonroot"
+      org.opencontainers.image.base.name="ghcr.io/semi-system/baseless-static"
 
 COPY --from=build --chown=65532:65532 /rootfs-submission/etc/rusty /etc/rusty
 COPY --from=build /rootfs-submission/usr/local/bin/ /usr/local/bin/
@@ -218,7 +221,7 @@ HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=3 \
 ENTRYPOINT ["/usr/local/bin/rusty-submission"]
 CMD ["--config", "/etc/rusty/submission.toml"]
 
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329 AS rusty-imap
+FROM ghcr.io/semi-system/baseless-static@sha256:0818dee927a7fdd28e358e3337c891b878ebc58e9e20094d236ae3fe03a09f1b AS rusty-imap
 
 ARG VERSION=dev
 ARG REVISION=unknown
@@ -232,7 +235,7 @@ LABEL org.opencontainers.image.title="rusty-imap" \
       org.opencontainers.image.revision="$REVISION" \
       org.opencontainers.image.source="$SOURCE_URL" \
       org.opencontainers.image.created="$CREATED" \
-      org.opencontainers.image.base.name="gcr.io/distroless/static-debian13:nonroot"
+      org.opencontainers.image.base.name="ghcr.io/semi-system/baseless-static"
 
 COPY --from=build --chown=65532:65532 /rootfs-imap/etc/rusty /etc/rusty
 COPY --from=build /rootfs-imap/usr/local/bin/ /usr/local/bin/
@@ -247,7 +250,7 @@ HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=3 \
 ENTRYPOINT ["/usr/local/bin/rusty-imap"]
 CMD ["--config", "/etc/rusty/imap.toml"]
 
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329 AS rusty-outbound
+FROM ghcr.io/semi-system/baseless-static@sha256:0818dee927a7fdd28e358e3337c891b878ebc58e9e20094d236ae3fe03a09f1b AS rusty-outbound
 
 ARG VERSION=dev
 ARG REVISION=unknown
@@ -261,7 +264,7 @@ LABEL org.opencontainers.image.title="rusty-outbound" \
       org.opencontainers.image.revision="$REVISION" \
       org.opencontainers.image.source="$SOURCE_URL" \
       org.opencontainers.image.created="$CREATED" \
-      org.opencontainers.image.base.name="gcr.io/distroless/static-debian13:nonroot"
+      org.opencontainers.image.base.name="ghcr.io/semi-system/baseless-static"
 
 COPY --from=build --chown=65532:65532 /rootfs-outbound/etc/rusty /etc/rusty
 COPY --from=build /rootfs-outbound/usr/local/bin/ /usr/local/bin/
@@ -275,7 +278,7 @@ HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=3 \
 ENTRYPOINT ["/usr/local/bin/rusty-outbound"]
 CMD ["--config", "/etc/rusty/outbound.toml"]
 
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329 AS rusty-gc
+FROM ghcr.io/semi-system/baseless-static@sha256:0818dee927a7fdd28e358e3337c891b878ebc58e9e20094d236ae3fe03a09f1b AS rusty-gc
 
 ARG VERSION=dev
 ARG REVISION=unknown
@@ -289,7 +292,7 @@ LABEL org.opencontainers.image.title="rusty-gc" \
       org.opencontainers.image.revision="$REVISION" \
       org.opencontainers.image.source="$SOURCE_URL" \
       org.opencontainers.image.created="$CREATED" \
-      org.opencontainers.image.base.name="gcr.io/distroless/static-debian13:nonroot"
+      org.opencontainers.image.base.name="ghcr.io/semi-system/baseless-static"
 
 COPY --from=build --chown=65532:65532 /rootfs-gc/etc/rusty /etc/rusty
 COPY --from=build /rootfs-gc/usr/local/bin/ /usr/local/bin/
@@ -304,8 +307,8 @@ ENTRYPOINT ["/usr/local/bin/rusty-gc"]
 CMD ["--config", "/etc/rusty/gc.toml"]
 
 # ---- final stage -----------------------------------------------------------------------------
-# distroless static (Debian 13): CA certificates, tzdata, /tmp, no shell. Default user 65532.
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329
+# baseless static: CA certificates, tzdata, /tmp, no shell, no package manager. Default user 65532.
+FROM ghcr.io/semi-system/baseless-static@sha256:0818dee927a7fdd28e358e3337c891b878ebc58e9e20094d236ae3fe03a09f1b AS rusty
 
 ARG VERSION=dev
 ARG REVISION=unknown
@@ -319,7 +322,7 @@ LABEL org.opencontainers.image.title="rusty" \
       org.opencontainers.image.revision="$REVISION" \
       org.opencontainers.image.source="$SOURCE_URL" \
       org.opencontainers.image.created="$CREATED" \
-      org.opencontainers.image.base.name="gcr.io/distroless/static-debian13:nonroot"
+      org.opencontainers.image.base.name="ghcr.io/semi-system/baseless-static"
 
 # State directory 0700 and the config directory belong to the numeric runtime user, so named
 # volumes mounted over them are initialised with the right owner. /etc/rusty is only read.
@@ -339,3 +342,7 @@ HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=3 \
     CMD ["/usr/local/bin/rusty", "healthcheck"]
 ENTRYPOINT ["/usr/local/bin/rusty"]
 CMD ["d", "--config", "/etc/rusty/rusty.toml"]
+
+# ---- the default target ------------------------------------------------------------------------
+# `docker build .` gives the multi-call mail image (SERVICE=rusty); CI builds each service image with `--build-arg SERVICE=<stage>`.
+FROM ${SERVICE} AS selected

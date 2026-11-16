@@ -18,7 +18,7 @@ pin() { awk -v n="$1" '$1 == n { print $2 }' "$ROOT/deploy/images.lock"; }
 PG_IMG="$(pin postgres:18)"; HA_IMG="$(pin haproxy:3.4.7-alpine3.24)"
 [ -n "$PG_IMG" ] && [ -n "$HA_IMG" ] || { echo "setup: images are not pinned in deploy/images.lock" >&2; exit 1; }
 
-STATE="${RUSTY_STATE:-$HOME/rusty-state}"; MAIL_HOST=""; ADMIN_HOST=""; CONTACT=""; PUBLIC_IP=""; STAGING=0; SELF=0; FILTER=0; ALLOW=()
+STATE="${RUSTY_STATE:-$HOME/rusty-state}"; MAIL_HOST=""; ADMIN_HOST=""; CONTACT=""; PUBLIC_IP=""; STAGING=0; SELF=0; FILTER=0; BUILD=0; TAG=main; REGISTRY=ghcr.io/semi-system; ALLOW=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --mail-host) MAIL_HOST="${2:-}"; shift 2 ;;
@@ -29,11 +29,16 @@ while [ $# -gt 0 ]; do
     --staging) STAGING=1; shift ;;
     --self-signed) SELF=1; shift ;;
     --filter) FILTER=1; shift ;;
+    --build) BUILD=1; shift ;;
+    --image-tag) TAG="${2:-}"; shift 2 ;;
+    --registry) REGISTRY="${2:-}"; shift 2 ;;
     --state-dir) STATE="${2:-}"; shift 2 ;;
     *) echo "setup: unknown argument $1 (see the header of this script)" >&2; exit 2 ;;
   esac
 done
 die() { echo "setup: $*" >&2; exit 2; }
+[[ "$TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || die "--image-tag must be a registry tag (a release such as 1.2.3, sha-abcdef0, or main)"
+[[ "$REGISTRY" =~ ^[a-z0-9.:/_-]+$ ]] || die "--registry must be a registry path such as ghcr.io/semi-system"
 host_re='^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
 [[ "$MAIL_HOST" =~ $host_re ]] || die "--mail-host must be a lower-case host name (mail.example.org)"
 [[ "$ADMIN_HOST" =~ $host_re ]] || die "--admin-host must be a lower-case host name (admin.example.org)"
@@ -56,9 +61,14 @@ R()  { docker run --rm --user 0 --entrypoint sh -e HOSTID -v "$STATE:/s" "$HA_IM
 RP() { docker run --rm --user 0 --entrypoint sh -e HOSTID -v "$STATE:/s" "$PG_IMG" -c "$1"; }
 R 'cd /s && mkdir -p secrets etc pgtls keys tls edge/acme edge/certs run && chown "$HOSTID" etc'
 # Which kind of certificates the edge has decides which of the optional services (cert-sync, cert-keep) compose starts.
-if [ "$SELF" = 1 ]; then profiles=""; else profiles="acme"; fi; if [ "$FILTER" = 1 ]; then profiles="${profiles:+$profiles,}filter"; fi; printf 'RUSTY_STATE=%s
+if [ "$SELF" = 1 ]; then profiles=""; else profiles="acme"; fi; compose_file=""; [ "$BUILD" = 1 ] && compose_file="compose.yaml:compose.build.yaml"
+if [ "$FILTER" = 1 ]; then profiles="${profiles:+$profiles,}filter"; fi; printf 'RUSTY_STATE=%s
 COMPOSE_PROFILES=%s
-' "$STATE" "$profiles" > .env
+RUSTY_REGISTRY=%s
+RUSTY_TAG=%s
+' "$STATE" "$profiles" "$REGISTRY" "$TAG" > .env
+[ -z "$compose_file" ] || printf 'COMPOSE_FILE=%s
+' "$compose_file" >> .env
 R 'cd /s/secrets && for s in pg_postgres pg_app pg_admin pg_migrator; do [ -s "$s" ] || (umask 077; head -c 32 /dev/urandom | od -An -tx1 | tr -d " \n" > "$s"); done'
 
 # The database CA and the server certificate for the name `db` (clients verify it: sslmode verify-full). Made once.
@@ -78,8 +88,11 @@ render() { # template -> file: the values were validated above, none holds a cha
       -e "s|@SEAL_PUBLIC@|$SEAL_PUBLIC|g" -e "s|@ACME_DIRECTORY@|$ACME_DIR|g" -e "s|@ADMIN_ALLOW@|${ALLOW[*]}|g" "templates/$1.in" > "$STATE/etc/$1"
 }
 # The sealing key pair: the private half stays in state/keys (mail uid only); the public half goes to both configurations.
-mail_ctl() { docker run --rm --user 65532:65532 --entrypoint /usr/local/bin/rustyctl -v "$STATE/keys:/etc/rusty-keys" rusty-mail:local "$@"; }
-[ "${SKIP_BUILD:-0}" = 1 ] || docker compose build >/dev/null   # SKIP_BUILD=1: the images (rusty-mail:local for the one-shot jobs, rusty-<service>:local, rusty-admin:local) already exist
+mail_ctl() { docker run --rm --user 65532:65532 --entrypoint /usr/local/bin/rustyctl -v "$STATE/keys:/etc/rusty-keys" "$REGISTRY/rusty:$TAG" "$@"; }
+if [ "${SKIP_BUILD:-0}" = 1 ]; then :   # SKIP_BUILD=1: the images are already here (a test installation that was built before)
+elif [ "$BUILD" = 1 ]; then docker compose build >/dev/null   # development: build from this checkout (compose.build.yaml)
+else docker compose pull --quiet; fi   # production: the images come from the registry, nothing is built on the server
+#   # SKIP_BUILD=1: the images (rusty-mail:local for the one-shot jobs, rusty-<service>:local, rusty-admin:local) already exist
 R 'chown 65532:65532 /s/keys /s/tls /s/secrets /s/secrets/* && chmod 0700 /s/keys /s/secrets && chmod 0600 /s/secrets/* && chmod 0755 /s/tls'
 if ! R 'test -e /s/keys/unseal.key'; then mail_ctl seal keygen /etc/rusty-keys/unseal.key >/dev/null; fi
 SEAL_PUBLIC="$(mail_ctl seal show /etc/rusty-keys/unseal.key | grep -o 'rusty-seal-v1:[0-9a-f]\{64\}' | head -1)"

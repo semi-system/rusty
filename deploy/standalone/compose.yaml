@@ -1,5 +1,5 @@
 # A complete Rusty mail server on one host: PostgreSQL, the five mail services (one image each), the admin web and the edge (HAProxy with ACME certificates).
-# Run ./setup.sh first (it writes ./state and builds the images); then `docker compose up -d`. docs/first-mail.md walks through it.
+# Run ./setup.sh first (it writes the state directory and pulls the images from the registry; --build builds them from this checkout instead); then `docker compose up -d`. docs/first-mail.md walks through it.
 name: rusty
 
 x-hardened: &hardened
@@ -51,8 +51,7 @@ services:
       db: { condition: service_healthy }
 
   migrate:
-    image: rusty-mail:local
-    build: { context: ../.., dockerfile: deploy/docker/Dockerfile }
+    image: ${RUSTY_REGISTRY:-ghcr.io/semi-system}/rusty:${RUSTY_TAG:-main}
     <<: *hardened
     restart: "no"
     entrypoint: [/usr/local/bin/rustyctl]
@@ -66,7 +65,7 @@ services:
 
   # The blob directory is never made implicitly by a production start: this one-shot makes it (and does nothing when it exists).
   blobs-init:
-    image: rusty-mail:local
+    image: ${RUSTY_REGISTRY:-ghcr.io/semi-system}/rusty:${RUSTY_TAG:-main}
     <<: *hardened
     restart: "no"
     entrypoint: [/usr/local/bin/rustyctl]
@@ -79,8 +78,7 @@ services:
 
   # Port 25: unauthenticated inbound mail.
   smtp-in:
-    image: rusty-smtp-in:local
-    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: rusty-smtp-in }
+    image: ${RUSTY_REGISTRY:-ghcr.io/semi-system}/rusty-smtp-in:${RUSTY_TAG:-main}
     <<: *hardened
     tmpfs: [/tmp]
     secrets: [pg_app]
@@ -101,8 +99,7 @@ services:
 
   # Ports 587 and 465: authenticated submission.
   submission:
-    image: rusty-submission:local
-    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: rusty-submission }
+    image: ${RUSTY_REGISTRY:-ghcr.io/semi-system}/rusty-submission:${RUSTY_TAG:-main}
     <<: *hardened
     tmpfs: [/tmp]
     secrets: [pg_app]
@@ -122,8 +119,7 @@ services:
 
   # Ports 143 and 993.
   imap:
-    image: rusty-imap:local
-    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: rusty-imap }
+    image: ${RUSTY_REGISTRY:-ghcr.io/semi-system}/rusty-imap:${RUSTY_TAG:-main}
     <<: *hardened
     tmpfs: [/tmp]
     secrets: [pg_app]
@@ -143,8 +139,7 @@ services:
 
   # The delivery worker: DKIM, relays, DNS and storage checks. No port; it dials out.
   outbound:
-    image: rusty-outbound:local
-    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: rusty-outbound }
+    image: ${RUSTY_REGISTRY:-ghcr.io/semi-system}/rusty-outbound:${RUSTY_TAG:-main}
     <<: *hardened
     tmpfs: [/tmp]
     secrets: [pg_app]
@@ -162,8 +157,7 @@ services:
 
   # Garbage collection, store upkeep and the periodic jobs. No port.
   gc:
-    image: rusty-gc:local
-    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: rusty-gc }
+    image: ${RUSTY_REGISTRY:-ghcr.io/semi-system}/rusty-gc:${RUSTY_TAG:-main}
     <<: *hardened
     tmpfs: [/tmp]
     secrets: [pg_app]
@@ -246,7 +240,7 @@ services:
   # rustyctl for the operator: `docker compose run --rm --name rusty-ctl-1 ctl domain add example.org` (docs/first-mail.md; the name is what the database allows). Not started by `up`.
   ctl:
     profiles: [tools]
-    image: rusty-mail:local
+    image: ${RUSTY_REGISTRY:-ghcr.io/semi-system}/rusty:${RUSTY_TAG:-main}
     <<: *hardened
     restart: "no"
     entrypoint: [/usr/local/bin/rustyctl, --config, /etc/rusty/ctl.toml]
@@ -260,8 +254,7 @@ services:
       migrate: { condition: service_completed_successfully }
 
   admin:
-    image: rusty-admin:local
-    build: { context: ../.., dockerfile: deploy/docker/Dockerfile, target: admin }
+    image: ${RUSTY_REGISTRY:-ghcr.io/semi-system}/rusty-admin:${RUSTY_TAG:-main}
     <<: *hardened
     tmpfs: [/tmp]
     secrets: [pg_admin]

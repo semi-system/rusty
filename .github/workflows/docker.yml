@@ -33,6 +33,7 @@ jobs:
       source-date-epoch: ${{ steps.m.outputs.epoch }}
       version: ${{ steps.m.outputs.version }}
       image: ${{ steps.m.outputs.image }}
+      services: ${{ steps.m.outputs.services }}
       image-changed: ${{ steps.c.outputs.docker }}
       workflow-changed: ${{ steps.c.outputs.workflow }}
     steps:
@@ -53,6 +54,8 @@ jobs:
             echo "epoch=$(git log -1 --format=%ct)"
             if [ "$REF_TYPE" = tag ]; then echo "version=${REF_NAME#v}"; else echo "version=0.0.0-dev+${SHA::12}"; fi
             echo "image=ghcr.io/${REPO,,}"
+            # One image per service (the Dockerfile's SERVICE build argument picks the stage); the suffix makes the package name.
+            echo 'services=[{"service":"rusty","suffix":""},{"service":"rusty-smtp-in","suffix":"-smtp-in"},{"service":"rusty-submission","suffix":"-submission"},{"service":"rusty-imap","suffix":"-imap"},{"service":"rusty-outbound","suffix":"-outbound"},{"service":"rusty-gc","suffix":"-gc"},{"service":"admin","suffix":"-admin"}]'
           } >> "$GITHUB_OUTPUT"
       - name: Which inputs changed (pull requests only; pushes and tags build everything)
         id: c
@@ -117,17 +120,18 @@ jobs:
   # secret): unset or "no-scan" runs the plain publish action, "strict" adds the SAST and image
   # scan gate before pushing. Both actions are pinned by commit SHA (never @main).
   publish-no-scan:
-    name: publish (no-scan)
+    name: publish (no-scan, ${{ matrix.service }})
     if: ${{ vars.DOCKER_PUBLISH_MODE != 'strict' && (github.event_name != 'pull_request' || needs.meta.outputs.workflow-changed == 'true') }}
     needs: [meta, smoke]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.meta.outputs.services) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
       contents: read
       packages: write # push to ghcr.io with GITHUB_TOKEN; no other permission
-    outputs:
-      digest: ${{ steps.publish.outputs.image-digest }}
-      image: ${{ steps.publish.outputs.image-name-lc }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -136,10 +140,11 @@ jobs:
         id: publish
         uses: abxst/actions/no-scan@670736025c229e0c308fc9a488cd5f008a96ca74 # v5
         with:
-          image-name: ${{ github.repository }}
+          image-name: ${{ github.repository }}${{ matrix.suffix }}
           context: .
           dockerfile: deploy/docker/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          # The base image (ghcr.io/semi-system/baseless-static) is linux/amd64 only for now; the arm64 binary is still cross compiled in the smoke job.
+          platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
           registry-username: ${{ github.actor }}
           registry-password: ${{ secrets.GITHUB_TOKEN }}
@@ -150,23 +155,38 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
           build-args: |
+            SERVICE=${{ matrix.service }}
             VERSION=${{ needs.meta.outputs.version }}
             REVISION=${{ github.sha }}
             SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
             SOURCE_DATE_EPOCH=${{ needs.meta.outputs.source-date-epoch }}
+      - name: Record the digest of this image
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          DIGEST: ${{ steps.publish.outputs.image-digest }}
+          IMAGE: ${{ steps.publish.outputs.image-name-lc }}
+        run: |
+          jq -n --arg digest "$DIGEST" --arg image "$IMAGE" '{digest: $digest, image: $image}' > digest.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ github.event_name != 'pull_request' }}
+        with:
+          name: digest-${{ matrix.service }}
+          path: digest.json
+          retention-days: 7
 
   publish-strict:
-    name: publish (strict)
+    name: publish (strict, ${{ matrix.service }})
     if: ${{ vars.DOCKER_PUBLISH_MODE == 'strict' && (github.event_name != 'pull_request' || needs.meta.outputs.workflow-changed == 'true') }}
     needs: [meta, smoke]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.meta.outputs.services) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
       contents: read
       packages: write
-    outputs:
-      digest: ${{ steps.publish.outputs.image-digest }}
-      image: ${{ steps.publish.outputs.image-name-lc }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -175,7 +195,7 @@ jobs:
         id: publish
         uses: abxst/actions/strict@670736025c229e0c308fc9a488cd5f008a96ca74 # v5
         with:
-          image-name: ${{ github.repository }}
+          image-name: ${{ github.repository }}${{ matrix.suffix }}
           context: .
           dockerfile: deploy/docker/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
@@ -190,17 +210,35 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
           build-args: |
+            SERVICE=${{ matrix.service }}
             VERSION=${{ needs.meta.outputs.version }}
             REVISION=${{ github.sha }}
             SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
             SOURCE_DATE_EPOCH=${{ needs.meta.outputs.source-date-epoch }}
+      - name: Record the digest of this image
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          DIGEST: ${{ steps.publish.outputs.image-digest }}
+          IMAGE: ${{ steps.publish.outputs.image-name-lc }}
+        run: |
+          jq -n --arg digest "$DIGEST" --arg image "$IMAGE" '{digest: $digest, image: $image}' > digest.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ github.event_name != 'pull_request' }}
+        with:
+          name: digest-${{ matrix.service }}
+          path: digest.json
+          retention-days: 7
 
   # Neither publish action signs or attests. Everything below refers to the pushed DIGEST, never
   # to a tag, and runs only when something was pushed.
   sign:
-    name: sign, SBOM and provenance
+    name: sign, SBOM and provenance (${{ matrix.service }})
     if: ${{ always() && github.event_name != 'pull_request' && (needs.publish-no-scan.result == 'success' || needs.publish-strict.result == 'success') }}
-    needs: [publish-no-scan, publish-strict]
+    needs: [meta, publish-no-scan, publish-strict]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.meta.outputs.services) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -208,10 +246,14 @@ jobs:
       packages: write # cosign and the attestations push signatures to the registry
       id-token: write # OIDC token for keyless signing (Sigstore Fulcio) and the provenance attestation
       attestations: write # GitHub artifact attestation
-    env:
-      DIGEST: ${{ needs.publish-no-scan.outputs.digest || needs.publish-strict.outputs.digest }}
-      IMAGE_LC: ${{ needs.publish-no-scan.outputs.image || needs.publish-strict.outputs.image }}
     steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: digest-${{ matrix.service }}
+      - name: Read the digest of this image
+        run: |
+          set -euo pipefail
+          printf 'DIGEST=%s\nIMAGE_LC=%s\n' "$(jq -r .digest digest.json)" "$(jq -r .image digest.json)" >> "$GITHUB_ENV"
       - name: Fail closed unless the digest is a real sha256
         run: |
           if ! [[ "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then echo "::error::the publish job returned no valid image digest (got: ${DIGEST:-empty})"; exit 1; fi
@@ -256,18 +298,26 @@ jobs:
   # Informational unless the repository variable DOCKER_TRIVY_BLOCKING is "true". In strict mode
   # the publish action's own gate is the blocking one. Reviewed exceptions: .trivyignore only.
   trivy:
-    name: Trivy report
+    name: Trivy report (${{ matrix.service }})
     if: ${{ always() && github.event_name != 'pull_request' && (needs.publish-no-scan.result == 'success' || needs.publish-strict.result == 'success') }}
-    needs: [publish-no-scan, publish-strict]
+    needs: [meta, publish-no-scan, publish-strict]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.meta.outputs.services) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
       packages: read
-    env:
-      DIGEST: ${{ needs.publish-no-scan.outputs.digest || needs.publish-strict.outputs.digest }}
-      IMAGE_LC: ${{ needs.publish-no-scan.outputs.image || needs.publish-strict.outputs.image }}
     steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: digest-${{ matrix.service }}
+      - name: Read the digest of this image
+        run: |
+          set -euo pipefail
+          printf 'DIGEST=%s\nIMAGE_LC=%s\n' "$(jq -r .digest digest.json)" "$(jq -r .image digest.json)" >> "$GITHUB_ENV"
       - name: Fail closed unless the digest is a real sha256
         run: |
           if ! [[ "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then echo "::error::the publish job returned no valid image digest (got: ${DIGEST:-empty})"; exit 1; fi
@@ -291,7 +341,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() }}
         with:
-          name: trivy-report
+          name: trivy-report-${{ matrix.service }}
           path: trivy-report.json
           if-no-files-found: ignore
           retention-days: 30
