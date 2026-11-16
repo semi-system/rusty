@@ -650,6 +650,14 @@ impl JobQueue {
         self.repo.count_by_state(kind, domain.0).await
     }
 
+    /// Every domain together: the jobs of `kind` in each state and the age of the oldest due queued one (seconds). For the admin's monitor.
+    pub async fn platform_figures(&self, kind: &str) -> Result<(Vec<(String, i64)>, i64)> {
+        if !valid_kind(kind) {
+            return Err(invalid("invalid job kind"));
+        }
+        self.repo.queue_figures(kind).await
+    }
+
     /// Delete `done`, `failed` and `dead` jobs with `updated_at < older_than` (unix seconds),
     /// at most [`PURGE_BATCH`] per transaction, until none are left. Returns the rows removed.
     pub async fn purge_finished(&self, older_than: i64) -> Result<u64> {

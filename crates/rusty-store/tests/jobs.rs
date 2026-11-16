@@ -1145,3 +1145,26 @@ async fn depth_check_survives_backslash_quote_sequences() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn platform_figures_count_every_state_of_a_kind_and_the_age_of_the_oldest_due_one() {
+    for_each_backend(|b| async move {
+        let (s, jq) = q(b).await;
+        let now = fetch_i64s(&s, "SELECT rs_now()", &[]).await[0];
+        assert_eq!(jq.platform_figures("figs").await.unwrap(), (vec![], 0), "no jobs: nothing and no age");
+        enq(&jq, "figs", Some(now - 120), now).await; // due, has waited 120 s
+        enq(&jq, "figs", Some(now - 30), now).await;
+        enq(&jq, "figs", Some(now + 3600), now).await; // not due yet: it does not age
+        enq(&jq, "other", Some(now - 999), now).await; // another kind
+        let (counts, oldest) = jq.platform_figures("figs").await.unwrap();
+        assert_eq!(counts, vec![("queued".to_string(), 3)]);
+        assert!((120..=125).contains(&oldest), "the age of the oldest due job, by the database clock: {oldest}");
+        // One job taken by a worker is `running` and no longer waiting.
+        let taken = jq.claim_at("w1", &["figs"], 600, now).await.unwrap().unwrap();
+        let (counts, oldest) = jq.platform_figures("figs").await.unwrap();
+        assert_eq!(counts, vec![("queued".to_string(), 2), ("running".to_string(), 1)]);
+        assert!(oldest < 120, "the 120 s job was the oldest and is running now: {oldest} ({:?})", taken.id);
+        assert!(jq.platform_figures("not a kind!").await.is_err());
+    })
+    .await;
+}

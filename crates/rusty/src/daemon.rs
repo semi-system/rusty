@@ -308,6 +308,13 @@ async fn build(
     for (kind, addr) in &addrs {
         tracing::info!(service = kind.name(), %addr, "listening");
     }
+    // The heartbeat of every service this process runs (docs/design-admin-monitor.md); the collector also removes the ones nobody renews for a day.
+    for r in [Role::SmtpIn, Role::Submission, Role::Imap, Role::Outbound, Role::Gc] {
+        if runs(r) {
+            let beat = rusty_svc::HeartbeatService::new(store.repos().heartbeat.clone(), r.name(), env!("CARGO_PKG_VERSION")).with_detail(format!("{{\"listeners\":{}}}", addrs.len()));
+            services.push(Box::new(if r == Role::Gc { beat.with_cleanup(Duration::from_secs(86_400)) } else { beat }));
+        }
+    }
     let task = tokio::spawn(run_services(services, ctx, shutdown));
     Ok((addrs, task))
 }

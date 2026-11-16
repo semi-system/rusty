@@ -23,12 +23,15 @@ BEGIN
     REVOKE INSERT, UPDATE, DELETE ON _sqlx_migrations FROM rusty_app;
     REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM rusty_app;
     GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO rusty_app;
+    GRANT EXECUTE ON FUNCTION rs_heartbeat(text, text, text, bigint, text, text) TO rusty_app;
   END IF;
   IF to_regrole('rusty_admin') IS NOT NULL THEN
     REVOKE ALL ON ALL TABLES IN SCHEMA public FROM rusty_admin;
     GRANT SELECT, INSERT, UPDATE, DELETE ON domains, accounts, aliases, lists, list_members, plans, capabilities, mailboxes,
       domain_dkim_keys, domain_dns_config, domain_dns_event, domain_dns_state, domain_relays, admin_grants, jobs TO rusty_admin;
     GRANT SELECT ON address_owners, _sqlx_migrations TO rusty_admin;
+    GRANT SELECT ON service_heartbeats TO rusty_admin;   -- the monitor page
+    GRANT EXECUTE ON FUNCTION rs_heartbeat(text, text, text, bigint, text, text) TO rusty_admin;
     GRANT SELECT, INSERT ON folders TO rusty_admin;   -- an account is made with its system folders
     -- Blob stores of domains (docs/design-s3-per-tenant.md): the settings, never a body. Two single columns are enough to know that a store or a domain already holds something:
     -- a store that holds a blob row, a domain whose mailboxes hold a message.
@@ -79,6 +82,7 @@ BEGIN
       EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM %I', r);
       EXECUTE format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %I', r);
       EXECUTE format('GRANT SELECT ON _sqlx_migrations TO %I', r);
+      EXECUTE format('GRANT EXECUTE ON FUNCTION rs_heartbeat(text, text, text, bigint, text, text) TO %I', r);   -- the heartbeat of the service (docs/design-admin-monitor.md)
     END IF;
   END LOOP;
 
@@ -137,6 +141,7 @@ BEGIN
     GRANT SELECT, UPDATE, DELETE ON blobs, deliveries TO rusty_gc;
     GRANT SELECT, INSERT, UPDATE, DELETE ON blob_locations, blob_store_leases, jobs TO rusty_gc;
     GRANT SELECT, INSERT, UPDATE ON blob_stores, blob_backends TO rusty_gc;
+    GRANT SELECT, DELETE ON service_heartbeats TO rusty_gc;   -- the cleanup of heartbeats nobody renews
   END IF;
 END
 $service_grants$;

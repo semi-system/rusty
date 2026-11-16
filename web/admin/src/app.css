@@ -6,6 +6,8 @@
   --accent: #0b5cad;
   --accent-fg: #ffffff;
   --danger: #b42318;
+  --ok: #1a7f37;
+  --warn: #9a6700;
   --focus: #0b5cad;
 }
 @media (prefers-color-scheme: dark) {
@@ -17,6 +19,8 @@
     --accent: #58a6ff;
     --accent-fg: #0b1118;
     --danger: #ff8a80;
+    --ok: #56d364;
+    --warn: #e3b341;
     --focus: #58a6ff;
   }
 }
@@ -51,3 +55,9 @@ ul.plain { list-style: none; padding: 0; }
 h2 { font-size: 1.2rem; margin: 1.5rem 0 0.5rem; }
 h3 { font-size: 1rem; margin: 1rem 0 0.25rem; }
 main { max-width: 64rem; }
+main.wide { max-width: 62rem; }
+.status-ok { color: var(--ok); font-weight: 600; }
+.status-degraded { color: var(--warn); font-weight: 600; }
+.status-down { color: var(--danger); font-weight: 600; }
+section { margin: 1.5rem 0; }
+h2 { font-size: 1.125rem; margin: 0 0 0.5rem; }

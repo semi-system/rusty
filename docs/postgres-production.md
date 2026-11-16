@@ -195,6 +195,15 @@ fails if the gap is filled. Applied migrations are frozen once released.
 | 0014, 0015 | DNS state tables (U10) |
 | 0016 | address registry `SECURITY DEFINER` |
 | 0017 | `NOTIFY` triggers on `change_log` and `jobs` (cross-process notifications, section 5a) |
+| 0018 | domain DKIM keys |
+| 0019, 0022 | sealed secrets (and their length rule) |
+| 0020 | domain relays |
+| 0021 | admin grants |
+| 0023 | blob stores per domain |
+| 0024 | blob pools (backends, locations) |
+| 0025 | blob store leases |
+| 0026 | `accounts.password_set` |
+| 0027 | service heartbeats and `rs_heartbeat()` |
 
 A new migration takes the next number.
 

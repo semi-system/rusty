@@ -107,19 +107,19 @@ async fn runtime_role_still_maintains_the_registry_through_the_definer_triggers(
 }
 
 #[tokio::test]
-async fn address_registry_functions_are_security_definer_with_a_pinned_search_path() {
+async fn the_definer_functions_are_owned_by_the_migrator_with_a_pinned_search_path() {
     let Some(admin) = pg_admin_url() else { return };
     let db = PgTestDb::create_with_roles(&admin).await;
     let a = admin_pool(&db).await;
     let rows: Vec<(String, bool, Option<Vec<String>>, String)> = sqlx::query_as(
         "SELECT p.proname::text, p.prosecdef, p.proconfig, pg_get_userbyid(p.proowner)::text \
          FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
-         WHERE n.nspname = 'public' AND p.proname IN ('rs_address_unique', 'rs_address_truncate') ORDER BY 1",
+         WHERE n.nspname = 'public' AND p.proname IN ('rs_address_unique', 'rs_address_truncate', 'rs_heartbeat') ORDER BY 1",
     )
     .fetch_all(&a)
     .await
     .unwrap();
-    assert_eq!(rows.len(), 2);
+    assert_eq!(rows.len(), 3);
     for (name, definer, config, owner) in rows {
         assert!(definer, "{name} must be SECURITY DEFINER");
         assert_eq!(owner, "rusty_migrator", "{name} must be owned by the migrator");
@@ -129,7 +129,7 @@ async fn address_registry_functions_are_security_definer_with_a_pinned_search_pa
     // Every other trigger function stays SECURITY INVOKER with a pinned search_path.
     let others: Vec<(String,)> = sqlx::query_as(
         "SELECT p.proname::text FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
-         WHERE n.nspname = 'public' AND p.prosecdef AND p.proname NOT IN ('rs_address_unique', 'rs_address_truncate')",
+         WHERE n.nspname = 'public' AND p.prosecdef AND p.proname NOT IN ('rs_address_unique', 'rs_address_truncate', 'rs_heartbeat')",
     )
     .fetch_all(&a)
     .await

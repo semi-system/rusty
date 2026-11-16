@@ -64,6 +64,28 @@ async fn dev_start_opens_every_listener_creates_the_data_files_and_serves_banner
 }
 
 #[tokio::test]
+async fn every_service_the_daemon_runs_sends_a_heartbeat() {
+    let tmp = private_tmp();
+    let data = tmp.path().join("data");
+    let pg = pg_dev().await;
+    let token = CancellationToken::new();
+    let run = start(pg.config(&data), Profile::Dev, token.clone()).await.unwrap();
+    let store = pg.open_store().await;
+    let mut seen: Vec<String> = Vec::new();
+    for _ in 0..50 {
+        seen = store.repos().heartbeat.list().await.unwrap().into_iter().map(|h| h.service).collect();
+        if seen.len() >= 5 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    seen.sort();
+    assert_eq!(seen, ["gc", "imap", "outbound", "smtp-in", "submission"], "one heartbeat per service of the process");
+    token.cancel();
+    run.wait().await.unwrap();
+}
+
+#[tokio::test]
 async fn production_start_without_hostname_or_tls_is_refused_and_binds_nothing() {
     let tmp = private_tmp();
     let data = tmp.path().join("data");
