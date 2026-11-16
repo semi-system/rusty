@@ -415,8 +415,10 @@ cmd_all() {
   # services), prepared when it answers, and so is the default S3 (its bucket is made by a job).
   cmd_prepare_secrets
   cmd_prepare_configs
-  if [ "$DB_IN_STACK" = 1 ] || [ "$S3_IN_STACK" = 1 ]; then
+  if [ "$DB_IN_STACK" = 1 ] || [ "$S3_IN_STACK" = 1 ] || [ "$FILTER" = 1 ]; then
     STACK_ONLY=1 cmd_deploy
+    # The resolver has its address now: the scanners' and smtp-in's configuration can name it.
+    [ "$FILTER" = 0 ] || cmd_prepare_configs
   fi
   cmd_prepare_db
   cmd_migrate

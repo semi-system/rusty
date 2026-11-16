@@ -101,6 +101,9 @@ run_wizard() {
   case " $allow " in *" 0.0.0.0/0 "*) echo "rusty-swarm: 0.0.0.0/0 would open the admin web to everyone" >&2; wiz_abort ;; esac
   tlsmode="$(ui_menu "Certificates for the mail and admin host names" acme "Let's Encrypt (the two names must point at this server and port 80 be open)" self "Self-signed (a test installation: clients will warn)")"
 
+  local filter=1
+  ui_yesno "Spam and virus filters (rspamd and ClamAV: they need about 3 GB of memory)?" y || filter=0
+
   dbmode="$(ui_menu "PostgreSQL" external "Use my own PostgreSQL (recommended)" stack "Run a default PostgreSQL in the cluster (one instance, no failover)")"
   db=""
   if [ "$dbmode" = external ]; then
@@ -153,6 +156,7 @@ MAIL_HOST=$mailhost
 ADMIN_HOST=$adminhost
 CONTACT=$contact
 TLS_MODE=$tlsmode
+FILTER=$filter
 ADMIN_ALLOW="$allow"
 $db
 $s3

@@ -11,11 +11,12 @@ fail() { echo "swarm-wizard: $*" >&2; exit 1; }
 # 1. This machine, an external PostgreSQL (TLS on) and an external S3.
 env1="$tmp/one.env"
 printf '%s\n' 1 203.0.113.10 mail.example.org admin.example.org ops@example.org "203.0.113.5/32 198.51.100.0/24" \
-  1 1 db.example.org "" "" "" 's3cr3t-db' "" \
+  1 y 1 db.example.org "" "" "" 's3cr3t-db' "" \
   1 https://s3.example.org "" "" AKIA123 's3cr3t-s3' | "$tool" --env "$env1" init >/dev/null 2>&1 || true
 [ -s "$env1" ] || fail "no swarm.env was written"
 [ "$(stat -c %a "$env1")" = 600 ] || fail "swarm.env is not mode 0600"
 grep -q 's3cr3t' "$env1" && fail "a password is in swarm.env"
+grep -q '^FILTER=1' "$env1" || fail "the filters answer was not written"
 grep -q '^TLS_MODE=acme' "$env1" || fail "the first choice (Let's Encrypt) was not written"
 grep -q '^DB_HOST=db.example.org' "$env1" || fail "DB_HOST is missing"
 grep -q '^DB_NAME=rusty' "$env1" || fail "the default database name is not rusty"
@@ -31,7 +32,7 @@ case "$out" in *"server  local  manager"*"PostgreSQL: external db.example.org:54
 # 2. Defaults in the cluster for both, and a bad answer that is asked again (a host name with a space, then a good one).
 env2="$tmp/two.env"
 rm -rf "$HOME/.rusty-swarm"
-printf '%s\n' 1 203.0.113.10 "bad host" mail.example.org admin.example.org ops@example.org "203.0.113.5" 2 2 2 | "$tool" --env "$env2" init >/dev/null 2>&1 || true
+printf '%s\n' 1 203.0.113.10 "bad host" mail.example.org admin.example.org ops@example.org "203.0.113.5" 2 n 2 2 | "$tool" --env "$env2" init >/dev/null 2>&1 || true
 [ -s "$env2" ] || fail "the second wizard wrote nothing"
 out="$("$tool" --env "$env2" inventory)"
 case "$out" in *"mail host: mail.example.org"*"PostgreSQL: the default one"*"S3: the default RustFS"*) ;; *) fail "the defaults are not understood: $out" ;; esac

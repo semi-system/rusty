@@ -13,6 +13,8 @@ IMAGE_TAG="${IMAGE_TAG:-main}"
 TLS_MODE="${TLS_MODE:-acme}"
 REPLICAS_DEFAULT="${REPLICAS_DEFAULT:-1}"
 declare -A SECRET_NAME=() CONFIG_NAME=()
+# shellcheck source=profiles.sh
+. "$HERE/profiles.sh"
 
 sw() { dk "$(manager_name)" "$@"; }
 sha16() { if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -c1-16; else shasum -a 256 | cut -c1-16; fi; }
@@ -110,14 +112,14 @@ inflight_message_mib = %s
 ' "$v"; }
 head_common() { printf 'hostname = "%s"\nblob_dir = "/var/lib/rusty/blobs"\n\n' "$MAIL_HOST"; }
 
-conf_smtp_in() { head_common; printf '[smtp]\nlisten_25 = "0.0.0.0:2525"\nproxy_protocol = true\ntrusted_proxies = ["127.0.0.1/32"]\ntrusted_proxy_hosts = ["tasks.edge", "edge"]\n\n'; blk_tls; blk_unseal; blk_blob; blk_store smtp_in; blk_limits smtp-in; blk_metrics; }
-conf_submission() { head_common; printf '[smtp]\nlisten_587 = "0.0.0.0:5587"\nlisten_465 = "0.0.0.0:4465"\nproxy_protocol = true\ntrusted_proxies = ["127.0.0.1/32"]\ntrusted_proxy_hosts = ["tasks.edge", "edge"]\n\n[outbound]\npublic_ips = ["%s"]\n\n' "$(manager_public_ip)"; blk_tls; blk_unseal; blk_blob; blk_store submission; blk_limits submission; blk_metrics; }
-conf_imap() { head_common; printf '[imap]\nlisten_143 = "0.0.0.0:1143"\nlisten_993 = "0.0.0.0:1993"\nproxy_protocol = true\ntrusted_proxies = ["127.0.0.1/32"]\ntrusted_proxy_hosts = ["tasks.edge", "edge"]\n\n'; blk_tls; blk_unseal; blk_blob; blk_store imap; blk_metrics; }
+conf_smtp_in() { head_common; printf '[smtp]\nlisten_25 = "0.0.0.0:2525"\nproxy_protocol = true\ntrusted_proxies = ["127.0.0.1/32"]\ntrusted_proxy_hosts = ["tasks.edge", "edge"]\n\n'; blk_tls; blk_unseal; blk_blob; blk_filter; blk_store smtp_in; blk_limits smtp-in; blk_metrics; }
+conf_submission() { head_common; printf '[smtp]\nlisten_587 = "0.0.0.0:5587"\nlisten_465 = "0.0.0.0:4465"\nproxy_protocol = true\ntrusted_proxies = ["127.0.0.1/32"]\ntrusted_proxy_hosts = ["tasks.edge", "edge"]\n\n[outbound]\npublic_ips = ["%s"]\n\n' "$(manager_public_ip)"; blk_tls; blk_unseal; blk_blob; blk_valkey submission; blk_store submission; blk_limits submission; blk_metrics; }
+conf_imap() { head_common; printf '[imap]\nlisten_143 = "0.0.0.0:1143"\nlisten_993 = "0.0.0.0:1993"\nproxy_protocol = true\ntrusted_proxies = ["127.0.0.1/32"]\ntrusted_proxy_hosts = ["tasks.edge", "edge"]\n\n'; blk_tls; blk_unseal; blk_blob; blk_valkey imap; blk_store imap; blk_metrics; }
 conf_outbound() { head_common; printf '[outbound]\ndkim_dir = "/var/lib/rusty/dkim"\npublic_ips = ["%s"]\n\n' "$(manager_public_ip)"; blk_unseal; blk_blob; blk_store outbound; blk_metrics; }
 conf_gc() { head_common; printf 'gc_grace_seconds = 604800\n\n[dns_check]\nenabled = true\n\n'; blk_unseal; blk_blob; blk_store gc; blk_metrics; }
 conf_admin() {
   printf 'hostname = "%s"\n\n[admin]\nlisten = "0.0.0.0:8080"\npublic_origin = "https://%s"\npublic_ips = ["%s"]\nallowed_peers = ["127.0.0.1/32"]\nallowed_hosts = ["tasks.edge", "edge"]\n\n' "$MAIL_HOST" "$ADMIN_HOST" "$(manager_public_ip)"
-  blk_store admin
+  blk_store admin; blk_valkey admin
   printf '[sealing]\npublic_key = "%s"\n\n' "$(cat "$STATE_DIR/keys/seal.pub")"
   if [ -n "${METRICS_ALLOW:-}" ]; then
     local c list=""
@@ -225,6 +227,8 @@ gen_limits() {
   [ "$mem" -gt 0 ] || die "limits: no Ready and Active node"
   [ "$DB_IN_STACK" = 1 ] || profiles="nodb"
   [ "$S3_IN_STACK" = 0 ] || profiles="${profiles:+$profiles,}s3"
+  [ "$FILTER" = 0 ] || profiles="${profiles:+$profiles,}filter"
+  [ "$VALKEY" = 0 ] || profiles="${profiles:+$profiles,}valkey"
   if [ "$REPLICAS_DEFAULT" != 1 ]; then for s in smtp-in submission imap outbound gc admin; do reps="${reps:+$reps,}$s=$REPLICAS_DEFAULT"; done; fi
   LIMITS_FILE="$STATE_DIR/stack/limits.yaml"
   bash "$HERE/../standalone/limits.sh" --total-mem-mib "$((mem / 1048576))" --total-cpus "$(awk -v n="$cpus" 'BEGIN { printf "%.2f", n / 1000000000 }')" ${profiles:+--profiles "$profiles"} ${reps:+--replicas "$reps"} \
@@ -273,6 +277,7 @@ cmd_prepare_secrets() {
     ensure_secret db_server_crt "$STATE_DIR/dbtls/server.crt"
     ensure_secret db_server_key "$STATE_DIR/dbtls/server.key"
   fi
+  profile_secrets
   save_names
   echo "prepare secrets: done"
 }
@@ -292,6 +297,7 @@ cmd_prepare_configs() {
   ensure_config haproxy "$d/haproxy.cfg"
   if [ "$DB_IN_STACK" = 1 ]; then make_db_tls; ( umask 077; conf_pg_hba > "$d/pg_hba.conf" ); ensure_config pg_hba "$d/pg_hba.conf"; fi
   if [ -n "$DB_CA" ]; then ensure_config db_ca "$DB_CA"; fi
+  profile_configs
   save_names
   echo "prepare configs: done"
 }
@@ -328,6 +334,8 @@ load_names() {
   need_c="smtp_in submission imap outbound gc admin migrate haproxy"
   [ "$DB_IN_STACK" != 1 ] || need_c="$need_c pg_hba"
   [ -z "$DB_CA" ] || need_c="$need_c db_ca"
+  local t k
+  while read -r t k; do case "$t" in S) need_s="$need_s $k" ;; C) need_c="$need_c $k" ;; esac; done < <(profile_names_needed)
   for base in $need_s; do
     [ -n "${SECRET_NAME[$base]:-}" ] && sw secret inspect "${SECRET_NAME[$base]}" >/dev/null 2>&1 || die "the secret $base is missing on the Manager: run 'prepare secrets'"
   done
@@ -352,6 +360,12 @@ y_hosts() { [ -z "$DB_HOSTADDR" ] || printf '    extra_hosts:\n      - "%s:%s"\n
 
 gen_rusty_service() { # NAME ROLE-OF-DB NETWORKS(space) [TLS] [UNSEAL] [CONSTRAINT]
   local name="$1" role="$2" nets="$3" tls="${4:-}" unseal="${5:-}" constraint="${6:-}" n key
+  # The profiles' networks: smtp-in reaches the scanners; submission, imap and admin the key-value store.
+  local kv=0
+  case "$name" in
+    smtp-in) [ "$FILTER" != 1 ] || nets="$nets filter" ;;
+    submission|imap|admin) [ "$VALKEY" != 1 ] || { nets="$nets kv"; kv=1; } ;;
+  esac
   y_service_common "$name" "$(rusty_image "$name")"
   y_deploy "$REPLICAS_DEFAULT" "$constraint" start-first "$name"
   y_hosts
@@ -360,10 +374,12 @@ gen_rusty_service() { # NAME ROLE-OF-DB NETWORKS(space) [TLS] [UNSEAL] [CONSTRAI
   if [ "$name" != admin ]; then y_secret s3_access; y_secret s3_secret; fi
   if [ "$unseal" = 1 ]; then y_secret unseal_key /etc/rusty-keys/unseal.key; fi
   if [ "$tls" = 1 ]; then y_secret tls_cert /etc/rusty-tls/cert.pem; y_secret tls_key /etc/rusty-tls/key.pem; fi
+  if [ "$kv" = 1 ]; then y_secret "kv_$name"; fi
   printf '    configs:\n'
   key="${name//-/_}"
   y_config "$key" "/etc/rusty/$name.toml"
   if [ -n "${CONFIG_NAME[db_ca]:-}" ]; then y_config db_ca /etc/rusty/db-ca.pem; fi
+  if [ "$kv" = 1 ]; then y_config kv_ca /etc/rusty/kv-ca.pem; fi
   printf '    networks:\n'
   for n in $nets; do printf '      - %s\n' "$n"; done
 }
@@ -375,6 +391,7 @@ gen_stack() {
     printf 'version: "3.9"\nservices:\n'
     [ "$DB_IN_STACK" = 0 ] || gen_db_service
     [ "$S3_IN_STACK" = 0 ] || gen_s3_service
+    [ "$FILTER" = 0 ] || gen_resolver_service
     if [ -z "$STACK_ONLY" ]; then
       # The edge: the one public entrance, on the Manager, its ports on the host (no routing mesh: the clients' addresses are kept).
       y_service_common edge "$(lock_ref 'haproxy:3.4.7-alpine3.24')"
@@ -400,13 +417,18 @@ gen_stack() {
       gen_rusty_service outbound outbound "backend metrics" 0 1 'node.labels.outbound == true'
       gen_rusty_service gc gc "backend metrics" 0 1
       gen_rusty_service admin admin "app backend metrics" 0 0
+      [ "$FILTER" = 0 ] || gen_scanner_services
+      [ "$VALKEY" = 0 ] || gen_valkey_service
     fi
     printf 'networks:\n  app: { driver: overlay, internal: true }\n  backend: { driver: overlay, attachable: true }\n  metrics: { driver: overlay, internal: true }\n'
-    if [ "$DB_IN_STACK" = 1 ] || [ "$S3_IN_STACK" = 1 ] || [ "$TLS_MODE" = acme ]; then
+    [ "$FILTER" = 0 ] || printf '  filter: { driver: overlay, internal: true }\n'
+    [ "$VALKEY" = 0 ] || printf '  kv: { driver: overlay, internal: true }\n'
+    if [ "$DB_IN_STACK" = 1 ] || [ "$S3_IN_STACK" = 1 ] || [ "$TLS_MODE" = acme ] || [ "$FILTER" = 1 ]; then
       printf 'volumes:\n'
       [ "$DB_IN_STACK" = 0 ] || printf '  pgdata:\n'
       [ "$S3_IN_STACK" = 0 ] || printf '  s3data:\n'
       [ "$TLS_MODE" != acme ] || printf '  edgedata:\n'
+      [ "$FILTER" = 0 ] || printf '  clamdb:\n'
     fi
     gen_externals
   }
