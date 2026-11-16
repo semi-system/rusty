@@ -65,7 +65,7 @@ docker compose run --rm --name rusty-ctl-1 ctl domain dns example.org      # the
 ## 6. Day two
 
 * Backups: `scripts/backup.sh` / `restore.sh` (database first, then blobs), `docs/backup.md`.
-* Upgrade: `./setup.sh ... --image-tag <new version>` again (it pulls), then `docker compose up -d` (the migration runs first).
+* Upgrade: back up first, then `./setup.sh ... --image-tag <new version>` again (it pulls) and `docker compose up -d` (the migration runs first). Rollback after a migration is a restore: see `operations.md`.
 * Certificates (ACME mode): the edge renews them itself; `cert-sync` copies the certificate for the STARTTLS ports and `cert-keep-*` keeps the files so a restarted edge does not
   order new ones (`docs/acme.md`). Self-signed mode: valid 825 days; run `setup.sh` again after deleting `state/edge/certs/*` and `state/tls/*` to make new ones.
 * Sessions of the admin web live in the admin process (a restart signs everyone out); add `[valkey]` to `admin.toml` to keep them in Valkey (`docs/admin-deploy.md`).
