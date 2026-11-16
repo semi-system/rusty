@@ -18,7 +18,7 @@ pin() { awk -v n="$1" '$1 == n { print $2 }' "$ROOT/deploy/images.lock"; }
 PG_IMG="$(pin postgres:18)"; HA_IMG="$(pin haproxy:3.4.7-alpine3.24)"
 [ -n "$PG_IMG" ] && [ -n "$HA_IMG" ] || { echo "setup: images are not pinned in deploy/images.lock" >&2; exit 1; }
 
-STATE="${RUSTY_STATE:-$HOME/rusty-state}"; MAIL_HOST=""; ADMIN_HOST=""; CONTACT=""; PUBLIC_IP=""; STAGING=0; SELF=0; FILTER=0; BUILD=0; MAX_REPLICAS=4; TAG=main; REGISTRY=ghcr.io/semi-system; ALLOW=()
+STATE="${RUSTY_STATE:-$HOME/rusty-state}"; MAIL_HOST=""; ADMIN_HOST=""; CONTACT=""; PUBLIC_IP=""; STAGING=0; SELF=0; FILTER=0; BUILD=0; VALKEY=0; MONITORING=0; MAX_REPLICAS=4; TAG=main; REGISTRY=ghcr.io/semi-system; ALLOW=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --mail-host) MAIL_HOST="${2:-}"; shift 2 ;;
@@ -30,6 +30,8 @@ while [ $# -gt 0 ]; do
     --self-signed) SELF=1; shift ;;
     --filter) FILTER=1; shift ;;
     --build) BUILD=1; shift ;;
+    --valkey) VALKEY=1; shift ;;
+    --monitoring) MONITORING=1; shift ;;
     --max-replicas) MAX_REPLICAS="${2:-}"; shift 2 ;;
     --image-tag) TAG="${2:-}"; shift 2 ;;
     --registry) REGISTRY="${2:-}"; shift 2 ;;
@@ -64,14 +66,14 @@ RP() { docker run --rm --user 0 --entrypoint sh -e HOSTID -v "$STATE:/s" "$PG_IM
 R 'cd /s && mkdir -p secrets etc pgtls keys tls edge/acme edge/certs run && chown "$HOSTID" etc'
 # Which kind of certificates the edge has decides which of the optional services (cert-sync, cert-keep) compose starts.
 if [ "$SELF" = 1 ]; then profiles=""; else profiles="acme"; fi; compose_file=""; [ "$BUILD" = 1 ] && compose_file="compose.yaml:compose.build.yaml"
-if [ "$FILTER" = 1 ]; then profiles="${profiles:+$profiles,}filter"; fi; printf 'RUSTY_STATE=%s
+if [ "$FILTER" = 1 ]; then profiles="${profiles:+$profiles,}filter"; fi; if [ "$VALKEY" = 1 ]; then profiles="${profiles:+$profiles,}valkey"; fi; if [ "$MONITORING" = 1 ]; then profiles="${profiles:+$profiles,}monitoring"; fi; printf 'RUSTY_STATE=%s
 COMPOSE_PROFILES=%s
 RUSTY_REGISTRY=%s
 RUSTY_TAG=%s
 ' "$STATE" "$profiles" "$REGISTRY" "$TAG" > .env
 [ -z "$compose_file" ] || printf 'COMPOSE_FILE=%s
 ' "$compose_file" >> .env
-R 'cd /s/secrets && for s in pg_postgres pg_app pg_admin pg_migrator pg_smtp_in pg_submission pg_imap pg_outbound pg_gc; do [ -s "$s" ] || (umask 077; head -c 32 /dev/urandom | od -An -tx1 | tr -d " \n" > "$s"); done'
+R 'cd /s/secrets && for s in pg_postgres pg_app pg_admin pg_migrator pg_smtp_in pg_submission pg_imap pg_outbound pg_gc kv_submission kv_imap kv_admin; do [ -s "$s" ] || (umask 077; head -c 32 /dev/urandom | od -An -tx1 | tr -d " \n" > "$s"); done'
 
 # The database CA and the server certificate for the name `db` (clients verify it: sslmode verify-full). Made once.
 if ! RP 'test -s /s/pgtls/server.key'; then
@@ -82,11 +84,18 @@ if ! RP 'test -s /s/pgtls/server.key'; then
     openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 3650 -extfile ext.cnf -out server.crt
     rm -f server.csr ext.cnf ca.srl; chmod 0644 ca.pem server.crt'
 fi
+if [ "$VALKEY" = 1 ] && ! RP 'test -s /s/valkeytls/server.key'; then
+  RP 'set -e; umask 077; mkdir -p /s/valkeytls; cd /s/valkeytls
+    openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-384 -nodes -subj "/CN=valkey" -keyout server.key -out server.csr
+    printf "subjectAltName=DNS:valkey\nextendedKeyUsage=serverAuth\n" > ext.cnf
+    openssl x509 -req -in server.csr -CA /s/pgtls/ca.pem -CAkey /s/pgtls/ca.key -CAcreateserial -days 3650 -extfile ext.cnf -out server.crt
+    cp /s/pgtls/ca.pem ca.pem; rm -f server.csr ext.cnf /s/pgtls/ca.srl; chmod 0644 server.crt ca.pem; chown -R 65532:65532 /s/valkeytls'
+fi
 R 'cp /s/pgtls/ca.pem /s/etc/db-ca.pem && chown "$HOSTID" /s/etc/db-ca.pem && chmod 0644 /s/etc/db-ca.pem'
 
 render() { # template -> file: the values were validated above, none holds a character that matters to sed (| is never in them)
-  local keep drop fkeep="#NOFILTER_"; [ "$FILTER" = 1 ] && fkeep="#FILTER "; if [ "$SELF" = 1 ]; then keep="#SELF "; drop="#ACME"; else keep="#ACME"; drop="#SELF "; fi
-  sed -e "s|^${fkeep}||" -e "/^${drop}/d" -e "s|^${keep}||" -e "s|@MAIL_HOST@|$MAIL_HOST|g" -e "s|@ADMIN_HOST@|$ADMIN_HOST|g" -e "s|@CONTACT@|$CONTACT|g" -e "s|@PUBLIC_IP@|$PUBLIC_IP|g" \
+  local keep drop fkeep="#NOFILTER_" vkeep="#NOVALKEY_" mkeep="#NOMONITORING_"; [ "$FILTER" = 1 ] && fkeep="#FILTER "; [ "$VALKEY" = 1 ] && vkeep="#VALKEY "; [ "$MONITORING" = 1 ] && mkeep="#MONITORING "; if [ "$SELF" = 1 ]; then keep="#SELF "; drop="#ACME"; else keep="#ACME"; drop="#SELF "; fi
+  sed -e "s|^${fkeep}||" -e "s|^${vkeep}||" -e "s|^${mkeep}||" -e "/^${drop}/d" -e "s|^${keep}||" -e "s|@MAIL_HOST@|$MAIL_HOST|g" -e "s|@ADMIN_HOST@|$ADMIN_HOST|g" -e "s|@CONTACT@|$CONTACT|g" -e "s|@PUBLIC_IP@|$PUBLIC_IP|g" \
       -e "s|@SEAL_PUBLIC@|$SEAL_PUBLIC|g" -e "s|@ACME_DIRECTORY@|$ACME_DIR|g" -e "s|@ADMIN_ALLOW@|${ALLOW[*]}|g" "templates/$1.in" > "$STATE/etc/$1"
 }
 # The sealing key pair: the private half stays in state/keys (mail uid only); the public half goes to both configurations.
@@ -101,6 +110,9 @@ SEAL_PUBLIC="$(mail_ctl seal show /etc/rusty-keys/unseal.key | grep -o 'rusty-se
 [ -n "$SEAL_PUBLIC" ] || die "could not read the sealing public key"
 
 for f in smtp-in.toml submission.toml imap.toml outbound.toml gc.toml ctl.toml admin.toml haproxy.cfg pg_hba.conf; do render $f; done
+# The ACL file of the key-value store: only the SHA-256 of each password (computed where the secret is readable).
+kvhash() { R "cd /s/secrets && printf '%s' \"\$(cat kv_$1)\" | sha256sum | cut -d' ' -f1"; }
+sed -e "s|@KV_SUBMISSION_HASH@|$(kvhash submission)|" -e "s|@KV_IMAP_HASH@|$(kvhash imap)|" -e "s|@KV_ADMIN_HASH@|$(kvhash admin)|" templates/valkey.acl.in > "$STATE/etc/valkey.acl"
 # The database allow-list names every replica (rusty-<service>-1, -2, ...): a #REPLICAS line becomes one line per number up to --max-replicas.
 awk -v max="$MAX_REPLICAS" '/^#REPLICAS / { l = substr($0, 11); for (n = 1; n <= max; n++) { o = l; gsub(/@N@/, n, o); print o } next } { print }' "$STATE/etc/pg_hba.conf" > "$STATE/etc/pg_hba.conf.new" && mv "$STATE/etc/pg_hba.conf.new" "$STATE/etc/pg_hba.conf"
 # Self-signed certificates for the two names (made once; a name change makes new ones): ECDSA P-256, with the names as subject alternative names. HAProxy loads

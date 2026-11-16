@@ -31,3 +31,11 @@ ca_bundle = "/etc/rusty/db-ca.pem"
 #MONITORING [metrics]
 #MONITORING listen = "0.0.0.0:9100"
 #MONITORING allowed_peers = ["10.79.0.2/32"]
+# The shared key-value store (./setup.sh --valkey): the sessions, the login throttle and the sending budget are then one for every replica.
+#VALKEY [valkey]
+#VALKEY host = "valkey"
+#VALKEY tls = true
+#VALKEY ca_bundle = "/etc/rusty/db-ca.pem"
+#VALKEY username = "rusty_submission"
+#VALKEY password_file = "/run/secrets/kv_submission"
+#VALKEY key_prefix = "rusty:"

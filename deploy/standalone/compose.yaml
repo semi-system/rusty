@@ -103,7 +103,7 @@ services:
     image: ${RUSTY_REGISTRY:-ghcr.io/semi-system}/rusty-submission:${RUSTY_TAG:-main}
     <<: *hardened
     tmpfs: [/tmp]
-    secrets: [pg_submission]
+    secrets: [pg_submission, kv_submission]
     volumes:
       - ${RUSTY_STATE:?run ./setup.sh first}/etc:/etc/rusty:ro
       - ${RUSTY_STATE:?run ./setup.sh first}/tls:/etc/rusty-tls:ro
@@ -113,7 +113,9 @@ services:
       db: {}
       metrics: {}
       app: {}
+      kv: {}
     depends_on:
+      valkey: { condition: service_healthy, required: false }
       migrate: { condition: service_completed_successfully }
       blobs-init: { condition: service_completed_successfully }
       cert-sync: { condition: service_healthy, required: false }
@@ -124,7 +126,7 @@ services:
     image: ${RUSTY_REGISTRY:-ghcr.io/semi-system}/rusty-imap:${RUSTY_TAG:-main}
     <<: *hardened
     tmpfs: [/tmp]
-    secrets: [pg_imap]
+    secrets: [pg_imap, kv_imap]
     volumes:
       - ${RUSTY_STATE:?run ./setup.sh first}/etc:/etc/rusty:ro
       - ${RUSTY_STATE:?run ./setup.sh first}/tls:/etc/rusty-tls:ro
@@ -134,7 +136,9 @@ services:
       db: {}
       metrics: {}
       app: {}
+      kv: {}
     depends_on:
+      valkey: { condition: service_healthy, required: false }
       migrate: { condition: service_completed_successfully }
       blobs-init: { condition: service_completed_successfully }
       cert-sync: { condition: service_healthy, required: false }
@@ -264,6 +268,48 @@ services:
       # The one scraper the services allow (`[metrics] allowed_peers`): it keeps an address.
       metrics: { ipv4_address: 10.79.0.2 }
 
+  # ---- the `valkey` profile (docs/valkey.md): the shared key-value store for the sending budget, the login throttle and the admin sessions of every replica. Start with `./setup.sh --valkey ...`.
+  # TLS with the database CA, one ACL user per service with a hashed password, the default user off, no persistence (everything in it is rebuildable), and a network of its own.
+  # The ACL file (templates/valkey.acl.in) cannot hold comments: one user per service that uses the store, each with the SHA-256 of its password, keys under the `rusty:` prefix only, no dangerous or administrative commands.
+  valkey:
+    profiles: [valkey]
+    image: valkey/valkey@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
+    <<: *hardened
+    user: "65532:65532"
+    command:
+      - valkey-server
+      - --port
+      - "0"
+      - --tls-port
+      - "6379"
+      - --tls-cert-file
+      - /tls/server.crt
+      - --tls-key-file
+      - /tls/server.key
+      - --tls-ca-cert-file
+      - /tls/ca.pem
+      - --tls-auth-clients
+      - "no"
+      - --aclfile
+      - /etc/valkey/users.acl
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --dir
+      - /data
+    tmpfs: [/data]
+    volumes:
+      - ${RUSTY_STATE:?run ./setup.sh first}/valkeytls:/tls:ro
+      - ${RUSTY_STATE:?run ./setup.sh first}/etc/valkey.acl:/etc/valkey/users.acl:ro
+    networks: [kv]
+    # Up when it answers on its TLS port, even if only to refuse an unauthenticated client.
+    healthcheck:
+      test: [CMD-SHELL, "valkey-cli --tls --cacert /tls/ca.pem -p 6379 ping 2>&1 | grep -qE 'PONG|NOAUTH|WRONGPASS|DENIED'"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
   # rustyctl for the operator: `docker compose run --rm --name rusty-ctl-1 ctl domain add example.org` (docs/first-mail.md; the name is what the database allows). Not started by `up`.
   ctl:
     profiles: [tools]
@@ -284,14 +330,16 @@ services:
     image: ${RUSTY_REGISTRY:-ghcr.io/semi-system}/rusty-admin:${RUSTY_TAG:-main}
     <<: *hardened
     tmpfs: [/tmp]
-    secrets: [pg_admin]
+    secrets: [pg_admin, kv_admin]
     volumes:
       - ${RUSTY_STATE:?run ./setup.sh first}/etc:/etc/rusty:ro
     networks:
       db: {}
       metrics: {}
       app: {}
+      kv: {}
     depends_on:
+      valkey: { condition: service_healthy, required: false }
       migrate: { condition: service_completed_successfully }
 
   edge:
@@ -359,6 +407,9 @@ secrets:
   pg_submission: { file: "${RUSTY_STATE:?run ./setup.sh first}/secrets/pg_submission" }
   pg_imap: { file: "${RUSTY_STATE:?run ./setup.sh first}/secrets/pg_imap" }
   pg_outbound: { file: "${RUSTY_STATE:?run ./setup.sh first}/secrets/pg_outbound" }
+  kv_submission: { file: "${RUSTY_STATE:?run ./setup.sh first}/secrets/kv_submission" }
+  kv_imap: { file: "${RUSTY_STATE:?run ./setup.sh first}/secrets/kv_imap" }
+  kv_admin: { file: "${RUSTY_STATE:?run ./setup.sh first}/secrets/kv_admin" }
   pg_gc: { file: "${RUSTY_STATE:?run ./setup.sh first}/secrets/pg_gc" }
 
 volumes:
@@ -375,6 +426,8 @@ networks:
     internal: true
     ipam: { config: [{ subnet: 10.77.0.0/24 }] }
   # The scanners and their resolver (the `filter` profile): internal, so nothing on it reaches the internet; the resolver and freshclam are also on `egress`.
+  # The shared key-value store and the services that use it, nothing else.
+  kv: { internal: true }
   filter:
     internal: true
     ipam: { config: [{ subnet: 10.78.0.0/24 }] }

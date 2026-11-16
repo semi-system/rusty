@@ -69,3 +69,14 @@ missing server into a failure.
   addition to the test server.
 * Valkey **Cluster** and **Sentinel**: only a single server is supported.
 * Behaviour with **PgBouncer-like proxies** in front of Valkey: not applicable, none is used.
+
+## In the standalone stack
+
+`./setup.sh --valkey ...` adds the `valkey` profile (`deploy/standalone`, run again to change it): the pinned Valkey image on a network of its own (`kv`, internal, joined only by the submission, imap and admin services),
+TLS with the database CA (a certificate for the name `valkey`), the default user off, one ACL user per service with the SHA-256 of its password (`templates/valkey.acl.in`: keys under `rusty:` only, no dangerous or
+administrative commands; the file cannot hold comments), no persistence, and the three services started after it is healthy. Their `[valkey]` sections are written into `submission.toml`, `imap.toml` and `admin.toml`.
+Without `--valkey` nothing changes: every replica counts for itself.
+
+Checked on the test server with two IMAP replicas: eight wrong passwords through the edge were split across the replicas (five and three) and the one shared counter stopped at the limit of five, where
+per-process counters would have allowed up to ten; an ACL user can write its own prefix and is refused another prefix, `FLUSHALL` and `CONFIG`. A service whose store is unreachable at start does not start (it
+would otherwise run with per-process limits without anyone knowing), which is why the services wait for the store's health check.
