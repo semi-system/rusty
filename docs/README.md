@@ -26,7 +26,6 @@ Everything here is written in English. Start with `architecture.md` and `roadmap
 | Page | What it covers |
 |---|---|
 | [first-mail.md](first-mail.md) | Install the standalone stack and send the first mail |
-| [operations.md](operations.md) | Upgrade, rollback and runbooks (drilled on the test server) |
 | [docker.md](docker.md) | Images, the published packages, signature verification, the filter profile |
 | [postgres-production.md](postgres-production.md), [valkey.md](valkey.md) | The database and the key-value store |
 | [blob-stores.md](blob-stores.md), [sealed-secrets.md](sealed-secrets.md) | Message storage and secrets at rest |
