@@ -127,6 +127,9 @@ async fn each_service_keeps_to_its_own_writes() {
         ("rusty_imap", "service_heartbeats", "DELETE", false),
         ("rusty_imap", "service_heartbeats", "INSERT", false),
         ("rusty_smtp_in", "service_heartbeats", "SELECT", false),
+        // the periodic DNS check of the collector asks which domains are due and locks the domain row it queues a check for
+        ("rusty_gc", "domain_dns_state", "SELECT", true),
+        ("rusty_gc", "domain_dns_state", "INSERT", false),
         // the collector's leases
         ("rusty_gc", "blob_store_leases", "INSERT", true),
         ("rusty_imap", "blob_store_leases", "SELECT", false),
