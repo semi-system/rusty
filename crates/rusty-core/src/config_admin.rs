@@ -30,6 +30,10 @@ pub struct AdminConfig {
     /// Mail leaves through a relay: the reverse records of our own addresses are not our business.
     #[serde(default)]
     pub via_relay: bool,
+    /// The only networks that may connect (the edge, for a service that sits behind it): any other peer is dropped before a byte is read. Empty: any peer (development).
+    /// At most 16 blocks, never one that holds every address.
+    #[serde(default)]
+    pub allowed_peers: Vec<crate::cidr::Cidr>,
 }
 
 impl AdminConfig {
@@ -42,6 +46,9 @@ impl AdminConfig {
         }
         if self.spf_include.as_deref().is_some_and(|s| !crate::dns::valid_spf_domain(s)) {
             return Err(Error::Invalid("admin.spf_include must be a DNS name".into()));
+        }
+        if self.allowed_peers.len() > 16 || self.allowed_peers.iter().any(|c| c.is_everything()) {
+            return Err(Error::Invalid("admin.allowed_peers must be at most 16 address blocks and none may hold every address (leave it empty to allow any peer)".into()));
         }
         Ok(())
     }
@@ -67,7 +74,24 @@ pub fn valid_origin(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_origin;
+    use super::{valid_origin, AdminConfig};
+
+    fn parse(extra: &str) -> Result<AdminConfig, String> {
+        let c: AdminConfig = toml::from_str(&format!("public_origin = \"https://admin.example.org\"
+{extra}")).map_err(|e| e.to_string())?;
+        c.validate().map_err(|e| e.to_string())?;
+        Ok(c)
+    }
+
+    #[test]
+    fn allowed_peers_are_optional_bounded_and_never_everything() {
+        assert!(parse("").unwrap().allowed_peers.is_empty());
+        assert_eq!(parse("allowed_peers = [\"10.77.0.2/32\", \"127.0.0.1/32\"]").unwrap().allowed_peers.len(), 2);
+        assert!(parse("allowed_peers = [\"0.0.0.0/0\"]").is_err(), "every address is no allow-list");
+        let many = (0..17).map(|i| format!("\"10.0.{i}.0/24\"")).collect::<Vec<_>>().join(", ");
+        assert!(parse(&format!("allowed_peers = [{many}]")).is_err(), "at most sixteen");
+        assert!(parse("allowed_peers = [\"not a network\"]").is_err());
+    }
 
     #[test]
     fn origins_are_scheme_host_and_optional_port_only() {

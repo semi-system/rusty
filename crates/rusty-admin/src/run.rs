@@ -15,7 +15,7 @@ use rusty_core::{Error, Result};
 use rusty_directory::{Directory, LocalAuthenticator};
 use rusty_http::{HttpConfig, HttpHandler, Router};
 use rusty_store::{AdminStore, Store};
-use rusty_svc::{Accept, AuthThrottle, BoundListener, DirectTcp, DirectTls, FileSecretSource, ListenerSpec, SecretSource, TlsProvider, TracingEvents};
+use rusty_svc::{Accept, AuthThrottle, BoundListener, DirectTcp, DirectTls, FileSecretSource, ListenerSpec, PeerAllow, SecretSource, TlsProvider, TracingEvents};
 use rusty_valkey::MemoryKv;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -129,6 +129,8 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     } else {
         (Arc::new(DirectTcp), None)
     };
+    // Behind the edge only: another container on the network must not reach the service directly and skip the edge's address allow-list.
+    let accept: Arc<dyn Accept> = if admin.allowed_peers.is_empty() { accept } else { Arc::new(PeerAllow::new(accept, admin.allowed_peers.clone())) };
     let spec = ListenerSpec { name: "admin", addr: admin.listen, max_connections: MAX_CONNECTIONS, max_per_ip: MAX_PER_IP };
     let bound = BoundListener::bind(spec).await?;
     let addr = bound.local_addr();
