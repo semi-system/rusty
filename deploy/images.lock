@@ -16,3 +16,4 @@ edoburu/pgbouncer:latest  edoburu/pgbouncer@sha256:8638aa563607256d3c74404375341
 klutchell/unbound:latest  klutchell/unbound@sha256:50cbeb32b5838a829a7226b19cb151f9535bd7f9f3190f950780f452fe807478  2026-11-16  (Unbound 1.26.2; the resolver of the filter profile, deploy/standalone)
 rspamd/rspamd:latest  rspamd/rspamd@sha256:02d2ba5f88873619ac77cd003bde78a8e77e3506de0871a7ed08c3080f4d45dd  2026-11-16  (rspamd 4.3.0; the spam scorer of the filter profile)
 clamav/clamav:stable  clamav/clamav@sha256:45fe5149fbee5a46509c9848ef20d0c354b7b2323c9369f285939a37cf33422a  2026-11-16  (ClamAV 1.5.4; clamd and freshclam of the filter profile)
+docker:27-dind  docker@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce  2026-11-16  (Docker 27.5.1 in Docker; the nodes of deploy/swarm/local-cluster.sh, a throw-away test cluster)
