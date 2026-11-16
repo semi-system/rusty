@@ -3,7 +3,10 @@
 #   ssh:USER@HOST      over SSH (a key; the node's `docker` must answer for that user)
 #   docker:CONTAINER   a node that is a container of this machine (the local test cluster, deploy/swarm/local-cluster.sh)
 #
+#   ./rusty-swarm [--env FILE] init [--yes]   the whole flow, automatic: Docker is installed where it is missing (get.docker.com, as root), a swarm that is already there is offered for
+#                                                removal, then the check, the swarm, its proof and prepare db (the later steps join the chain as they are built); --yes answers the question with y
 #   ./rusty-swarm [--env FILE] cluster check     what is wrong on the nodes (prints, changes nothing)
+#   ./rusty-swarm [--env FILE] cluster install-docker   install Docker (get.docker.com, run as root) on the ssh nodes that have none (`init` does it by itself)
 #   ./rusty-swarm [--env FILE] cluster init      start the swarm on the Manager, join the workers, set the labels (each part is skipped when it is already done)
 #   ./rusty-swarm [--env FILE] cluster verify    nodes Ready and Active, and a throw-away overlay with one task per node: the tasks list each other, reach each other
 #                                                (an encrypted overlay when the inventory says ENCRYPTED=1)
@@ -23,7 +26,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 die() { echo "rusty-swarm: $*" >&2; exit 1; }
 
+usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print } /^set / { exit }' "$0"; }
 ENV_FILE="${RUSTY_SWARM_ENV:-$HERE/swarm.env}"
+case "${1:-}" in -h|--help|help|"") usage; exit 0 ;; esac
 if [ "${1:-}" = "--env" ]; then ENV_FILE="${2:?--env needs a file}"; shift 2; fi
 [ -r "$ENV_FILE" ] || die "no inventory at $ENV_FILE (copy swarm.env.example, or use --env local.env)"
 NODES=(); ENCRYPTED=0; MIN_DOCKER_MAJOR=25
@@ -284,12 +289,72 @@ cmd_prepare_db() {
 }
 
 
+# ---- install docker --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Only where Docker is missing (owner's choice: automatic): get.docker.com is a script of the internet that runs as root. A node reached as a
+# container (the local test cluster) already has Docker and is skipped. The user of an ssh node must be root or be allowed `sudo` without a password.
+cmd_install_docker() {
+  local n t
+  for n in $(node_names); do
+    t="$(node_field "$n" 2)"
+    case "$t" in docker:*) echo "install docker: $n is a container, Docker is there"; continue ;; esac
+    if dk "$n" version >/dev/null 2>&1; then echo "install docker: $n already has Docker ($(dk "$n" version --format '{{.Server.Version}}' 2>/dev/null))"; continue; fi
+    on "$n" sh -c 'id -u | grep -qx 0 || sudo -n true' >/dev/null 2>&1 || die "install docker: on $n the user is not root and cannot sudo without a password"
+    echo "install docker: $n: running get.docker.com (as root) ..."
+    on "$n" sh -c 'S=""; [ "$(id -u)" = 0 ] || S="sudo -n"; command -v curl >/dev/null || { echo "curl is missing" >&2; exit 1; }; curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && $S sh /tmp/get-docker.sh >/dev/null && rm -f /tmp/get-docker.sh' || die "install docker: it failed on $n"
+    # The user of the transport must be able to use docker in the next ssh session.
+    on "$n" sh -c 'id -u | grep -qx 0 || sudo -n usermod -aG docker "$(id -un)"' >/dev/null 2>&1 || true
+    echo "install docker: $n done"
+  done
+}
+
+# ---- init: the whole flow ---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# One command, nothing to switch on: Docker is installed where it is missing (and left alone where it is there), a swarm that is already there is offered for removal (answer y to remove it and start
+# clean, n to keep and use it), then the check, the swarm, its proof and the database; the steps that follow (secrets, configs, migration, the stack) are added to this chain as they are built.
+# `--yes` answers the question with y (there is no terminal to ask on: a script, CI); without a terminal and without --yes the swarm is kept.
+swarm_nodes_in_swarm() { local n; for n in $(node_names); do [ "$(node_state "$n")" = active ] && printf '%s\n' "$n"; done; return 0; }
+
+offer_swarm_removal() {
+  local yes="$1" found answer="n" n m
+  found="$(swarm_nodes_in_swarm | tr '\n' ' ')"
+  [ -n "$found" ] || return 0
+  echo "A swarm already exists on: $found"
+  if [ "$yes" = 1 ]; then
+    answer=y
+  elif [ -t 0 ]; then
+    read -r -p "Remove it (every node leaves the swarm; its stacks, secrets and configs are lost) and start clean? [y/N] " answer || answer=n
+  else
+    echo "(no terminal to ask on and no --yes: the swarm is kept)"
+  fi
+  case "$answer" in
+    y|Y|yes|YES)
+      m="$(manager_name)"
+      for n in $(node_names); do [ "$n" = "$m" ] || { [ "$(node_state "$n")" = active ] && dk "$n" swarm leave --force >/dev/null 2>&1 && echo "removed: $n left the swarm"; }; done
+      if [ "$(node_state "$m")" = active ]; then dk "$m" swarm leave --force >/dev/null && echo "removed: the swarm of $m"; fi
+      ;;
+    *) echo "keeping the existing swarm" ;;
+  esac
+}
+
+cmd_all() {
+  local yes=0
+  while [ $# -gt 0 ]; do case "$1" in --yes) yes=1; shift ;; *) die "init: unknown argument $1 (only --yes)" ;; esac; done
+  cmd_install_docker
+  offer_swarm_removal "$yes"
+  cmd_check
+  cmd_init
+  cmd_verify
+  cmd_prepare_db
+  echo "init: done so far: Docker, the swarm and the database. (The stack is the next step of the tool.)"
+}
+
 # ---- main ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 validate_inventory
 case "${1:-}:${2:-}" in
+  init:*) shift; cmd_all "$@" ;;
   cluster:check) cmd_check ;;
+  cluster:install-docker) cmd_install_docker ;;
   cluster:init) cmd_init ;;
   cluster:verify) cmd_verify ;;
   prepare:db) cmd_prepare_db ;;
-  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; [ -z "${1:-}" ] || exit 2 ;;
+  *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print } /^set / { exit }' "$0"; [ -z "${1:-}" ] || exit 2 ;;
 esac
