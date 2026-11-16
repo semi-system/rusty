@@ -240,3 +240,7 @@ What could not be verified:
 * The pinned action SHAs were resolved through the GitHub API on the authoring date; they should be
   spot-checked by a human against the release pages before the first run.
 * Multi-arch manifest creation, and the nightly fuzz job under real `cargo-fuzz`.
+
+## Spam and virus filters (the `filter` profile)
+
+`./setup.sh --filter ...` (with the usual arguments) adds a validating resolver (Unbound), rspamd, ClamAV (clamd) and its signature updater (freshclam) to the standalone stack, and writes a `[filter]` section into the inbound SMTP service's configuration. The scanners sit on the `filter` network (10.78.0.0/24), which has no route to the internet and no access to the database; only the resolver and freshclam also join `egress`. Inbound mail is scanned for viruses first (a message is held with 451 while clamd is down), then scored (a message gets through when rspamd is down). Spam goes to the Spam folder, virus mail is refused with 550. No greylisting: `greylist` in `filter/rspamd/actions.conf` is out of reach on purpose. The first start takes a few minutes while clamd waits for its first signatures. Design: docs/design-filters-and-resolver.md.
