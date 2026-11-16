@@ -314,7 +314,7 @@ services:
       - ${RUSTY_STATE:?run ./setup.sh first}/etc:/etc/rusty:ro
     networks:
       db: {}
-      metrics: { ipv4_address: 10.79.0.2 }   # the central endpoint: the other services let this address read their /metrics, nothing else on the network (docs/design-metrics.md)
+      metrics: {}
       app: {}
       kv: {}
     depends_on:

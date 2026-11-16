@@ -287,7 +287,7 @@ What a replica needs:
 ## Metrics
 
 `./setup.sh --metrics-allow 192.168.1.10/32 ...` (repeatable: one to sixteen networks, never every address) turns the metrics on. Every service then has a `[metrics]` listener on port 9100 (the internal `metrics` network,
-`rusty_metrics`, which no port of the host reaches) that only the admin web, at the fixed address 10.79.0.2, may read; the admin web is the **central endpoint**: it reads every replica of every service (Docker's
+`rusty_metrics`, which no port of the host reaches) that only that network may read (no address is fixed: a swarm has none); the admin web is the **central endpoint**: it reads every replica of every service (Docker's
 resolver returns them all) and serves everything on `admin:9100`, each sample labelled `service` and `instance`, plus `rusty_scrape_target_up` (0 for a service that cannot be read). Only the networks named by
 `--metrics-allow` may read the admin web's endpoint. The stack does **not** run a Prometheus: yours joins the `rusty_metrics` network (`docker run --network rusty_metrics ...`, or an override file) and has ONE
 target, `admin:9100` (`deploy/monitoring/prometheus.yml`), so no service can be missed. `deploy/monitoring/rusty.rules.yml` has sample alert rules; `docs/design-metrics.md` lists every metric.

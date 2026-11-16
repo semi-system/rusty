@@ -24,7 +24,7 @@ service's `[metrics]` listener). A name that resolves to many addresses (Docker'
 * `rusty_scrape_target_up{service,instance}` is 1 when the read worked and 0 when it did not (a bad status, a refusal, a timeout, an oversized or unreadable body, a name that does not resolve: the
   instance is then the configured address). A dead service shows as 0, never as nothing.
 * A line that already names an `instance` is dropped; one that names a `service` (`rusty_build_info`, the admin web's `rusty_service_up{service}`) keeps its own.
-* The services allow the admin web's address only (`[metrics] allowed_peers`); the admin web's own endpoint allows the operator's networks. Prometheus scrapes it with `honor_labels: true`.
+* The services allow the metrics network (`[metrics] allowed_peers`: the subnet of the internal network, so no fixed address is needed and a swarm works the same; the network has no host port, and the endpoint is read-only counters); the admin web's own endpoint allows the operator's networks. Prometheus scrapes it with `honor_labels: true`.
 * If the admin web is down nothing is watched: `RustyCentralEndpointDown` (on `up{job="rusty"}`) is the alert for it, and the only one that needs an outside check.
 
 ## What is measured
