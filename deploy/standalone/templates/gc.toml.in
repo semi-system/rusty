@@ -17,3 +17,8 @@ url = "postgres://rusty_gc@db:5432/rusty"
 password_file = "/run/secrets/pg_gc"
 sslmode = "verify-full"
 ca_bundle = "/etc/rusty/db-ca.pem"
+
+# The Prometheus endpoint (./setup.sh --metrics-allow CIDR): only the networks named there may scrape it.
+#METRICS [metrics]
+#METRICS listen = "0.0.0.0:9100"
+#METRICS allowed_peers = [@METRICS_ALLOW@]

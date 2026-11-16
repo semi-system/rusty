@@ -11,6 +11,7 @@ mod config_role;
 mod config_admin;
 mod config_blob_s3;
 mod config_filter;
+mod config_metrics;
 mod config_resolver;
 mod config_sealing;
 mod config_sections;

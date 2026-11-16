@@ -159,6 +159,18 @@ async fn build(
         ctx = ctx.with_rate(Arc::new(rusty_svc::ValkeyThrottle::from_limits(kv.clone(), &cfg.limits)));
     }
 
+    // `[metrics]`: the counters of what the listeners report and of what the scanners decide, served on a listener of its own to the allowed scrapers only (docs/design-metrics.md).
+    let registry = Arc::new(rusty_metrics::Registry::new(role.map_or("rusty", |r| r.name()), env!("CARGO_PKG_VERSION")));
+    let scan_observer: Option<rusty_smtp::scan::Observer> = cfg.metrics.as_ref().map(|_| {
+        let registry = registry.clone();
+        Arc::new(move |scanner: &'static str, result: &'static str| registry.inc("rusty_filter_results_total", &[("scanner", scanner), ("result", result)])) as rusty_smtp::scan::Observer
+    });
+    if let Some(m) = &cfg.metrics {
+        ctx = ctx.with_events(Arc::new(rusty_metrics::MetricsEvents::new(registry.clone())));
+        let (addr, _task) = rusty_metrics::serve(m.listen, registry.clone(), m.allowed_peers.clone(), shutdown.clone()).await?;
+        tracing::info!(service = "metrics", %addr, "listening");
+    }
+
     // Bind everything before serving anything: a clash fails the whole start.
     let mut addrs = Vec::new();
     let mut services: Vec<Box<dyn Service>> = Vec::new();
@@ -182,10 +194,18 @@ async fn build(
     if let Some(f) = &cfg.filter {
         let max = f.max_scan_bytes;
         if let Some(addr) = &f.clamd_addr {
-            inbound_filters.push(Arc::new(rusty_smtp::scan::ClamdFilter::new(addr, Duration::from_secs(f.clamd_timeout_secs), max, f.clamd_on_error)));
+            let clamd = rusty_smtp::scan::ClamdFilter::new(addr, Duration::from_secs(f.clamd_timeout_secs), max, f.clamd_on_error);
+            inbound_filters.push(Arc::new(match &scan_observer {
+                Some(o) => clamd.with_observer(o.clone()),
+                None => clamd,
+            }));
         }
         if let Some(url) = &f.rspamd_url {
-            inbound_filters.push(Arc::new(rusty_smtp::scan::RspamdFilter::new(url, Duration::from_secs(f.rspamd_timeout_secs), max, f.rspamd_on_error)));
+            let rspamd = rusty_smtp::scan::RspamdFilter::new(url, Duration::from_secs(f.rspamd_timeout_secs), max, f.rspamd_on_error);
+            inbound_filters.push(Arc::new(match &scan_observer {
+                Some(o) => rspamd.with_observer(o.clone()),
+                None => rspamd,
+            }));
         }
     }
     for planned in listener_plan_for(&cfg, role) {

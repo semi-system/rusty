@@ -89,6 +89,7 @@ services:
       - mail-data:/var/lib/rusty
     networks:
       db: {}
+      metrics: {}
       app: {}
       filter: {}
     depends_on:
@@ -110,6 +111,7 @@ services:
       - mail-data:/var/lib/rusty
     networks:
       db: {}
+      metrics: {}
       app: {}
       kv: {}
     depends_on:
@@ -132,6 +134,7 @@ services:
       - mail-data:/var/lib/rusty
     networks:
       db: {}
+      metrics: {}
       app: {}
       kv: {}
     depends_on:
@@ -153,6 +156,7 @@ services:
       - mail-data:/var/lib/rusty
     networks:
       db: {}
+      metrics: {}
       egress: {}
     depends_on:
       migrate: { condition: service_completed_successfully }
@@ -169,7 +173,9 @@ services:
       - ${RUSTY_STATE:?run ./setup.sh first}/etc:/etc/rusty:ro
       - ${RUSTY_STATE:?run ./setup.sh first}/keys:/etc/rusty-keys:ro
       - mail-data:/var/lib/rusty
-    networks: [db]
+    networks:
+      db: {}
+      metrics: {}
     depends_on:
       migrate: { condition: service_completed_successfully }
       blobs-init: { condition: service_completed_successfully }
@@ -308,6 +314,7 @@ services:
       - ${RUSTY_STATE:?run ./setup.sh first}/etc:/etc/rusty:ro
     networks:
       db: {}
+      metrics: {}
       app: {}
       kv: {}
     depends_on:
@@ -402,5 +409,9 @@ networks:
   filter:
     internal: true
     ipam: { config: [{ subnet: 10.78.0.0/24 }] }
+  # The metrics endpoints (`[metrics]`, port 9100) of every service, nothing else: a Prometheus of yours joins this network (docs/design-metrics.md).
+  metrics:
+    internal: true
+    ipam: { config: [{ subnet: 10.79.0.0/24 }] }
   # Out to the internet: the edge (ACME, inbound ports) and the mail service (outbound delivery).
   egress: {}
