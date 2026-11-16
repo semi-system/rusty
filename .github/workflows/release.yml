@@ -61,9 +61,10 @@ jobs:
     name: checksums, signatures, GitHub release
     needs: binaries
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 60 # waits for docker.yml to finish and sign the images (pin-release-images.sh, at most 40 minutes)
     permissions:
       contents: write # create the release and upload assets
+      packages: read # look up the digests of the images docker.yml published on this tag
       id-token: write # keyless cosign signing
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -78,10 +79,17 @@ jobs:
       - name: Assemble, checksum and sign
         env:
           TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          GH_ACTOR: ${{ github.actor }}
+          PIN_TIMEOUT_SECS: "2400"
         run: |
           set -euo pipefail
-          # The deployment kit as one file (scripts/package-deploy.sh); SHA256SUMS below covers it.
-          bash scripts/package-deploy.sh "$TAG" dist
+          # The deployment kit as one file (scripts/package-deploy.sh); SHA256SUMS below covers it. Its images.lock names the images of THIS release by digest: docker.yml builds and signs
+          # them on the same tag, and the script waits until each exists and carries its signature (scripts/pin-release-images.sh).
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GH_ACTOR" --password-stdin
+          bash scripts/pin-release-images.sh "$TAG" "$REPO" pins.txt
+          bash scripts/package-deploy.sh "$TAG" dist pins.txt
           rm -f "dist/rusty-deploy-$TAG.tar.gz.sha256"
           cp deploy/compose/compose.yaml dist/compose.yaml
           [ ! -f deploy/standalone/install.sh ] || cp deploy/standalone/install.sh dist/install.sh
