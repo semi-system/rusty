@@ -9,10 +9,10 @@ filters, the replicas, the limits). This page is the deploy flow, step by step, 
 |---|---|
 | Where the cluster runs | **First a local test cluster** (section 3b: Docker-in-Docker nodes on the owner's machine); the real machines or VPS are looked for **only when the work is finished and passes there**. |
 | Where the public ports are open | **Only on the Manager node.** The edge (HAProxy) runs there and nowhere else. |
-| Message blobs | **An external S3 service**, always (no S3 server inside the cluster). |
-| The database | **An external, dedicated PostgreSQL** ("as separate as the S3"): it is not a swarm service. |
+| Message blobs | **An S3 service, external by choice** (the recommended form: `S3_ENDPOINT` and keys in `swarm.env`). When the inventory names none, the stack runs a **default RustFS** (a service of its own, pinned to the node labelled `s3=true`, its data on a local volume of that node). Revised 2026-11-16: it was "always external". |
+| The database | **A PostgreSQL, external by choice** (`DB_HOST` and a login in `swarm.env`). When the inventory names none, the stack runs a **default PostgreSQL 18** (TLS on with a CA of its own, pinned to the node labelled `db=true`, data on a local volume of that node; the superuser password is generated and kept with the operator in the state directory, for manual backups and repairs). Revised 2026-11-16: it was "always external". |
 
-Consequences, in short: the swarm holds only stateless services plus a few single-instance helpers; everything with data (PostgreSQL, S3) is outside and has its own backup; the Manager is the one public entrance and
+Consequences, in short: the swarm holds only stateless services plus a few single-instance helpers; with an external PostgreSQL and S3 everything with data is outside and has its own backup. The in-stack defaults are for a start with nothing prepared: each is ONE instance on ONE node (no failover; losing that node loses its data unless it is backed up: `backup.sh` of the standalone stack is the model), and `prepare db` works on them the same way (the generated superuser login plays the part of the operator's); the Manager is the one public entrance and
 therefore the one place that must be protected and monitored most closely (section 9 says what that costs).
 
 ## 2. The topology
