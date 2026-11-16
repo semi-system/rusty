@@ -247,6 +247,48 @@ services:
       - clamdb:/var/lib/clamav
     networks: [egress]
 
+  # ---- the `valkey` profile (docs/valkey.md): the shared key-value store for the sending budget, the login throttle and the admin sessions of every replica. Start with `./setup.sh --valkey ...`.
+  # TLS with the database CA, one ACL user per service with a hashed password, the default user off, no persistence (everything in it is rebuildable), and a network of its own.
+  # The ACL file (templates/valkey.acl.in) cannot hold comments: one user per service that uses the store, each with the SHA-256 of its password, keys under the `rusty:` prefix only, no dangerous or administrative commands.
+  valkey:
+    profiles: [valkey]
+    image: valkey/valkey@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
+    <<: *hardened
+    user: "65532:65532"
+    command:
+      - valkey-server
+      - --port
+      - "0"
+      - --tls-port
+      - "6379"
+      - --tls-cert-file
+      - /tls/server.crt
+      - --tls-key-file
+      - /tls/server.key
+      - --tls-ca-cert-file
+      - /tls/ca.pem
+      - --tls-auth-clients
+      - "no"
+      - --aclfile
+      - /etc/valkey/users.acl
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --dir
+      - /data
+    tmpfs: [/data]
+    volumes:
+      - ${RUSTY_STATE:?run ./setup.sh first}/valkeytls:/tls:ro
+      - ${RUSTY_STATE:?run ./setup.sh first}/etc/valkey.acl:/etc/valkey/users.acl:ro
+    networks: [kv]
+    # Up when it answers on its TLS port, even if only to refuse an unauthenticated client.
+    healthcheck:
+      test: [CMD-SHELL, "valkey-cli --tls --cacert /tls/ca.pem -p 6379 ping 2>&1 | grep -qE 'PONG|NOAUTH|WRONGPASS|DENIED'"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
   # rustyctl for the operator: `docker compose run --rm --name rusty-ctl-1 ctl domain add example.org` (docs/first-mail.md; the name is what the database allows). Not started by `up`.
   ctl:
     profiles: [tools]
