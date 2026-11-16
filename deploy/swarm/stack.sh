@@ -522,36 +522,43 @@ gen_externals_for_migrate() {
 
 # ---- migrate and deploy ------------------------------------------------------------------------------------------------------------------------------------------------------------------
 cmd_migrate() {
-  local jobs=(migrate) j state ndone failed
+  local jobs=(migrate) j state ndone failed rejected attempt
   [ "$S3_IN_STACK" = 0 ] || jobs+=(blobs-init)
   gen_migrate_stack > "$STATE_DIR/stack/migrate.yaml"
-  sw stack rm "$MIGRATE_STACK" >/dev/null 2>&1 || true
-  for _ in $(seq 1 30); do [ -z "$(sw service ls --filter "label=com.docker.stack.namespace=$MIGRATE_STACK" -q)" ] && break; sleep 1; done
-  sw stack deploy --with-registry-auth -c - "$MIGRATE_STACK" < "$STATE_DIR/stack/migrate.yaml" >/dev/null
-  for _ in $(seq 1 90); do
-    ndone=0; failed=""
-    for j in "${jobs[@]}"; do
-      state="$(sw service ps "${MIGRATE_STACK}_$j" --format '{{.CurrentState}}' 2>/dev/null | head -1)"
-      case "$state" in
-        Complete*) ndone=$((ndone + 1)) ;;
-        Failed*|Rejected*) failed="$failed $j" ;;
-      esac
-    done
-    if [ -n "$failed" ]; then
-      for j in $failed; do
-        echo "migrate: the job $j failed. The swarm says:" >&2
-        sw service ps "${MIGRATE_STACK}_$j" --no-trunc --format '{{.CurrentState}}: {{.Error}}' 2>&1 | head -5 >&2
-        echo "migrate: its log:" >&2
-        sw service logs "${MIGRATE_STACK}_$j" 2>&1 | tail -20 >&2
+  # A job the swarm REJECTS (it could not even start: a network that was removed a moment ago is still being cleaned on the node, "Pool overlaps") is tried again, three times; a job that
+  # starts and fails is not: that is the migration itself saying no.
+  for attempt in 1 2 3; do
+    sw stack rm "$MIGRATE_STACK" >/dev/null 2>&1 || true
+    for _ in $(seq 1 30); do [ -z "$(sw service ls --filter "label=com.docker.stack.namespace=$MIGRATE_STACK" -q)" ] && break; sleep 1; done
+    [ "$attempt" = 1 ] || sleep 8
+    sw stack deploy --with-registry-auth -c - "$MIGRATE_STACK" < "$STATE_DIR/stack/migrate.yaml" >/dev/null
+    for _ in $(seq 1 90); do
+      ndone=0; failed=""; rejected=0
+      for j in "${jobs[@]}"; do
+        state="$(sw service ps "${MIGRATE_STACK}_$j" --format '{{.CurrentState}}' 2>/dev/null | head -1)"
+        case "$state" in
+          Complete*) ndone=$((ndone + 1)) ;;
+          Failed*) failed="$failed $j" ;;
+          Rejected*) failed="$failed $j"; rejected=1 ;;
+        esac
       done
-      sw stack rm "$MIGRATE_STACK" >/dev/null 2>&1 || true
-      die "a job failed: nothing was deployed"
-    fi
-    if [ "$ndone" = "${#jobs[@]}" ]; then echo "migrate: the schema is up to date$([ "$S3_IN_STACK" = 1 ] && echo " and the bucket exists")"; sw stack rm "$MIGRATE_STACK" >/dev/null 2>&1 || true; return 0; fi
-    sleep 2
+      if [ -n "$failed" ]; then
+        for j in $failed; do
+          echo "migrate: the job $j failed. The swarm says:" >&2
+          sw service ps "${MIGRATE_STACK}_$j" --no-trunc --format '{{.CurrentState}}: {{.Error}}' 2>&1 | head -5 >&2
+          echo "migrate: its log:" >&2
+          sw service logs "${MIGRATE_STACK}_$j" 2>&1 | tail -20 >&2
+        done
+        if [ "$rejected" = 1 ] && [ "$attempt" -lt 3 ]; then echo "migrate: the swarm rejected the job: trying again" >&2; continue 2; fi
+        sw stack rm "$MIGRATE_STACK" >/dev/null 2>&1 || true
+        die "a job failed: nothing was deployed"
+      fi
+      if [ "$ndone" = "${#jobs[@]}" ]; then echo "migrate: the schema is up to date$([ "$S3_IN_STACK" = 1 ] && echo " and the bucket exists")"; sw stack rm "$MIGRATE_STACK" >/dev/null 2>&1 || true; return 0; fi
+      sleep 2
+    done
+    for j in "${jobs[@]}"; do sw service logs "${MIGRATE_STACK}_$j" 2>&1 | tail -20 >&2 || true; done
+    die "the jobs did not finish in time"
   done
-  for j in "${jobs[@]}"; do sw service logs "${MIGRATE_STACK}_$j" 2>&1 | tail -20 >&2 || true; done
-  die "the jobs did not finish in time"
 }
 
 cmd_deploy() {
