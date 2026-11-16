@@ -69,7 +69,7 @@ impl Role {
             Role::SmtpIn => &["blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "smtp"],
             Role::Submission => &["blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "smtp", "outbound", "valkey"],
             Role::Imap => &["blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "imap", "valkey"],
-            Role::Outbound => &["blob_dir", "blob_s3", "outbound", "unsealing"],
+            Role::Outbound => &["blob_dir", "blob_s3", "outbound", "unsealing", "dns_check"],
             Role::Gc => &["blob_dir", "blob_s3", "unsealing", "gc_grace_seconds", "dns_check"],
             Role::Admin => &["tls", "valkey", "sealing", "admin"],
         }

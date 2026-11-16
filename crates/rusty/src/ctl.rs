@@ -101,8 +101,9 @@ fn config_for(source: &Source) -> Result<(StartupConfig, bool, String), String> 
         Source::Config(path) => {
             let path = path.clone().unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH));
             let cfg = StartupConfig::load(&path).map_err(|e| format!("configuration: {e}"))?;
-            // The same start-up rules as the daemon (hostname, TLS for authenticated listeners, ...).
-            cfg.check_startup(Profile::Production).map_err(|e| format!("configuration: {e}"))?;
+            // The start-up rules of a process that serves nothing (hostname, the database settings): rustyctl opens no listener, so the TLS rule for authenticated listeners is the business of
+            // the services and their own files. The role of the gc service has no listener.
+            cfg.check_startup_for(Profile::Production, Some(rusty_core::config::Role::Gc)).map_err(|e| format!("configuration: {e}"))?;
             Ok((cfg, false, "read".to_owned()))
         }
     }

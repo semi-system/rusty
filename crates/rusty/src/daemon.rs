@@ -262,14 +262,15 @@ async fn build(
             dns_checks = dns_checks.with_second(Arc::new(rusty_smtp::stack::LiveDns::with_nameserver(Some(second.addr()))?));
         }
         services.push(Box::new(dns_checks));
-        if cfg.dns_check.enabled {
-            services.push(Box::new(rusty_smtp::outbound::dns_job::DnsCheckScheduler::new(
-                rusty_store::DnsStore::with_repo(store.repos().dns.clone()),
-                cfg.dns_check.interval_secs,
-                cfg.dns_check.jitter_secs,
-            )));
-        }
         services.push(Box::new(OutboundWorker::new(deps, WorkerOptions::new(cfg.outbound.clone(), hostname)).with_wake(wake)));
+    }
+    // The periodic queueing of `dns.check` jobs belongs to the service of the periodic jobs (gc); the worker that runs them is the outbound one, where the resolver is.
+    if runs(Role::Gc) && cfg.dns_check.enabled {
+        services.push(Box::new(rusty_smtp::outbound::dns_job::DnsCheckScheduler::new(
+            rusty_store::DnsStore::with_repo(store.repos().dns.clone()),
+            cfg.dns_check.interval_secs,
+            cfg.dns_check.jitter_secs,
+        )));
     }
     // The check of a tenant's S3 store (`storage.check`, queued by the admin web or `rustyctl`): it needs the unsealing key, so it runs only where the S3 opener exists.
     if let (true, Some(s3_opener)) = (runs(Role::Outbound), s3_opener) {
