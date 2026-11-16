@@ -54,7 +54,7 @@ down, but nothing enters and nothing can be changed. Three managers with the edg
 Until the work is complete the cluster lives on the owner's own machine, as **Docker-in-Docker nodes**, with the two external dependencies as plain containers outside it, so the flow of section 6 runs unchanged
 against it:
 
-* **Nodes**: `rusty-m1` (the Manager) and `rusty-w1`, `rusty-w2` (workers), each a privileged `docker:dind` container on one Docker network (`rusty-cluster`); labels `outbound=true` on `w1` and `av=true` on `w2` stand
+* **Nodes** (owner's choice 2026-11-16: no separate worker is needed, everything stays on the Manager, which is still a swarm): by default one node, `rusty-m1`, carrying `outbound=true` and `av=true`; `--workers N` adds more for the tests that need several nodes (placement spread, node loss). The text below describes that larger form: `rusty-m1` (the Manager) and `rusty-w1`, `rusty-w2` (workers), each a privileged `docker:dind` container on one Docker network (`rusty-cluster`); labels `outbound=true` on `w1` and `av=true` on `w2` stand
   in for the real roles. The machine to use is the WSL2 Ubuntu of the owner's PC (16 CPUs, 16 GB, 100 GB limit set earlier), which has room for three nodes plus the helpers; the LAN test server (4 CPUs, 7 GB) is
   the second choice.
 * **External PostgreSQL** and **external S3** (RustFS, the S3 server of the test suite) are ordinary containers on a second network (`rusty-ext`) that the nodes can reach, with their own certificates from a throw-away CA;
@@ -202,7 +202,7 @@ addresses, which also have to be public).
 
 ## 13. Order of work
 
-0. **The local test cluster** (section 3b) and the external PostgreSQL and S3 containers: `local-cluster.sh up` gives a Manager and two workers, healthy, with a working overlay.
+0. **The local test cluster** (section 3b) and the external PostgreSQL and S3 containers: `local-cluster.sh up` gives a one-node swarm (the Manager carries every label; `--workers N` adds nodes), healthy, with a working overlay.
 1. `cluster` subcommands and `cluster check`/`verify`, tested against the local cluster (nothing of the platform yet): **the first result**.
 2. The stack template with only `edge`, `smtp-in` and a configuration, a secrets and configs pipeline, the external-database preparation and the `migrate` job: the smallest thing that receives a message.
 3. The remaining services, the filters and Valkey, then the limits and the logging limits; the certificate sync.
