@@ -13,6 +13,12 @@ Everything here was run on the LAN test server on 2026-11-16 unless it says othe
 
 ## Upgrade
 
+**The short way: `./upgrade.sh --image-tag 1.2.3`.** It does steps 2 to 5 below: a backup into `$STATE/backups/before-<tag>-<time>` (`--backup-dir DIR` to choose, `--with-keys` to add the sealing key pair, `--no-backup`
+if you must), `setup.sh` again with the arguments of this installation (`setup.sh` records them in `$STATE/setup.args`; an installation made before that needs one run of `setup.sh` first), `docker compose up -d` with
+the number of replicas that run now (a plain `up -d` would put every service back to one), then it waits for every service to be healthy and checks that the schema is current. If anything fails it says so and
+where the backup is. Tested on the LAN test server on 2026-11-16 with two replicas of IMAP and of the inbound service, from `sha-6b2523c` to `sha-ce996d1`: both replicas kept, the backup made, the schema went from 18 to
+19 and was current, the data was unchanged. The steps by hand:
+
 1. Read what changed, and the new migrations (`postgres-production.md`, "Migration numbering"). A migration must keep the **previous** release working while the new one rolls out (add first, remove in a
    later release): that is the rule that makes an upgrade a short restart instead of an outage.
 2. **Take a backup first** (`backup.sh --out DIR --with-keys`, `backup.md`). After a migration it is the only way back (see Rollback).

@@ -252,7 +252,7 @@ package, signs it (cosign, keyless), attaches an SBOM and scans it: `ghcr.io/sem
 `rusty-imap`, `rusty-outbound`, `rusty-gc` and `rusty-admin`. Tags: `sha-<short>`, the branch name, and `1.2.3` / `1.2` for a release tag.
 
 A server never builds. `deploy/standalone/setup.sh` pulls (`docker compose pull`) the images of the tag in `.env` (`--image-tag 1.2.3`, default `main`; `--registry` for a mirror), and an
-upgrade is: back up, set the new tag, `./setup.sh ...` again, `docker compose up -d` (the migration runs first); the whole procedure, the rollback and the runbooks are in `operations.md`. Verify an image before you run it:
+upgrade is: back up, set the new tag, `./setup.sh ...` again, `docker compose up -d` (the migration runs first); the whole procedure (or just `./upgrade.sh --image-tag X`), the rollback and the runbooks are in `operations.md`. Verify an image before you run it:
 
 ```sh
 cosign verify \

@@ -53,7 +53,7 @@ Library policy: use a maintained library first, rewrite after the product works;
 | Folder sharing and ACLs | Designed (`design-folder-sharing.md`) |
 | Send-as and delegation | Planned (after sharing) |
 | External accounts (pull from another IMAP/POP server) | Planned |
-| Two-factor, app passwords, SSO | Planned |
+| Two-factor, app passwords, SSO | Deferred (owner, 2026-11-16: not needed for now) |
 | Authoritative DNS for tenant domains | Designed (`design-authoritative-dns.md`) |
 
 ## Phase 4: groupware (level B)

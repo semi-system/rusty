@@ -18,6 +18,7 @@ pin() { awk -v n="$1" '$1 == n { print $2 }' "$ROOT/deploy/images.lock"; }
 PG_IMG="$(pin postgres:18)"; HA_IMG="$(pin haproxy:3.4.7-alpine3.24)"
 [ -n "$PG_IMG" ] && [ -n "$HA_IMG" ] || { echo "setup: images are not pinned in deploy/images.lock" >&2; exit 1; }
 
+SAVED_ARGS=("$@")   # kept in the state directory for upgrade.sh
 STATE="${RUSTY_STATE:-$HOME/rusty-state}"; MAIL_HOST=""; ADMIN_HOST=""; CONTACT=""; PUBLIC_IP=""; STAGING=0; SELF=0; FILTER=0; BUILD=0; VALKEY=0; METRICS_ALLOW=(); MAX_REPLICAS=4; TAG=main; REGISTRY=ghcr.io/semi-system; ALLOW=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -69,6 +70,8 @@ if [ "$STAGING" = 1 ]; then ACME_DIR="https://acme-staging-v02.api.letsencrypt.o
 # the service users. An absolute path, written to .env for compose.
 case "$STATE" in /*) ;; *) die "--state-dir must be an absolute path" ;; esac
 mkdir -p "$STATE"
+# The arguments of this installation, one per line, so that upgrade.sh can run this script again the same way (the secrets and keys that exist are kept).
+( umask 077; printf '%s\n' "${SAVED_ARGS[@]}" > "$STATE/setup.args" )
 HOSTID="$(id -u):$(id -g)"; export HOSTID
 R()  { docker run --rm --user 0 --entrypoint sh -e HOSTID -v "$STATE:/s" "$HA_IMG" -c "$1"; }
 RP() { docker run --rm --user 0 --entrypoint sh -e HOSTID -v "$STATE:/s" "$PG_IMG" -c "$1"; }

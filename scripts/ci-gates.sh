@@ -29,8 +29,7 @@ case "${1:-}" in
     bash scripts/tests/docker-pins-gate.sh
     bash scripts/check-docker-pins.sh
     bash scripts/check-prom-rules.sh
-    bash scripts/check-prom-rules.sh
-    bash scripts/check-prom-rules.sh
+    bash scripts/tests/limits-gate.sh
     bash scripts/tests/backup-restore.sh
     ;;
   symbols)
