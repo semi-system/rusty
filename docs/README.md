@@ -20,6 +20,7 @@ Everything here is written in English. Start with `architecture.md` and `roadmap
 | [design-authoritative-dns.md](design-authoritative-dns.md) | Designed, review pending |
 | [design-webmail.md](design-webmail.md) | Designed, review pending |
 | [design-folder-sharing.md](design-folder-sharing.md) | Designed |
+| [design-swarm.md](design-swarm.md) | Plan for the owner's review: deploying on a Docker Swarm cluster (external PostgreSQL and S3, the edge on the Manager) |
 
 ## Running and operating
 
