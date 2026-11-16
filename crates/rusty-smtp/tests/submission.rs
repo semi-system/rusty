@@ -517,7 +517,7 @@ async fn the_atomic_memory_limiter_does_not_overshoot_under_parallel_attempts() 
     let mut tasks = Vec::new();
     for _ in 0..50 {
         let l = lim.clone();
-        tasks.push(tokio::spawn(async move { l.try_record(AccountId(1)) }));
+        tasks.push(tokio::spawn(async move { l.try_record(AccountId(1)).await }));
     }
     let mut ok = 0;
     for t in tasks {
