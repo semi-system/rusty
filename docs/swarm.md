@@ -40,7 +40,7 @@ A file of shell variables, yours (not in the repository); `swarm.env.example` is
 | `DB_HOST DB_PORT DB_NAME DB_ADMIN_USER DB_ADMIN_PASSWORD_FILE` | your PostgreSQL. **Empty `DB_HOST`: the stack runs a default PostgreSQL 18** (one instance on the node labelled `db=true`, TLS with its own CA, data in a local volume) |
 | `DB_TLS=1\|0` | 1: TLS verified (the system's CAs; `DB_CA` for a private one). 0: plain, with a warning (the services run with `insecure_allow_unverified_tls`); a trusted private network only |
 | `S3_ENDPOINT S3_REGION S3_BUCKET S3_ACCESS_KEY S3_SECRET_KEY_FILE` | your S3. **Empty `S3_ENDPOINT`: the stack runs a default RustFS** (one instance on the node labelled `s3=true`; its bucket is made by a job) |
-| `TLS_MODE` | `self` (self-signed certificates; the only one built so far: ACME and the certificate sync for STARTTLS are the next step) |
+| `TLS_MODE` | `acme` (default): the edge gets and renews the certificates of `MAIL_HOST` and `ADMIN_HOST` from Let's Encrypt (HTTP-01 on port 80; the names must point at the Manager). `self`: self-signed (a test installation). `ACME_DIRECTORY` names another ACME server (the staging one while you try) |
 | `IMAGE_TAG`, `REGISTRY`, `REPLICAS_DEFAULT` | the image tag when the kit has no digests (a checkout; default `main`), the registry, replicas per service (default 1) |
 | `STATE_DIR` | where the tool keeps what it makes (default `~/.rusty-swarm`, mode 0700): the service passwords, the keys, the certificates, the generated files |
 
@@ -58,6 +58,9 @@ PostgreSQL its password is `STATE_DIR/secrets/pg_postgres`.
 | `cluster check / install-docker / init / verify` | the cluster steps alone |
 | `prepare db / secrets / configs`, `migrate`, `deploy` | the later steps alone, each repeatable |
 | `stack` | print the stack file the next `deploy` would use |
+| `backup [DIR]`, `restore FILE` | a dump of the database (with the login that stays yours) and the sealing key; the way back. The S3 bucket is not in it: copy it as you copy any bucket |
+| `upgrade [--no-backup]` | a new release: backup, secrets, configs, the migration job on the new image, then a rolling update (a service that does not come up is rolled back by itself) |
+| `certs sync`, `certs install-timer` | with `acme`: the edge's certificate to the mail services (a new secret version and a rolling update when it changed), and a systemd timer that does it every six hours (a Manager reached as `local`; elsewhere run `certs sync` from cron) |
 | `logs SERVICE [LINES]` | the log of a service (`admin`, `smtp-in`, `edge` ...) |
 | `verify` | the greetings of ports 25, 587 and 143 through the edge: they only come when the edge reached a service and the service accepted the edge, found **by name** |
 
@@ -75,7 +78,13 @@ replica takes its share and a replica that stops answering is taken out.
 * **A new release**: unpack its kit, run `./rusty-swarm migrate` then `deploy` with the same `swarm.env` and `STATE_DIR`. The migration runs first, on the new image; take a backup before (`operations.md`:
   a migration is forward only, the way back is a restore).
 
+## Limits of the services
+
+`limits.sh` of the standalone stack divides 80 % of the memory and CPUs of the Ready nodes over the services (the default PostgreSQL and S3 included when they are in the stack) and the result goes into the
+stack file as `deploy.resources.limits`, with `inflight_message_mib` of the inbound listeners kept well under their container's memory. It is worked out again at every `prepare configs` and `deploy`: after nodes
+join or leave, run them.
+
 ## What is not there yet
 
-ACME certificates and the sync of the certificate to the mail services (so the edge's certificate is the only trusted one, and STARTTLS uses the self-signed one), the spam and virus filters and Valkey in the
-stack, resource limits, an upgrade command, and the proof of the encrypted overlay on real machines. `design-swarm.md`, section 13, is the order of work.
+The spam and virus filters and Valkey in the stack (the standalone stack has them as profiles), the proof of the encrypted overlay on real machines, and the PROXY authentication and schema compatibility
+hardening of `design-swarm.md`, section 11. The single-node swarm test of `.github/workflows/swarm.yml` runs the whole flow nightly on the images of `main`.

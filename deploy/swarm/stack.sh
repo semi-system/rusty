@@ -10,7 +10,7 @@ STACK_NAME=rusty
 MIGRATE_STACK=rustymigrate
 REGISTRY="${REGISTRY:-ghcr.io/semi-system}"
 IMAGE_TAG="${IMAGE_TAG:-main}"
-TLS_MODE="${TLS_MODE:-self}"
+TLS_MODE="${TLS_MODE:-acme}"
 REPLICAS_DEFAULT="${REPLICAS_DEFAULT:-1}"
 declare -A SECRET_NAME=() CONFIG_NAME=()
 
