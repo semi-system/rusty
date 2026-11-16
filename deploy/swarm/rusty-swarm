@@ -3,25 +3,38 @@
 #   ssh:USER@HOST      over SSH (a key; the node's `docker` must answer for that user)
 #   docker:CONTAINER   a node that is a container of this machine (the local test cluster, deploy/swarm/local-cluster.sh)
 #
+#   ./rusty-swarm [--env FILE] init [--yes]   the whole flow, automatic: Docker is installed where it is missing (get.docker.com, as root), a swarm that is already there is offered for
+#                                                removal, then the check, the swarm, its proof and prepare db (the later steps join the chain as they are built); --yes answers the question with y
 #   ./rusty-swarm [--env FILE] cluster check     what is wrong on the nodes (prints, changes nothing)
+#   ./rusty-swarm [--env FILE] cluster install-docker   install Docker (get.docker.com, run as root) on the ssh nodes that have none (`init` does it by itself)
 #   ./rusty-swarm [--env FILE] cluster init      start the swarm on the Manager, join the workers, set the labels (each part is skipped when it is already done)
 #   ./rusty-swarm [--env FILE] cluster verify    nodes Ready and Active, and a throw-away overlay with one task per node: the tasks list each other, reach each other
 #                                                (an encrypted overlay when the inventory says ENCRYPTED=1)
+#   ./rusty-swarm [--env FILE] prepare db       with the one login of the inventory (DB_ADMIN_USER), create the roles of the services in the external PostgreSQL (deploy/db/roles.sql), give each a random
+#                                                password (kept in the state directory, mode 0600, for the next step) and prove that each of them can log in; run again, it changes no password
 #
 # The inventory is a file of shell variables (default: swarm.env next to this script, or $RUSTY_SWARM_ENV); `local.env` is the one of the local test cluster. It is the operator's own file and is never
 # kept in the repository (swarm.env.example shows it):
 #   NODES=("name|transport|role|labels|public_address" ...)    role: manager or worker; labels: comma-separated `key=value` (may be empty); public_address may be empty
 #   ENCRYPTED=1                                                the overlays of the stack are encrypted (IPsec); needs the ESP protocol between the nodes
 #   MIN_DOCKER_MAJOR=25                                        the oldest Docker major the stack is tested with
+#   DB_HOST DB_PORT DB_NAME DB_ADMIN_USER DB_ADMIN_PASSWORD_FILE   the external PostgreSQL: where, which database (default rusty), the login for the preparation and the file that holds its password
+#   DB_TLS=1                                     1 (default): TLS, the certificate checked (verify-full) against the system's CAs; 0: a plain connection (the services then run with sslmode = "disable" and
+#                                                insecure_allow_unverified_tls = true, which they warn about at every start; for a database on a trusted private network only)
+#   DB_CA                                        optional: the CA file, when the database's certificate is signed by a private CA; DB_HOSTADDR (optional) connects to that address while the certificate is checked against DB_HOST
+#   STATE_DIR=$HOME/.rusty-swarm                where this tool keeps what it generates (the service passwords), mode 0700
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 die() { echo "rusty-swarm: $*" >&2; exit 1; }
 
+usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print } /^set / { exit }' "$0"; }
 ENV_FILE="${RUSTY_SWARM_ENV:-$HERE/swarm.env}"
+case "${1:-}" in -h|--help|help|"") usage; exit 0 ;; esac
 if [ "${1:-}" = "--env" ]; then ENV_FILE="${2:?--env needs a file}"; shift 2; fi
 [ -r "$ENV_FILE" ] || die "no inventory at $ENV_FILE (copy swarm.env.example, or use --env local.env)"
 NODES=(); ENCRYPTED=0; MIN_DOCKER_MAJOR=25
+DB_HOST=""; DB_PORT=5432; DB_NAME=rusty; DB_ADMIN_USER=""; DB_ADMIN_PASSWORD_FILE=""; DB_CA=""; DB_TLS=1; DB_HOSTADDR=""; STATE_DIR="$HOME/.rusty-swarm"
 # shellcheck source=/dev/null
 . "$ENV_FILE"
 [ "${#NODES[@]}" -gt 0 ] || die "$ENV_FILE has no NODES"
@@ -63,8 +76,8 @@ on() {
   local n="$1" t; shift
   t="$(node_field "$n" 2)"
   case "$t" in
-    ssh:*) ssh -o BatchMode=yes -o ConnectTimeout=10 "${t#ssh:}" "$@" ;;
-    docker:*) docker exec "${t#docker:}" "$@" ;;
+    ssh:*) ssh -o BatchMode=yes -o ConnectTimeout=10 "${t#ssh:}" "$(printf '%q ' "$@")" ;;
+    docker:*) docker exec -i "${t#docker:}" "$@" ;;
   esac
 }
 dk() { local n="$1"; shift; on "$n" docker "$@"; }
@@ -226,11 +239,141 @@ probe_clean() { # the network cannot go while the last task is still shutting do
   die "the probe network $net could not be removed"
 }
 
+# ---- prepare db ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SERVICE_ROLES=(app admin migrator smtp_in submission imap outbound gc)
+POSTGRES_IMAGE="$(awk '$1 == "postgres:18" { print $2 }' "$HERE/../images.lock")"
+
+secret_file() { printf '%s/secrets/pg_%s\n' "$STATE_DIR" "$1"; }
+
+# Make the state directory and give every role a password that does not exist yet (a password that exists is never replaced).
+make_passwords() {
+  local r f
+  umask 077
+  mkdir -p "$STATE_DIR/secrets"; chmod 0700 "$STATE_DIR" "$STATE_DIR/secrets"
+  for r in "${SERVICE_ROLES[@]}"; do
+    f="$(secret_file "$r")"
+    [ -s "$f" ] || od -An -N24 -tx1 /dev/urandom | tr -d ' \n' > "$f"
+  done
+}
+
+# Run psql on the manager (the node reaches the database the way the services will). The first line of the standard input is the password, the rest is the SQL: the password is in no argument
+# and no environment variable of a process on the node. $1 is the user, $2 the file with its password; the SQL comes from the standard input.
+psql_as() {
+  local m user="$1" pwfile="$2" ca="/tmp/rusty-swarm-ca.pem" conn mount=()
+  m="$(manager_name)"
+  conn="host=$DB_HOST port=$DB_PORT dbname=$DB_NAME user=$user"
+  if [ "$DB_TLS" = 1 ]; then
+    conn="$conn sslmode=verify-full"
+    if [ -n "$DB_CA" ]; then
+      conn="$conn sslrootcert=/ca.pem"
+      on "$m" sh -c "umask 077; cat > $ca" < "$DB_CA"
+      mount=(-v "$ca:/ca.pem:ro")
+    else
+      conn="$conn sslrootcert=system"
+    fi
+  else
+    conn="$conn sslmode=disable"
+  fi
+  [ -z "$DB_HOSTADDR" ] || conn="$conn hostaddr=$DB_HOSTADDR"
+  { cat "$pwfile"; echo; cat; } | dk "$m" run --rm -i --cap-drop ALL --security-opt no-new-privileges:true "${mount[@]}" --entrypoint sh "$POSTGRES_IMAGE" \
+    -c 'IFS= read -r PGPASSWORD; export PGPASSWORD; exec psql -X -q -At -v ON_ERROR_STOP=1 "$0"' "$conn"
+}
+
+cmd_prepare_db() {
+  local r f sql
+  [ -n "$DB_HOST" ] && [ -n "$DB_ADMIN_USER" ] && [ -r "$DB_ADMIN_PASSWORD_FILE" ] || die "prepare db: the inventory needs DB_HOST, DB_ADMIN_USER and DB_ADMIN_PASSWORD_FILE (a readable file)"
+  case "$DB_TLS" in
+    1) ;;
+    0) echo "WARNING: DB_TLS=0: the database connection is not encrypted (the services will run with insecure_allow_unverified_tls = true). Only for a trusted private network." >&2 ;;
+    *) die "prepare db: DB_TLS is 1 or 0" ;;
+  esac
+  [ -z "$DB_CA" ] || [ -r "$DB_CA" ] || die "prepare db: DB_CA is not a readable file"
+  [[ "$DB_PORT" =~ ^[0-9]+$ ]] && [[ "$DB_NAME" =~ ^[a-z][a-z0-9_]{0,62}$ ]] && [[ "$DB_HOST" =~ ^[A-Za-z0-9.-]+$ ]] && [[ "$DB_ADMIN_USER" =~ ^[A-Za-z][A-Za-z0-9_]{0,62}$ ]] || die "prepare db: DB_HOST, DB_PORT, DB_NAME or DB_ADMIN_USER has a character that does not belong in one"
+  [ -n "$POSTGRES_IMAGE" ] || die "postgres:18 is not pinned in deploy/images.lock"
+  make_passwords
+  # The roles (NOLOGIN, idempotent), then the passwords of the ones that log in. A password that is already set is set again to the same value: nothing changes.
+  sql="$(cat "$HERE/../db/roles.sql")"$'\n'
+  for r in "${SERVICE_ROLES[@]}"; do
+    f="$(secret_file "$r")"
+    sql="$sql"$'\n'"ALTER ROLE rusty_$r LOGIN PASSWORD '$(cat "$f")';"
+  done
+  printf '%s\n' "$sql" | psql_as "$DB_ADMIN_USER" "$DB_ADMIN_PASSWORD_FILE" >/dev/null || die "prepare db: the roles could not be created (see the database message above: the login's rights, the TLS setting DB_TLS, DB_CA, or pg_hba for the nodes' addresses)"
+  echo "prepare db: the roles of the services exist in $DB_NAME on $DB_HOST"
+  # Each service role must be able to log in the way the services will (verified TLS, or plain with DB_TLS=0).
+  for r in "${SERVICE_ROLES[@]}"; do
+    f="$(secret_file "$r")"
+    if [ "$(echo "select current_user" | psql_as "rusty_$r" "$f" 2>/dev/null)" = "rusty_$r" ]; then echo "  ok    rusty_$r logs in"; else die "prepare db: rusty_$r cannot log in (does pg_hba allow the nodes' addresses with TLS and scram-sha-256?)"; fi
+  done
+  echo "prepare db: done; the passwords are in $STATE_DIR/secrets (mode 0600)"
+}
+
+
+# ---- install docker --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Only where Docker is missing (owner's choice: automatic): get.docker.com is a script of the internet that runs as root. A node reached as a
+# container (the local test cluster) already has Docker and is skipped. The user of an ssh node must be root or be allowed `sudo` without a password.
+cmd_install_docker() {
+  local n t
+  for n in $(node_names); do
+    t="$(node_field "$n" 2)"
+    case "$t" in docker:*) echo "install docker: $n is a container, Docker is there"; continue ;; esac
+    if dk "$n" version >/dev/null 2>&1; then echo "install docker: $n already has Docker ($(dk "$n" version --format '{{.Server.Version}}' 2>/dev/null))"; continue; fi
+    on "$n" sh -c 'id -u | grep -qx 0 || sudo -n true' >/dev/null 2>&1 || die "install docker: on $n the user is not root and cannot sudo without a password"
+    echo "install docker: $n: running get.docker.com (as root) ..."
+    on "$n" sh -c 'S=""; [ "$(id -u)" = 0 ] || S="sudo -n"; command -v curl >/dev/null || { echo "curl is missing" >&2; exit 1; }; curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && $S sh /tmp/get-docker.sh >/dev/null && rm -f /tmp/get-docker.sh' || die "install docker: it failed on $n"
+    # The user of the transport must be able to use docker in the next ssh session.
+    on "$n" sh -c 'id -u | grep -qx 0 || sudo -n usermod -aG docker "$(id -un)"' >/dev/null 2>&1 || true
+    echo "install docker: $n done"
+  done
+}
+
+# ---- init: the whole flow ---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# One command, nothing to switch on: Docker is installed where it is missing (and left alone where it is there), a swarm that is already there is offered for removal (answer y to remove it and start
+# clean, n to keep and use it), then the check, the swarm, its proof and the database; the steps that follow (secrets, configs, migration, the stack) are added to this chain as they are built.
+# `--yes` answers the question with y (there is no terminal to ask on: a script, CI); without a terminal and without --yes the swarm is kept.
+swarm_nodes_in_swarm() { local n; for n in $(node_names); do [ "$(node_state "$n")" = active ] && printf '%s\n' "$n"; done; return 0; }
+
+offer_swarm_removal() {
+  local yes="$1" found answer="n" n m
+  found="$(swarm_nodes_in_swarm | tr '\n' ' ')"
+  [ -n "$found" ] || return 0
+  echo "A swarm already exists on: $found"
+  if [ "$yes" = 1 ]; then
+    answer=y
+  elif [ -t 0 ]; then
+    read -r -p "Remove it (every node leaves the swarm; its stacks, secrets and configs are lost) and start clean? [y/N] " answer || answer=n
+  else
+    echo "(no terminal to ask on and no --yes: the swarm is kept)"
+  fi
+  case "$answer" in
+    y|Y|yes|YES)
+      m="$(manager_name)"
+      for n in $(node_names); do [ "$n" = "$m" ] || { [ "$(node_state "$n")" = active ] && dk "$n" swarm leave --force >/dev/null 2>&1 && echo "removed: $n left the swarm"; }; done
+      if [ "$(node_state "$m")" = active ]; then dk "$m" swarm leave --force >/dev/null && echo "removed: the swarm of $m"; fi
+      ;;
+    *) echo "keeping the existing swarm" ;;
+  esac
+}
+
+cmd_all() {
+  local yes=0
+  while [ $# -gt 0 ]; do case "$1" in --yes) yes=1; shift ;; *) die "init: unknown argument $1 (only --yes)" ;; esac; done
+  cmd_install_docker
+  offer_swarm_removal "$yes"
+  cmd_check
+  cmd_init
+  cmd_verify
+  cmd_prepare_db
+  echo "init: done so far: Docker, the swarm and the database. (The stack is the next step of the tool.)"
+}
+
 # ---- main ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 validate_inventory
 case "${1:-}:${2:-}" in
+  init:*) shift; cmd_all "$@" ;;
   cluster:check) cmd_check ;;
+  cluster:install-docker) cmd_install_docker ;;
   cluster:init) cmd_init ;;
   cluster:verify) cmd_verify ;;
-  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; [ -z "${1:-}" ] || exit 2 ;;
+  prepare:db) cmd_prepare_db ;;
+  *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print } /^set / { exit }' "$0"; [ -z "${1:-}" ] || exit 2 ;;
 esac
