@@ -17,6 +17,7 @@
 #   ./rusty-swarm [--env FILE] logs SERVICE [LINES]   the log of a service (for example admin: the setup token of the first start); verify: the greeting of ports 25, 587 and 143 through the edge
 #   ./rusty-swarm [--env FILE] backup [DIR] [--with-keys] | restore FILE | upgrade [--no-backup]   a dump of the database (the sealing key only with --with-keys); the way back (a restore); a new release: backup, secrets, configs, migration, rolling update
 #   ./rusty-swarm [--env FILE] certs sync | certs install-timer   with TLS_MODE=acme: the edge's certificate to the mail services (rolling update when it is new) and a systemd timer that does it every six hours
+#   ./rusty-swarm [--env FILE] prune    remove the old secrets and configs that no service uses, and none a rollback would go back to (upgrade does it at the end)
 #   ./rusty-swarm [--env FILE] stack          print the stack file the next deploy would use
 #   ./rusty-swarm [--env FILE] prepare secrets | prepare configs | migrate | deploy   the next steps of the flow, each repeatable: the swarm secrets (versioned names) and configs (named by the
 #                                                hash of their content), the schema migration as a job, and the stack (the edge and the services)
@@ -468,7 +469,7 @@ cmd_all() {
 # ---- main ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 validate_inventory
 # The defaults of the stack (the passwords and keys it makes itself) are worked out before any step that needs them.
-case "${1:-}" in init|prepare|migrate|deploy|stack|logs|verify|backup|restore|upgrade|certs) resolve_defaults ;; esac
+case "${1:-}" in init|prepare|migrate|deploy|stack|logs|verify|backup|restore|upgrade|certs|prune) resolve_defaults ;; esac
 case "${1:-}:${2:-}" in
   init:*) shift; cmd_all "$@" ;;
   inventory:*) cmd_inventory ;;
@@ -487,6 +488,7 @@ case "${1:-}:${2:-}" in
   restore:*) shift; cmd_restore "$@" ;;
   upgrade:*) shift; cmd_upgrade "$@" ;;
   certs:sync) cmd_certs_sync ;;
+  prune:*) read_names || true; cmd_prune ;;
   certs:install-timer) cmd_certs_install_timer ;;
   verify:*) cmd_verify_stack ;;
   *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print } /^set / { exit }' "$0"; [ -z "${1:-}" ] || exit 2 ;;

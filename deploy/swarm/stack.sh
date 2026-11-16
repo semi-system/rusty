@@ -221,12 +221,15 @@ gen_s3_service() {
 # inbound listeners, into `[limits] inflight_message_mib` (which must stay well under the container's memory). Run again after nodes join or leave.
 LIMITS_FILE=""
 gen_limits() {
-  local mem cpus id st av n m profiles="" reps="" s
+  local mem cpus id st av n m profiles="" reps="" s info nodes=""
   mem=0; cpus=0
   while read -r id st av; do
     [ "$st" = Ready ] && [ "$av" = Active ] || continue
     read -r n m < <(sw node inspect "$id" --format '{{.Description.Resources.NanoCPUs}} {{.Description.Resources.MemoryBytes}}')
     cpus=$((cpus + n)); mem=$((mem + m))
+    # One line per node: its memory in MiB, its role, its labels (to know which services may run there).
+    info="$(sw node inspect "$id" --format '{{.Description.Resources.MemoryBytes}} {{.Spec.Role}} {{json .Spec.Labels}}')"
+    nodes="$nodes$(( ${info%% *} / 1048576 )) ${info#* }"$'\n'
   done < <(sw node ls --format '{{.ID}} {{.Status}} {{.Availability}}')
   [ "$mem" -gt 0 ] || die "limits: no Ready and Active node"
   [ "$DB_IN_STACK" = 1 ] || profiles="nodb"
@@ -237,11 +240,42 @@ gen_limits() {
   LIMITS_FILE="$STATE_DIR/stack/limits.yaml"
   bash "$HERE/../standalone/limits.sh" --total-mem-mib "$((mem / 1048576))" --total-cpus "$(awk -v n="$cpus" 'BEGIN { printf "%.2f", n / 1000000000 }')" ${profiles:+--profiles "$profiles"} ${reps:+--replicas "$reps"} \
     --out "$LIMITS_FILE" > "$STATE_DIR/stack/limits.txt" || { cat "$STATE_DIR/stack/limits.txt" >&2; die "limits: the services do not fit in the nodes (see above)"; }
+  cap_limits "$nodes"
 }
-# The memory ceiling of the inbound listeners' in-flight messages for a service, from the table limits.sh printed (empty when there is none).
-inflight_of() { awk -v n="$1" '$1 == n { for (i = 1; i <= NF; i++) if ($i == "<=") print $(i + 1) }' "$STATE_DIR/stack/limits.txt" 2>/dev/null; }
-# The `resources` lines of a service in the file limits.sh wrote (nothing when the service has none).
-y_limits() { [ -s "$STATE_DIR/stack/limits.yaml" ] && awk -v n="  $1:" '$0 == n { f = 1; next } f && /limits:/ { sub(/^ +/, ""); print "      resources:"; print "        " $0; exit } f && /^  [a-z]/ { exit }' "$STATE_DIR/stack/limits.yaml"; return 0; }
+
+# limits.sh divides the memory of ALL nodes as if it were one pool. A container lives on one node: its limit may not be more than 80 % of the smallest node it may be placed on (the rest is the host's),
+# and it is reserved at a quarter of the limit so the scheduler counts it. The result is the table `limits.tsv` (service, MiB, CPUs, reserved MiB) that y_limits and inflight_of read.
+cap_limits() { # NODES-TEXT
+  local nodes="$1" name mem cpus cap pin min line nmem role labels lab out="$STATE_DIR/stack/limits.tsv"
+  : > "$out"
+  while read -r name mem cpus; do
+    case "$name" in
+      edge) pin="manager" ;;
+      outbound) pin='"outbound":"true"' ;;
+      clamd|freshclam) pin='"av":"true"' ;;
+      db) pin='"db":"true"' ;;
+      s3) pin='"s3":"true"' ;;
+      *) pin="" ;;
+    esac
+    min=""
+    while read -r nmem role labels; do
+      [ -n "$nmem" ] || continue
+      if [ -n "$pin" ]; then
+        if [ "$pin" = manager ]; then [ "$role" = manager ] || continue; else lab="$labels"; case "$lab" in *"$pin"*) ;; *) continue ;; esac; fi
+      fi
+      if [ -z "$min" ] || [ "$nmem" -lt "$min" ]; then min="$nmem"; fi
+    done <<< "$nodes"
+    [ -n "$min" ] || die "limits: no node can run $name (it needs a node $([ "$pin" = manager ] && echo 'that is a manager' || echo "labelled ${pin//\"/}"))"
+    cap=$(( min * 80 / 100 ))
+    [ "$mem" -le "$cap" ] || { echo "limits: $name is limited to $cap MiB, 80 % of the smallest node it can run on ($min MiB), not $mem MiB" >&2; mem="$cap"; }
+    printf '%s %s %s %s\n' "$name" "$mem" "$cpus" "$(( mem / 4 ))" >> "$out"
+  done < <(awk '/^  [a-z0-9-]+:$/ { n = $1; sub(/:$/, "", n) } /limits:/ { m = $0; sub(/.*memory: /, "", m); sub(/M.*/, "", m); c = $0; sub(/.*cpus: "/, "", c); sub(/".*/, "", c); print n, m, c }' "$LIMITS_FILE")
+}
+# The in-flight message budget (MiB) of an inbound listener: a third of its container's memory, at least 64 (empty when the service has no limit).
+inflight_of() { awk -v n="$1" '$1 == n { v = int($2 / 3); if (v < 64) v = 64; print v }' "$STATE_DIR/stack/limits.tsv" 2>/dev/null; }
+# The `resources` lines of a service (nothing when it has none).
+y_limits() { awk -v n="$1" '$1 == n { printf "      resources:\n        limits: { cpus: \"%s\", memory: %sM }\n        reservations: { memory: %sM }\n", $3, $2, $4 }' "$STATE_DIR/stack/limits.tsv" 2>/dev/null; return 0; }
+
 
 # ---- prepare secrets and prepare configs --------------------------------------------------------------------------------------------------------------------------------------------------
 require_stack_inputs() {
@@ -598,6 +632,7 @@ cmd_upgrade() {
   cmd_prepare_configs
   cmd_migrate
   cmd_deploy
+  cmd_prune
   echo "upgrade: done"
 }
 
@@ -661,4 +696,24 @@ cmd_certs_install_timer() {
   printf '[Unit]\nDescription=Rusty swarm: certificate sync every six hours\n\n[Timer]\nOnCalendar=*-*-* 00/6:17:00\nPersistent=true\nRandomizedDelaySec=600\n\n[Install]\nWantedBy=timers.target\n' | $s tee "$unit.timer" >/dev/null
   $s systemctl daemon-reload && $s systemctl enable --now rusty-swarm-certs.timer >/dev/null
   echo "certs install-timer: rusty-swarm-certs.timer runs 'certs sync' every six hours"
+}
+
+# ---- prune -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# Every change of a secret or a config makes a new object and the old one stays. This removes the ones nothing needs: not in the names this tool chose, not used by a running service, and not used by
+# the PREVIOUS version of a service either (a rollback goes back to those). Old passwords do not linger on the Manager.
+cmd_prune() {
+  local used svc k n removed=0
+  read_names || die "prune: nothing was prepared yet"
+  used=" "
+  for k in "${SECRET_NAME[@]}" "${CONFIG_NAME[@]}"; do used="$used$k "; done
+  for svc in $(sw service ls --format '{{.Name}}'); do
+    used="$used$(sw service inspect "$svc" --format '{{range .Spec.TaskTemplate.ContainerSpec.Secrets}}{{.SecretName}} {{end}}{{range .Spec.TaskTemplate.ContainerSpec.Configs}}{{.ConfigName}} {{end}}{{if .PreviousSpec}}{{range .PreviousSpec.TaskTemplate.ContainerSpec.Secrets}}{{.SecretName}} {{end}}{{range .PreviousSpec.TaskTemplate.ContainerSpec.Configs}}{{.ConfigName}} {{end}}{{end}}') "
+  done
+  for n in $(sw secret ls --filter label=rusty.base --format '{{.Name}}'); do
+    case "$used" in *" $n "*) ;; *) if sw secret rm "$n" >/dev/null 2>&1; then removed=$((removed + 1)); fi ;; esac
+  done
+  for n in $(sw config ls --filter label=rusty.base --format '{{.Name}}'); do
+    case "$used" in *" $n "*) ;; *) if sw config rm "$n" >/dev/null 2>&1; then removed=$((removed + 1)); fi ;; esac
+  done
+  echo "prune: removed $removed unused secret(s) and config(s)"
 }

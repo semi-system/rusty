@@ -58,6 +58,7 @@ PostgreSQL its password is `STATE_DIR/secrets/pg_postgres`.
 | `inventory` | what the tool understood of `swarm.env` |
 | `cluster check / install-docker / init / verify` | the cluster steps alone |
 | `prepare db / secrets / configs`, `migrate`, `deploy` | the later steps alone, each repeatable |
+| `prune` | removes the old secrets and configs that no service uses (and none that a rollback would go back to); `upgrade` does it at the end |
 | `stack` | print the stack file the next `deploy` would use |
 | `backup [DIR] [--with-keys]`, `restore FILE` | a dump of the database (with the login that stays yours; the sealing key only with `--with-keys`, because it opens the credentials in the dump: keep it elsewhere); the way back. The S3 bucket is not in it: copy it as you copy any bucket |
 | `upgrade [--no-backup]` | a new release: backup, secrets, configs, the migration job on the new image, then a rolling update (a service that does not come up is rolled back by itself) |
