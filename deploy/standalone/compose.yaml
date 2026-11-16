@@ -91,6 +91,7 @@ services:
     networks:
       db: {}
       app: { ipv4_address: 10.77.0.10 }
+      filter: { ipv4_address: 10.78.0.6 }
     depends_on:
       migrate: { condition: service_completed_successfully }
       blobs-init: { condition: service_completed_successfully }
@@ -174,6 +175,71 @@ services:
       migrate: { condition: service_completed_successfully }
       blobs-init: { condition: service_completed_successfully }
     stop_grace_period: 45s
+
+  # ---- the `filter` profile (docs/design-filters-and-resolver.md): a resolver, a spam scorer, a virus scanner and its signature updater. Start with `./setup.sh --filter ...`.
+  # The scanners live on the `filter` network, which has no route out and no database; only the resolver and freshclam also join `egress`.
+  resolver:
+    profiles: [filter]
+    image: klutchell/unbound@sha256:50cbeb32b5838a829a7226b19cb151f9535bd7f9f3190f950780f452fe807478
+    <<: *hardened
+    cap_add: [NET_BIND_SERVICE]
+    tmpfs: [/tmp]
+    command: [-d, -c, /etc/unbound/unbound.conf]
+    volumes:
+      - ./filter/unbound.conf:/etc/unbound/unbound.conf:ro
+    networks:
+      filter: { ipv4_address: 10.78.0.3 }
+      egress: {}
+
+  rspamd:
+    profiles: [filter]
+    image: rspamd/rspamd@sha256:02d2ba5f88873619ac77cd003bde78a8e77e3506de0871a7ed08c3080f4d45dd
+    <<: *hardened
+    tmpfs: [/tmp, "/run/rspamd:uid=11333,gid=11333", "/var/lib/rspamd:uid=11333,gid=11333"]
+    volumes:
+      - ./filter/rspamd:/etc/rspamd/local.d:ro
+    networks:
+      filter: { ipv4_address: 10.78.0.4 }
+    depends_on: [resolver]
+
+  clamd:
+    profiles: [filter]
+    image: clamav/clamav@sha256:45fe5149fbee5a46509c9848ef20d0c354b7b2323c9369f285939a37cf33422a
+    restart: unless-stopped
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      CLAMAV_NO_FRESHCLAMD: "true"
+      CLAMAV_NO_MILTERD: "true"
+    tmpfs: [/tmp, /run/clamav]
+    volumes:
+      - ./filter/clamd.conf:/etc/clamav/clamd.conf:ro
+      - clamdb:/var/lib/clamav
+    networks:
+      filter: { ipv4_address: 10.78.0.5 }
+    healthcheck:
+      test: [CMD-SHELL, "clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    depends_on: [freshclam]
+
+  freshclam:
+    profiles: [filter]
+    image: clamav/clamav@sha256:45fe5149fbee5a46509c9848ef20d0c354b7b2323c9369f285939a37cf33422a
+    restart: unless-stopped
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      CLAMAV_NO_CLAMD: "true"
+      CLAMAV_NO_MILTERD: "true"
+    tmpfs: [/tmp]
+    volumes:
+      - clamdb:/var/lib/clamav
+    networks: [egress]
 
   # rustyctl for the operator: `docker compose run --rm ctl domain add example.org` (docs/first-mail.md). Not started by `up`.
   ctl:
@@ -270,6 +336,7 @@ secrets:
 volumes:
   pgdata:
   mail-data:
+  clamdb:
 
 networks:
   # The database is reachable by the services that need it only.
@@ -278,5 +345,9 @@ networks:
   app:
     internal: true
     ipam: { config: [{ subnet: 10.77.0.0/24 }] }
+  # The scanners and their resolver (the `filter` profile): internal, so nothing on it reaches the internet; the resolver and freshclam are also on `egress`.
+  filter:
+    internal: true
+    ipam: { config: [{ subnet: 10.78.0.0/24 }] }
   # Out to the internet: the edge (ACME, inbound ports) and the mail service (outbound delivery).
   egress: {}

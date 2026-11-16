@@ -18,7 +18,7 @@ pin() { awk -v n="$1" '$1 == n { print $2 }' "$ROOT/deploy/images.lock"; }
 PG_IMG="$(pin postgres:18)"; HA_IMG="$(pin haproxy:3.4.7-alpine3.24)"
 [ -n "$PG_IMG" ] && [ -n "$HA_IMG" ] || { echo "setup: images are not pinned in deploy/images.lock" >&2; exit 1; }
 
-STATE="${RUSTY_STATE:-$HOME/rusty-state}"; MAIL_HOST=""; ADMIN_HOST=""; CONTACT=""; PUBLIC_IP=""; STAGING=0; SELF=0; ALLOW=()
+STATE="${RUSTY_STATE:-$HOME/rusty-state}"; MAIL_HOST=""; ADMIN_HOST=""; CONTACT=""; PUBLIC_IP=""; STAGING=0; SELF=0; FILTER=0; ALLOW=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --mail-host) MAIL_HOST="${2:-}"; shift 2 ;;
@@ -28,6 +28,7 @@ while [ $# -gt 0 ]; do
     --admin-allow) ALLOW+=("${2:-}"); shift 2 ;;
     --staging) STAGING=1; shift ;;
     --self-signed) SELF=1; shift ;;
+    --filter) FILTER=1; shift ;;
     --state-dir) STATE="${2:-}"; shift 2 ;;
     *) echo "setup: unknown argument $1 (see the header of this script)" >&2; exit 2 ;;
   esac
@@ -55,7 +56,7 @@ R()  { docker run --rm --user 0 --entrypoint sh -e HOSTID -v "$STATE:/s" "$HA_IM
 RP() { docker run --rm --user 0 --entrypoint sh -e HOSTID -v "$STATE:/s" "$PG_IMG" -c "$1"; }
 R 'cd /s && mkdir -p secrets etc pgtls keys tls edge/acme edge/certs run && chown "$HOSTID" etc'
 # Which kind of certificates the edge has decides which of the optional services (cert-sync, cert-keep) compose starts.
-if [ "$SELF" = 1 ]; then profiles=""; else profiles="acme"; fi; printf 'RUSTY_STATE=%s
+if [ "$SELF" = 1 ]; then profiles=""; else profiles="acme"; fi; if [ "$FILTER" = 1 ]; then profiles="${profiles:+$profiles,}filter"; fi; printf 'RUSTY_STATE=%s
 COMPOSE_PROFILES=%s
 ' "$STATE" "$profiles" > .env
 R 'cd /s/secrets && for s in pg_postgres pg_app pg_admin pg_migrator; do [ -s "$s" ] || (umask 077; head -c 32 /dev/urandom | od -An -tx1 | tr -d " \n" > "$s"); done'
@@ -72,8 +73,8 @@ fi
 R 'cp /s/pgtls/ca.pem /s/etc/db-ca.pem && chown "$HOSTID" /s/etc/db-ca.pem && chmod 0644 /s/etc/db-ca.pem'
 
 render() { # template -> file: the values were validated above, none holds a character that matters to sed (| is never in them)
-  local keep drop; if [ "$SELF" = 1 ]; then keep="#SELF "; drop="#ACME"; else keep="#ACME"; drop="#SELF "; fi
-  sed -e "/^${drop}/d" -e "s|^${keep}||" -e "s|@MAIL_HOST@|$MAIL_HOST|g" -e "s|@ADMIN_HOST@|$ADMIN_HOST|g" -e "s|@CONTACT@|$CONTACT|g" -e "s|@PUBLIC_IP@|$PUBLIC_IP|g" \
+  local keep drop fkeep="#NOFILTER_"; [ "$FILTER" = 1 ] && fkeep="#FILTER "; if [ "$SELF" = 1 ]; then keep="#SELF "; drop="#ACME"; else keep="#ACME"; drop="#SELF "; fi
+  sed -e "s|^${fkeep}||" -e "/^${drop}/d" -e "s|^${keep}||" -e "s|@MAIL_HOST@|$MAIL_HOST|g" -e "s|@ADMIN_HOST@|$ADMIN_HOST|g" -e "s|@CONTACT@|$CONTACT|g" -e "s|@PUBLIC_IP@|$PUBLIC_IP|g" \
       -e "s|@SEAL_PUBLIC@|$SEAL_PUBLIC|g" -e "s|@ACME_DIRECTORY@|$ACME_DIR|g" -e "s|@ADMIN_ALLOW@|${ALLOW[*]}|g" "templates/$1.in" > "$STATE/etc/$1"
 }
 # The sealing key pair: the private half stays in state/keys (mail uid only); the public half goes to both configurations.

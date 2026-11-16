@@ -13,3 +13,6 @@ ghcr.io/letsencrypt/pebble:latest  ghcr.io/letsencrypt/pebble@sha256:0c81f05db37
 ghcr.io/letsencrypt/pebble-challtestsrv:latest  ghcr.io/letsencrypt/pebble-challtestsrv@sha256:0152c8cb506e2ecba2900ed47d23932e27e3e6575a7d2c8ef93c7719ee3dea4c  2026-11-15  (Pebble challenge test server; scripts/tests/acme-pebble.sh, test only)
 rustfs/rustfs:latest  rustfs/rustfs@sha256:b81d16a90ee25bd9511280127ca1471788c6e874cf0f0da759645f46b2dc1d74  2026-11-15  (RustFS, the S3 test server of crates/rusty-s3; tests and the dev compose)
 edoburu/pgbouncer:latest  edoburu/pgbouncer@sha256:8638aa563607256d3c7440437534195f1066a92b68015d89ae9d6b935b444a6d  2026-11-15  (PgBouncer 1.26.1, transaction pooling; scripts/pgb-up.sh, test only until the standalone stack uses it)
+klutchell/unbound:latest  klutchell/unbound@sha256:50cbeb32b5838a829a7226b19cb151f9535bd7f9f3190f950780f452fe807478  2026-11-16  (Unbound 1.26.2; the resolver of the filter profile, deploy/standalone)
+rspamd/rspamd:latest  rspamd/rspamd@sha256:02d2ba5f88873619ac77cd003bde78a8e77e3506de0871a7ed08c3080f4d45dd  2026-11-16  (rspamd 4.3.0; the spam scorer of the filter profile)
+clamav/clamav:stable  clamav/clamav@sha256:45fe5149fbee5a46509c9848ef20d0c354b7b2323c9369f285939a37cf33422a  2026-11-16  (ClamAV 1.5.4; clamd and freshclam of the filter profile)
