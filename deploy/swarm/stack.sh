@@ -132,13 +132,85 @@ conf_haproxy() {
       "$HERE/../standalone/templates/haproxy.cfg.in"
 }
 
+# ---- the defaults: PostgreSQL and RustFS inside the stack when the inventory names none -----------------------------------------------------------------------------------------------------
+# DB_HOST empty: a PostgreSQL 18 service pinned to the node labelled db=true, TLS on with a CA made here, its superuser password made here and kept in the state directory (yours, for manual
+# backups and repairs). S3_ENDPOINT empty: a RustFS service pinned to the node labelled s3=true with keys made here. Each is ONE instance on ONE node with its data in a local volume: no failover.
+DB_IN_STACK=0; S3_IN_STACK=0
+[ -n "$DB_HOST" ] || DB_IN_STACK=1
+[ -n "$S3_ENDPOINT" ] || S3_IN_STACK=1
+STACK_ONLY=""
+
+rand_hex() { od -An -N"$1" -tx1 /dev/urandom | tr -d ' \n'; }
+
+# shellcheck disable=SC2034 # the values are read by rusty-swarm, which sources this file
+resolve_defaults() {
+  mkdir -p "$STATE_DIR/secrets"; chmod 0700 "$STATE_DIR" "$STATE_DIR/secrets" 2>/dev/null || true
+  if [ "$DB_IN_STACK" = 1 ]; then
+    DB_HOST=db; DB_PORT=5432; DB_NAME=rusty; DB_TLS=1; DB_HOSTADDR=""; DB_ADMIN_USER=postgres
+    DB_CA="$STATE_DIR/dbtls/ca.pem"; DB_ADMIN_PASSWORD_FILE="$STATE_DIR/secrets/pg_postgres"
+    [ -s "$DB_ADMIN_PASSWORD_FILE" ] || ( umask 077; rand_hex 24 > "$DB_ADMIN_PASSWORD_FILE" )
+  fi
+  if [ "$S3_IN_STACK" = 1 ]; then
+    S3_ENDPOINT=http://s3:9000; S3_REGION=us-east-1; S3_BUCKET=rusty-mail
+    [ -s "$STATE_DIR/secrets/s3_access_key" ] || ( umask 077; rand_hex 10 > "$STATE_DIR/secrets/s3_access_key" )
+    [ -s "$STATE_DIR/secrets/s3_secret_key" ] || ( umask 077; rand_hex 24 > "$STATE_DIR/secrets/s3_secret_key" )
+    S3_ACCESS_KEY="$(cat "$STATE_DIR/secrets/s3_access_key")"; S3_SECRET_KEY_FILE="$STATE_DIR/secrets/s3_secret_key"
+  fi
+}
+
+# The CA and the server certificate of the default PostgreSQL (the name `db`), made once.
+make_db_tls() {
+  local dir="$STATE_DIR/dbtls" out
+  mkdir -p "$dir"; chmod 0700 "$dir"
+  if [ -s "$dir/ca.pem" ] && [ -s "$dir/server.crt" ] && [ -s "$dir/server.key" ]; then return 0; fi
+  out="$(sw run --rm --cap-drop ALL --entrypoint sh "$POSTGRES_IMAGE" -c 'set -e; cd /tmp
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-384 -nodes -days 3650 -subj "/CN=rusty db CA" -keyout ca.key -out ca.pem 2>/dev/null
+    openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-384 -nodes -subj "/CN=db" -keyout server.key -out server.csr 2>/dev/null
+    printf "subjectAltName=DNS:db\nextendedKeyUsage=serverAuth\n" > ext.cnf
+    openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 3650 -extfile ext.cnf -out server.crt 2>/dev/null
+    cat ca.pem; echo ----SPLIT----; cat server.key; echo ----SPLIT----; cat server.crt')"
+  ( umask 077
+    printf '%s\n' "$out" | awk 'BEGIN { n = 0 } /^----SPLIT----$/ { n++; next } n == 0 { print }' > "$dir/ca.pem"
+    printf '%s\n' "$out" | awk 'BEGIN { n = 0 } /^----SPLIT----$/ { n++; next } n == 1 { print }' > "$dir/server.key"
+    printf '%s\n' "$out" | awk 'BEGIN { n = 0 } /^----SPLIT----$/ { n++; next } n == 2 { print }' > "$dir/server.crt" )
+  grep -q 'BEGIN CERTIFICATE' "$dir/ca.pem" && grep -q 'PRIVATE KEY' "$dir/server.key" && grep -q 'BEGIN CERTIFICATE' "$dir/server.crt" || die "could not make the certificates of the default PostgreSQL"
+}
+
+conf_pg_hba() { printf 'local all all trust\nhostssl all all all scram-sha-256\nhost all all all reject\n'; }
+
+gen_db_service() {
+  printf '  db:\n    image: %s\n    cap_drop: [ALL]\n    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]\n' "$(lock_ref 'postgres:18')"
+  printf '    environment:\n      POSTGRES_DB: %s\n      POSTGRES_PASSWORD_FILE: /run/secrets/pg_postgres\n      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --data-checksums"\n' "$DB_NAME"
+  printf '    command: [postgres, -c, ssl=on, -c, ssl_cert_file=/run/secrets/db_server_crt, -c, ssl_key_file=/run/secrets/db_server_key, -c, ssl_min_protocol_version=TLSv1.3, -c, hba_file=/etc/postgresql-hba/pg_hba.conf]\n'
+  printf '    volumes:\n      - pgdata:/var/lib/postgresql\n'
+  y_deploy 1 'node.labels.db == true' stop-first | sed 's/rollback_config: { parallelism: 1, order: stop-first }/rollback_config: { parallelism: 1, order: stop-first }/'
+  printf '    secrets:\n'
+  y_secret pg_postgres pg_postgres 0
+  y_secret db_server_crt db_server_crt 999
+  y_secret db_server_key db_server_key 999
+  printf '    configs:\n'
+  y_config pg_hba /etc/postgresql-hba/pg_hba.conf
+  printf '    healthcheck:\n      test: [CMD-SHELL, "pg_isready -U postgres -d %s"]\n      interval: 5s\n      timeout: 5s\n      retries: 20\n    networks:\n      - backend\n' "$DB_NAME"
+}
+
+gen_s3_service() {
+  printf '  s3:\n    image: %s\n    read_only: true\n    cap_drop: [ALL]\n    command: ["/data"]\n' "$(lock_ref 'rustfs/rustfs:latest')"
+  printf '    environment:\n      RUSTFS_ACCESS_KEY_FILE: /run/secrets/s3_access\n      RUSTFS_SECRET_KEY_FILE: /run/secrets/s3_secret\n'
+  printf '    volumes:\n      - s3data:/data\n      - type: tmpfs\n        target: /logs\n        tmpfs: { mode: 1777 }\n      - type: tmpfs\n        target: /tmp\n        tmpfs: { mode: 1777 }\n'
+  y_deploy 1 'node.labels.s3 == true' stop-first
+  printf '    secrets:\n'
+  y_secret s3_access s3_access 0
+  y_secret s3_secret s3_secret 0
+  printf '    networks:\n      - backend\n'
+}
+
 # ---- prepare secrets and prepare configs --------------------------------------------------------------------------------------------------------------------------------------------------
 require_stack_inputs() {
+  resolve_defaults
   [ -n "$MAIL_HOST" ] && [ -n "$ADMIN_HOST" ] && [ -n "$ADMIN_ALLOW" ] || die "the inventory needs MAIL_HOST, ADMIN_HOST and ADMIN_ALLOW"
-  [ -n "$DB_HOST" ] || die "the default PostgreSQL of the stack is a later step: set DB_HOST (an external PostgreSQL)"
-  [ -n "$S3_ENDPOINT" ] && [ -r "$S3_SECRET_KEY_FILE" ] && [ -n "$S3_ACCESS_KEY" ] || die "the default RustFS of the stack is a later step: set S3_ENDPOINT, S3_ACCESS_KEY and S3_SECRET_KEY_FILE (an external S3)"
+  [ -n "$S3_ACCESS_KEY" ] && [ -r "$S3_SECRET_KEY_FILE" ] || die "S3_ENDPOINT is set but S3_ACCESS_KEY or S3_SECRET_KEY_FILE is not"
   [ "$TLS_MODE" = self ] || die "TLS_MODE=$TLS_MODE: only self (self-signed certificates) is built so far; ACME and the certificate sync are a later step"
-  [ -s "$(secret_file app)" ] || die "no service passwords yet: run 'prepare db' first"
+  make_passwords
 }
 
 cmd_prepare_secrets() {
@@ -157,6 +229,12 @@ cmd_prepare_secrets() {
   ensure_secret tls_key "$STATE_DIR/tls/mail.key"
   ensure_secret edge_mail_pem "$STATE_DIR/tls/mail.pem"
   ensure_secret edge_admin_pem "$STATE_DIR/tls/admin.pem"
+  if [ "$DB_IN_STACK" = 1 ]; then
+    make_db_tls
+    ensure_secret pg_postgres "$DB_ADMIN_PASSWORD_FILE"
+    ensure_secret db_server_crt "$STATE_DIR/dbtls/server.crt"
+    ensure_secret db_server_key "$STATE_DIR/dbtls/server.key"
+  fi
   echo "prepare secrets: done"
 }
 
@@ -171,6 +249,7 @@ cmd_prepare_configs() {
   done
   ( umask 077; conf_haproxy > "$d/haproxy.cfg" )
   ensure_config haproxy "$d/haproxy.cfg"
+  if [ "$DB_IN_STACK" = 1 ]; then make_db_tls; ( umask 077; conf_pg_hba > "$d/pg_hba.conf" ); ensure_config pg_hba "$d/pg_hba.conf"; fi
   if [ -n "$DB_CA" ]; then ensure_config db_ca "$DB_CA"; fi
   echo "prepare configs: done"
 }
@@ -191,6 +270,16 @@ load_names() { # the versioned names, from the manager
     [ -n "$n" ] || die "the secret $base is missing: run 'prepare secrets'"
     SECRET_NAME[$base]="${base}_v$n"
   done
+  if [ "$DB_IN_STACK" = 1 ]; then
+    for base in pg_postgres db_server_crt db_server_key; do
+      n="$(sw secret ls --filter "label=rusty.base=$base" --format '{{.Name}}' | sed "s/^${base}_v//" | sort -n | tail -1)"
+      [ -n "$n" ] || die "the secret $base is missing: run 'prepare secrets'"
+      SECRET_NAME[$base]="${base}_v$n"
+    done
+    n="$(sw config ls --filter "label=rusty.base=pg_hba" --format '{{.Name}} {{.CreatedAt}}' | sort -k2 | tail -1 | cut -d' ' -f1)"
+    [ -n "$n" ] || die "the config pg_hba is missing: run 'prepare configs'"
+    CONFIG_NAME[pg_hba]="$n"
+  fi
   for base in smtp_in submission imap outbound gc admin migrate haproxy db_ca; do
     n="$(sw config ls --filter "label=rusty.base=$base" --format '{{.Name}} {{.CreatedAt}}' | sort -k2 | tail -1 | cut -d' ' -f1)"
     [ -n "$n" ] || { [ "$base" = db_ca ] && continue; die "the config $base is missing: run 'prepare configs'"; }
@@ -229,25 +318,34 @@ gen_stack() {
   load_names
   {
     printf 'version: "3.9"\nservices:\n'
-    # The edge: the one public entrance, on the Manager, its ports on the host (no routing mesh: the clients' addresses are kept).
-    y_service_common edge "$(lock_ref 'haproxy:3.4.7-alpine3.24')"
-    printf '    sysctls: { net.ipv4.ip_unprivileged_port_start: 0 }\n    ports:\n'
-    local p
-    for p in 25 80 143 443 465 587 993; do printf '      - { target: %s, published: %s, protocol: tcp, mode: host }\n' "$p" "$p"; done
-    y_deploy 1 'node.role == manager' stop-first
-    printf '    secrets:\n'
-    y_secret edge_mail_pem /var/lib/haproxy/certs/mail.pem 99
-    y_secret edge_admin_pem /var/lib/haproxy/certs/admin.pem 99
-    printf '    configs:\n'
-    y_config haproxy /usr/local/etc/haproxy/haproxy.cfg
-    printf '    networks:\n      - app\n      - backend\n'
-    gen_rusty_service smtp-in smtp_in "app backend metrics" 1 1
-    gen_rusty_service submission submission "app backend metrics" 1 1
-    gen_rusty_service imap imap "app backend metrics" 1 1
-    gen_rusty_service outbound outbound "backend metrics" 0 1 'node.labels.outbound == true'
-    gen_rusty_service gc gc "backend metrics" 0 1
-    gen_rusty_service admin admin "app backend metrics" 0 0
-    printf 'networks:\n  app: { driver: overlay, internal: true }\n  backend: { driver: overlay }\n  metrics: { driver: overlay, internal: true }\n'
+    [ "$DB_IN_STACK" = 0 ] || gen_db_service
+    [ "$S3_IN_STACK" = 0 ] || gen_s3_service
+    if [ -z "$STACK_ONLY" ]; then
+      # The edge: the one public entrance, on the Manager, its ports on the host (no routing mesh: the clients' addresses are kept).
+      y_service_common edge "$(lock_ref 'haproxy:3.4.7-alpine3.24')"
+      printf '    sysctls: { net.ipv4.ip_unprivileged_port_start: 0 }\n    ports:\n'
+      local p
+      for p in 25 80 143 443 465 587 993; do printf '      - { target: %s, published: %s, protocol: tcp, mode: host }\n' "$p" "$p"; done
+      y_deploy 1 'node.role == manager' stop-first
+      printf '    secrets:\n'
+      y_secret edge_mail_pem /var/lib/haproxy/certs/mail.pem 99
+      y_secret edge_admin_pem /var/lib/haproxy/certs/admin.pem 99
+      printf '    configs:\n'
+      y_config haproxy /usr/local/etc/haproxy/haproxy.cfg
+      printf '    networks:\n      - app\n      - backend\n'
+      gen_rusty_service smtp-in smtp_in "app backend metrics" 1 1
+      gen_rusty_service submission submission "app backend metrics" 1 1
+      gen_rusty_service imap imap "app backend metrics" 1 1
+      gen_rusty_service outbound outbound "backend metrics" 0 1 'node.labels.outbound == true'
+      gen_rusty_service gc gc "backend metrics" 0 1
+      gen_rusty_service admin admin "app backend metrics" 0 0
+    fi
+    printf 'networks:\n  app: { driver: overlay, internal: true }\n  backend: { driver: overlay, attachable: true }\n  metrics: { driver: overlay, internal: true }\n'
+    if [ "$DB_IN_STACK" = 1 ] || [ "$S3_IN_STACK" = 1 ]; then
+      printf 'volumes:\n'
+      [ "$DB_IN_STACK" = 0 ] || printf '  pgdata:\n'
+      [ "$S3_IN_STACK" = 0 ] || printf '  s3data:\n'
+    fi
     gen_externals
   }
 }
@@ -272,35 +370,60 @@ gen_migrate_stack() {
     printf '    configs:\n'
     y_config migrate /etc/rusty/migrate.toml
     if [ -n "${CONFIG_NAME[db_ca]:-}" ]; then y_config db_ca /etc/rusty/db-ca.pem; fi
-    printf '    networks: [backend]\nnetworks:\n  backend: { driver: overlay }\n'
+    printf '    networks: [backend]\n'
+    if [ "$S3_IN_STACK" = 1 ]; then
+      # The default S3 server has no bucket yet: the one-shot `blobs init` makes it (with [blob_s3] it makes the bucket, not the directory).
+      printf '  blobs-init:\n    image: %s\n    entrypoint: [/usr/local/bin/rustyctl]\n    command: [--config, /etc/rusty/migrate.toml, blobs, init]\n    read_only: true\n    cap_drop: [ALL]\n    deploy:\n      mode: replicated-job\n      restart_policy: { condition: none }\n    secrets:\n' "$(rusty_image "")"
+      y_secret s3_access; y_secret s3_secret; y_secret pg_gc
+      printf '    configs:\n'
+      y_config migrate /etc/rusty/migrate.toml
+      if [ -n "${CONFIG_NAME[db_ca]:-}" ]; then y_config db_ca /etc/rusty/db-ca.pem; fi
+      printf '    networks: [backend]\n'
+    fi
+    if [ "$DB_IN_STACK" = 1 ] || [ "$S3_IN_STACK" = 1 ]; then
+      # The default PostgreSQL and S3 are on the stack's own network: the jobs join it.
+      printf 'networks:\n  backend: { external: true, name: %s_backend }\n' "$STACK_NAME"
+    else
+      printf 'networks:\n  backend: { driver: overlay, attachable: true }\n'
+    fi
     gen_externals_for_migrate
   }
 }
 gen_externals_for_migrate() {
   local k
   printf 'secrets:\n'
-  for k in pg_app pg_migrator s3_access s3_secret; do printf '  %s: { external: true }\n' "${SECRET_NAME[$k]}"; done
+  for k in pg_app pg_migrator pg_gc s3_access s3_secret; do printf '  %s: { external: true }\n' "${SECRET_NAME[$k]}"; done
   printf 'configs:\n  %s: { external: true }\n' "${CONFIG_NAME[migrate]}"
   [ -z "${CONFIG_NAME[db_ca]:-}" ] || printf '  %s: { external: true }\n' "${CONFIG_NAME[db_ca]}"
 }
 
 # ---- migrate and deploy ------------------------------------------------------------------------------------------------------------------------------------------------------------------
 cmd_migrate() {
-  local state
+  local jobs=(migrate) j state ndone failed
+  [ "$S3_IN_STACK" = 0 ] || jobs+=(blobs-init)
   gen_migrate_stack > "$STATE_DIR/stack/migrate.yaml"
   sw stack rm "$MIGRATE_STACK" >/dev/null 2>&1 || true
   for _ in $(seq 1 30); do [ -z "$(sw service ls --filter "label=com.docker.stack.namespace=$MIGRATE_STACK" -q)" ] && break; sleep 1; done
   sw stack deploy --with-registry-auth -c - "$MIGRATE_STACK" < "$STATE_DIR/stack/migrate.yaml" >/dev/null
   for _ in $(seq 1 90); do
-    state="$(sw service ps "${MIGRATE_STACK}_migrate" --format '{{.CurrentState}}' 2>/dev/null | head -1)"
-    case "$state" in
-      Complete*) echo "migrate: the schema is up to date"; sw stack rm "$MIGRATE_STACK" >/dev/null 2>&1 || true; return 0 ;;
-      Failed*|Rejected*) echo "migrate: the job failed ($state); its log:" >&2; sw service logs "${MIGRATE_STACK}_migrate" 2>&1 | tail -20 >&2; sw stack rm "$MIGRATE_STACK" >/dev/null 2>&1 || true; die "the migration failed: nothing was deployed" ;;
-    esac
+    ndone=0; failed=""
+    for j in "${jobs[@]}"; do
+      state="$(sw service ps "${MIGRATE_STACK}_$j" --format '{{.CurrentState}}' 2>/dev/null | head -1)"
+      case "$state" in
+        Complete*) ndone=$((ndone + 1)) ;;
+        Failed*|Rejected*) failed="$failed $j" ;;
+      esac
+    done
+    if [ -n "$failed" ]; then
+      for j in $failed; do echo "migrate: the job $j failed; its log:" >&2; sw service logs "${MIGRATE_STACK}_$j" 2>&1 | tail -20 >&2; done
+      sw stack rm "$MIGRATE_STACK" >/dev/null 2>&1 || true
+      die "a job failed: nothing was deployed"
+    fi
+    if [ "$ndone" = "${#jobs[@]}" ]; then echo "migrate: the schema is up to date${S3_IN_STACK/#1/ and the bucket exists}"; sw stack rm "$MIGRATE_STACK" >/dev/null 2>&1 || true; return 0; fi
     sleep 2
   done
-  sw service logs "${MIGRATE_STACK}_migrate" 2>&1 | tail -20 >&2 || true
-  die "the migration did not finish in time"
+  for j in "${jobs[@]}"; do sw service logs "${MIGRATE_STACK}_$j" 2>&1 | tail -20 >&2 || true; done
+  die "the jobs did not finish in time"
 }
 
 cmd_deploy() {

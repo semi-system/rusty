@@ -109,8 +109,8 @@ cmd_inventory() {
   for n in $(node_names); do printf '  %s  %s  %s  labels=%s  address=%s
 ' "$n" "$(node_field "$n" 2)" "$(node_field "$n" 3)" "$(node_field "$n" 4)" "$(node_field "$n" 5)"; done
   echo "mail host: ${MAIL_HOST:-(not set)}  admin host: ${ADMIN_HOST:-(not set)}  admin allow: ${ADMIN_ALLOW:-(not set)}"
-  if [ -n "$DB_HOST" ]; then echo "PostgreSQL: external $DB_HOST:$DB_PORT/$DB_NAME as $DB_ADMIN_USER (tls=$DB_TLS)"; else echo "PostgreSQL: the default one, in the cluster"; fi
-  if [ -n "$S3_ENDPOINT" ]; then echo "S3: external $S3_ENDPOINT bucket $S3_BUCKET"; else echo "S3: the default RustFS, in the cluster"; fi
+  if [ "$DB_IN_STACK" = 0 ]; then echo "PostgreSQL: external $DB_HOST:$DB_PORT/$DB_NAME as $DB_ADMIN_USER (tls=$DB_TLS)"; else echo "PostgreSQL: the default one, in the cluster"; fi
+  if [ "$S3_IN_STACK" = 0 ]; then echo "S3: external $S3_ENDPOINT bucket $S3_BUCKET"; else echo "S3: the default RustFS, in the cluster"; fi
 }
 
 # ---- cluster check ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -290,7 +290,9 @@ make_passwords() {
 # Run psql on the manager (the node reaches the database the way the services will). The first line of the standard input is the password, the rest is the SQL: the password is in no argument
 # and no environment variable of a process on the node. $1 is the user, $2 the file with its password; the SQL comes from the standard input.
 psql_as() {
-  local m user="$1" pwfile="$2" ca="/tmp/rusty-swarm-ca.pem" conn mount=()
+  local m user="$1" pwfile="$2" ca="/tmp/rusty-swarm-ca.pem" conn mount=() net=()
+  # The default PostgreSQL lives on the stack's network: the psql container joins it (the network is attachable).
+  [ "$DB_IN_STACK" != 1 ] || net=(--network "${STACK_NAME}_backend")
   m="$(manager_name)"
   conn="host=$DB_HOST port=$DB_PORT dbname=$DB_NAME user=$user"
   if [ "$DB_TLS" = 1 ]; then
@@ -306,7 +308,7 @@ psql_as() {
     conn="$conn sslmode=disable"
   fi
   [ -z "$DB_HOSTADDR" ] || conn="$conn hostaddr=$DB_HOSTADDR"
-  { cat "$pwfile"; echo; cat; } | dk "$m" run --rm -i --cap-drop ALL --security-opt no-new-privileges:true "${mount[@]}" --entrypoint sh "$POSTGRES_IMAGE" \
+  { cat "$pwfile"; echo; cat; } | dk "$m" run --rm -i --cap-drop ALL --security-opt no-new-privileges:true "${net[@]}" "${mount[@]}" --entrypoint sh "$POSTGRES_IMAGE" \
     -c 'IFS= read -r PGPASSWORD; export PGPASSWORD; exec psql -X -q -At -v ON_ERROR_STOP=1 "$0"' "$conn"
 }
 
@@ -329,7 +331,15 @@ cmd_prepare_db() {
     f="$(secret_file "$r")"
     sql="$sql"$'\n'"ALTER ROLE rusty_$r LOGIN PASSWORD '$(cat "$f")';"
   done
-  printf '%s\n' "$sql" | psql_as "$DB_ADMIN_USER" "$DB_ADMIN_PASSWORD_FILE" >/dev/null || die "prepare db: the roles could not be created (see the database message above: the login's rights, the TLS setting DB_TLS, DB_CA, or pg_hba for the nodes' addresses)"
+  # A database that was just started needs a moment: with the default PostgreSQL the first connection is tried for a minute.
+  local t ok=0 errf="$STATE_DIR/.psql.err"
+  for t in $(seq 1 20); do
+    if printf '%s\n' "$sql" | psql_as "$DB_ADMIN_USER" "$DB_ADMIN_PASSWORD_FILE" >/dev/null 2>"$errf"; then ok=1; break; fi
+    [ "$DB_IN_STACK" = 1 ] || break
+    sleep 3
+  done
+  if [ "$ok" != 1 ]; then cat "$errf" >&2; rm -f "$errf"; die "prepare db: the roles could not be created (see the database message above: the login's rights, the TLS setting DB_TLS, DB_CA, or pg_hba for the nodes' addresses)"; fi
+  rm -f "$errf"
   echo "prepare db: the roles of the services exist in $DB_NAME on $DB_HOST"
   # Each service role must be able to log in the way the services will (verified TLS, or plain with DB_TLS=0).
   for r in "${SERVICE_ROLES[@]}"; do
@@ -397,9 +407,14 @@ cmd_all() {
   cmd_check
   cmd_init
   cmd_verify
-  cmd_prepare_db
+  # The secrets and configs first (the passwords are made here); then the database: an external one is prepared as it is, the default one is started first (the stack with only its
+  # services), prepared when it answers, and so is the default S3 (its bucket is made by a job).
   cmd_prepare_secrets
   cmd_prepare_configs
+  if [ "$DB_IN_STACK" = 1 ] || [ "$S3_IN_STACK" = 1 ]; then
+    STACK_ONLY=1 cmd_deploy
+  fi
+  cmd_prepare_db
   cmd_migrate
   cmd_deploy
   echo "init: done: the stack is deployed (the first start: the admin web prints the setup token in its log: ./rusty-swarm logs admin)"
@@ -407,6 +422,8 @@ cmd_all() {
 
 # ---- main ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 validate_inventory
+# The defaults of the stack (the passwords and keys it makes itself) are worked out before any step that needs them.
+case "${1:-}" in init|prepare|migrate|deploy|stack|logs|verify) resolve_defaults ;; esac
 case "${1:-}:${2:-}" in
   init:*) shift; cmd_all "$@" ;;
   inventory:*) cmd_inventory ;;
