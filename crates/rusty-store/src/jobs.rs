@@ -444,7 +444,13 @@ impl JobQueue {
         kinds: &[&str],
         lease_secs: u32,
     ) -> Result<Option<ClaimedJob>> {
-        self.claim_inner(worker, kinds, lease_secs, None).await
+        self.claim_inner(worker, kinds, lease_secs, None, None).await
+    }
+
+    /// [`claim`](Self::claim) for a tenant-fair worker: a tenant that already has `tenant_cap` jobs running (their leases unexpired) is not served, so with a cap of 1 every tenant is
+    /// worked by one worker at a time and the workers run different tenants side by side (docs/design-fair-claim.md).
+    pub async fn claim_capped(&self, worker: &str, kinds: &[&str], lease_secs: u32, tenant_cap: u32) -> Result<Option<ClaimedJob>> {
+        self.claim_inner(worker, kinds, lease_secs, None, Some(tenant_cap.max(1))).await
     }
 
     /// [`claim`](Self::claim) at time `now`.
@@ -457,7 +463,7 @@ impl JobQueue {
         now: i64,
     ) -> Result<Option<ClaimedJob>> {
         check_supplied_time(now)?;
-        self.claim_inner(worker, kinds, lease_secs, Some(now)).await
+        self.claim_inner(worker, kinds, lease_secs, Some(now), None).await
     }
 
     async fn claim_inner(
@@ -466,6 +472,7 @@ impl JobQueue {
         kinds: &[&str],
         lease_secs: u32,
         now: Option<i64>,
+        tenant_cap: Option<u32>,
     ) -> Result<Option<ClaimedJob>> {
         if !valid_worker(worker) {
             return Err(invalid("invalid worker name"));
@@ -482,6 +489,7 @@ impl JobQueue {
                 worker,
                 kinds,
                 lease_secs,
+                tenant_cap,
                 now,
             })
             .await

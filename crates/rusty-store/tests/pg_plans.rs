@@ -96,7 +96,8 @@ async fn claim_probes_use_index_scans_at_scale() {
     let concrete_sql = peek
         .replace("$1", "ARRAY['common']")
         .replace("$2", "NULL::bigint")
-        .replace("$3", "0");
+        .replace("$3", "0")
+        .replace("$4", "9223372036854775807");
     let concrete: Vec<String> =
         sqlx::query_scalar(sqlx::AssertSqlSafe(format!("EXPLAIN (ANALYZE, BUFFERS OFF, TIMING OFF) {concrete_sql}")))
             .fetch_all(&mut conn)

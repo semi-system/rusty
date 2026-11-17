@@ -158,7 +158,7 @@ impl Service for OutboundWorker {
                 () = shutdown.cancelled() => break,
                 p = slots.clone().acquire_owned() => match p { Ok(p) => p, Err(_) => break },
             };
-            let claimed = ctx.jobs.claim(&self.inner.opts.name, &[OUTBOUND_JOB_KIND], cfg.lease_secs).await;
+            let claimed = ctx.jobs.claim_capped(&self.inner.opts.name, &[OUTBOUND_JOB_KIND], cfg.lease_secs, cfg.max_concurrent_per_tenant).await;
             match claimed {
                 Ok(Some(job)) => {
                     let inner = self.inner.clone();

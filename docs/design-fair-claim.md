@@ -27,3 +27,12 @@ So with tenant A holding 20 mails and B and C one each, the claims go A, B, C, A
 
 * Weights (a paying tenant served more often) and a cap of mails in flight per tenant: the order is equal turns only. Per-tenant sending limits are the plans/quota work.
 * Fairness between the accounts of one tenant.
+
+## One worker per tenant (added the same day)
+
+Owner: each worker should take one tenant, and the workers run side by side. `[outbound] max_concurrent_per_tenant` (default **1**, 1 to 1000) is that rule: a tenant that already has that many jobs running (leases unexpired) is left out of the claim window, so a tenant is worked by one delivery at a time while the other tenants run beside it, in the same process or in other replicas.
+
+* It is the database that enforces it, so it holds across replicas: a claim of a tenant takes a transaction-scoped advisory lock on the tenant, counts the running jobs again under it, and gives up if the tenant is at its cap. A worker that died stops counting when its lease expires.
+* **No worker per tenant as a process, task or connection.** The workers are the existing delivery tasks of the outbound service (`max_concurrent` of them, default 20), served tenants in turn; connections to the database are held only for the short claim transaction, not while a mail is sent, so the connection count (and PgBouncer's pool) does not grow with the number of tenants. The advisory lock is transaction-scoped, which transaction pooling keeps.
+* The cost is throughput for a tenant alone: with the default of 1, a tenant's mails go one after another (the old behaviour let it use all 20 deliveries). Raise the number for installations with few, large tenants, or per plan later.
+* `max_concurrent_per_domain` (deliveries to one destination domain) is a different limit and stays.

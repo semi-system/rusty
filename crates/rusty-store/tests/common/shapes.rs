@@ -200,7 +200,7 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
         Some(("FROM domains WHERE id = $1 FOR NO KEY UPDATE", "unixepoch()")), None,
         j.enqueue_batch(&breq));
     let kinds = ["shape"];
-    let creq = |worker| rusty_store::repo::ClaimRequest { worker, kinds: &kinds, lease_secs: 30, now: None };
+    let creq = |worker| rusty_store::repo::ClaimRequest { worker, kinds: &kinds, lease_secs: 30, tenant_cap: None, now: None };
     let (c1, c2, c3, c4) = (creq("w"), creq("w2"), creq("w3"), creq("w4"));
     let claimed = j.claim(&c1).await.unwrap().unwrap();
     // `claim` of a fresh job is measured again below; this one is the fixture for the rest.
