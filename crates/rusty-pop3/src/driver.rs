@@ -84,6 +84,13 @@ impl Pop3Handler {
 #[async_trait]
 impl SessionHandler for Pop3Handler {
     async fn handle(&self, stream: BoxedStream, peer: PeerInfo, shutdown: CancellationToken) {
+        // The operator can turn POP3 off in the admin web: the listeners stay, a connection is told and closed (RFC 1939: the greeting may be a negative one).
+        if !self.ctx.protocols.enabled("pop3").await {
+            let mut stream = stream;
+            let _ = tokio::time::timeout(Duration::from_secs(5), stream.write_all(b"-ERR POP3 is turned off on this server\r\n")).await;
+            let _ = stream.shutdown().await;
+            return;
+        }
         let transport = if peer.tls || self.port == Port::Implicit { Transport::Tls } else { Transport::Plain { stls: true } };
         let session = Session::new(transport, self.allow_plain);
         let backend = Rusty { ctx: self.ctx.clone(), peer, mailbox: None, max_messages: self.limits.max_messages, budget: self.budget.clone() };

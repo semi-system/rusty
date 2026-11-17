@@ -108,8 +108,9 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
         sealed: rusty_store::SealedWriter::with_repo(repos.sealed.clone()),
         jobs: rusty_store::JobQueue::with_repo(repos.jobs.clone()),
         monitor: repos.heartbeat.clone(),
+        settings: repos.settings.clone(),
         sealing,
-        mail: cfg.hostname.clone().map(|host| MailSettings { host, pop3: admin.pop3, public_ips: admin.public_ips.clone(), spf_include: admin.spf_include.clone() }),
+        mail: cfg.hostname.clone().map(|host| MailSettings { host, public_ips: admin.public_ips.clone(), spf_include: admin.spf_include.clone() }),
     };
     // The heartbeat of the admin web itself (docs/design-admin-monitor.md).
     {
@@ -120,7 +121,16 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     let app = Arc::new(AdminApp::new(auth, directory, admins, gate, &admin.public_origin, SessionConfig::default()).with_services(services));
     // What other processes write (the outbound service's checks, another replica, rustyctl) reaches the open pages through the database's announcements.
     crate::live::spawn_feed(app.clone(), store.admin_feed(), shutdown.clone());
-    let router = crate::autodiscover::routes(app.clone(), crate::autoconfig::routes(app.clone(), crate::live::routes(app.clone(), crate::admins::routes(app.clone(), crate::dns::routes(app.clone(), crate::outbound::routes(app.clone(), crate::storage::routes(app.clone(), crate::manage::routes(app.clone(), routes(app.clone(), Router::new())))))))));
+    let router = routes(app.clone(), Router::new());
+    let router = crate::manage::routes(app.clone(), router);
+    let router = crate::storage::routes(app.clone(), router);
+    let router = crate::outbound::routes(app.clone(), router);
+    let router = crate::dns::routes(app.clone(), router);
+    let router = crate::admins::routes(app.clone(), router);
+    let router = crate::live::routes(app.clone(), router);
+    let router = crate::protocols::routes(app.clone(), router);
+    let router = crate::autoconfig::routes(app.clone(), router);
+    let router = crate::autodiscover::routes(app.clone(), router);
     let router = crate::monitor::routes(app.clone(), router);
     // The front end embedded at build time answers every other path (and the single-page routes); without one this is an API server only.
     let router = match crate::web::handler() {

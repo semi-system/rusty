@@ -121,7 +121,7 @@ fn production_profile_needs_hostname() {
 
 #[test]
 fn production_without_cert_and_without_dev_flag_refuses_authenticated_listeners() {
-    // Defaults enable 587/465/143/993, which accept authentication: no TLS source, no start.
+    // Defaults enable 587/465/143/993/110/995, which accept authentication: no TLS source, no start.
     let c = with("hostname = \"mail.example.com\"").unwrap();
     match c.check_startup(Profile::Production) {
         Err(Error::Invalid(m)) => assert!(m.contains("TLS"), "{m}"),
@@ -130,7 +130,7 @@ fn production_without_cert_and_without_dev_flag_refuses_authenticated_listeners(
     // Only port 25 (never offers AUTH) may run without a certificate.
     let c = with(
         "hostname = \"mail.example.com\"\n[smtp]\nlisten_587 = \"\"\nlisten_465 = \"\"\n\
-         [imap]\nlisten_143 = \"\"\nlisten_993 = \"\"",
+         [imap]\nlisten_143 = \"\"\nlisten_993 = \"\"\nlisten_110 = \"\"\nlisten_995 = \"\"",
     )
     .unwrap();
     assert!(c.check_startup(Profile::Production).is_ok());

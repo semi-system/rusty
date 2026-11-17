@@ -31,6 +31,7 @@ BEGIN
       domain_dkim_keys, domain_dns_config, domain_dns_event, domain_dns_state, domain_relays, admin_grants, jobs TO rusty_admin;
     GRANT SELECT ON address_owners, _sqlx_migrations TO rusty_admin;
     GRANT SELECT ON service_heartbeats TO rusty_admin;   -- the monitor page
+    GRANT SELECT, INSERT, UPDATE ON platform_settings TO rusty_admin;   -- the protocol switches (docs/design-protocols.md)
     GRANT EXECUTE ON FUNCTION rs_heartbeat(text, text, text, bigint, text, text) TO rusty_admin;
     GRANT SELECT, INSERT ON folders TO rusty_admin;   -- an account is made with its system folders
     -- Blob stores of domains (docs/design-s3-per-tenant.md): the settings, never a body. Two single columns are enough to know that a store or a domain already holds something:
@@ -82,6 +83,7 @@ BEGIN
       EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM %I', r);
       EXECUTE format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %I', r);
       EXECUTE format('GRANT SELECT ON _sqlx_migrations TO %I', r);
+      EXECUTE format('GRANT SELECT ON platform_settings TO %I', r);   -- the services read the protocol switches
       EXECUTE format('GRANT EXECUTE ON FUNCTION rs_heartbeat(text, text, text, bigint, text, text) TO %I', r);   -- the heartbeat of the service (docs/design-admin-monitor.md)
     END IF;
   END LOOP;

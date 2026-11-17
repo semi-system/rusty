@@ -93,5 +93,5 @@ async fn the_mozilla_answer_is_also_served_at_the_well_known_path() {
     let b = send(r.addr, "GET", "/mail/config-v1.1.xml?emailaddress=alice@known.test", &[], "").await;
     assert_eq!(a.status, 200, "{}", a.body);
     assert_eq!(a.body, b.body, "the same answer at both paths");
-    assert!(a.body.contains("<hostname>mail.example.org</hostname>") && !a.body.contains("pop3"), "POP3 is not offered where it does not run");
+    assert!(a.body.contains("<hostname>mail.example.org</hostname>") && a.body.contains("<incomingServer type=\"pop3\">"), "POP3 is on by default, so it is offered");
 }

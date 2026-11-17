@@ -65,5 +65,5 @@ pub use migrate::{
 pub use pg::{PgPassword, PgLimits, PgSecurity, PgStore};
 pub use pg_queue::{MailboxPermit, MailboxQueue, STRIPES};
 pub use jobs::BatchSpec;
-pub use repo::{HeartbeatRepo, HeartbeatRow, BlobStoreRepo, BlobStoreRow, StoreId, PLATFORM_STORE, FlagUpdate, FolderCounts, FolderInfo, JobFence, MessageDetail, OwnerLimits, PurgeBatch, RawRef};
+pub use repo::{SettingsRepo, PROTOCOLS, HeartbeatRepo, HeartbeatRow, BlobStoreRepo, BlobStoreRow, StoreId, PLATFORM_STORE, FlagUpdate, FolderCounts, FolderInfo, JobFence, MessageDetail, OwnerLimits, PurgeBatch, RawRef};
 pub use store::{Repos, Store, StoreConfig};

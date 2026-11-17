@@ -167,14 +167,14 @@ fn mail_host(app: &AdminApp) -> Option<String> {
     domain_ok(&host).then_some(host)
 }
 
-/// Whether the installation runs POP3 (`[admin] pop3`).
-fn pop3_on(app: &AdminApp) -> bool {
-    app.services.as_ref().and_then(|s| s.mail.as_ref()).is_some_and(|m| m.pop3)
+/// Whether POP3 is switched on (the operator sets it in the admin web).
+async fn pop3_on(app: &AdminApp) -> bool {
+    crate::protocols::is_on(app, "pop3").await
 }
 
 /// `?protocol=pop3` asks for the POP3 profile; it is honoured only where POP3 runs (otherwise the answer is the IMAP profile, which is always there).
-fn wants_pop3(app: &AdminApp, query: Option<&str>) -> bool {
-    pop3_on(app) && query.is_some_and(|q| q.split('&').any(|p| p == "protocol=pop3"))
+async fn wants_pop3(app: &AdminApp, query: Option<&str>) -> bool {
+    pop3_on(app).await && query.is_some_and(|q| q.split('&').any(|p| p == "protocol=pop3"))
 }
 
 /// `?emailaddress=` or `?email=` (the spellings clients use), with `%40` read as `@`.
@@ -194,7 +194,7 @@ async fn outlook(app: &AdminApp, req: Request) -> Response {
         .with_header("content-type", "text/xml; charset=utf-8")
         .with_header("cache-control", "no-store")
         .with_header("x-content-type-options", "nosniff")
-        .with_body(outlook_xml(&host, &address, pop3_on(app)).into_bytes())
+        .with_body(outlook_xml(&host, &address, pop3_on(app).await).into_bytes())
 }
 
 /// Microsoft Autodiscover v2 (`GET /autodiscover/autodiscover.json?Email=...&Protocol=AutodiscoverV1`): a newer Outlook asks for the way to the settings first, and this server's way is the XML
@@ -220,7 +220,7 @@ async fn apple(app: &AdminApp, req: Request) -> Response {
         .with_header("content-disposition", "attachment; filename=\"mail.mobileconfig\"")
         .with_header("cache-control", "no-store")
         .with_header("x-content-type-options", "nosniff")
-        .with_body(mobileconfig(&host, &address, wants_pop3(app, req.query.as_deref())).into_bytes())
+        .with_body(mobileconfig(&host, &address, wants_pop3(app, req.query.as_deref()).await).into_bytes())
 }
 
 /// The routes of this part of the service.

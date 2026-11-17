@@ -107,13 +107,13 @@ fn production_postgres_needs_a_password_file() {
 
 #[test]
 fn pool_must_cover_the_enabled_services() {
-    // Five listeners, GC and the outbound worker: 7 services + 4 headroom.
-    let c = parse(&pg("pool_size = 10\n")).unwrap();
+    // Seven listeners, GC and the outbound worker: 9 services + 4 headroom.
+    let c = parse(&pg("pool_size = 12\n")).unwrap();
     assert!(matches!(c.check_startup(Profile::Production), Err(Error::Invalid(_))));
-    let c = parse(&pg("pool_size = 11\n")).unwrap();
+    let c = parse(&pg("pool_size = 13\n")).unwrap();
     assert!(c.check_startup(Profile::Production).is_ok());
     // Fewer listeners lower the floor.
-    let c = parse(&pg("pool_size = 7\n[smtp]\nlisten_587 = \"\"\nlisten_465 = \"\"\n[imap]\nlisten_143 = \"\"\nlisten_993 = \"\"\n")).unwrap();
+    let c = parse(&pg("pool_size = 7\n[smtp]\nlisten_587 = \"\"\nlisten_465 = \"\"\n[imap]\nlisten_143 = \"\"\nlisten_993 = \"\"\nlisten_110 = \"\"\nlisten_995 = \"\"\n")).unwrap();
     assert!(c.check_startup(Profile::Production).is_ok());
 }
 

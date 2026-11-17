@@ -1,4 +1,0 @@
-# POP3 (./setup.sh --pop3; docs/design-pop3.md): the edge publishes the two ports. Added to COMPOSE_FILE in .env by setup.sh; without --pop3 nothing opens them.
-services:
-  edge:
-    ports: ["110:110", "995:995"]

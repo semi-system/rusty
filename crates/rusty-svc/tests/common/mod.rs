@@ -179,5 +179,7 @@ pub fn dev_config(dir: &Path) -> StartupConfig {
     c.smtp.listen_465 = any;
     c.imap.listen_143 = any;
     c.imap.listen_993 = any;
+    c.imap.listen_110 = any;
+    c.imap.listen_995 = any;
     c
 }

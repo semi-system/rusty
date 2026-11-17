@@ -101,11 +101,11 @@ pub struct ImapConfig {
     pub listen_143: Listen,
     #[serde(default = "l993")]
     pub listen_993: Listen,
-    /// POP3 with `STLS` (docs/design-pop3.md): a listener of this service, off unless the configuration names an address.
-    #[serde(default = "l_off")]
+    /// POP3 with `STLS` (docs/design-pop3.md): a listener of this service, always there; the operator turns the protocol on or off in the admin web (docs/design-protocols.md).
+    #[serde(default = "l110")]
     pub listen_110: Listen,
-    /// POP3 over implicit TLS (off unless named).
-    #[serde(default = "l_off")]
+    /// POP3 over implicit TLS.
+    #[serde(default = "l995")]
     pub listen_995: Listen,
     #[serde(default = "d_max_connections")]
     pub max_connections: u32,
@@ -452,8 +452,11 @@ fn l143() -> Listen {
 fn l993() -> Listen {
     Listen::any(993)
 }
-fn l_off() -> Listen {
-    Listen::off()
+fn l110() -> Listen {
+    Listen::any(110)
+}
+fn l995() -> Listen {
+    Listen::any(995)
 }
 fn d_max_recipients() -> u32 {
     100
@@ -505,8 +508,8 @@ impl Default for ImapConfig {
         ImapConfig {
             listen_143: l143(),
             listen_993: l993(),
-            listen_110: Listen::off(),
-            listen_995: Listen::off(),
+            listen_110: l110(),
+            listen_995: l995(),
             max_connections: d_max_connections(),
             max_connections_per_ip: d_per_ip_imap(),
             proxy_protocol: false,

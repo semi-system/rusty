@@ -19,7 +19,7 @@ PG_IMG="$(pin postgres:18)"; HA_IMG="$(pin haproxy:3.4.7-alpine3.24)"
 [ -n "$PG_IMG" ] && [ -n "$HA_IMG" ] || { echo "setup: images are not pinned in deploy/images.lock" >&2; exit 1; }
 
 SAVED_ARGS=("$@")   # kept in the state directory for upgrade.sh
-STATE="${RUSTY_STATE:-$HOME/rusty-state}"; MAIL_HOST=""; ADMIN_HOST=""; CONTACT=""; PUBLIC_IP=""; STAGING=0; SELF=0; FILTER=0; BUILD=0; VALKEY=0; POP3=0; METRICS_ALLOW=(); MAX_REPLICAS=4; TAG=main; REGISTRY=ghcr.io/semi-system; ALLOW=()
+STATE="${RUSTY_STATE:-$HOME/rusty-state}"; MAIL_HOST=""; ADMIN_HOST=""; CONTACT=""; PUBLIC_IP=""; STAGING=0; SELF=0; FILTER=0; BUILD=0; VALKEY=0; METRICS_ALLOW=(); MAX_REPLICAS=4; TAG=main; REGISTRY=ghcr.io/semi-system; ALLOW=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --mail-host) MAIL_HOST="${2:-}"; shift 2 ;;
@@ -32,7 +32,6 @@ while [ $# -gt 0 ]; do
     --filter) FILTER=1; shift ;;
     --build) BUILD=1; shift ;;
     --valkey) VALKEY=1; shift ;;
-    --pop3) POP3=1; shift ;;
     --metrics-allow) METRICS_ALLOW+=("${2:-}"); shift 2 ;;
     --max-replicas) MAX_REPLICAS="${2:-}"; shift 2 ;;
     --image-tag) TAG="${2:-}"; shift 2 ;;
@@ -78,7 +77,7 @@ R()  { docker run --rm --user 0 --entrypoint sh -e HOSTID -v "$STATE:/s" "$HA_IM
 RP() { docker run --rm --user 0 --entrypoint sh -e HOSTID -v "$STATE:/s" "$PG_IMG" -c "$1"; }
 R 'cd /s && mkdir -p secrets etc pgtls keys tls edge/acme edge/certs run && chown "$HOSTID" etc'
 # Which kind of certificates the edge has decides which of the optional services (cert-sync, cert-keep) compose starts.
-if [ "$SELF" = 1 ]; then profiles=""; else profiles="acme"; fi; compose_file=""; [ "$BUILD" = 1 ] && compose_file="compose.yaml:compose.build.yaml"; if [ "$POP3" = 1 ]; then compose_file="${compose_file:-compose.yaml}:compose.pop3.yaml"; fi
+if [ "$SELF" = 1 ]; then profiles=""; else profiles="acme"; fi; compose_file=""; [ "$BUILD" = 1 ] && compose_file="compose.yaml:compose.build.yaml"
 if [ "$FILTER" = 1 ]; then profiles="${profiles:+$profiles,}filter"; fi; if [ "$VALKEY" = 1 ]; then profiles="${profiles:+$profiles,}valkey"; fi; printf 'RUSTY_STATE=%s
 COMPOSE_PROFILES=%s
 RUSTY_REGISTRY=%s
@@ -107,8 +106,8 @@ fi
 R 'cp /s/pgtls/ca.pem /s/etc/db-ca.pem && chown "$HOSTID" /s/etc/db-ca.pem && chmod 0644 /s/etc/db-ca.pem'
 
 render() { # template -> file: the values were validated above, none holds a character that matters to sed (| is never in them)
-  local keep drop fkeep="#NOFILTER_" vkeep="#NOVALKEY_" mkeep="#NOMETRICS_"; [ "$FILTER" = 1 ] && fkeep="#FILTER "; [ "$VALKEY" = 1 ] && vkeep="#VALKEY "; local pkeep="#NOPOP3_" pdrop="#NOPOP3_" pacme="#NOPOP3_"; if [ "$POP3" = 1 ]; then pkeep="#POP3 "; if [ "$SELF" = 1 ]; then pacme="#POP3SELF "; pdrop="#POP3ACME "; else pacme="#POP3ACME "; pdrop="#POP3SELF "; fi; fi; [ "${#METRICS_ALLOW[@]}" -gt 0 ] && mkeep="#METRICS "; if [ "$SELF" = 1 ]; then keep="#SELF "; drop="#ACME"; else keep="#ACME"; drop="#SELF "; fi
-  sed -e "s|^${pkeep}||" -e "/^${pdrop}/d" -e "s|^${pacme}||" -e "s|^${fkeep}||" -e "s|^${vkeep}||" -e "s|^${mkeep}||" -e "/^${drop}/d" -e "s|^${keep}||" -e "s|@MAIL_HOST@|$MAIL_HOST|g" -e "s|@ADMIN_HOST@|$ADMIN_HOST|g" -e "s|@CONTACT@|$CONTACT|g" -e "s|@PUBLIC_IP@|$PUBLIC_IP|g" \
+  local keep drop fkeep="#NOFILTER_" vkeep="#NOVALKEY_" mkeep="#NOMETRICS_"; [ "$FILTER" = 1 ] && fkeep="#FILTER "; [ "$VALKEY" = 1 ] && vkeep="#VALKEY "; [ "${#METRICS_ALLOW[@]}" -gt 0 ] && mkeep="#METRICS "; if [ "$SELF" = 1 ]; then keep="#SELF "; drop="#ACME"; else keep="#ACME"; drop="#SELF "; fi
+  sed -e "s|^${fkeep}||" -e "s|^${vkeep}||" -e "s|^${mkeep}||" -e "/^${drop}/d" -e "s|^${keep}||" -e "s|@MAIL_HOST@|$MAIL_HOST|g" -e "s|@ADMIN_HOST@|$ADMIN_HOST|g" -e "s|@CONTACT@|$CONTACT|g" -e "s|@PUBLIC_IP@|$PUBLIC_IP|g" \
       -e "s|@SEAL_PUBLIC@|$SEAL_PUBLIC|g" -e "s|@ACME_DIRECTORY@|$ACME_DIR|g" -e "s|@ADMIN_ALLOW@|${ALLOW[*]}|g" -e "s|@METRICS_ALLOW@|$METRICS_LIST|g" "templates/$1.in" > "$STATE/etc/$1"
 }
 # The sealing key pair: the private half stays in state/keys (mail uid only); the public half goes to both configurations.

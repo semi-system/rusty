@@ -46,7 +46,7 @@ async fn dev_start_opens_every_listener_creates_the_data_files_and_serves_banner
     let cfg = pg.config(&data);
     let token = CancellationToken::new();
     let run = start(cfg.clone(), Profile::Dev, token.clone()).await.unwrap();
-    assert_eq!(run.addrs.len(), 5);
+    assert_eq!(run.addrs.len(), 7);
 
     // data dir 0700, blob root initialised with its marker and 0700
     assert_eq!(mode_of(&data), 0o700);
@@ -123,6 +123,8 @@ async fn port_25_alone_may_run_without_a_certificate() {
     cfg.smtp.listen_465 = Listen::off();
     cfg.imap.listen_143 = Listen::off();
     cfg.imap.listen_993 = Listen::off();
+    cfg.imap.listen_110 = Listen::off();
+    cfg.imap.listen_995 = Listen::off();
     // Production never creates directories: prepare them as an operator would.
     std::fs::create_dir(&data).unwrap();
     std::fs::set_permissions(&data, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
@@ -235,14 +237,16 @@ fn the_listener_plan_follows_the_configuration() {
             ListenerKind::Submission587,
             ListenerKind::Submissions465,
             ListenerKind::Imap143,
-            ListenerKind::Imaps993
+            ListenerKind::Imaps993,
+            ListenerKind::Pop3110,
+            ListenerKind::Pop3s995
         ]
     );
-    assert!(plan.iter().filter(|p| p.kind.implicit_tls()).count() == 2);
+    assert!(plan.iter().filter(|p| p.kind.implicit_tls()).count() == 3);
     assert!(!ListenerKind::Smtp25.accepts_auth() && ListenerKind::Imap143.accepts_auth());
     c.smtp.listen_587 = Listen::off();
     c.imap.listen_143 = Listen::off();
-    assert_eq!(rusty_svc::listener_plan(&c).len(), 3);
+    assert_eq!(rusty_svc::listener_plan(&c).len(), 5);
 }
 
 #[test]
@@ -377,7 +381,7 @@ async fn a_service_started_for_its_role_binds_only_its_own_ports_and_the_others_
     let cases: [(Role, Vec<rusty_svc::ListenerKind>); 5] = [
         (Role::SmtpIn, vec![Smtp25]),
         (Role::Submission, vec![Submission587, Submissions465]),
-        (Role::Imap, vec![Imap143, Imaps993]),
+        (Role::Imap, vec![Imap143, Imaps993, Pop3110, Pop3s995]),
         (Role::Outbound, vec![]),
         (Role::Gc, vec![]),
     ];
@@ -407,11 +411,11 @@ fn only_the_listeners_of_a_role_need_tls_and_count_as_services() {
     assert!(cfg.check_startup_for(Profile::Dev, Some(Role::Imap)).is_err(), "imap has authenticated listeners and no certificate");
     assert!(cfg.check_startup_for(Profile::Dev, Some(Role::Submission)).is_err());
     assert!(cfg.check_startup_for(Profile::Dev, None).is_err());
-    assert_eq!(cfg.tls_required_listeners_for(Some(Role::Imap)), 2);
+    assert_eq!(cfg.tls_required_listeners_for(Some(Role::Imap)), 4, "143, 993, 110 and 995");
     assert_eq!(cfg.tls_required_listeners_for(Some(Role::SmtpIn)), 0);
     assert_eq!(cfg.service_count_for(Some(Role::Gc)), 2);
-    assert_eq!(cfg.service_count_for(Some(Role::Imap)), 4);
-    assert_eq!(cfg.service_count_for(None), 7);
+    assert_eq!(cfg.service_count_for(Some(Role::Imap)), 6);
+    assert_eq!(cfg.service_count_for(None), 9);
 }
 
 #[tokio::test]
@@ -472,9 +476,13 @@ async fn a_service_other_than_the_admin_web_refuses_metrics_scrape() {
 }
 
 #[test]
-fn pop3_is_off_unless_the_configuration_names_an_address_and_belongs_to_the_imap_service() {
+fn pop3_listens_by_default_can_be_left_out_of_the_configuration_and_belongs_to_the_imap_service() {
     let mut c = StartupConfig::dev(std::path::Path::new("/tmp/x"));
-    assert!(!rusty_svc::listener_plan(&c).iter().any(|p| p.kind.is_pop3()), "nobody opens a port they did not ask for");
+    assert_eq!(rusty_svc::listener_plan(&c).iter().filter(|p| p.kind.is_pop3()).count(), 2, "the on/off switch is in the database; the ports are always there");
+    let mut left_out = c.clone();
+    left_out.imap.listen_110 = Listen::off();
+    left_out.imap.listen_995 = Listen::off();
+    assert!(!rusty_svc::listener_plan(&left_out).iter().any(|p| p.kind.is_pop3()), "an empty address leaves the listener out");
     c.imap.listen_110 = Listen::on("127.0.0.1:1110".parse().unwrap());
     c.imap.listen_995 = Listen::on("127.0.0.1:1995".parse().unwrap());
     let plan = rusty_svc::listener_plan(&c);

@@ -83,9 +83,9 @@ async fn config(app: &AdminApp, req: Request) -> Response {
     let domain = domain_of(req.query.as_deref()).unwrap_or_else(|| host.clone());
     Response::new(200)
         .with_header("content-type", "application/xml; charset=utf-8")
-        .with_header("cache-control", "public, max-age=3600")
+        .with_header("cache-control", "public, max-age=300")
         .with_header("x-content-type-options", "nosniff")
-        .with_body(xml(&host, &domain, mail.pop3).into_bytes())
+        .with_body(xml(&host, &domain, crate::protocols::is_on(app, "pop3").await).into_bytes())
 }
 
 /// The route of this part of the service.

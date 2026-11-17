@@ -467,3 +467,23 @@ async fn a_retr_asks_the_shared_memory_budget_first_and_a_service_short_of_it_sa
         assert!(r[0].starts_with("+OK"), "{r:?}");
     }
 }
+
+#[tokio::test]
+async fn a_protocol_switched_off_in_the_database_answers_with_an_error_and_closes_and_it_is_on_until_then() {
+    let w = world().await;
+    let ctx = w.ctx().await;
+    let mut on = Conn::open(handler(ctx, Port::Implicit), true);
+    let greeting = on.try_line().await.expect("a greeting");
+    assert!(greeting.starts_with("+OK"), "POP3 is on by default: {greeting}");
+    on.send("QUIT\r\n").await;
+    let _ = on.try_line().await;
+
+    // The operator turns it off (the admin web writes the row); a new connection is told so and closed. The service reads the row again within its refresh time,
+    // so this test makes the context after the write instead of waiting for it.
+    let admin = Store::open(StoreConfig::postgres(w._db.seed_url())).await.unwrap();
+    admin.repos().settings.set_protocol("pop3", false, None).await.unwrap();
+    let mut off = Conn::open(handler(w.ctx().await, Port::Implicit), true);
+    let line = off.try_line().await.expect("an answer");
+    assert!(line.starts_with("-ERR") && line.contains("turned off"), "{line}");
+    assert!(off.try_line().await.is_none(), "the connection is closed");
+}
