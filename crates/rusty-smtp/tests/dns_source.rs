@@ -221,6 +221,8 @@ async fn the_engine_over_real_dns_messages_finds_a_correct_publication_all_ok() 
     for (s, port) in [("_submission._tcp", 587u16), ("_submissions._tcp", 465), ("_imaps._tcp", 993)] {
         z.add(&format!("{s}.example.test"), SRV, srv(0, 1, port, "mx.example.test"));
     }
+    z.add("_autodiscover._tcp.example.test", SRV, srv(0, 1, 443, "mx.example.test"));
+    z.add("autoconfig.example.test", A, vec![192, 0, 2, 10]);
     let (dns, server) = live(z).await;
     let checks = tokio::time::timeout(Duration::from_secs(30), check_records(&dns, &expected, &CheckOptions::default())).await.unwrap();
     for c in &checks {
