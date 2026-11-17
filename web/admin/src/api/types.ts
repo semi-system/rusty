@@ -28,6 +28,7 @@ export interface Account {
   address: string;
   status: string;
   has_password: boolean;
+  last_login_at: number | null;
 }
 
 export interface AccountCreated {
@@ -35,6 +36,7 @@ export interface AccountCreated {
   address: string;
   status: string;
   has_password: boolean;
+  last_login_at: number | null;
   aliases_created: string[];
 }
 

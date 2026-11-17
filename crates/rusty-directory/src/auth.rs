@@ -104,7 +104,15 @@ impl Authenticator for LocalAuthenticator {
         match (account, row) {
             (Some(id), Some(AuthRow { status, password_hash: Some(hash) })) => {
                 let ok = Self::run_verify(hash, password).await?;
-                Ok((ok && status == "active").then_some(id))
+                let granted = ok && status == "active";
+                if granted {
+                    // The time of the last sign-in, for the console: a write that fails or is slow never stops or delays the sign-in.
+                    let directory = self.directory.clone();
+                    tokio::spawn(async move {
+                        let _ = directory.record_login(id).await;
+                    });
+                }
+                Ok(granted.then_some(id))
             }
             _ => {
                 // Unknown account or no local hash: burn comparable time.

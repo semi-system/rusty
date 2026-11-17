@@ -78,6 +78,7 @@ export const en = {
   'accounts.empty': 'This domain has no accounts yet.',
   'accounts.list': 'List of accounts',
   'accounts.address': 'Address',
+  'accounts.lastLogin': 'Last sign-in',
   'accounts.status': 'Status',
   'accounts.password': 'Password',
   'accounts.hasPassword': 'Set',

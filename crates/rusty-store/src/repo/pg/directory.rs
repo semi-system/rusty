@@ -153,6 +153,11 @@ impl DirectoryRepo for PgRepo {
         rows.into_iter().map(decode_account).collect()
     }
 
+    async fn record_login(&self, account: AccountId) -> Result<()> {
+        sqlx::query(r(sql::RECORD_LOGIN)).bind(account.0).execute(self.store.pool()).await.map_err(map_db_error)?;
+        Ok(())
+    }
+
     async fn search_domains(&self, filter: &ListFilter, after: Option<DomainId>, limit: usize) -> Result<Vec<DomainInfo>> {
         let limit = check_page_limit(limit)?;
         let rows: Vec<(i64, String, String, i64)> = sqlx::query_as(r(sql::SEARCH_DOMAINS))

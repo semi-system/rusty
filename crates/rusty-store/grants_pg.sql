@@ -102,11 +102,13 @@ BEGIN
     GRANT INSERT ON keywords, change_log, deliveries TO rusty_submission;
     GRANT UPDATE ON mailboxes, folders TO rusty_submission;
     GRANT UPDATE (created_at) ON domains, accounts TO rusty_submission;   -- row locks
+    GRANT UPDATE (last_login_at) ON accounts TO rusty_submission;   -- the time of the last sign-in (DirectoryRepo::record_login)
   END IF;
 
   -- rusty_imap: mailbox access. Checks a password, reads and changes the messages of a mailbox.
   IF to_regrole('rusty_imap') IS NOT NULL THEN
     GRANT SELECT ON accounts, domains, aliases, lists, list_members, plans, address_owners, mailboxes, folders, deliveries, blob_stores, blob_backends, sealed_secrets TO rusty_imap;
+    GRANT UPDATE (last_login_at) ON accounts TO rusty_imap;   -- the time of the last sign-in (DirectoryRepo::record_login)
     GRANT SELECT, INSERT, UPDATE, DELETE ON messages TO rusty_imap;
     GRANT SELECT, INSERT, UPDATE ON blobs, blob_locations TO rusty_imap;
     GRANT SELECT, INSERT, DELETE ON keywords TO rusty_imap;

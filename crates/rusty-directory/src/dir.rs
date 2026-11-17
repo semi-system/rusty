@@ -303,6 +303,11 @@ impl Directory {
         self.repo.list_aliases(domain, after, limit).await
     }
 
+    /// Note a successful sign-in of the account (at most one write an hour per account).
+    pub async fn record_login(&self, account: AccountId) -> Result<()> {
+        self.repo.record_login(account).await
+    }
+
     /// One page of domains that match `filter` (a substring of the name, an exact status), in creation order.
     pub async fn search_domains(&self, filter: &ListFilter, after: Option<DomainId>, limit: usize) -> Result<Vec<DomainInfo>> {
         self.repo.search_domains(filter, after, limit).await
