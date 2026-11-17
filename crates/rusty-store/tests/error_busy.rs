@@ -372,12 +372,13 @@ mod pg {
         assert!(matches!(map_db_error(overflow), Error::Invalid(_)));
 
         // 22001: a value too long for a sized column.
-        let mut conn = p.acquire().await.unwrap();
-        sqlx::query("CREATE TEMP TABLE narrow(a varchar(2))").execute(&mut *conn).await.unwrap();
-        let truncated = sqlx::query("INSERT INTO narrow VALUES ('abc')").execute(&mut *conn).await.unwrap_err();
+        // One transaction: behind a pooler in transaction mode two statements of one connection may reach two server connections, and a temporary table lives in only one of them.
+        let mut tx = p.begin().await.unwrap();
+        sqlx::query("CREATE TEMP TABLE narrow(a varchar(2)) ON COMMIT DROP").execute(&mut *tx).await.unwrap();
+        let truncated = sqlx::query("INSERT INTO narrow VALUES ('abc')").execute(&mut *tx).await.unwrap_err();
         assert_eq!(code(&truncated).as_deref(), Some("22001"));
         assert!(matches!(map_db_error(truncated), Error::Invalid(_)));
-        drop(conn);
+        drop(tx);
 
         // 25006: a write inside a read-only transaction.
         let mut tx = p.begin().await.unwrap();
