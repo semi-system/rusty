@@ -11,8 +11,8 @@ import { PLATFORM, TENANT, created, fail, fakeServer, ok, signedIn, type Answer,
 
 const D1: Domain = { id: 1, name: 'example.org', status: 'active' };
 const D2: Domain = { id: 2, name: 'other.org', status: 'disabled' };
-const ACC: Account = { id: 10, address: 'alice@example.org', status: 'active', has_password: true };
-const ACC2: Account = { id: 11, address: 'bob@example.org', status: 'disabled', has_password: false };
+const ACC: Account = { id: 10, address: 'alice@example.org', status: 'active', has_password: true, last_login_at: 1700000000 };
+const ACC2: Account = { id: 11, address: 'bob@example.org', status: 'disabled', has_password: false, last_login_at: null };
 
 beforeEach(() => {
   setCatalogue(en, 'en');
@@ -154,6 +154,16 @@ describe('accounts', () => {
     await fireEvent.click(await screen.findByRole('button', { name: t('accounts.disable', { address: 'alice@example.org' }) }));
     expect(await screen.findByRole('button', { name: t('accounts.enable', { address: 'alice@example.org' }) })).toBeTruthy();
     expect(s.calls.some((c) => c.key === 'POST /api/v1/accounts/alice%40example.org/disable')).toBe(true);
+  });
+
+  it('shows when each account last signed in, and Never for one that did not', async () => {
+    await open('/domains/example.org/accounts', PLATFORM, { 'GET /api/v1/domains/example.org/accounts': ok({ items: [ACC, ACC2], next: null, total: 2 }) });
+    const table = await screen.findByRole('table', { name: t('accounts.list') });
+    expect(within(table).getByRole('columnheader', { name: t('accounts.lastLogin') })).toBeTruthy();
+    const rows = within(table).getAllByRole('row');
+    const row = (address: string) => rows.find((r) => within(r).queryByText(address) !== null) as HTMLElement;
+    expect(within(row('bob@example.org')).getByText(t('common.never'))).toBeTruthy();
+    expect(within(row('alice@example.org')).queryByText(t('common.never'))).toBeNull();
   });
 
   it('locks an account (no sign-in, mail still arrives) and enables it again', async () => {

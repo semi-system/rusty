@@ -129,6 +129,8 @@ pub struct AccountInfo {
     pub status: AccountStatus,
     pub has_password: bool,
     pub created_at: i64,
+    /// When the account last signed in (seconds, database clock; at most an hour late: see `record_login`). `None`: never.
+    pub last_login_at: Option<i64>,
 }
 
 /// One alias with the account it points at.
@@ -226,6 +228,8 @@ pub trait DirectoryRepo: Send + Sync {
         after: Option<AccountId>,
         limit: usize,
     ) -> Result<Vec<AccountInfo>>;
+    /// Note that the account signed in just now (a no-op when the stored time is less than an hour old). Never an error that may stop a sign-in: the caller ignores it.
+    async fn record_login(&self, account: AccountId) -> Result<()>;
     /// One page of domains that match `filter`, in the order of `list_domains`.
     async fn search_domains(&self, filter: &ListFilter, after: Option<DomainId>, limit: usize) -> Result<Vec<DomainInfo>>;
     /// How many domains match `filter` (all of them, whatever the page).
@@ -359,13 +363,15 @@ pub(crate) mod sql {
     pub const FIND_DOMAIN: &str = "SELECT id, name, status, created_at FROM domains WHERE name = $1";
     pub const UPDATE_DOMAIN_STATUS: &str = "UPDATE domains SET status = $1 WHERE id = $2";
     /// `has_password` as a bigint 0/1 so both backends decode it the same way.
+    /// The time of a sign-in, written only when the stored one is more than an hour old (or absent): a client that signs in every few seconds changes the row once an hour.
+    pub const RECORD_LOGIN: &str = "UPDATE accounts SET last_login_at = {NOW} WHERE id = $1 AND (last_login_at IS NULL OR last_login_at < {NOW} - 3600)";
     pub const FIND_ACCOUNT: &str = "SELECT a.id, a.domain_id, a.local_part, a.status, \
         CASE WHEN a.password_set THEN CAST(1 AS BIGINT) ELSE CAST(0 AS BIGINT) END, \
-        a.created_at FROM accounts a JOIN domains d ON d.id = a.domain_id \
+        a.created_at, a.last_login_at FROM accounts a JOIN domains d ON d.id = a.domain_id \
         WHERE d.name = $1 AND a.local_part = $2";
     pub const LIST_ACCOUNTS: &str = "SELECT id, domain_id, local_part, status, \
         CASE WHEN password_set THEN CAST(1 AS BIGINT) ELSE CAST(0 AS BIGINT) END, \
-        created_at FROM accounts \
+        created_at, last_login_at FROM accounts \
         WHERE domain_id = $1 AND id > COALESCE(CAST($2 AS BIGINT), 0) ORDER BY id LIMIT $3";
     pub const SEARCH_DOMAINS: &str = "SELECT id, name, status, created_at FROM domains \
         WHERE id > COALESCE(CAST($1 AS BIGINT), 0) \
@@ -375,7 +381,7 @@ pub(crate) mod sql {
         WHERE (CAST($1 AS TEXT) IS NULL OR strpos(name, CAST($1 AS TEXT)) > 0) AND (CAST($2 AS TEXT) IS NULL OR status = CAST($2 AS TEXT))";
     pub const SEARCH_ACCOUNTS: &str = "SELECT id, domain_id, local_part, status, \
         CASE WHEN password_set THEN CAST(1 AS BIGINT) ELSE CAST(0 AS BIGINT) END, \
-        created_at FROM accounts \
+        created_at, last_login_at FROM accounts \
         WHERE domain_id = $1 AND id > COALESCE(CAST($2 AS BIGINT), 0) \
         AND (CAST($4 AS TEXT) IS NULL OR strpos(local_part, CAST($4 AS TEXT)) > 0) AND (CAST($5 AS TEXT) IS NULL OR status = CAST($5 AS TEXT)) \
         ORDER BY id LIMIT $3";
@@ -526,10 +532,10 @@ pub(crate) fn decode_domain(row: (i64, String, String, i64)) -> Result<DomainInf
     })
 }
 
-pub(crate) type AccountRow = (i64, i64, String, String, i64, i64);
+pub(crate) type AccountRow = (i64, i64, String, String, i64, i64, Option<i64>);
 
 pub(crate) fn decode_account(row: AccountRow) -> Result<AccountInfo> {
-    let (id, domain, local, status, has_password, created_at) = row;
+    let (id, domain, local, status, has_password, created_at, last_login_at) = row;
     Ok(AccountInfo {
         id: AccountId(id),
         domain: DomainId(domain),
@@ -537,6 +543,7 @@ pub(crate) fn decode_account(row: AccountRow) -> Result<AccountInfo> {
         status: AccountStatus::parse(&status).ok_or_else(|| Error::storage("unknown account status"))?,
         has_password: has_password != 0,
         created_at,
+        last_login_at,
     })
 }
 

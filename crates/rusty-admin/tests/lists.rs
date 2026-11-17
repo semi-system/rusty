@@ -162,3 +162,27 @@ async fn a_filter_never_reaches_past_the_administrators_own_domain() {
     let admins = boss.get("/api/v1/admins?q=root").await.json();
     assert_eq!(admins["total"], 0, "the platform administrator is not in its list");
 }
+
+#[tokio::test]
+async fn the_list_of_accounts_says_when_each_last_signed_in_and_never_for_one_that_did_not() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    let c = Client::sign_in(r.addr, "root@home.test").await;
+    c.post("/api/v1/domains/home.test/accounts", json!({ "local": "quiet", "password": "a-long-password-1" })).await;
+    // The sign-in is recorded by a task of its own (it never delays the sign-in): look until it has been.
+    let mut root_time = Value::Null;
+    for _ in 0..50 {
+        let list = c.get("/api/v1/domains/home.test/accounts").await.json();
+        conforms(&list, "AccountList");
+        let root = list["items"].as_array().unwrap().iter().find(|a| a["address"] == "root@home.test").unwrap().clone();
+        conforms(&root, "Account");
+        root_time = root["last_login_at"].clone();
+        if !root_time.is_null() {
+            let quiet = list["items"].as_array().unwrap().iter().find(|a| a["address"] == "quiet@home.test").unwrap();
+            assert!(quiet["last_login_at"].is_null(), "an account that never signed in has no time: {quiet}");
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(root_time.as_i64().is_some_and(|t| t > 0), "the administrator signed in and the list says when: {root_time}");
+}

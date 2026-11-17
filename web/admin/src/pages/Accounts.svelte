@@ -10,6 +10,7 @@
   import { t, tFor } from '../i18n';
 
   const MIN = 8;
+  const when = (s: number): string => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(s * 1000));
   let { app, name }: { app: App; name: string } = $props();
 
   let items = $state<Account[]>([]);
@@ -127,6 +128,7 @@
               <th scope="col">{t('accounts.address')}</th>
               <th scope="col">{t('accounts.status')}</th>
               <th scope="col">{t('accounts.password')}</th>
+              <th scope="col">{t('accounts.lastLogin')}</th>
               <th scope="col" class="col-actions"><span class="sr">{t('domain.accounts')}</span></th>
             </tr>
           </thead>
@@ -136,6 +138,7 @@
                 <th scope="row">{a.address}</th>
                 <td><Badge tone={a.status === 'active' ? 'ok' : 'warn'}>{tFor('accounts.status.', a.status, 'accounts.status.active')}</Badge></td>
                 <td>{a.has_password ? t('accounts.hasPassword') : t('accounts.noPassword')}</td>
+                <td>{a.last_login_at === null ? t('common.never') : when(a.last_login_at)}</td>
                 <td class="col-actions">
                   <div class="row-actions">
                     {#if a.status === 'active'}

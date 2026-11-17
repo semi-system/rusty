@@ -9,6 +9,7 @@ COLUMN accounts.status text nullable=NO identity=NO/ collation= default=
 COLUMN accounts.config jsonb nullable=NO identity=NO/ collation= default='{}'::jsonb
 COLUMN accounts.created_at bigint nullable=NO identity=NO/ collation= default=
 COLUMN accounts.password_set boolean nullable=YES identity=NO/ collation= default=
+COLUMN accounts.last_login_at bigint nullable=YES identity=NO/ collation= default=
 COLUMN address_owners.domain_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN address_owners.local_part text nullable=NO identity=NO/ collation=C default=
 COLUMN address_owners.owner_kind text nullable=NO identity=NO/ collation= default=
@@ -198,6 +199,7 @@ CONSTRAINT accounts.accounts_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES d
 CONSTRAINT accounts.accounts_domain_id_not_null NOT NULL domain_id
 CONSTRAINT accounts.accounts_id_domain UNIQUE (id, domain_id)
 CONSTRAINT accounts.accounts_id_not_null NOT NULL id
+CONSTRAINT accounts.accounts_last_login_valid CHECK (last_login_at IS NULL OR last_login_at >= 0)
 CONSTRAINT accounts.accounts_local_part_domain_id_key UNIQUE (local_part, domain_id)
 CONSTRAINT accounts.accounts_local_part_not_null NOT NULL local_part
 CONSTRAINT accounts.accounts_local_part_valid CHECK (length(local_part) > 0 AND local_part = lower(local_part))

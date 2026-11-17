@@ -54,10 +54,12 @@ struct AccountJson {
     address: String,
     status: &'static str,
     has_password: bool,
+    /// When the account last signed in (seconds; at most an hour late), `null` if it never did.
+    last_login_at: Option<i64>,
 }
 
 fn account_json(a: &AccountInfo, domain: &str) -> AccountJson {
-    AccountJson { id: a.id.0, address: format!("{}@{domain}", a.local), status: a.status.as_str(), has_password: a.has_password }
+    AccountJson { id: a.id.0, address: format!("{}@{domain}", a.local), status: a.status.as_str(), has_password: a.has_password, last_login_at: a.last_login_at }
 }
 
 #[derive(Serialize)]
