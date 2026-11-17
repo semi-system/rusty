@@ -6,6 +6,7 @@
   import type { Monitor, MonitorInstance } from '../api/types';
   import { Load } from '../lib/load.svelte';
   import ErrorNote from '../lib/ErrorNote.svelte';
+  import { labelled } from '../lib/stack';
   import { t, tFor } from '../i18n';
 
   let { app }: { app: App } = $props();
@@ -63,7 +64,7 @@
     <section aria-labelledby="mon-services">
       <div class="section-head"><h2 id="mon-services">{t('monitor.services')}</h2></div>
       <div class="table-wrap">
-        <table aria-label={t('monitor.services')}>
+        <table use:labelled aria-label={t('monitor.services')}>
           <thead>
             <tr><th scope="col">{t('monitor.col.service')}</th><th scope="col">{t('monitor.col.status')}</th><th scope="col">{t('monitor.col.instances')}</th></tr>
           </thead>
@@ -83,7 +84,7 @@
     <section aria-labelledby="mon-instances">
       <div class="section-head"><h2 id="mon-instances">{t('monitor.instances')}</h2></div>
       <div class="table-wrap">
-        <table aria-label={t('monitor.instances')}>
+        <table use:labelled aria-label={t('monitor.instances')}>
           <thead>
             <tr>
               <th scope="col">{t('monitor.col.instance')}</th><th scope="col">{t('monitor.col.service')}</th><th scope="col">{t('monitor.col.version')}</th>

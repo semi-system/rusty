@@ -7,6 +7,7 @@
   import Link from '../lib/Link.svelte';
   import PageHead from '../lib/PageHead.svelte';
   import { href } from '../lib/router';
+  import { labelled } from '../lib/stack';
   import { t, tFor } from '../i18n';
 
   let { app, me }: { app: App; me: Me } = $props();
@@ -65,7 +66,7 @@
     <div class="empty"><p>{t('domains.empty')}</p></div>
   {:else}
     <div class="table-wrap">
-      <table aria-label={t('domains.list')}>
+      <table use:labelled aria-label={t('domains.list')}>
         <thead>
           <tr><th scope="col">{t('domains.name')}</th><th scope="col">{t('domains.status')}</th></tr>
         </thead>
