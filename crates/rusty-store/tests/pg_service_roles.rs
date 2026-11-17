@@ -173,3 +173,33 @@ async fn every_service_role_may_send_its_heartbeat_and_the_reporting_role_may_no
     let public: bool = sqlx::query_scalar("SELECT has_function_privilege('public', 'rs_heartbeat(text, text, text, bigint, text, text)', 'EXECUTE')").fetch_one(&admin).await.unwrap();
     assert!(!public, "the function is not open to PUBLIC");
 }
+
+/// The storage check worker runs in the delivery worker (`rusty_outbound`): it locks a store or a backend row and records the result of a check. Without the privilege the check never completes, the store of a
+/// domain stays `unchecked`, and a store is used only after a check passed: every message for that domain was refused with a temporary error (found on the swarm test server, 2026-11-17).
+#[tokio::test]
+async fn the_storage_check_worker_can_record_a_check_and_nothing_else_on_the_stores() {
+    let Some(url) = pg_admin_url() else { return };
+    let db = PgTestDb::create_with_roles(&url).await;
+    let admin = admin_pool(&db).await;
+    sqlx::query("INSERT INTO domains (name, created_at) VALUES ('t.test', 0)").execute(&admin).await.unwrap();
+    sqlx::query("INSERT INTO blob_stores (domain_id, kind, created_at) SELECT id, 's3', 0 FROM domains WHERE name = 't.test'").execute(&admin).await.unwrap();
+    sqlx::query("INSERT INTO blob_backends (store_id, name, kind, created_at) SELECT id, 'b1', 's3', 0 FROM blob_stores WHERE domain_id IS NOT NULL").execute(&admin).await.unwrap();
+    let outbound = pool_as(&db, "rusty_outbound").await;
+    // the statements of the worker (repo/blob_pool.rs and repo/pg/blob_store.rs)
+    sqlx::query("SELECT id FROM blob_stores WHERE domain_id IS NOT NULL FOR UPDATE").fetch_all(&outbound).await.unwrap();
+    sqlx::query("SELECT id FROM blob_backends FOR UPDATE").fetch_all(&outbound).await.unwrap();
+    sqlx::query("UPDATE blob_stores SET check_status = 'ok', checked_at = 1 WHERE domain_id IS NOT NULL").execute(&outbound).await.unwrap();
+    sqlx::query("UPDATE blob_backends SET check_status = 'ok', checked_at = 1").execute(&outbound).await.unwrap();
+    // it records a result; it does not change what a store is
+    denied(&outbound, "UPDATE blob_backends SET config = '{}'::jsonb").await;
+    denied(&outbound, "UPDATE blob_backends SET state = 'disabled'").await;
+    denied(&outbound, "UPDATE blob_stores SET config = '{}'::jsonb").await;
+    denied(&outbound, "INSERT INTO blob_backends (store_id, name, kind, created_at) VALUES (1, 'x', 's3', 0)").await;
+    denied(&outbound, "DELETE FROM blob_backends").await;
+    // and no other delivering service records checks
+    for role in ["rusty_smtp_in", "rusty_submission", "rusty_imap"] {
+        let p = pool_as(&db, role).await;
+        denied(&p, "UPDATE blob_backends SET check_status = 'ok'").await;
+        denied(&p, "UPDATE blob_stores SET check_status = 'ok'").await;
+    }
+}

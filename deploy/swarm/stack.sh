@@ -12,6 +12,7 @@ REGISTRY="${REGISTRY:-ghcr.io/semi-system}"
 IMAGE_TAG="${IMAGE_TAG:-main}"
 TLS_MODE="${TLS_MODE:-acme}"
 REPLICAS_DEFAULT="${REPLICAS_DEFAULT:-1}"
+LOG_LEVEL="${LOG_LEVEL:-info}"
 declare -A SECRET_NAME=() CONFIG_NAME=()
 # shellcheck source=validate.sh
 . "$HERE/validate.sh"
@@ -113,7 +114,12 @@ blk_limits() { local v; v="$(inflight_of "$1")"; [ -z "$v" ] || printf '[limits]
 inflight_message_mib = %s
 
 ' "$v"; }
-head_common() { printf 'hostname = "%s"\nblob_dir = "/var/lib/rusty/blobs"\n\n' "$MAIL_HOST"; }
+# LOG_LEVEL (error, warn, info, debug or trace; default info) is the log level of every service: raise it to find out why something is refused (docs/swarm.md).
+head_common() {
+  printf 'hostname = "%s"\nblob_dir = "/var/lib/rusty/blobs"\n' "$MAIL_HOST"
+  [ "$LOG_LEVEL" = info ] || printf 'log_level = "%s"\n' "$LOG_LEVEL"
+  printf '\n'
+}
 
 conf_smtp_in() { head_common; printf '[smtp]\nlisten_25 = "0.0.0.0:2525"\nproxy_protocol = true\ntrusted_proxies = ["127.0.0.1/32"]\ntrusted_proxy_hosts = ["tasks.edge", "edge"]\n\n'; blk_tls; blk_unseal; blk_blob; blk_filter; blk_store smtp_in; blk_limits smtp-in; blk_metrics; }
 conf_submission() { head_common; printf '[smtp]\nlisten_587 = "0.0.0.0:5587"\nlisten_465 = "0.0.0.0:4465"\nproxy_protocol = true\ntrusted_proxies = ["127.0.0.1/32"]\ntrusted_proxy_hosts = ["tasks.edge", "edge"]\n\n[outbound]\npublic_ips = ["%s"]\n\n' "$(manager_public_ip)"; blk_tls; blk_unseal; blk_blob; blk_valkey submission; blk_store submission; blk_limits submission; blk_metrics; }

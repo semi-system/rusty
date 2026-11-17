@@ -42,6 +42,7 @@ A file of shell variables, yours (not in the repository); `swarm.env.example` is
 | `S3_ENDPOINT S3_REGION S3_BUCKET S3_ACCESS_KEY S3_SECRET_KEY_FILE` | your S3. **Empty `S3_ENDPOINT`: the stack runs a default RustFS** (one instance on the node labelled `s3=true`; its bucket is made by a job) |
 | `TLS_MODE` | `acme` (default): the edge gets and renews the certificates of `MAIL_HOST` and `ADMIN_HOST` from Let's Encrypt (HTTP-01 on port 80; the names must point at the Manager). `self`: self-signed (a test installation). `ACME_DIRECTORY` names another ACME server (the staging one while you try) |
 | `FILTER=1`, `VALKEY=1` | the spam and virus filters (a validating resolver, rspamd, ClamAV; the scanners are on an internal network, ClamAV and its updater on the node labelled `av=true`; they need about 3 GB of memory) and the shared key-value store (TLS and one login per service) that makes the sending budget, the login throttle and the admin sessions one for every replica: turn it on when a service has more than one replica |
+| `LOG_LEVEL` | `error`, `warn`, `info` (default), `debug` or `trace`: the log level of every service; raise it to see why something is refused, then `prepare configs` and `deploy` |
 | `IMAGE_TAG`, `REGISTRY`, `REPLICAS_DEFAULT` | the image tag when the kit has no digests (a checkout; default `main`), the registry, replicas per service (default 1) |
 | `STATE_DIR` | where the tool keeps what it makes (default `~/.rusty-swarm`, mode 0700): the service passwords, the keys, the certificates, the generated files |
 
