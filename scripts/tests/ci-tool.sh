@@ -15,5 +15,5 @@ echo 0.1.0 > "$tmp/root/versions/cargo-deny"
 bash "$here/scripts/ci-tool.sh" cargo-deny >/dev/null; [ "$(wc -l < "$tmp/calls")" -eq 2 ] || fail "version change must reinstall"
 bash "$here/scripts/ci-tool.sh" cargo-nope >/dev/null 2>&1 && fail "unpinned tool accepted"
 ( unset CI_TOOLS_ROOT; bash "$here/scripts/ci-tool.sh" cargo-deny >/dev/null 2>&1 ) && fail "ran without CI_TOOLS_ROOT"
-for t in cargo-deny cargo-audit cargo-fuzz; do grep -qE "^$t [0-9]+\.[0-9]+\.[0-9]+$" "$here/scripts/ci-tools.txt" || fail "$t not pinned"; done
+for t in cargo-deny cargo-audit cargo-fuzz cargo-nextest; do grep -qE "^$t [0-9]+\.[0-9]+\.[0-9]+$" "$here/scripts/ci-tools.txt" || fail "$t not pinned"; done
 echo "ci-tool self-test OK"

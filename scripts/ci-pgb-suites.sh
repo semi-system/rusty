@@ -20,4 +20,5 @@ trap cleanup EXIT
 bash scripts/pgb-up.sh
 RUSTY_TEST_PG_POOLED="$(cat "$HOME/.rusty-pgb-test.$RUN_ID")"
 export RUSTY_TEST_PG_POOLED
-cargo test --workspace -- --skip feed --skip startup_refuses_a_runtime_role
+command -v cargo-nextest >/dev/null || { echo "cargo-nextest is needed: cargo install --locked cargo-nextest" >&2; exit 1; }
+cargo nextest run --workspace -E 'not test(~feed) and not test(~startup_refuses_a_runtime_role)'

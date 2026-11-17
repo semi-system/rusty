@@ -14,10 +14,11 @@ instructions in `docs/git-workflow.md`).
 ```
 changes ─┬─ workflows-lint          (actionlint + shellcheck + their self-test)
          ├─ gates                   (scripts/ci-gates.sh static, compose check, fuzz lockfile, pg isolation)
-         ├─ test-glibc              (clippy + cargo test --workspace + dev quickstart smoke)   [Postgres service]
+         ├─ test-glibc              (clippy + cargo nextest run --workspace + dev quickstart smoke) [Postgres service]
          ├─ test-postgres           (scripts/ci-pg-suites.sh)                                  [Postgres service]
+         ├─ test-pgbouncer          (scripts/ci-pgb-suites.sh: the suites through PgBouncer)    [Postgres service]
          ├─ supply-chain            (cargo-deny, cargo-audit)
-         ├─ musl-test               (cargo test --workspace --target x86_64-unknown-linux-musl)
+         ├─ musl-test               (cargo nextest run --workspace --target x86_64-unknown-linux-musl)
          └─ musl-release            (release build, symbol gates, static-link check)
 fuzz-smoke, edge-suite              (schedule / manual only)
 ci-ok                               (always runs; needs every job above)
@@ -94,6 +95,11 @@ Bumping the key prefix (`-v1-`) invalidates every cache at once if one is ever p
   graph, and without a measurement on GitHub runners it is not known to be a win. If the job becomes the
   critical path, shard by command of `ci-pg-suites.sh` (each command is independent; give each shard its own
   service container).
+* **The pooled suites are a job of their own** (`test-pgbouncer`, 2026-11-17): the run through PgBouncer is the whole workspace again and took longer than everything else (19 of the 32 minutes of the old
+  `test-postgres`), so it runs beside the direct suites instead of after them. It has its own build cache (two jobs must not race to save one key).
+* **cargo-nextest runs the tests** (`test-glibc`, `musl-test`, `test-postgres`, `test-pgbouncer`): `cargo test` runs the test binaries one after the other, nextest runs the tests of all binaries side by side
+  (each test in its own process), which is what the database-heavy tests of this repository need on a 4-core runner. The version is pinned in `scripts/ci-tools.txt` and cached like `cargo-deny`. Doc tests are not run by
+  nextest; the workspace has none (a gate would be added with the first one). `scripts/ci.sh` keeps `cargo test` for a local run on one machine.
 * musl: the debug test build and the release build share no artefacts, so they are two parallel jobs instead
   of one after the other. Coverage is identical to `scripts/ci.sh`: musl tests, musl release build,
   the three symbol gates (`scripts/ci-gates.sh symbols`) and the static-linking check.
@@ -135,6 +141,7 @@ Bumping the key prefix (`-v1-`) invalidates every cache at once if one is ever p
 | workflows-lint self-test; actionlint and shellcheck | `workflows-lint` |
 | clippy; test (glibc); dev quickstart smoke | `test-glibc` |
 | postgres (store, directory, imap, mutation table, clippy) | `test-postgres` |
+| the suites through PgBouncer (`ci-pgb-suites.sh`) | `test-pgbouncer` |
 | pg isolation | `gates` |
 | cargo-deny, cargo-audit | `supply-chain` |
 | test (musl) | `musl-test` |

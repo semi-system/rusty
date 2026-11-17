@@ -1,9 +1,11 @@
-# cargo-nextest for local runs: `bash scripts/wsl-cargo.sh nextest run --workspace` (about twice as fast as `cargo test --workspace` here).
-# The heavy suites share one Postgres server; running too many at once starves them, so they form a group that runs two at a time.
+# cargo-nextest, for local runs (`bash scripts/wsl-cargo.sh nextest run --workspace`) and for the test jobs of ci.yml (`cargo nextest run --workspace`).
+# The heavy suites share one Postgres server; running too many at once starves them (the 10k acceptance test has a wall-clock budget and failed at 210 s against 63 s alone when
+# 16 other tests ran beside it). They form a group that runs two at a time, and each takes two test slots, so on the 4-core runner of ci.yml two of them are all that runs at once.
 [test-groups]
 heavy-db = { max-threads = 2 }
 
 [[profile.default.overrides]]
-filter = "test(acceptance_10k_messages) or test(deliver_many_matches_loop_of_deliver)"
+filter = "test(acceptance_10k_messages) or test(deliver_many_matches_loop_of_deliver) or binary(mailbox_props)"
 test-group = "heavy-db"
+threads-required = 2
 slow-timeout = { period = "60s", terminate-after = 10 }
