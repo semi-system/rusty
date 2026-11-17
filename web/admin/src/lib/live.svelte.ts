@@ -18,7 +18,7 @@ const browser: SourceFactory = (url) => new EventSource(url);
 export const MERGE_MS = 250;
 
 interface Watcher {
-  topics: Set<string>;
+  topics: string[];
   run: () => void;
   timer: ReturnType<typeof setTimeout> | null;
 }
@@ -29,7 +29,7 @@ export class Live {
 
   private readonly make: SourceFactory;
   private source: Source | null = null;
-  private readonly watchers = new Set<Watcher>();
+  private watchers: Watcher[] = [];
 
   constructor(make: SourceFactory | null = typeof EventSource === 'undefined' ? null : browser) {
     this.make = make ?? (() => ({ addEventListener() {}, onopen: null, onerror: null, close() {} }));
@@ -51,7 +51,7 @@ export class Live {
     });
     s.addEventListener('changed', (e) => {
       const topics = parse(e.data);
-      for (const w of this.watchers) if (topics.some((t) => w.topics.has(t))) this.schedule(w);
+      for (const w of this.watchers) if (topics.some((t) => w.topics.includes(t))) this.schedule(w);
     });
   }
 
@@ -64,11 +64,11 @@ export class Live {
 
   /** Run `run` when one of `topics` changed (and after a resync). Returns the function that stops watching. */
   watch(topics: string[], run: () => void): () => void {
-    const w: Watcher = { topics: new Set(topics), run, timer: null };
-    this.watchers.add(w);
+    const w: Watcher = { topics, run, timer: null };
+    this.watchers.push(w);
     return () => {
       if (w.timer !== null) clearTimeout(w.timer);
-      this.watchers.delete(w);
+      this.watchers = this.watchers.filter((x) => x !== w);
     };
   }
 
