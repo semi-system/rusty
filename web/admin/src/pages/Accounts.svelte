@@ -5,6 +5,7 @@
   import type { Account } from '../api/types';
   import DomainShell from '../lib/DomainShell.svelte';
   import ErrorNote from '../lib/ErrorNote.svelte';
+  import { labelled } from '../lib/stack';
   import { t, tFor } from '../i18n';
 
   const MIN = 8;
@@ -107,7 +108,7 @@
       <div class="empty"><p>{t('accounts.empty')}</p></div>
     {:else}
       <div class="table-wrap">
-        <table aria-label={t('accounts.list')}>
+        <table use:labelled aria-label={t('accounts.list')}>
           <thead>
             <tr>
               <th scope="col">{t('accounts.address')}</th>

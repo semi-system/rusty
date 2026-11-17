@@ -4,6 +4,7 @@
   import type { App } from '../lib/app.svelte';
   import type { Storage, StorageBackend } from '../api/types';
   import ErrorNote from '../lib/ErrorNote.svelte';
+  import { labelled } from '../lib/stack';
   import { t, tFor } from '../i18n';
 
   let {
@@ -110,7 +111,7 @@
       <div class="empty"><p>{t('pool.noBackends')}</p></div>
     {:else}
       <div class="table-wrap">
-        <table>
+        <table use:labelled>
           <thead>
             <tr>
               <th>{t('pool.name')}</th>

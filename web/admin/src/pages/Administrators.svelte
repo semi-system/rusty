@@ -6,6 +6,7 @@
   import Badge from '../lib/Badge.svelte';
   import ErrorNote from '../lib/ErrorNote.svelte';
   import PageHead from '../lib/PageHead.svelte';
+  import { labelled } from '../lib/stack';
   import { t } from '../i18n';
 
   let { app, me }: { app: App; me: Me } = $props();
@@ -108,7 +109,7 @@
     <div class="empty"><p>{t('admins.empty')}</p></div>
   {:else}
     <div class="table-wrap">
-      <table aria-label={t('admins.list')}>
+      <table use:labelled aria-label={t('admins.list')}>
         <thead>
           <tr>
             <th scope="col">{t('admins.account')}</th>
