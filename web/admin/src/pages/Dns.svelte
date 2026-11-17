@@ -6,6 +6,7 @@
   import Copy from '../lib/Copy.svelte';
   import DomainShell from '../lib/DomainShell.svelte';
   import ErrorNote from '../lib/ErrorNote.svelte';
+  import { labelled } from '../lib/stack';
   import { t, tFor } from '../i18n';
 
   let { app, name }: { app: App; name: string } = $props();
@@ -62,7 +63,7 @@
     {:else if data !== null}
       {#each data.warnings as w (w)}<p class="alert warn">{tFor('dns.warning.', w, 'error.unknown')}</p>{/each}
       <div class="table-wrap">
-        <table aria-label={t('dns.list')}>
+        <table use:labelled aria-label={t('dns.list')}>
           <thead>
             <tr>
               <th scope="col">{t('dns.name')}</th>

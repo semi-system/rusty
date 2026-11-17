@@ -4,6 +4,7 @@
   import type { Alias } from '../api/types';
   import DomainShell from '../lib/DomainShell.svelte';
   import ErrorNote from '../lib/ErrorNote.svelte';
+  import { labelled } from '../lib/stack';
   import { t } from '../i18n';
 
   let { app, name }: { app: App; name: string } = $props();
@@ -78,7 +79,7 @@
       <div class="empty"><p>{t('aliases.empty')}</p></div>
     {:else}
       <div class="table-wrap">
-        <table aria-label={t('aliases.list')}>
+        <table use:labelled aria-label={t('aliases.list')}>
           <thead>
             <tr><th scope="col">{t('aliases.alias')}</th><th scope="col">{t('aliases.target')}</th><th scope="col" class="col-actions"><span class="sr">{t('domain.aliases')}</span></th></tr>
           </thead>

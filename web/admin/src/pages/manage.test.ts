@@ -155,6 +155,18 @@ describe('accounts', () => {
     expect(s.calls.some((c) => c.key === 'POST /api/v1/accounts/alice%40example.org/disable')).toBe(true);
   });
 
+  it('locks an account (no sign-in, mail still arrives) and enables it again', async () => {
+    const s = await open('/domains/example.org/accounts', PLATFORM, {
+      'GET /api/v1/domains/example.org/accounts': list,
+      'POST /api/v1/accounts/alice%40example.org/lock': ok({ ...ACC, status: 'locked' }),
+      'POST /api/v1/accounts/alice%40example.org/enable': ok(ACC),
+    });
+    await fireEvent.click(await screen.findByRole('button', { name: t('accounts.lock', { address: 'alice@example.org' }) }));
+    await fireEvent.click(await screen.findByRole('button', { name: t('accounts.enable', { address: 'alice@example.org' }) }));
+    expect(await screen.findByRole('button', { name: t('accounts.lock', { address: 'alice@example.org' }) })).toBeTruthy();
+    expect(s.calls.map((c) => c.key)).toContain('POST /api/v1/accounts/alice%40example.org/lock');
+  });
+
   it('sets a password through a form that is closed and cleared afterwards', async () => {
     const s = await open('/domains/example.org/accounts', PLATFORM, {
       'GET /api/v1/domains/example.org/accounts': list,

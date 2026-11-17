@@ -43,6 +43,7 @@ pub enum Command {
     AccountAdd { addr: String, password: PasswordSource },
     AccountList { domain: Option<String> },
     AccountSetPassword { addr: String, password: PasswordSource },
+    AccountLock { addr: String },
     AccountDisable { addr: String },
     AccountEnable { addr: String },
     AliasAdd { alias: String, target: String },
@@ -131,7 +132,7 @@ pub const USAGE: &str = "usage: rustyctl [--config FILE | --dev [--data-dir DIR]
   account add <addr> [--password-stdin | --prompt]\n\
   account list [domain]\n\
   account set-password <addr> (--password-stdin | --prompt)\n\
-  account disable <addr> | enable <addr>\n\
+  account lock <addr> | disable <addr> | enable <addr>\n\
   alias add <alias-addr> <account-addr> | list [domain] | remove <alias-addr>\n\
   dkim generate <domain> [--selector S] [--sealed]\n\
                                              create an ed25519 DKIM key and print its DNS record: the private key is a\n\
@@ -358,6 +359,10 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
         ["account", "list", d] => {
             plain()?;
             done(Command::AccountList { domain: Some((*d).to_owned()) })
+        }
+        ["account", "lock", addr] => {
+            plain()?;
+            done(Command::AccountLock { addr: (*addr).to_owned() })
         }
         ["account", "disable", addr] => {
             plain()?;

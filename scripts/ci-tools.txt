@@ -5,3 +5,4 @@
 cargo-deny 0.20.0
 cargo-audit 0.22.0
 cargo-fuzz 0.13.1
+cargo-nextest 0.9.152

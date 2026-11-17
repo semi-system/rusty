@@ -203,8 +203,8 @@ export class Client {
     await this.call('POST', `/api/v1/accounts/${seg(address)}/password`, { password });
   }
 
-  setAccountEnabled(address: string, enabled: boolean): Promise<Account> {
-    return this.call('POST', `/api/v1/accounts/${seg(address)}/${enabled ? 'enable' : 'disable'}`);
+  setAccountStatus(address: string, action: 'enable' | 'lock' | 'disable'): Promise<Account> {
+    return this.call('POST', `/api/v1/accounts/${seg(address)}/${action}`);
   }
 
   aliases(domain: string, after?: number): Promise<Page<Alias>> {

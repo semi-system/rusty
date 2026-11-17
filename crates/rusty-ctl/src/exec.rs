@@ -754,11 +754,11 @@ pub async fn execute(command: &Command, env: &mut CtlEnv<'_>) -> Result<Outcome,
             Ok(Outcome::new(format!("password of {} changed", addr.trim()), json!({ "account": addr.trim(), "changed": true })))
         }
 
-        Command::AccountDisable { addr } | Command::AccountEnable { addr } => {
-            let status = if matches!(command, Command::AccountDisable { .. }) {
-                AccountStatus::Disabled
-            } else {
-                AccountStatus::Active
+        Command::AccountLock { addr } | Command::AccountDisable { addr } | Command::AccountEnable { addr } => {
+            let status = match command {
+                Command::AccountLock { .. } => AccountStatus::Locked,
+                Command::AccountDisable { .. } => AccountStatus::Disabled,
+                _ => AccountStatus::Active,
             };
             let acc = account_named(env.directory, addr).await?;
             env.directory

@@ -203,8 +203,19 @@ jobs:
           key: cargo-target-v1-test-glibc-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: |
             cargo-target-v1-test-glibc-${{ runner.os }}-
+      - name: Restore the installed tool binaries (cargo-nextest)
+        id: tools
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.ci-tools
+          key: ci-tools-v1-nextest-${{ runner.os }}-${{ hashFiles('scripts/ci-tools.txt', 'rust-toolchain.toml') }}
+      - name: Install cargo-nextest (pinned version, compiled only on a cache miss)
+        run: |
+          set -euo pipefail
+          CI_TOOLS_ROOT="$HOME/.ci-tools" bash scripts/ci-tool.sh cargo-nextest
+          echo "$HOME/.ci-tools/bin" >> "$GITHUB_PATH"
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - run: cargo nextest run --workspace
       - name: Dev quickstart smoke
         run: bash deploy/dev/quickstart.sh --smoke
         env:
@@ -229,6 +240,12 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
           key: ${{ steps.registry.outputs.cache-primary-key }}
+      - name: Save the tool binaries (main only)
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.tools.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.ci-tools
+          key: ${{ steps.tools.outputs.cache-primary-key }}
 
   # The Postgres suites run in parallel with test-glibc: they build the `postgres` feature graph,
   # which the workspace build does not share, so one job would build it after the workspace.
@@ -281,8 +298,97 @@ jobs:
           key: cargo-target-v1-test-postgres-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: |
             cargo-target-v1-test-postgres-${{ runner.os }}-
+      - name: Restore the installed tool binaries (cargo-nextest)
+        id: tools
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.ci-tools
+          key: ci-tools-v1-nextest-${{ runner.os }}-${{ hashFiles('scripts/ci-tools.txt', 'rust-toolchain.toml') }}
+      - name: Install cargo-nextest (pinned version, compiled only on a cache miss)
+        run: |
+          set -euo pipefail
+          CI_TOOLS_ROOT="$HOME/.ci-tools" bash scripts/ci-tool.sh cargo-nextest
+          echo "$HOME/.ci-tools/bin" >> "$GITHUB_PATH"
       - name: Postgres suites (scripts/ci-pg-suites.sh, as in scripts/ci.sh)
         run: bash scripts/ci-pg-suites.sh
+      - name: Prune the build directory (workspace artefacts, test binaries) before saving
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.target.outputs.cache-hit != 'true' }}
+        run: bash scripts/ci-cache-prune.sh target
+      - name: Save the build cache (main only)
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.target.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: ${{ steps.target.outputs.cache-primary-key }}
+      - name: Save the tool binaries (main only)
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.tools.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.ci-tools
+          key: ${{ steps.tools.outputs.cache-primary-key }}
+
+  # The same suites through PgBouncer in transaction mode (scripts/ci-pgb-suites.sh): a job of its own, in parallel with test-postgres, because the pooled run
+  # is the longer of the two. It builds the same feature graph (its own cache, so the two jobs do not race to save one).
+  test-pgbouncer:
+    name: Postgres suites through PgBouncer
+    needs: changes
+    if: ${{ needs.changes.outputs.rust == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    services:
+      postgres:
+        # Same digest as deploy/images.lock (checked by scripts/check-docker-pins.sh).
+        image: postgres@sha256:3a4264520e121176619f54ff867d12774bc81e95e7b84db58d63bccdb6144b81
+        env:
+          POSTGRES_USER: rusty
+          # Throw-away service container on the runner's private network: not a secret.
+          POSTGRES_PASSWORD: ci-throwaway-not-a-secret
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U rusty -d postgres"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      RUSTY_TEST_PG_URL: postgres://rusty:ci-throwaway-not-a-secret@127.0.0.1:5432/postgres?sslmode=disable
+      RUSTY_REQUIRE_PG: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain (minimal profile, no rust-docs download)
+        run: rustup set profile minimal
+      - name: Restore the cargo registry and git cache
+        id: registry
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-v1-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-registry-v1-${{ runner.os }}-
+      - name: Restore the build cache (test-pgbouncer)
+        id: target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: cargo-target-v1-test-pgbouncer-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-target-v1-test-pgbouncer-${{ runner.os }}-
+      - name: Restore the installed tool binaries (cargo-nextest)
+        id: tools
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.ci-tools
+          key: ci-tools-v1-nextest-${{ runner.os }}-${{ hashFiles('scripts/ci-tools.txt', 'rust-toolchain.toml') }}
+      - name: Install cargo-nextest (pinned version, compiled only on a cache miss)
+        run: |
+          set -euo pipefail
+          CI_TOOLS_ROOT="$HOME/.ci-tools" bash scripts/ci-tool.sh cargo-nextest
+          echo "$HOME/.ci-tools/bin" >> "$GITHUB_PATH"
       - name: The suites through PgBouncer in transaction mode (scripts/ci-pgb-suites.sh)
         run: bash scripts/ci-pgb-suites.sh
       - name: Prune the build directory (workspace artefacts, test binaries) before saving
@@ -294,6 +400,12 @@ jobs:
         with:
           path: target
           key: ${{ steps.target.outputs.cache-primary-key }}
+      - name: Save the tool binaries (main only)
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.tools.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.ci-tools
+          key: ${{ steps.tools.outputs.cache-primary-key }}
 
   supply-chain:
     name: cargo-deny and cargo-audit
@@ -402,7 +514,18 @@ jobs:
           key: cargo-target-v1-musl-test-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: |
             cargo-target-v1-musl-test-${{ runner.os }}-
-      - run: cargo test --workspace --target x86_64-unknown-linux-musl
+      - name: Restore the installed tool binaries (cargo-nextest)
+        id: tools
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.ci-tools
+          key: ci-tools-v1-nextest-${{ runner.os }}-${{ hashFiles('scripts/ci-tools.txt', 'rust-toolchain.toml') }}
+      - name: Install cargo-nextest (pinned version, compiled only on a cache miss)
+        run: |
+          set -euo pipefail
+          CI_TOOLS_ROOT="$HOME/.ci-tools" bash scripts/ci-tool.sh cargo-nextest
+          echo "$HOME/.ci-tools/bin" >> "$GITHUB_PATH"
+      - run: cargo nextest run --workspace --target x86_64-unknown-linux-musl
       - name: Prune the build directory (workspace artefacts, test binaries) before saving
         if: ${{ success() && github.ref == 'refs/heads/main' && steps.target.outputs.cache-hit != 'true' }}
         run: bash scripts/ci-cache-prune.sh target
@@ -412,6 +535,12 @@ jobs:
         with:
           path: target
           key: ${{ steps.target.outputs.cache-primary-key }}
+      - name: Save the tool binaries (main only)
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.tools.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.ci-tools
+          key: ${{ steps.tools.outputs.cache-primary-key }}
 
   musl-release:
     name: release build and static check (musl)
@@ -576,7 +705,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: ${{ always() }}
-    needs: [changes, workflows-lint, web, gates, test-glibc, test-postgres, supply-chain, musl-test, musl-release, fuzz-smoke, edge-suite]
+    needs: [changes, workflows-lint, web, gates, test-glibc, test-postgres, test-pgbouncer, supply-chain, musl-test, musl-release, fuzz-smoke, edge-suite]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
