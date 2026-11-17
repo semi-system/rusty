@@ -126,6 +126,7 @@ BEGIN
     GRANT SELECT ON domains, aliases, lists, list_members, mailboxes, folders, messages, deliveries, blobs, blob_locations, blob_stores, blob_backends, sealed_secrets,
       domain_dkim_keys, domain_relays, domain_dns_config TO rusty_outbound;
     GRANT SELECT, INSERT, UPDATE, DELETE ON jobs, domain_dns_state, domain_dns_event TO rusty_outbound;
+    GRANT SELECT, INSERT, UPDATE ON job_turns TO rusty_outbound;   -- the turn order of the tenants (docs/design-fair-claim.md)
     GRANT UPDATE (created_at) ON domains, accounts TO rusty_outbound;   -- the row locks of the DNS check and of a delivery
     GRANT UPDATE (check_status, checked_at) ON domain_relays TO rusty_outbound;
     GRANT UPDATE (check_status, checked_at) ON blob_stores, blob_backends TO rusty_outbound;   -- the storage check worker locks the row, then records its result; a tenant's store is used only after a check passed
@@ -145,6 +146,7 @@ BEGIN
     GRANT SELECT, UPDATE, DELETE ON capabilities TO rusty_gc;
     GRANT SELECT, UPDATE, DELETE ON blobs, deliveries TO rusty_gc;
     GRANT SELECT, INSERT, UPDATE, DELETE ON blob_locations, blob_store_leases, jobs TO rusty_gc;
+    GRANT SELECT, INSERT, UPDATE ON job_turns TO rusty_gc;
     GRANT SELECT, INSERT, UPDATE ON blob_stores, blob_backends TO rusty_gc;
     GRANT SELECT, DELETE ON service_heartbeats TO rusty_gc;   -- the cleanup of heartbeats nobody renews
   END IF;

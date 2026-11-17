@@ -164,6 +164,8 @@ pub(crate) mod sql {
     pub const CLAIM_UPDATE: &str = "UPDATE jobs SET state = 'running', attempts = attempts + 1, \
         epoch = epoch + 1, lease_owner = $2, lease_expires_at = $3, updated_at = $4 \
         WHERE id = $1 RETURNING id, kind, domain_id, payload, epoch, attempts, created_at";
+    /// The turn of a tenant (docs/design-fair-claim.md): the number of its last claim, from one global sequence.
+    pub const TURN: &str = "INSERT INTO job_turns (scope, kind, last_claim) VALUES ($1, $2, nextval('job_turn_seq')) \n        ON CONFLICT (scope, kind) DO UPDATE SET last_claim = excluded.last_claim";
 }
 
 /// `Ok` iff exactly one row was affected by a fenced update.

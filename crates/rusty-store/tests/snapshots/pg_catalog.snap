@@ -126,6 +126,9 @@ COLUMN folders.role text nullable=NO identity=NO/ collation= default='custom'::t
 COLUMN folders.uid_validity bigint nullable=NO identity=NO/ collation= default=
 COLUMN folders.next_uid bigint nullable=NO identity=NO/ collation= default=1
 COLUMN folders.subscribed bigint nullable=NO identity=NO/ collation= default=1
+COLUMN job_turns.scope bigint nullable=NO identity=NO/ collation= default=
+COLUMN job_turns.kind text nullable=NO identity=NO/ collation=C default=
+COLUMN job_turns.last_claim bigint nullable=NO identity=NO/ collation= default=
 COLUMN jobs.id bigint nullable=NO identity=YES/ALWAYS collation= default=
 COLUMN jobs.kind text nullable=NO identity=NO/ collation=C default=
 COLUMN jobs.domain_id bigint nullable=YES identity=NO/ collation= default=
@@ -417,6 +420,12 @@ CONSTRAINT folders.folders_subscribed_not_null NOT NULL subscribed
 CONSTRAINT folders.folders_subscribed_valid CHECK (subscribed = ANY (ARRAY[0::bigint, 1::bigint]))
 CONSTRAINT folders.folders_uid_validity_not_null NOT NULL uid_validity
 CONSTRAINT folders.folders_uid_validity_valid CHECK (uid_validity > 0)
+CONSTRAINT job_turns.job_turns_kind_not_null NOT NULL kind
+CONSTRAINT job_turns.job_turns_kind_valid CHECK (length(kind) >= 1 AND length(kind) <= 64)
+CONSTRAINT job_turns.job_turns_last_claim_not_null NOT NULL last_claim
+CONSTRAINT job_turns.job_turns_pkey PRIMARY KEY (scope, kind)
+CONSTRAINT job_turns.job_turns_scope_not_null NOT NULL scope
+CONSTRAINT job_turns.job_turns_scope_valid CHECK (scope >= 0)
 CONSTRAINT jobs.jobs_attempts_not_null NOT NULL attempts
 CONSTRAINT jobs.jobs_attempts_valid CHECK (attempts >= 0)
 CONSTRAINT jobs.jobs_attempts_within_max CHECK (attempts <= max_attempts)
@@ -572,11 +581,13 @@ INDEX domains.domains_pkey CREATE UNIQUE INDEX domains_pkey ON public.domains US
 INDEX folders.folders_pkey CREATE UNIQUE INDEX folders_pkey ON public.folders USING btree (mailbox_id, id)
 INDEX folders.folders_role CREATE UNIQUE INDEX folders_role ON public.folders USING btree (mailbox_id, role) WHERE (role <> 'custom'::text)
 INDEX folders.folders_sibling_name CREATE UNIQUE INDEX folders_sibling_name ON public.folders USING btree (mailbox_id, COALESCE(parent_id, (0)::bigint), name)
+INDEX job_turns.job_turns_pkey CREATE UNIQUE INDEX job_turns_pkey ON public.job_turns USING btree (scope, kind)
 INDEX jobs.jobs_dedupe_key CREATE UNIQUE INDEX jobs_dedupe_key ON public.jobs USING btree (dedupe_key) WHERE (dedupe_key IS NOT NULL)
 INDEX jobs.jobs_domain_state CREATE INDEX jobs_domain_state ON public.jobs USING btree (domain_id, state)
 INDEX jobs.jobs_owner_created CREATE INDEX jobs_owner_created ON public.jobs USING btree (owner_id, created_at) WHERE (owner_id IS NOT NULL)
 INDEX jobs.jobs_pkey CREATE UNIQUE INDEX jobs_pkey ON public.jobs USING btree (id)
 INDEX jobs.jobs_queued_order CREATE INDEX jobs_queued_order ON public.jobs USING btree (run_after, id) WHERE (state = 'queued'::text)
+INDEX jobs.jobs_queued_scope CREATE INDEX jobs_queued_scope ON public.jobs USING btree (COALESCE(domain_id, (0)::bigint), run_after, id) WHERE (state = 'queued'::text)
 INDEX jobs.jobs_running_lease CREATE INDEX jobs_running_lease ON public.jobs USING btree (lease_expires_at) WHERE (state = 'running'::text)
 INDEX keywords.keywords_pkey CREATE UNIQUE INDEX keywords_pkey ON public.keywords USING btree (mailbox_id, message_id, keyword)
 INDEX list_members.list_members_list_id_account_id_key CREATE UNIQUE INDEX list_members_list_id_account_id_key ON public.list_members USING btree (list_id, account_id)

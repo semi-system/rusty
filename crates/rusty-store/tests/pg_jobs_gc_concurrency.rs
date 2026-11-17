@@ -605,3 +605,35 @@ async fn a_lease_that_expires_while_waiting_for_the_mailbox_lock_fails_the_fence
     );
     assert_eq!(scalar(&b, "SELECT count(*) FROM messages").await, 0, "and nothing was delivered");
 }
+
+/// docs/design-fair-claim.md: a tenant with a large backlog does not make the others wait behind it. Tenant A queues 20 jobs first, tenants B and C one job each afterwards; the claims go A, B, C
+/// (the oldest of each, the tenant never served first, in the order of their oldest job), then A again for each of its remaining jobs, and a tenant served earlier goes before one served later.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn claims_give_each_tenant_a_turn_before_a_tenant_with_a_backlog_gets_a_second_one() {
+    if pg_admin_url().is_none() {
+        return;
+    }
+    let b = pg_backend().await.unwrap();
+    let (store, _) = b.pg.as_ref().unwrap();
+    let q = jq(&repo_with(&b, Knobs::default()));
+    let mut dom = vec![];
+    for name in ["a.test", "b.test", "c.test"] {
+        let id: i64 = sqlx::query_scalar("INSERT INTO domains(name, created_at) VALUES ($1, 0) RETURNING id").bind(name).fetch_one(store.pool()).await.unwrap();
+        dom.push(rusty_core::DomainId(id));
+    }
+    for i in 0..20 {
+        q.enqueue("t", Some(dom[0]), &json!({ "i": i }), Some(1000 + i)).await.unwrap();
+    }
+    q.enqueue("t", Some(dom[1]), &json!({ "i": 0 }), Some(2000)).await.unwrap();
+    q.enqueue("t", Some(dom[2]), &json!({ "i": 0 }), Some(2001)).await.unwrap();
+    let mut order = vec![];
+    for _ in 0..8 {
+        let got = q.claim("w", &["t"], 30).await.unwrap().expect("a job is due");
+        order.push(got.domain.unwrap().0);
+    }
+    let (a, bb, c) = (dom[0].0, dom[1].0, dom[2].0);
+    assert_eq!(order, vec![a, bb, c, a, a, a, a, a], "one job per tenant first, then the backlog of A alone");
+    // The jobs of one tenant still go in their own order.
+    let rest = q.claim("w", &["t"], 30).await.unwrap().unwrap();
+    assert_eq!(rest.payload["i"], 6, "A has had jobs 0 to 5, so its seventh is next: its own jobs go in order");
+}
