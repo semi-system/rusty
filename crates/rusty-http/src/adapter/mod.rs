@@ -2,17 +2,21 @@
 //! nothing here is `pub`.
 
 use std::convert::Infallible;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
+use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full, Limited};
-use hyper::body::Incoming;
+use hyper::body::{Frame, Incoming};
 use hyper::header::{HeaderName, HeaderValue};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use rusty_svc::{BoxedStream, PeerInfo};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::request::{Headers, Method, Params, Request};
@@ -52,7 +56,7 @@ pub(crate) async fn serve(stream: BoxedStream, peer: PeerInfo, shutdown: Cancell
     }
 }
 
-async fn respond(core: &Core, peer: PeerInfo, served: &AtomicU32, req: hyper::Request<Incoming>) -> hyper::Response<Full<Bytes>> {
+async fn respond(core: &Core, peer: PeerInfo, served: &AtomicU32, req: hyper::Request<Incoming>) -> hyper::Response<Body> {
     let n = served.fetch_add(1, Ordering::SeqCst).saturating_add(1);
     let (resp, force_close) = build(core, peer, req).await;
     to_hyper(core, resp, force_close || n >= core.limits.max_requests_per_connection)
@@ -103,7 +107,22 @@ async fn build(core: &Core, peer: PeerInfo, req: hyper::Request<Incoming>) -> (R
     (core.run(handler, request).await, false)
 }
 
-fn to_hyper(core: &Core, resp: Response, close: bool) -> hyper::Response<Full<Bytes>> {
+/// What the connection sends: a whole body, or the chunks of a stream.
+type Body = BoxBody<Bytes, Infallible>;
+
+/// The body of a streamed response: what arrives on the channel, until the sender is dropped.
+struct ChannelBody(mpsc::Receiver<Bytes>);
+
+impl hyper::body::Body for ChannelBody {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+        self.0.poll_recv(cx).map(|chunk| chunk.map(|b| Ok(Frame::data(b))))
+    }
+}
+
+fn to_hyper(core: &Core, resp: Response, close: bool) -> hyper::Response<Body> {
     match try_to_hyper(&resp, close) {
         Some(r) => r,
         None => {
@@ -111,18 +130,23 @@ fn to_hyper(core: &Core, resp: Response, close: bool) -> hyper::Response<Full<By
             // client gets a plain 500, never a half-built response.
             tracing::error!("a handler returned an invalid response");
             let fallback = core.error(500, "internal");
-            try_to_hyper(&fallback, true).unwrap_or_else(|| hyper::Response::new(Full::new(Bytes::new())))
+            try_to_hyper(&fallback, true).unwrap_or_else(|| hyper::Response::new(Full::new(Bytes::new()).boxed()))
         }
     }
 }
 
-fn try_to_hyper(resp: &Response, close: bool) -> Option<hyper::Response<Full<Bytes>>> {
+fn try_to_hyper(resp: &Response, close: bool) -> Option<hyper::Response<Body>> {
     let mut b = hyper::Response::builder().status(hyper::StatusCode::from_u16(resp.status).ok()?);
     for (name, value) in &resp.headers {
         b = b.header(HeaderName::from_bytes(name.as_bytes()).ok()?, HeaderValue::from_str(value).ok()?);
     }
-    if close {
+    // A stream ends its connection when it ends.
+    let stream = resp.stream.as_ref().and_then(|s| s.take());
+    if close || stream.is_some() {
         b = b.header(hyper::header::CONNECTION, "close");
     }
-    b.body(Full::new(resp.body.clone())).ok()
+    match stream {
+        Some(rx) => b.body(ChannelBody(rx).boxed()).ok(),
+        None => b.body(Full::new(resp.body.clone()).boxed()).ok(),
+    }
 }

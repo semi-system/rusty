@@ -61,6 +61,7 @@ impl Core {
         }
         if head_only {
             resp.body = bytes::Bytes::new();
+            resp.stream = None;
         }
         resp
     }
