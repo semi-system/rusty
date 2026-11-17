@@ -68,9 +68,9 @@
     });
   };
 
-  const toggle = (a: Account): Promise<void> =>
+  const change = (a: Account, action: 'enable' | 'lock' | 'disable'): Promise<void> =>
     guarded(async () => {
-      const updated = await app.client.setAccountEnabled(a.address, a.status !== 'active');
+      const updated = await app.client.setAccountStatus(a.address, action);
       items = items.map((x) => (x.id === updated.id ? updated : x));
     });
 
@@ -124,7 +124,12 @@
                 <td>{a.has_password ? t('accounts.hasPassword') : t('accounts.noPassword')}</td>
                 <td class="col-actions">
                   <div class="row-actions">
-                    <button type="button" disabled={busy} aria-label={a.status === 'active' ? t('accounts.disable', { address: a.address }) : t('accounts.enable', { address: a.address })} onclick={() => toggle(a)}>{a.status === 'active' ? t('accounts.disableShort') : t('accounts.enableShort')}</button>
+                    {#if a.status === 'active'}
+                      <button type="button" disabled={busy} aria-label={t('accounts.lock', { address: a.address })} onclick={() => change(a, 'lock')}>{t('accounts.lockShort')}</button>
+                      <button type="button" disabled={busy} aria-label={t('accounts.disable', { address: a.address })} onclick={() => change(a, 'disable')}>{t('accounts.disableShort')}</button>
+                    {:else}
+                      <button type="button" disabled={busy} aria-label={t('accounts.enable', { address: a.address })} onclick={() => change(a, 'enable')}>{t('accounts.enableShort')}</button>
+                    {/if}
                     <button type="button" aria-label={t('accounts.setPassword', { address: a.address })} onclick={() => { editing = editing === a.address ? null : a.address; fresh = ''; tooShort = false; }}>{t('accounts.setPasswordShort')}</button>
                   </div>
                   {#if editing === a.address}

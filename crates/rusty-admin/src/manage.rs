@@ -500,6 +500,7 @@ pub fn routes(app: Arc<AdminApp>, router: Router) -> Router {
     let router = route!(router, app, Method::Post, "/api/v1/domains/{d}/accounts", |a, r| create_account(&a, r).await);
     let router = route!(router, app, Method::Post, "/api/v1/accounts/{a}/password", |a, r| set_password(&a, r).await);
     let router = route!(router, app, Method::Post, "/api/v1/accounts/{a}/disable", |a, r| set_account_status(&a, r, AccountStatus::Disabled).await);
+    let router = route!(router, app, Method::Post, "/api/v1/accounts/{a}/lock", |a, r| set_account_status(&a, r, AccountStatus::Locked).await);
     let router = route!(router, app, Method::Post, "/api/v1/accounts/{a}/enable", |a, r| set_account_status(&a, r, AccountStatus::Active).await);
     let router = route!(router, app, Method::Get, "/api/v1/domains/{d}/aliases", |a, r| list_aliases(&a, r).await);
     let router = route!(router, app, Method::Post, "/api/v1/domains/{d}/aliases", |a, r| create_alias(&a, r).await);

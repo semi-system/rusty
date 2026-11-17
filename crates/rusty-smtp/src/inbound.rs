@@ -285,7 +285,8 @@ impl InboundHandler {
         let (mut active, mut inactive) = (Vec::new(), 0usize);
         for id in unique {
             match statuses.get(&id) {
-                Some(AccountStatus::Active) => active.push(id),
+                // A locked account cannot sign in but its mail still arrives; a closed (disabled) one receives nothing.
+                Some(AccountStatus::Active | AccountStatus::Locked) => active.push(id),
                 _ => inactive += 1,
             }
         }
