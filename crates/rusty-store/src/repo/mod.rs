@@ -37,7 +37,7 @@ pub use blob_store::{BlobStoreRepo, BlobStoreRow, StoreId, PLATFORM_STORE};
 pub use blob_pool::{BackendId, BackendRow, BackendState, BlobPoolRepo, Location, MAX_BACKENDS};
 pub use heartbeat::{HeartbeatRepo, HeartbeatRow};
 pub use relay::{RelayRepo, RelayRow};
-pub use admin::{AdminGrant, AdminRepo};
+pub use admin::{AdminEntry, AdminGrant, AdminRepo, Revoked};
 pub use jobs::{BatchJob, BatchRequest, ClaimRequest, JobRepo, NewJob, OwnerLimits};
 pub use directory::{
     AccountInfo, AccountStatus, AliasInfo, AuthRow, CapabilityGrant, ConfigLayers, ConfigTarget,
