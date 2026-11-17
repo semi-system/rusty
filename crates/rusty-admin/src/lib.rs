@@ -7,6 +7,7 @@
 //! * [`auth`]: sign-in with the throttle, one fixed failure for every reason, and the per-request check that the account is still an
 //!   administrator and still active.
 
+pub mod admins;
 pub mod api;
 pub mod auth;
 pub mod autoconfig;

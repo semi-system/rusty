@@ -35,6 +35,7 @@ const dns = (d) => ({
 const api = {
   'GET /api/v1/session': () => me,
   'GET /api/v1/setup': () => ({ required: state === 'setup' }),
+  'GET /api/v1/admins': () => ({ items: [{ id: 1, address: 'ops@rusty.lan', scope: 'platform', domain: null, created_at: now - 86400 * 40 }, { id: 5, address: 'admin@example.test', scope: 'domain', domain: 'example.test', created_at: now - 86400 * 3 }], next: null }),
   'GET /api/v1/domains': () => ({ items: scope === 'platform' ? domains : domains.slice(0, 1), next: null }),
   'GET /api/v1/monitor': () => ({
     services: ['admin', 'edge', 'gc', 'imap', 'outbound', 'smtp-in', 'submission'].map((s, i) => ({

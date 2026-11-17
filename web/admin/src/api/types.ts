@@ -64,6 +64,19 @@ export interface AliasList {
   next: number | null;
 }
 
+export interface AdminEntry {
+  id: number;
+  address: string;
+  scope: string;
+  domain: string | null;
+  created_at: number;
+}
+
+export interface AdminList {
+  items: AdminEntry[];
+  next: number | null;
+}
+
 export interface Dkim {
   selector: string;
   algorithm: string;

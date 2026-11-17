@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use rusty_core::{AccountId, DomainId, Error, Result};
 
-use crate::repo::{AdminGrant, AdminRepo};
+use crate::repo::{AdminEntry, AdminGrant, AdminRepo, Revoked};
 
 /// Most grants one `list` call returns.
 pub const MAX_ADMIN_PAGE: i64 = 200;
@@ -45,6 +45,16 @@ impl AdminStore {
     /// One page of grants after `after` (`limit` is clamped to `1..=`[`MAX_ADMIN_PAGE`]).
     pub async fn list(&self, after: Option<AccountId>, limit: i64) -> Result<Vec<AdminGrant>> {
         self.repo.list(after, limit.clamp(1, MAX_ADMIN_PAGE)).await
+    }
+
+    /// One page of administrators with their addresses; `domain` `Some` lists only those of that domain.
+    pub async fn list_named(&self, after: Option<AccountId>, limit: i64, domain: Option<DomainId>) -> Result<Vec<AdminEntry>> {
+        self.repo.list_named(after, limit.clamp(1, MAX_ADMIN_PAGE), domain).await
+    }
+
+    /// Remove the grant, but never the last platform administrator.
+    pub async fn revoke_keeping_one(&self, account: AccountId) -> Result<Revoked> {
+        self.repo.revoke_keeping_one(account).await
     }
 
     /// Whether any platform administrator exists. The first-administrator setup page is served only while this is `false`; the answer is a

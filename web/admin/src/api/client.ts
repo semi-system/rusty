@@ -1,7 +1,7 @@
 // The API client: the contract's endpoints as typed calls. It knows the three rules of a state-changing request (design section 5): the JSON content type,
 // the CSRF token of the session (the browser adds `Origin` itself) and that a failure is a fixed code, never text to show.
 
-import type { Account, AccountCreated, Alias, Dkim, DkimList, DnsRecords, Domain, Me, Monitor, Queue, Relay, SetupState, Storage } from './types';
+import type { Account, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, Monitor, Queue, Relay, SetupState, Storage } from './types';
 import type { MessageKey } from '../i18n';
 
 /** A page of a list and the cursor of the next one. */
@@ -217,6 +217,18 @@ export class Client {
 
   async deleteAlias(address: string): Promise<void> {
     await this.call('DELETE', `/api/v1/aliases/${seg(address)}`);
+  }
+
+  admins(after?: number): Promise<Page<AdminEntry>> {
+    return this.call('GET', `/api/v1/admins${cursor(after)}`);
+  }
+
+  grantAdmin(address: string, domain: string | null): Promise<AdminEntry> {
+    return this.call('POST', '/api/v1/admins', { address, domain });
+  }
+
+  async revokeAdmin(address: string): Promise<void> {
+    await this.call('DELETE', `/api/v1/admins/${seg(address)}`);
   }
 
   async dkim(domain: string): Promise<Dkim[]> {

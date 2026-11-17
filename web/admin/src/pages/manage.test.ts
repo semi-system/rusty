@@ -496,3 +496,58 @@ describe('storage', () => {
     expect(screen.getByText(t('storage.platformOnly'))).toBeTruthy();
   });
 });
+
+describe('administrators', () => {
+  const ROOT = { id: 1, address: 'root@example.org', scope: 'platform', domain: null, created_at: 1700000000 };
+  const CAROL = { id: 2, address: 'carol@example.org', scope: 'domain', domain: 'example.org', created_at: 1700000100 };
+
+  it('lists the administrators with what each may manage and removes one, but never offers to remove oneself', async () => {
+    const s = await open('/administrators', PLATFORM, {
+      'GET /api/v1/admins': ok({ items: [ROOT, CAROL], next: null }),
+      'GET /api/v1/domains': ok({ items: [D1], next: null }),
+      'DELETE /api/v1/admins/carol%40example.org': ok(),
+    });
+    const table = await screen.findByRole('table', { name: t('admins.list') });
+    expect(within(table).getByText(t('admins.scopePlatform'))).toBeTruthy();
+    expect(within(table).getByText(t('admins.scopeDomain', { domain: 'example.org' }))).toBeTruthy();
+    expect(screen.queryByRole('button', { name: t('admins.remove', { address: 'root@example.org' }) })).toBeNull();
+    await fireEvent.click(screen.getByRole('button', { name: t('admins.remove', { address: 'carol@example.org' }) }));
+    expect(await screen.findByText(t('admins.removed', { address: 'carol@example.org' }))).toBeTruthy();
+    expect(s.last('DELETE /api/v1/admins/carol%40example.org')?.headers['X-CSRF-Token']).toBe(PLATFORM.csrf);
+  });
+
+  it('adds an administrator limited to a domain, or to every domain', async () => {
+    const s = await open('/administrators', PLATFORM, {
+      'GET /api/v1/admins': [ok({ items: [ROOT], next: null }), ok({ items: [ROOT, CAROL], next: null })],
+      'GET /api/v1/domains': ok({ items: [D1], next: null }),
+      'POST /api/v1/admins': created(CAROL),
+    });
+    await type(t('admins.address'), 'carol@example.org');
+    await screen.findByRole('option', { name: 'example.org' });
+    await fireEvent.change(screen.getByLabelText(t('admins.domain')), { target: { value: 'example.org' } });
+    await fireEvent.click(screen.getByRole('button', { name: t('admins.add') }));
+    expect(await screen.findByText(t('admins.added', { address: 'carol@example.org' }))).toBeTruthy();
+    expect(s.last('POST /api/v1/admins')?.body).toEqual({ address: 'carol@example.org', domain: 'example.org' });
+  });
+
+  it('says why the last platform administrator cannot be removed and why an account without a password cannot be added', async () => {
+    await open('/administrators', PLATFORM, {
+      'GET /api/v1/admins': ok({ items: [ROOT, { ...CAROL, id: 3, address: 'dave@example.org', scope: 'platform', domain: null }], next: null }),
+      'GET /api/v1/domains': ok({ items: [D1], next: null }),
+      'DELETE /api/v1/admins/dave%40example.org': fail(409, 'exists'),
+      'POST /api/v1/admins': fail(400, 'invalid'),
+    });
+    await fireEvent.click(await screen.findByRole('button', { name: t('admins.remove', { address: 'dave@example.org' }) }));
+    expect(await screen.findByText(t('admins.last'))).toBeTruthy();
+    await type(t('admins.address'), 'nopw@example.org');
+    await fireEvent.click(screen.getByRole('button', { name: t('admins.add') }));
+    expect(await screen.findByText(t('admins.noPassword'))).toBeTruthy();
+  });
+
+  it('shows a domain administrator the list and nothing to change', async () => {
+    await open('/administrators', TENANT, { 'GET /api/v1/admins': ok({ items: [CAROL], next: null }) });
+    await screen.findByRole('table', { name: t('admins.list') });
+    expect(screen.queryByRole('button', { name: t('common.remove') })).toBeNull();
+    expect(screen.queryByText(t('admins.new'))).toBeNull();
+  });
+});

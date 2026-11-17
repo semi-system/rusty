@@ -13,16 +13,18 @@
   import Relay from './Relay.svelte';
   import Storage from './Storage.svelte';
   import MonitorPage from './Monitor.svelte';
+  import Administrators from './Administrators.svelte';
   import NotFound from './NotFound.svelte';
   import Link from '../lib/Link.svelte';
 
   let { app, me }: { app: App; me: Me } = $props();
 
   // A route never ends in a domain name: the server answers a path that looks like a file with 404 (see docs/admin-web-frontend.md).
-  type Page = 'domains' | 'overview' | 'accounts' | 'aliases' | 'dkim' | 'dns' | 'relay' | 'storage' | 'monitor';
+  type Page = 'domains' | 'overview' | 'accounts' | 'aliases' | 'dkim' | 'dns' | 'relay' | 'storage' | 'monitor' | 'administrators';
   const routes: Route<Page>[] = [
     { pattern: '/', value: 'domains' },
     { pattern: '/monitor', value: 'monitor' },
+    { pattern: '/administrators', value: 'administrators' },
     { pattern: '/domains/{name}/overview', value: 'overview' },
     { pattern: '/domains/{name}/accounts', value: 'accounts' },
     { pattern: '/domains/{name}/aliases', value: 'aliases' },
@@ -49,6 +51,7 @@
     if (match === null) return [];
     if (match.value === 'domains') return [{ label: t('nav.domains') }];
     if (match.value === 'monitor') return [{ label: t('nav.monitor') }];
+    if (match.value === 'administrators') return [{ label: t('nav.administrators') }];
     const key = pageLabel[match.value];
     return [{ label: t('nav.domains'), to: '/' }, { label: name, to: href('/domains/{name}/overview', { name }) }, { label: key ? t(key) : '' }];
   });
@@ -76,6 +79,7 @@
       <div class="nav-group">
         <h2>{t('nav.manage')}</h2>
         <Link class="nav-link" href="/" current={nav.path === '/' || nav.path.startsWith('/domains/')}>{t('nav.domains')}</Link>
+        <Link class="nav-link" href="/administrators" current={nav.path === '/administrators'}>{t('nav.administrators')}</Link>
       </div>
       {#if me.scope === 'platform'}
         <div class="nav-group">
@@ -117,6 +121,8 @@
       <NotFound />
     {:else if match.value === 'domains'}
       <Domains {app} {me} />
+    {:else if match.value === 'administrators'}
+      <Administrators {app} {me} />
     {:else if match.value === 'monitor'}
       <!-- Only for platform administrators: for anyone else the page does not exist (the API says 403 as well). -->
       {#if me.scope === 'platform'}<MonitorPage {app} />{:else}<NotFound />{/if}

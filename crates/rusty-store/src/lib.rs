@@ -43,6 +43,7 @@ pub use blob_stores::{STORE_REFRESH, BackendOpener, BlobRouter, BlobStores, FsSt
 pub use pool::{Breaker, Placement, PoolPolicy, PoolStore, ReadRule, RepairReport};
 pub use relay::{tls_of, tls_text, RelayStore, CHECK_STATUSES};
 pub use admin::{AdminStore, MAX_ADMIN_PAGE};
+pub use repo::{AdminEntry, Revoked};
 pub use feed::{ChangeFeed, ChangeSink, PgChangeFeed, CHANNEL_JOBS, CHANNEL_MAILBOX};
 pub use jobs::{
     ClaimedJob, JobQueue, DEFAULT_JOB_ATTEMPTS, JOB_RETENTION_SECS, MAX_CLAIM_KINDS,
