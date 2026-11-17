@@ -121,8 +121,8 @@ jobs:
   # scan gate before pushing. Both actions are pinned by commit SHA (never @main).
   publish-no-scan:
     name: publish (no-scan, ${{ matrix.service }})
-    if: ${{ vars.DOCKER_PUBLISH_MODE != 'strict' && (github.event_name != 'pull_request' || needs.meta.outputs.workflow-changed == 'true') }}
-    needs: [meta, smoke]
+    if: ${{ needs.meta.outputs.image-changed == 'true' && vars.DOCKER_PUBLISH_MODE != 'strict' && (github.event_name != 'pull_request' || needs.meta.outputs.workflow-changed == 'true') }}
+    needs: meta
     strategy:
       fail-fast: false
       matrix:
@@ -176,8 +176,8 @@ jobs:
 
   publish-strict:
     name: publish (strict, ${{ matrix.service }})
-    if: ${{ vars.DOCKER_PUBLISH_MODE == 'strict' && (github.event_name != 'pull_request' || needs.meta.outputs.workflow-changed == 'true') }}
-    needs: [meta, smoke]
+    if: ${{ needs.meta.outputs.image-changed == 'true' && vars.DOCKER_PUBLISH_MODE == 'strict' && (github.event_name != 'pull_request' || needs.meta.outputs.workflow-changed == 'true') }}
+    needs: meta
     strategy:
       fail-fast: false
       matrix:
@@ -231,10 +231,13 @@ jobs:
 
   # Neither publish action signs or attests. Everything below refers to the pushed DIGEST, never
   # to a tag, and runs only when something was pushed.
+  # The publish build runs beside the smoke tests (it used to wait for them, which doubled the time of a push to main). What the smoke tests gate is the signature: nothing is
+  # signed, attested or taken into a release kit (kit.yml needs this whole workflow to succeed, and the pin script only takes signed images) unless they passed. A tag pushed
+  # before they finish (`main`, `sha-...`) is unsigned and not used by any deployment path.
   sign:
     name: sign, SBOM and provenance (${{ matrix.service }})
-    if: ${{ always() && github.event_name != 'pull_request' && (needs.publish-no-scan.result == 'success' || needs.publish-strict.result == 'success') }}
-    needs: [meta, publish-no-scan, publish-strict]
+    if: ${{ always() && github.event_name != 'pull_request' && needs.smoke.result == 'success' && (needs.publish-no-scan.result == 'success' || needs.publish-strict.result == 'success') }}
+    needs: [meta, smoke, publish-no-scan, publish-strict]
     strategy:
       fail-fast: false
       matrix:
@@ -299,7 +302,7 @@ jobs:
   # the publish action's own gate is the blocking one. Reviewed exceptions: .trivyignore only.
   trivy:
     name: Trivy report (${{ matrix.service }})
-    if: ${{ always() && github.event_name != 'pull_request' && (needs.publish-no-scan.result == 'success' || needs.publish-strict.result == 'success') }}
+    if: ${{ always() && github.event_name != 'pull_request' && needs.smoke.result == 'success' && (needs.publish-no-scan.result == 'success' || needs.publish-strict.result == 'success') }}
     needs: [meta, publish-no-scan, publish-strict]
     strategy:
       fail-fast: false
