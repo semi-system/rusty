@@ -302,7 +302,7 @@ jobs:
   # the publish action's own gate is the blocking one. Reviewed exceptions: .trivyignore only.
   trivy:
     name: Trivy report (${{ matrix.service }})
-    if: ${{ always() && github.event_name != 'pull_request' && needs.smoke.result == 'success' && (needs.publish-no-scan.result == 'success' || needs.publish-strict.result == 'success') }}
+    if: ${{ always() && github.event_name != 'pull_request' && (needs.publish-no-scan.result == 'success' || needs.publish-strict.result == 'success') }}
     needs: [meta, publish-no-scan, publish-strict]
     strategy:
       fail-fast: false
