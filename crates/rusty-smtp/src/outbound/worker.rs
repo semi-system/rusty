@@ -158,7 +158,11 @@ impl Service for OutboundWorker {
                 () = shutdown.cancelled() => break,
                 p = slots.clone().acquire_owned() => match p { Ok(p) => p, Err(_) => break },
             };
-            let claimed = ctx.jobs.claim_capped(&self.inner.opts.name, &[OUTBOUND_JOB_KIND], cfg.lease_secs, cfg.max_concurrent_per_tenant).await;
+            // Every tenant gets its turn under the per-tenant cap first; a slot that would stay idle then goes to a tenant that still has jobs, up to the burst cap (docs/design-fair-claim.md).
+            let mut claimed = ctx.jobs.claim_capped(&self.inner.opts.name, &[OUTBOUND_JOB_KIND], cfg.lease_secs, cfg.max_concurrent_per_tenant).await;
+            if matches!(claimed, Ok(None)) && cfg.max_concurrent_per_tenant_burst > cfg.max_concurrent_per_tenant {
+                claimed = ctx.jobs.claim_capped(&self.inner.opts.name, &[OUTBOUND_JOB_KIND], cfg.lease_secs, cfg.max_concurrent_per_tenant_burst).await;
+            }
             match claimed {
                 Ok(Some(job)) => {
                     let inner = self.inner.clone();

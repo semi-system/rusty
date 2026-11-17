@@ -36,3 +36,7 @@ Owner: each worker should take one tenant, and the workers run side by side. `[o
 * **No worker per tenant as a process, task or connection.** The workers are the existing delivery tasks of the outbound service (`max_concurrent` of them, default 20), served tenants in turn; connections to the database are held only for the short claim transaction, not while a mail is sent, so the connection count (and PgBouncer's pool) does not grow with the number of tenants. The advisory lock is transaction-scoped, which transaction pooling keeps.
 * The cost is throughput for a tenant alone: with the default of 1, a tenant's mails go one after another (the old behaviour let it use all 20 deliveries). Raise the number for installations with few, large tenants, or per plan later.
 * `max_concurrent_per_domain` (deliveries to one destination domain) is a different limit and stays.
+
+## Idle workers are reused (burst)
+
+A cap of 1 would leave 19 of the 20 delivery slots idle when one tenant is alone. After a claim under `max_concurrent_per_tenant` finds nothing, the worker claims again under `max_concurrent_per_tenant_burst` (default **5**; at least the per-tenant cap; equal to it turns the reuse off). The first claim is always the strict one, so as soon as a slot frees, a tenant under its cap goes before any tenant bursting; the burst cap (and not all 20 slots) bounds how long a new tenant can wait behind a bursting one: until one of that tenant's mails ends.
