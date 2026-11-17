@@ -78,15 +78,15 @@ frontend imaps_in
 #SELF     bind :993 ssl crt /var/lib/haproxy/certs/mail.pem
     default_backend be_imaps
 
-# POP3 (setup.sh --pop3, POP3=1 in swarm.env; docs/design-pop3.md): a listener of the IMAP service, off unless asked for. These lines are comments until then.
-#POP3 frontend pop3_in
-#POP3     bind :110
-#POP3     default_backend be_pop3
-#POP3
-#POP3 frontend pop3s_in
-#POP3ACME     bind :995 ssl crt "@certs/mail.pem"
-#POP3SELF     bind :995 ssl crt /var/lib/haproxy/certs/mail.pem
-#POP3     default_backend be_pop3s
+# POP3 (docs/design-pop3.md): a listener of the IMAP service, always open here; whether it answers is a switch in the database (the admin web, docs/design-protocols.md).
+frontend pop3_in
+    bind :110
+    default_backend be_pop3
+
+frontend pop3s_in
+#ACME     bind :995 ssl crt "@certs/mail.pem"
+#SELF     bind :995 ssl crt /var/lib/haproxy/certs/mail.pem
+    default_backend be_pop3s
 
 # HTTPS on 443 for two host names. The admin host: from the allow-listed networks only. The mail host: only the auto-setup of mail clients that need HTTPS (Outlook's Autodiscover, and
 # the profile Apple Mail installs, and the Mozilla answer again), which the admin service answers without a session; everything else on the mail host is refused. A tenant domain's
@@ -129,12 +129,12 @@ backend be_imap
 backend be_imaps
     server-template imap 1-8 imap:1993 resolvers docker init-addr none check inter 5s send-proxy-v2
 
-#POP3 backend be_pop3
-#POP3     server-template imap 1-8 imap:1110 resolvers docker init-addr none check inter 5s send-proxy-v2
-#POP3
-#POP3 backend be_pop3s
-#POP3     server-template imap 1-8 imap:1995 resolvers docker init-addr none check inter 5s send-proxy-v2
-#POP3
+backend be_pop3
+    server-template imap 1-8 imap:1110 resolvers docker init-addr none check inter 5s send-proxy-v2
+
+backend be_pop3s
+    server-template imap 1-8 imap:1995 resolvers docker init-addr none check inter 5s send-proxy-v2
+
 backend be_admin
     mode http
     server-template admin 1-4 admin:8080 resolvers docker init-addr none check inter 5s

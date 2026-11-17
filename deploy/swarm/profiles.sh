@@ -8,7 +8,7 @@
 # The filters are found by NAME (clamd, rspamd). The one thing that needs an address is the resolver: rspamd and smtp-in take their nameserver as an address, so the tool reads the virtual address
 # the swarm gave the resolver service on the filter network (it stays the same as long as the service exists) and writes it into their configuration; `init` therefore starts the resolver first.
 
-FILTER="${FILTER:-0}"; VALKEY="${VALKEY:-0}"; POP3="${POP3:-0}"   # POP3=1: the IMAP service also listens for POP3 (the edge passes 110 and ends TLS on 995; docs/design-pop3.md)
+FILTER="${FILTER:-0}"; VALKEY="${VALKEY:-0}"
 KV_ROLES=(submission imap admin)
 
 # ---- the resolver's address ---------------------------------------------------------------------------------------------------------------------------------------------------------------------

@@ -30,9 +30,6 @@ pub struct AdminConfig {
     /// Mail leaves through a relay: the reverse records of our own addresses are not our business.
     #[serde(default)]
     pub via_relay: bool,
-    /// The IMAP service also listens for POP3 (`[imap] listen_995`): the Mozilla auto-setup then lists it as a second incoming server. Off by default, like POP3.
-    #[serde(default)]
-    pub pop3: bool,
     /// The only networks that may connect (the edge, for a service that sits behind it): any other peer is dropped before a byte is read. Empty: any peer (development).
     /// At most 16 blocks, never one that holds every address.
     #[serde(default)]

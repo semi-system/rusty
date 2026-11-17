@@ -12,6 +12,7 @@ use rusty_store::{BlobRouter, BlobStore, BlobStores, FsStoreOpener, Gc, JobQueue
 use crate::events::{ServiceEvents, TracingEvents};
 use crate::hub::MailboxHub;
 use crate::quota::{QuotaPolicy, SizeCap};
+use crate::protocols::ProtocolSwitches;
 use crate::throttle::{AuthThrottle, RateLimiter};
 use crate::tls::TlsProvider;
 
@@ -31,6 +32,8 @@ pub struct Context {
     pub events: Arc<dyn ServiceEvents>,
     pub rate: Arc<dyn RateLimiter>,
     pub quota: Arc<dyn QuotaPolicy>,
+    /// The operator's protocol switches (read from the database, cached).
+    pub protocols: ProtocolSwitches,
 }
 
 impl Context {
@@ -74,6 +77,7 @@ impl Context {
             events: Arc::new(TracingEvents),
             rate: Arc::new(AuthThrottle::from_limits(&cfg.limits)),
             quota: Arc::new(SizeCap { max_message_bytes: cfg.max_message_bytes }),
+            protocols: ProtocolSwitches::new(repos.settings.clone()),
             cfg,
         })
     }

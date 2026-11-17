@@ -33,8 +33,6 @@ const MAX_TOKEN: usize = 128;
 /// The operator's facts the DNS page needs (from `[admin]` and the shared `hostname`).
 #[derive(Debug, Clone)]
 pub struct MailSettings {
-    /// POP3 is on (the IMAP service listens for it): the auto-setup of Thunderbird says so.
-    pub pop3: bool,
     pub host: String,
     pub public_ips: Vec<std::net::IpAddr>,
     pub spf_include: Option<String>,
@@ -52,6 +50,8 @@ pub struct Services {
     pub jobs: rusty_store::JobQueue,
     /// The heartbeats and the figures of the monitor page (docs/design-admin-monitor.md).
     pub monitor: Arc<dyn rusty_store::HeartbeatRepo>,
+    /// The protocol switches (docs/design-protocols.md).
+    pub settings: Arc<dyn rusty_store::SettingsRepo>,
     /// `[sealing] public_key`: what secrets are sealed to. `None`: nothing can be sealed, the endpoints that need it answer `503 unavailable`.
     pub sealing: Option<rusty_seal::SealingKey>,
     /// `None` (no host name configured): the DNS page answers `503 unavailable`.

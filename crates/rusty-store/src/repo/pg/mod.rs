@@ -11,6 +11,7 @@ mod blob_store;
 mod blob_pool;
 mod heartbeat;
 mod relay;
+mod settings;
 mod admin;
 pub mod tx;
 

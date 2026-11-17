@@ -247,7 +247,7 @@ impl StartupConfig {
 
     /// The listeners that accept authentication (submission and IMAP). Port 25 never does.
     pub fn authenticated_listeners(&self) -> usize {
-        [self.smtp.listen_587, self.smtp.listen_465, self.imap.listen_143, self.imap.listen_993]
+        [self.smtp.listen_587, self.smtp.listen_465, self.imap.listen_143, self.imap.listen_993, self.imap.listen_110, self.imap.listen_995]
             .iter()
             .filter(|l| l.addr().is_some())
             .count()
@@ -267,6 +267,8 @@ impl StartupConfig {
             (Role::Submission, self.smtp.listen_465, !self.smtp.proxy_protocol),
             (Role::Imap, self.imap.listen_143, true),
             (Role::Imap, self.imap.listen_993, !self.imap.proxy_protocol),
+            (Role::Imap, self.imap.listen_110, true),
+            (Role::Imap, self.imap.listen_995, !self.imap.proxy_protocol),
         ]
         .iter()
         .filter(|(r, l, needs)| *needs && l.addr().is_some() && role.is_none_or(|x| x == *r))
@@ -312,6 +314,8 @@ impl StartupConfig {
             (Role::Submission, self.smtp.listen_465),
             (Role::Imap, self.imap.listen_143),
             (Role::Imap, self.imap.listen_993),
+            (Role::Imap, self.imap.listen_110),
+            (Role::Imap, self.imap.listen_995),
         ]
         .iter()
         .filter(|(r, l)| l.addr().is_some() && role.is_none_or(|x| x == *r))
@@ -373,6 +377,8 @@ impl StartupConfig {
             imap: ImapConfig {
                 listen_143: Listen::loopback(1143),
                 listen_993: Listen::loopback(9993),
+                listen_110: Listen::loopback(1110),
+                listen_995: Listen::loopback(9995),
                 ..ImapConfig::default()
             },
             outbound: OutboundConfig::default(),

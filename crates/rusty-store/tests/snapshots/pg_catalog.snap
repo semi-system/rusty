@@ -178,6 +178,9 @@ COLUMN messages.blob_store_id bigint nullable=NO identity=NO/ collation= default
 COLUMN plans.id bigint nullable=NO identity=YES/ALWAYS collation= default=
 COLUMN plans.name text nullable=NO identity=NO/ collation=C default=
 COLUMN plans.config jsonb nullable=NO identity=NO/ collation= default='{}'::jsonb
+COLUMN platform_settings.key text nullable=NO identity=NO/ collation=C default=
+COLUMN platform_settings.enabled boolean nullable=NO identity=NO/ collation= default=
+COLUMN platform_settings.updated_at bigint nullable=NO identity=NO/ collation= default=
 COLUMN sealed_secrets.owner_kind text nullable=NO identity=NO/ collation=C default=
 COLUMN sealed_secrets.owner_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN sealed_secrets.purpose text nullable=NO identity=NO/ collation=C default=
@@ -502,6 +505,12 @@ CONSTRAINT plans.plans_name_key UNIQUE (name)
 CONSTRAINT plans.plans_name_not_null NOT NULL name
 CONSTRAINT plans.plans_name_valid CHECK (length(name) > 0)
 CONSTRAINT plans.plans_pkey PRIMARY KEY (id)
+CONSTRAINT platform_settings.platform_settings_enabled_not_null NOT NULL enabled
+CONSTRAINT platform_settings.platform_settings_key_not_null NOT NULL key
+CONSTRAINT platform_settings.platform_settings_key_valid CHECK (key = 'protocol_pop3'::text)
+CONSTRAINT platform_settings.platform_settings_pkey PRIMARY KEY (key)
+CONSTRAINT platform_settings.platform_settings_updated_at_not_null NOT NULL updated_at
+CONSTRAINT platform_settings.platform_settings_updated_valid CHECK (updated_at >= 0)
 CONSTRAINT sealed_secrets.sealed_secrets_created_at_not_null NOT NULL created_at
 CONSTRAINT sealed_secrets.sealed_secrets_key_id_not_null NOT NULL key_id
 CONSTRAINT sealed_secrets.sealed_secrets_key_id_valid CHECK (key_id ~ '^[0-9a-f]{16}$'::text)
@@ -585,6 +594,7 @@ INDEX messages.messages_pkey CREATE UNIQUE INDEX messages_pkey ON public.message
 INDEX messages.messages_thread CREATE INDEX messages_thread ON public.messages USING btree (mailbox_id, thread_id)
 INDEX plans.plans_name_key CREATE UNIQUE INDEX plans_name_key ON public.plans USING btree (name)
 INDEX plans.plans_pkey CREATE UNIQUE INDEX plans_pkey ON public.plans USING btree (id)
+INDEX platform_settings.platform_settings_pkey CREATE UNIQUE INDEX platform_settings_pkey ON public.platform_settings USING btree (key)
 INDEX sealed_secrets.sealed_secrets_pkey CREATE UNIQUE INDEX sealed_secrets_pkey ON public.sealed_secrets USING btree (owner_kind, owner_id, purpose)
 INDEX service_heartbeats.service_heartbeats_pkey CREATE UNIQUE INDEX service_heartbeats_pkey ON public.service_heartbeats USING btree (service, instance)
 INDEX service_heartbeats.service_heartbeats_seen CREATE INDEX service_heartbeats_seen ON public.service_heartbeats USING btree (last_seen)

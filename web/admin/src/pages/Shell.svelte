@@ -14,6 +14,7 @@
   import Relay from './Relay.svelte';
   import Storage from './Storage.svelte';
   import MonitorPage from './Monitor.svelte';
+  import ProtocolsPage from './Protocols.svelte';
   import Administrators from './Administrators.svelte';
   import NotFound from './NotFound.svelte';
   import Link from '../lib/Link.svelte';
@@ -21,10 +22,11 @@
   let { app, me }: { app: App; me: Me } = $props();
 
   // A route never ends in a domain name: the server answers a path that looks like a file with 404 (see docs/admin-web-frontend.md).
-  type Page = 'domains' | 'overview' | 'accounts' | 'aliases' | 'dkim' | 'dns' | 'relay' | 'storage' | 'monitor' | 'administrators';
+  type Page = 'domains' | 'overview' | 'accounts' | 'aliases' | 'dkim' | 'dns' | 'relay' | 'storage' | 'monitor' | 'protocols' | 'administrators';
   const routes: Route<Page>[] = [
     { pattern: '/', value: 'domains' },
     { pattern: '/monitor', value: 'monitor' },
+    { pattern: '/protocols', value: 'protocols' },
     { pattern: '/administrators', value: 'administrators' },
     { pattern: '/domains/{name}/overview', value: 'overview' },
     { pattern: '/domains/{name}/accounts', value: 'accounts' },
@@ -52,6 +54,7 @@
     if (match === null) return [];
     if (match.value === 'domains') return [{ label: t('nav.domains') }];
     if (match.value === 'monitor') return [{ label: t('nav.monitor') }];
+    if (match.value === 'protocols') return [{ label: t('nav.protocols') }];
     if (match.value === 'administrators') return [{ label: t('nav.administrators') }];
     const key = pageLabel[match.value];
     return [{ label: t('nav.domains'), to: '/' }, { label: name, to: href('/domains/{name}/overview', { name }) }, { label: key ? t(key) : '' }];
@@ -92,6 +95,7 @@
         <div class="nav-group">
           <h2>{t('nav.monitoring')}</h2>
           <Link class="nav-link" href="/monitor" current={nav.path === '/monitor'}>{t('nav.monitor')}</Link>
+          <Link class="nav-link" href="/protocols" current={nav.path === '/protocols'}>{t('nav.protocols')}</Link>
         </div>
       {/if}
     </nav>
@@ -134,6 +138,8 @@
     {:else if match.value === 'monitor'}
       <!-- Only for platform administrators: for anyone else the page does not exist (the API says 403 as well). -->
       {#if me.scope === 'platform'}<MonitorPage {app} />{:else}<NotFound />{/if}
+    {:else if match.value === 'protocols'}
+      {#if me.scope === 'platform'}<ProtocolsPage {app} />{:else}<NotFound />{/if}
     {:else}
       <!-- Keyed by the domain and the page: moving to another domain starts the page afresh. -->
       {#key nav.path}

@@ -221,3 +221,12 @@ export interface Monitor {
   storage: MonitorCount[];
   dns_problem_domains: number;
 }
+
+export interface Protocol {
+  name: string;
+  enabled: boolean;
+}
+
+export interface Protocols {
+  protocols: Protocol[];
+}

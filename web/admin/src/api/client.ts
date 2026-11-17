@@ -1,7 +1,7 @@
 // The API client: the contract's endpoints as typed calls. It knows the three rules of a state-changing request (design section 5): the JSON content type,
 // the CSRF token of the session (the browser adds `Origin` itself) and that a failure is a fixed code, never text to show.
 
-import type { Account, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, Monitor, Queue, Relay, SetupState, Storage } from './types';
+import type { Account, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, Monitor, Protocols, Queue, Relay, SetupState, Storage } from './types';
 import type { MessageKey } from '../i18n';
 
 /** A page of a list, the cursor of the next one and how many rows match in all. */
@@ -324,5 +324,15 @@ export class Client {
   /** The services, the outbound queue, the storage checks and the DNS problems (platform administrators only). */
   monitor(): Promise<Monitor> {
     return this.call('GET', '/api/v1/monitor');
+  }
+
+  /** The optional protocols and whether each is on (platform administrators only). */
+  protocols(): Promise<Protocols> {
+    return this.call('GET', '/api/v1/protocols');
+  }
+
+  /** Switch a protocol on or off for every replica of the mail services. */
+  setProtocol(protocol: string, enabled: boolean): Promise<Protocols> {
+    return this.call('PUT', '/api/v1/protocols', { protocol, enabled });
   }
 }
