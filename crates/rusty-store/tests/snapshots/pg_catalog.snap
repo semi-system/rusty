@@ -185,6 +185,8 @@ COLUMN plans.config jsonb nullable=NO identity=NO/ collation= default='{}'::json
 COLUMN platform_settings.key text nullable=NO identity=NO/ collation=C default=
 COLUMN platform_settings.enabled boolean nullable=NO identity=NO/ collation= default=
 COLUMN platform_settings.updated_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN schema_compat.version bigint nullable=NO identity=NO/ collation= default=
+COLUMN schema_compat.min_binary bigint nullable=NO identity=NO/ collation= default=
 COLUMN sealed_secrets.owner_kind text nullable=NO identity=NO/ collation=C default=
 COLUMN sealed_secrets.owner_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN sealed_secrets.purpose text nullable=NO identity=NO/ collation=C default=
@@ -523,6 +525,11 @@ CONSTRAINT platform_settings.platform_settings_key_valid CHECK (key = 'protocol_
 CONSTRAINT platform_settings.platform_settings_pkey PRIMARY KEY (key)
 CONSTRAINT platform_settings.platform_settings_updated_at_not_null NOT NULL updated_at
 CONSTRAINT platform_settings.platform_settings_updated_valid CHECK (updated_at >= 0)
+CONSTRAINT schema_compat.schema_compat_min_binary_not_null NOT NULL min_binary
+CONSTRAINT schema_compat.schema_compat_min_valid CHECK (min_binary >= 0)
+CONSTRAINT schema_compat.schema_compat_pkey PRIMARY KEY (version)
+CONSTRAINT schema_compat.schema_compat_version_not_null NOT NULL version
+CONSTRAINT schema_compat.schema_compat_version_valid CHECK (version >= 1)
 CONSTRAINT sealed_secrets.sealed_secrets_created_at_not_null NOT NULL created_at
 CONSTRAINT sealed_secrets.sealed_secrets_key_id_not_null NOT NULL key_id
 CONSTRAINT sealed_secrets.sealed_secrets_key_id_valid CHECK (key_id ~ '^[0-9a-f]{16}$'::text)
@@ -609,6 +616,7 @@ INDEX messages.messages_thread CREATE INDEX messages_thread ON public.messages U
 INDEX plans.plans_name_key CREATE UNIQUE INDEX plans_name_key ON public.plans USING btree (name)
 INDEX plans.plans_pkey CREATE UNIQUE INDEX plans_pkey ON public.plans USING btree (id)
 INDEX platform_settings.platform_settings_pkey CREATE UNIQUE INDEX platform_settings_pkey ON public.platform_settings USING btree (key)
+INDEX schema_compat.schema_compat_pkey CREATE UNIQUE INDEX schema_compat_pkey ON public.schema_compat USING btree (version)
 INDEX sealed_secrets.sealed_secrets_pkey CREATE UNIQUE INDEX sealed_secrets_pkey ON public.sealed_secrets USING btree (owner_kind, owner_id, purpose)
 INDEX service_heartbeats.service_heartbeats_pkey CREATE UNIQUE INDEX service_heartbeats_pkey ON public.service_heartbeats USING btree (service, instance)
 INDEX service_heartbeats.service_heartbeats_seen CREATE INDEX service_heartbeats_seen ON public.service_heartbeats USING btree (last_seen)

@@ -14,7 +14,7 @@ default = []
 test-knobs = ["tokio/sync"]
 # Raw SQL fixtures and the Postgres test-database helper for other crates tests. Enable it ONLY from
 # [dev-dependencies]; scripts/check-test-fixtures.sh enforces that and that a release build has none of it.
-test-fixtures = ["tokio/rt", "dep:url", "dep:tracing"]
+test-fixtures = ["tokio/rt", "dep:url"]
 # SQL mutation hook for scripts/pg-mutate.sh (src/mutation.rs). No manifest enables it; the runner passes it
 # on the command line, and scripts/check-mutation-hook.sh proves a release build contains none of it.
 mutation-testing = []
@@ -34,7 +34,7 @@ serde_json.workspace = true
 hex.workspace = true
 sha2.workspace = true
 url = { workspace = true, optional = true }
-tracing = { workspace = true, optional = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 rusty-store = { path = ".", features = ["test-knobs", "test-fixtures"] }
