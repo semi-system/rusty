@@ -1,0 +1,13 @@
+USER alice
+PASS correct-horse
+STAT
+LIST
+UIDL
+RETR 1
+RETR 2
+RETR 3
+TOP 1 1
+DELE 1
+RSET
+DELE 2
+QUIT

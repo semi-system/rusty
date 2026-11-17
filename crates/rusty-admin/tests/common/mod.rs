@@ -89,7 +89,7 @@ async fn build(with_sealing: bool) -> Rig {
         jobs: rusty_store::JobQueue::with_repo(repos.jobs.clone()),
         monitor: repos.heartbeat.clone(),
         sealing: with_sealing.then_some(seal_key),
-        mail: Some(MailSettings { host: "mail.example.org".into(), public_ips: vec!["203.0.114.5".parse().unwrap()], spf_include: None }),
+        mail: Some(MailSettings { host: "mail.example.org".into(), pop3: false, public_ips: vec!["203.0.114.5".parse().unwrap()], spf_include: None }),
     };
     let app = Arc::new(AdminApp::new(auth, dir.clone(), admins.clone(), None, ORIGIN, SessionConfig::default()).with_services(services).with_live(rusty_admin::live::Hub::with_timing(Duration::from_millis(300), Duration::from_millis(200))));
     let router = rusty_admin::autoconfig::routes(app.clone(), rusty_admin::dns::routes(app.clone(), outbound_routes(app.clone(), storage_routes(app.clone(), manage_routes(app.clone(), session_routes(app.clone(), Router::new()))))));

@@ -16,6 +16,7 @@ rusty-core = { path = "../crates/rusty-core" }
 rusty-svc = { path = "../crates/rusty-svc", default-features = false }
 rusty-seal = { path = "../crates/rusty-seal" }
 rusty-imap = { path = "../crates/rusty-imap" }
+rusty-pop3 = { path = "../crates/rusty-pop3" }
 rusty-ctl = { path = "../crates/rusty-ctl" }
 rusty-smtp = { path = "../crates/rusty-smtp" }
 rusty-http = { path = "../crates/rusty-http" }
@@ -197,3 +198,15 @@ path = "fuzz_targets/fuzz_unseal.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_pop3_command"
+path = "fuzz_targets/fuzz_pop3_command.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_pop3_session"
+path = "fuzz_targets/fuzz_pop3_session.rs"
+test = false
+doc = false

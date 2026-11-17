@@ -17,6 +17,10 @@ pub enum ListenerKind {
     Imap143,
     /// IMAP over implicit TLS.
     Imaps993,
+    /// POP3 with STLS (a listener of the IMAP service).
+    Pop3110,
+    /// POP3 over implicit TLS.
+    Pop3s995,
 }
 
 impl ListenerKind {
@@ -27,12 +31,14 @@ impl ListenerKind {
             ListenerKind::Submissions465 => "submissions-465",
             ListenerKind::Imap143 => "imap-143",
             ListenerKind::Imaps993 => "imaps-993",
+            ListenerKind::Pop3110 => "pop3-110",
+            ListenerKind::Pop3s995 => "pop3s-995",
         }
     }
 
     /// The TLS handshake happens before the first byte of the protocol.
     pub fn implicit_tls(self) -> bool {
-        matches!(self, ListenerKind::Submissions465 | ListenerKind::Imaps993)
+        matches!(self, ListenerKind::Submissions465 | ListenerKind::Imaps993 | ListenerKind::Pop3s995)
     }
 
     /// The service accepts credentials on this port.
@@ -40,8 +46,13 @@ impl ListenerKind {
         !matches!(self, ListenerKind::Smtp25)
     }
 
+    /// A port of the IMAP service (POP3 is one of its listeners and shares `[imap]`'s connection limits, proxy settings and trusted edge).
     pub fn is_imap(self) -> bool {
-        matches!(self, ListenerKind::Imap143 | ListenerKind::Imaps993)
+        matches!(self, ListenerKind::Imap143 | ListenerKind::Imaps993 | ListenerKind::Pop3110 | ListenerKind::Pop3s995)
+    }
+
+    pub fn is_pop3(self) -> bool {
+        matches!(self, ListenerKind::Pop3110 | ListenerKind::Pop3s995)
     }
 
     /// The service (role) that owns this port: smtp-in has 25, submission 587 and 465, imap 143 and 993. Outbound and gc have no port.
@@ -49,7 +60,7 @@ impl ListenerKind {
         match self {
             ListenerKind::Smtp25 => Role::SmtpIn,
             ListenerKind::Submission587 | ListenerKind::Submissions465 => Role::Submission,
-            ListenerKind::Imap143 | ListenerKind::Imaps993 => Role::Imap,
+            ListenerKind::Imap143 | ListenerKind::Imaps993 | ListenerKind::Pop3110 | ListenerKind::Pop3s995 => Role::Imap,
         }
     }
 }
@@ -90,6 +101,8 @@ pub fn listener_plan(cfg: &StartupConfig) -> Vec<PlannedListener> {
         smtp(ListenerKind::Submissions465, cfg.smtp.listen_465),
         imap(ListenerKind::Imap143, cfg.imap.listen_143),
         imap(ListenerKind::Imaps993, cfg.imap.listen_993),
+        imap(ListenerKind::Pop3110, cfg.imap.listen_110),
+        imap(ListenerKind::Pop3s995, cfg.imap.listen_995),
     ]
     .into_iter()
     .flatten()

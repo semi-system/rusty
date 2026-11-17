@@ -10,7 +10,7 @@ Some clients and devices (old phones, scanners, a script that fetches mail, a mi
 
 * **No new service, image or database role.** POP3 reads and expunges messages of one account's mailbox, which is exactly what the IMAP service's role (`rusty_imap`) is for: it holds `SELECT` on the mailbox rows and `DELETE` on messages, and the same password check, the same throttle, the same TLS material, the same blob access and the same change feed. A separate service would need the same grants, so it would add an image, a stack entry and a heartbeat for nothing.
 * **A crate of its own, `rusty-pop3`**, so the parser and the session machine can be fuzzed and tested without the IMAP service (the layers of `rusty-imap`: a codec with no I/O, a session that answers with bytes, a driver that owns the stream). The IMAP service's daemon starts its listeners next to the IMAP ones (`ListenerKind::Pop3`, `Pop3s`).
-* **Ports.** `995` implicit TLS (ended at the edge, like 993) and `110` with `STLS` (passed through with the PROXY protocol, like 143). In `[pop3]`: `listen_110`, `listen_995`, `proxy_protocol`, `trusted_proxies`, `trusted_proxy_hosts` (the same rules as `[imap]`), `max_connections`, `max_connections_per_ip`.
+* **Ports.** `995` implicit TLS (ended at the edge, like 993) and `110` with `STLS` (passed through with the PROXY protocol, like 143). In `[imap]` (the service's own section, so the connection limits, the PROXY protocol and the trusted edge are the IMAP service's, not a second set to keep in step): `listen_110` and `listen_995`, both off until an address is named.
 * **When the service is down** POP3 is down with IMAP (one process); clients retry. When the database is down a login answers `-ERR [SYS/TEMP]` and nothing is deleted.
 * **Heartbeat and metrics** are the IMAP service's: the heartbeat detail says how many listeners are up (the count grows by two), and the listener counters carry `listener="pop3"` / `"pop3s"`.
 
@@ -20,7 +20,7 @@ Some clients and devices (old phones, scanners, a script that fetches mail, a mi
 |---|---|
 | `CAPA` | `TOP UIDL USER RESP-CODES PIPELINING UTF8 EXPIRE NEVER LOGIN-DELAY 0 IMPLEMENTATION rusty`, `STLS` before TLS on 110, `SASL PLAIN` after TLS. |
 | `STLS` | on 110 only, before authentication: `+OK`, then TLS; the session starts over (RFC 2595). On 995 or after TLS: `-ERR`. |
-| `USER` / `PASS` | **only inside TLS.** On plain 110 `USER` answers `-ERR [AUTH] TLS required` (a password is never accepted in clear text; the setting `allow_plain_login` is for test networks, as for IMAP). |
+| `USER` / `PASS` | **only inside TLS.** On plain 110 `USER` answers `-ERR [AUTH] TLS is required before a password` (a password is never accepted in clear text; as in the IMAP service there is no setting that allows it: only the tests of the listener can). |
 | `AUTH PLAIN` | the same check, with the initial response or a continuation; only inside TLS. |
 | `APOP` | **not offered**: it needs the plain secret on the server, and passwords here are only stored as argon2 hashes. |
 | `STAT` `LIST` `UIDL` `RETR` `TOP` `DELE` `NOOP` `RSET` `QUIT` | as the RFCs say, on the **Inbox** snapshot taken at login. |
@@ -34,6 +34,7 @@ Details that matter:
 * **`DELE`** marks; **nothing leaves the server before `QUIT`** reaches the UPDATE state, which expunges what was marked in one batch (`expunge_many`). A connection that drops, times out or is cut leaves every message where it was (RFC 1939 section 6). `RSET` unmarks.
 * **Concurrency.** RFC 1939 asks for an exclusive lock of the maildrop. This server does not lock: the same account is read by IMAP at once by design, and a second POP3 session would only see the same snapshot and delete the same messages, which is harmless (the second `QUIT` finds them gone). `[IN-USE]` is therefore never answered.
 * **The mailbox's other folders** are not reachable. A message the person marked `\Deleted` in IMAP but did not expunge is not in the snapshot (it is as good as gone).
+* **Memory.** A `RETR` reserves four times the size of the message from the same budget of messages in flight that SMTP `DATA` and IMAP `APPEND` draw on (the bytes read, the normalised copy, the byte-stuffed reply and its write buffer), before it reads the message: a service short of memory answers `-ERR [SYS/TEMP] busy` and the message stays where it is. The reservation is given back when the reply is made.
 * **Quota and policy** are the IMAP service's: a closed or locked account cannot sign in (`-ERR [AUTH]`), and what an account may do is what IMAP lets it do.
 
 ## 4. Limits (hostile input and slow clients)
@@ -46,9 +47,10 @@ Details that matter:
 
 ## 5. Edge and deployment
 
+* **Built as described, with these differences:** the configuration is `[imap] listen_110` and `listen_995` (above); the standalone `setup.sh --pop3` adds `compose.pop3.yaml` (the two published ports) and switches on the `#POP3` lines of the templates; the swarm has `POP3=1` in `swarm.env` (the edge publishes 110 and 995 in host mode, the IMAP service listens); `[admin] pop3 = true` is set with it so that the auto-setup lists POP3. The RFC 6186 SRV records of POP3 are **not** in the generated DNS records: the records are per domain and the same for every installation, while POP3 is something one installation runs; a domain owner who runs POP3 adds `_pop3s._tcp` by hand.
 * The edge (`haproxy.cfg.in`) gets `pop3s_in` (`bind :995 ssl crt mail.pem`, to `be_pop3s`, `imap:1995`, PROXY) and `pop3_in` (`bind :110`, to `be_pop3`, `imap:1110`, PROXY), next to the IMAP frontends. The swarm stack and the compose file publish `110` and `995`, and the firewall note of `docs/first-mail.md` lists them. The DNS page lists the RFC 6186 SRV records `_pop3s._tcp` (995, optional) and `_pop3._tcp` (110, optional).
 * **Off by default.** `[pop3]` absent means no POP3 listener (nobody opens a port they did not ask for); `swarm.env` has `POP3=1` and the standalone setup `--pop3`. When on, the edge frontends and the published ports appear.
-* The autoconfig answer of Thunderbird lists POP3 as a second incoming server only when POP3 is on (the answer is the same for every domain).
+* The auto-setup answers list POP3 only when POP3 is on: Thunderbird's autoconfig adds a `pop3` incoming server (995, TLS); Outlook's Autodiscover adds a `POP3` protocol after IMAP; the Apple profile for POP3 is `/mail/config.mobileconfig?emailaddress=...&protocol=pop3` (its own account, so one address may have both). The answers are the same for every domain.
 
 ## 6. Tests
 

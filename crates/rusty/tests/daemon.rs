@@ -470,3 +470,68 @@ async fn a_service_other_than_the_admin_web_refuses_metrics_scrape() {
         "only the admin web reads the other services"
     );
 }
+
+#[test]
+fn pop3_is_off_unless_the_configuration_names_an_address_and_belongs_to_the_imap_service() {
+    let mut c = StartupConfig::dev(std::path::Path::new("/tmp/x"));
+    assert!(!rusty_svc::listener_plan(&c).iter().any(|p| p.kind.is_pop3()), "nobody opens a port they did not ask for");
+    c.imap.listen_110 = Listen::on("127.0.0.1:1110".parse().unwrap());
+    c.imap.listen_995 = Listen::on("127.0.0.1:1995".parse().unwrap());
+    let plan = rusty_svc::listener_plan(&c);
+    let pop3: Vec<_> = plan.iter().filter(|p| p.kind.is_pop3()).map(|p| p.kind).collect();
+    assert_eq!(pop3, vec![ListenerKind::Pop3110, ListenerKind::Pop3s995]);
+    assert!(ListenerKind::Pop3s995.implicit_tls() && !ListenerKind::Pop3110.implicit_tls());
+    assert!(ListenerKind::Pop3110.accepts_auth());
+    // The IMAP service owns them, and no other service starts them.
+    use rusty_core::config::Role;
+    let imap: Vec<_> = rusty_svc::listener_plan_for(&c, Some(Role::Imap)).into_iter().filter(|p| p.kind.is_pop3()).collect();
+    assert_eq!(imap.len(), 2);
+    assert!(rusty_svc::listener_plan_for(&c, Some(Role::Submission)).iter().all(|p| !p.kind.is_pop3()));
+    // The dev rewrites move them with the others.
+    let moved = rusty::daemon::with_port_offset(c.clone(), 100).unwrap();
+    assert_eq!(moved.imap.listen_110.addr(), Some("127.0.0.1:1210".parse().unwrap()));
+    let all = rusty::daemon::with_bind(c, "0.0.0.0".parse().unwrap());
+    assert_eq!(all.imap.listen_995.addr(), Some("0.0.0.0:1995".parse().unwrap()));
+}
+
+#[tokio::test]
+async fn the_pop3_listener_serves_pop3_refuses_a_password_in_clear_text_and_the_healthcheck_probes_it() {
+    let tmp = private_tmp();
+    let token = CancellationToken::new();
+    let pg = pg_dev().await;
+    let mut cfg = pg.config(&tmp.path().join("d"));
+    cfg.imap.listen_110 = Listen::on("127.0.0.1:0".parse().unwrap());
+    cfg.imap.listen_995 = Listen::on("127.0.0.1:0".parse().unwrap());
+    let run = start(cfg.clone(), Profile::Dev, token.clone()).await.unwrap();
+    assert_eq!(run.addrs.len(), 7, "the five of the mail ports and the two of POP3");
+    let mut c = TcpStream::connect(addr_of(&run, ListenerKind::Pop3110)).await.unwrap();
+    assert_eq!(read_line(&mut c).await, "+OK rusty POP3 ready\r\n");
+    c.write_all(b"NOOP\r\n").await.unwrap();
+    assert_eq!(read_line(&mut c).await, "+OK\r\n");
+    c.write_all(b"USER a\r\n").await.unwrap();
+    assert!(read_line(&mut c).await.starts_with("-ERR [AUTH] TLS is required"), "a password is not taken in clear text");
+    c.write_all(b"CAPA\r\n").await.unwrap();
+    let mut caps = String::new();
+    loop {
+        let l = read_line(&mut c).await;
+        caps.push_str(&l);
+        if l == ".\r\n" || l.is_empty() {
+            break;
+        }
+    }
+    assert!(caps.contains("STLS\r\n") && caps.contains("UIDL\r\n") && caps.contains("TOP\r\n"), "{caps}");
+    // The container health check reads the POP3 greeting too (and the implicit-TLS port is connect-only).
+    let mut probed = cfg.clone();
+    probed.imap.listen_110 = Listen::on(addr_of(&run, ListenerKind::Pop3110));
+    probed.imap.listen_995 = Listen::on(addr_of(&run, ListenerKind::Pop3s995));
+    probed.smtp.listen_25 = Listen::off();
+    probed.smtp.listen_587 = Listen::off();
+    probed.smtp.listen_465 = Listen::off();
+    probed.imap.listen_143 = Listen::off();
+    probed.imap.listen_993 = Listen::off();
+    // The probe is blocking: on its own thread, or it would hold the runtime that the listener runs on.
+    let probed_result = tokio::task::spawn_blocking(move || rusty::health::check(&probed)).await.unwrap();
+    assert_eq!(probed_result, Ok(2));
+    token.cancel();
+    run.wait().await.unwrap();
+}

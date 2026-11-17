@@ -1,0 +1,6 @@
+CAPA
+STLS
+USER alice
+PASS correct-horse
+AUTH PLAIN AGFsaWNlAGNvcnJlY3QtaG9yc2U=
+QUIT

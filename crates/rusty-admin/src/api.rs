@@ -33,6 +33,8 @@ const MAX_TOKEN: usize = 128;
 /// The operator's facts the DNS page needs (from `[admin]` and the shared `hostname`).
 #[derive(Debug, Clone)]
 pub struct MailSettings {
+    /// POP3 is on (the IMAP service listens for it): the auto-setup of Thunderbird says so.
+    pub pop3: bool,
     pub host: String,
     pub public_ips: Vec<std::net::IpAddr>,
     pub spf_include: Option<String>,

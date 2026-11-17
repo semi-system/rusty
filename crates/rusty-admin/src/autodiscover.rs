@@ -41,8 +41,26 @@ fn xml_escape(s: &str) -> String {
 }
 
 /// The Autodiscover answer for Outlook: IMAP over TLS on 993 and SMTP over TLS on 465, the address as the login name.
-pub(crate) fn outlook_xml(host: &str, address: &str) -> String {
+pub(crate) fn outlook_xml(host: &str, address: &str, pop3: bool) -> String {
     let (host, login) = (xml_escape(host), xml_escape(address));
+    // POP3 over TLS on 995, listed after IMAP (Outlook takes the first protocol it can use) only where the installation runs it.
+    let pop = if pop3 {
+        format!(
+            "      <Protocol>\n\
+        <Type>POP3</Type>\n\
+        <Server>{host}</Server>\n\
+        <Port>995</Port>\n\
+        <DomainRequired>off</DomainRequired>\n\
+        <LoginName>{login}</LoginName>\n\
+        <SPA>off</SPA>\n\
+        <SSL>on</SSL>\n\
+        <AuthRequired>on</AuthRequired>\n\
+        <LeaveMessagesOnServer>on</LeaveMessagesOnServer>\n\
+      </Protocol>\n"
+        )
+    } else {
+        String::new()
+    };
     format!(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
 <Autodiscover xmlns=\"http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006\">\n\
@@ -72,6 +90,7 @@ pub(crate) fn outlook_xml(host: &str, address: &str) -> String {
         <UsePOPAuth>off</UsePOPAuth>\n\
         <SMTPLast>off</SMTPLast>\n\
       </Protocol>\n\
+{pop}\
     </Account>\n\
   </Response>\n\
 </Autodiscover>\n"
@@ -90,10 +109,12 @@ fn uuid_of(what: &str) -> String {
 }
 
 /// The Apple configuration profile (unsigned): an IMAP account over TLS on 993 and submission over TLS on 465, the address as the user name, no password.
-pub(crate) fn mobileconfig(host: &str, address: &str) -> String {
+pub(crate) fn mobileconfig(host: &str, address: &str, pop3: bool) -> String {
     let (h, a) = (xml_escape(host), xml_escape(address));
-    let account = uuid_of(&format!("account:{host}:{address}"));
-    let profile = uuid_of(&format!("profile:{host}:{address}"));
+    // `EmailTypeIMAP` or `EmailTypePOP`; a POP3 profile has another incoming port and its own identifiers (one address may have both accounts).
+    let (kind, in_port, which) = if pop3 { ("EmailTypePOP", 995, "pop") } else { ("EmailTypeIMAP", 993, "imap") };
+    let account = uuid_of(&format!("account:{which}:{host}:{address}"));
+    let profile = uuid_of(&format!("profile:{which}:{host}:{address}"));
     let reverse: String = host.split('.').rev().collect::<Vec<_>>().join(".");
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
@@ -105,11 +126,11 @@ pub(crate) fn mobileconfig(host: &str, address: &str) -> String {
     <dict>\n\
       <key>EmailAccountDescription</key><string>{a}</string>\n\
       <key>EmailAccountName</key><string>{a}</string>\n\
-      <key>EmailAccountType</key><string>EmailTypeIMAP</string>\n\
+      <key>EmailAccountType</key><string>{kind}</string>\n\
       <key>EmailAddress</key><string>{a}</string>\n\
       <key>IncomingMailServerAuthentication</key><string>EmailAuthPassword</string>\n\
       <key>IncomingMailServerHostName</key><string>{h}</string>\n\
-      <key>IncomingMailServerPortNumber</key><integer>993</integer>\n\
+      <key>IncomingMailServerPortNumber</key><integer>{in_port}</integer>\n\
       <key>IncomingMailServerUseSSL</key><true/>\n\
       <key>IncomingMailServerUsername</key><string>{a}</string>\n\
       <key>OutgoingMailServerAuthentication</key><string>EmailAuthPassword</string>\n\
@@ -146,6 +167,16 @@ fn mail_host(app: &AdminApp) -> Option<String> {
     domain_ok(&host).then_some(host)
 }
 
+/// Whether the installation runs POP3 (`[admin] pop3`).
+fn pop3_on(app: &AdminApp) -> bool {
+    app.services.as_ref().and_then(|s| s.mail.as_ref()).is_some_and(|m| m.pop3)
+}
+
+/// `?protocol=pop3` asks for the POP3 profile; it is honoured only where POP3 runs (otherwise the answer is the IMAP profile, which is always there).
+fn wants_pop3(app: &AdminApp, query: Option<&str>) -> bool {
+    pop3_on(app) && query.is_some_and(|q| q.split('&').any(|p| p == "protocol=pop3"))
+}
+
 /// `?emailaddress=` or `?email=` (the spellings clients use), with `%40` read as `@`.
 fn address_of_query(query: Option<&str>) -> Option<String> {
     let q = query?;
@@ -163,7 +194,22 @@ async fn outlook(app: &AdminApp, req: Request) -> Response {
         .with_header("content-type", "text/xml; charset=utf-8")
         .with_header("cache-control", "no-store")
         .with_header("x-content-type-options", "nosniff")
-        .with_body(outlook_xml(&host, &address).into_bytes())
+        .with_body(outlook_xml(&host, &address, pop3_on(app)).into_bytes())
+}
+
+/// Microsoft Autodiscover v2 (`GET /autodiscover/autodiscover.json?Email=...&Protocol=AutodiscoverV1`): a newer Outlook asks for the way to the settings first, and this server's way is the XML
+/// form on the mail host. Only that protocol is served: another one (ActiveSync, EWS) is an `InvalidProtocol` error, in the shape Outlook understands.
+async fn outlook_v2(app: &AdminApp, req: Request) -> Response {
+    let Some(host) = mail_host(app) else { return Response::error(404, "not_found") };
+    let q = req.query.as_deref().unwrap_or_default();
+    let protocol = q.split('&').find_map(|p| p.strip_prefix("Protocol=").or_else(|| p.strip_prefix("protocol=")));
+    let json = |status: u16, body: String| {
+        Response::new(status).with_header("content-type", "application/json; charset=utf-8").with_header("cache-control", "no-store").with_header("x-content-type-options", "nosniff").with_body(body.into_bytes())
+    };
+    match protocol {
+        Some(p) if p.eq_ignore_ascii_case("AutodiscoverV1") => json(200, format!("{{\"Protocol\":\"AutodiscoverV1\",\"Url\":\"https://{host}/autodiscover/autodiscover.xml\"}}")),
+        _ => json(400, "{\"ErrorCode\":\"InvalidProtocol\",\"ErrorMessage\":\"The given protocol value is invalid. Supported values: AutodiscoverV1\"}".to_owned()),
+    }
 }
 
 async fn apple(app: &AdminApp, req: Request) -> Response {
@@ -174,7 +220,7 @@ async fn apple(app: &AdminApp, req: Request) -> Response {
         .with_header("content-disposition", "attachment; filename=\"mail.mobileconfig\"")
         .with_header("cache-control", "no-store")
         .with_header("x-content-type-options", "nosniff")
-        .with_body(mobileconfig(&host, &address).into_bytes())
+        .with_body(mobileconfig(&host, &address, wants_pop3(app, req.query.as_deref())).into_bytes())
 }
 
 /// The routes of this part of the service.
@@ -189,6 +235,13 @@ pub fn routes(app: Arc<AdminApp>, router: Router) -> Router {
                 async move { outlook(&a, r).await }
             }));
         }
+    }
+    for path in ["/autodiscover/autodiscover.json", "/Autodiscover/Autodiscover.json"] {
+        let a = app.clone();
+        router = router.route(Method::Get, path, handler(move |r: Request| {
+            let a = a.clone();
+            async move { outlook_v2(&a, r).await }
+        }));
     }
     router.route(Method::Get, "/mail/config.mobileconfig", handler(move |r: Request| {
         let a = app.clone();
@@ -221,12 +274,17 @@ mod tests {
 
     #[test]
     fn the_answers_name_the_mail_host_and_carry_no_markup_from_the_input() {
-        let o = outlook_xml("mail.example.net", "bob@example.org");
+        let o = outlook_xml("mail.example.net", "bob@example.org", false);
+        assert!(!o.contains("POP3"), "POP3 is listed only where it runs");
+        let with = outlook_xml("mail.example.net", "bob@example.org", true);
+        assert!(with.contains("<Type>POP3</Type>") && with.contains("<Port>995</Port>") && with.find("<Type>IMAP</Type>") < with.find("<Type>POP3</Type>"), "POP3 comes after IMAP");
         assert!(o.contains("<Server>mail.example.net</Server>") && o.contains("<LoginName>bob@example.org</LoginName>") && o.contains("<Port>993</Port>") && o.contains("<Port>465</Port>"));
-        let m = mobileconfig("mail.example.net", "bob@example.org");
+        let m = mobileconfig("mail.example.net", "bob@example.org", false);
+        let p = mobileconfig("mail.example.net", "bob@example.org", true);
+        assert!(p.contains("EmailTypePOP") && p.contains("<integer>995</integer>") && !p.contains("EmailTypeIMAP") && p != m, "the POP3 profile is its own account");
         assert!(m.contains("<string>mail.example.net</string>") && m.contains("<integer>993</integer>") && m.contains("net.example.mail.mail."));
         // Even a value that got past the checks could not break out of the markup.
-        assert!(!outlook_xml("h", "a<b>&c").contains("<b>") && !mobileconfig("h", "a<b>&c").contains("<b>"));
+        assert!(!outlook_xml("h", "a<b>&c", true).contains("<b>") && !mobileconfig("h", "a<b>&c", true).contains("<b>"));
         // The same account always has the same identifiers, and they have the UUID shape.
         assert_eq!(uuid_of("x"), uuid_of("x"));
         assert_ne!(uuid_of("x"), uuid_of("y"));
