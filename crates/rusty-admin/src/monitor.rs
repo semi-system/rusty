@@ -83,13 +83,17 @@ pub(crate) fn service_status(instances: &[InstanceJsonView]) -> &'static str {
     }
 }
 
-/// A stale instance is `replaced` when a live one of the same service started after the stale one last beat: swarm replaced the task (an upgrade, a restart, a move to another node),
-/// so the row is the old version, not a replica that was lost. A stale instance that no later one has replaced stays a fault.
+/// How long the old task of a rolling update may keep beating after the new one started. An update starts the new task first and stops the old one afterwards (`start-first`, and the old one
+/// is given up to 45 s to stop), so the two overlap by up to a minute. A replica that was lost while another had long been running is far outside this.
+pub const REPLACE_OVERLAP_SECS: i64 = 120;
+
+/// A stale instance is `replaced` when a live one of the same service started no later than [`REPLACE_OVERLAP_SECS`] after the stale one last beat: swarm replaced the task (an upgrade, a restart,
+/// a move to another node), so the row is the old version, not a replica that was lost. A stale instance that no such newer one covers stays a fault.
 fn mark_replaced(instances: &mut [InstanceJson]) {
     let newest_uptime = instances.iter().filter(|i| !i.stale).map(|i| i.uptime_secs).min();
     for i in instances.iter_mut().filter(|i| i.stale) {
-        // Seconds since the live instance started (its uptime) against seconds since the stale one last beat: the smaller number is the later moment.
-        i.replaced = newest_uptime.is_some_and(|up| up < i.age_secs);
+        // The live instance started `up` seconds ago, the stale one last beat `age_secs` ago: it started at most REPLACE_OVERLAP_SECS before that last beat when up <= age + overlap.
+        i.replaced = newest_uptime.is_some_and(|up| up <= i.age_secs + REPLACE_OVERLAP_SECS);
     }
 }
 
@@ -216,6 +220,10 @@ mod tests {
         let mut after_upgrade = vec![at("new", 120, 3), at("old", 9000, 600)];
         mark_replaced(&mut after_upgrade);
         assert!(!after_upgrade[0].replaced && after_upgrade[1].replaced);
+        // A rolling update with `start-first`: the new task started 240 s ago and the old one went on beating for another 20 s, so it last beat 220 s ago.
+        let mut start_first = vec![at("new", 240, 3), at("old", 9000, 220)];
+        mark_replaced(&mut start_first);
+        assert!(start_first[1].replaced, "the old task overlapped the new one");
         // Two replicas, one lost 60 s ago while the other has been up for hours: nothing replaced it.
         let mut lost = vec![at("a", 20_000, 3), at("b", 20_000, 60)];
         mark_replaced(&mut lost);
