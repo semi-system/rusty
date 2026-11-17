@@ -202,7 +202,7 @@ export const en = {
   'storage.platformOnly': 'Only a platform administrator can change the store.',
   'storage.check.ok': 'Works: the bucket can be read and written.',
   'storage.check.config': 'The settings or the stored keys cannot be used.',
-  'storage.check.resolve': 'The endpoint name does not resolve to a public address.',
+  'storage.check.resolve': 'The server could not resolve the endpoint name, or it points to an address that is not public. Without path-style addressing the name is the bucket in front of the endpoint host (bucket.host) and must have its own DNS record. The outbound service log says which name failed.',
   'storage.check.connect': 'The endpoint could not be reached.',
   'storage.check.tls': 'Encryption failed: the certificate does not verify.',
   'pool.use': 'Use several S3 backends (a pool) instead',

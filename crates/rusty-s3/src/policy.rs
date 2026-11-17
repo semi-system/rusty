@@ -30,14 +30,22 @@ pub(crate) fn check_addresses(addrs: &[SocketAddr]) -> Result<(), S3Fail> {
 impl Connector for PolicyConnector {
     async fn connect(&self, host: &str, port: u16) -> Result<TcpStream, S3Fail> {
         if !TENANT_S3_PORTS.contains(&port) {
+            tracing::warn!(host, port, "tenant store endpoint refused: the port is not one a tenant store may use");
             return Err(S3Fail::Resolve);
         }
         let addrs: Vec<SocketAddr> = match tokio::time::timeout(self.timeout, tokio::net::lookup_host((host, port))).await {
             Err(_) => return Err(S3Fail::Timeout),
-            Ok(Err(_)) => return Err(S3Fail::Resolve),
+            Ok(Err(e)) => {
+                // The operator needs to tell "the name has no answer here" from "the answer was refused": the admin web shows the same category for both.
+                tracing::warn!(host, error = %e, "tenant store endpoint: the name did not resolve from this service");
+                return Err(S3Fail::Resolve);
+            }
             Ok(Ok(a)) => a.collect(),
         };
-        check_addresses(&addrs)?;
+        if let Err(f) = check_addresses(&addrs) {
+            tracing::warn!(host, addresses = ?addrs.iter().map(|a| a.ip()).collect::<Vec<_>>(), "tenant store endpoint refused: an address of the name is not a public one");
+            return Err(f);
+        }
         let mut last = S3Fail::Connect;
         for a in addrs {
             match tokio::time::timeout(self.timeout, TcpStream::connect(a)).await {
