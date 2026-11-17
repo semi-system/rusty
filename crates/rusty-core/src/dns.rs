@@ -306,6 +306,26 @@ pub fn records_for_domain(i: &DnsInputs<'_>) -> Result<Vec<DnsRecord>> {
             required: Requirement::Optional,
         });
     }
+    // Thunderbird asks http://autoconfig.<domain>/... first. The name may also be a CNAME to the mail host: the check compares addresses, which a CNAME gives the same.
+    for ip in i.outbound_ips {
+        out.push(DnsRecord {
+            name: format!("autoconfig.{domain}"),
+            rtype: if ip.is_ipv4() { RecordType::A } else { RecordType::Aaaa },
+            value: ip.to_string(),
+            ttl_hint: TTL,
+            purpose: "Lets Thunderbird find the account settings by itself (autoconfig, a CNAME to the mail host does as well)",
+            required: Requirement::Optional,
+        });
+    }
+    // Outlook asks https://autodiscover.<domain>/... first (a name this installation has no certificate for), then this record, which sends it to the mail host.
+    out.push(DnsRecord {
+        name: format!("_autodiscover._tcp.{domain}"),
+        rtype: RecordType::Srv,
+        value: format!("0 1 443 {host}"),
+        ttl_hint: TTL,
+        purpose: "Lets Outlook find the account settings by itself (Autodiscover)",
+        required: Requirement::Optional,
+    });
     Ok(out)
 }
 

@@ -14,7 +14,7 @@ use rusty_http::{handler, Method, Request, Response, Router};
 use crate::api::AdminApp;
 
 /// A DNS name, as far as this answer is concerned: dot-separated labels of letters, digits and `-`.
-fn domain_ok(d: &str) -> bool {
+pub(crate) fn domain_ok(d: &str) -> bool {
     !d.is_empty()
         && d.len() <= 253
         && d.split('.').all(|l| !l.is_empty() && l.len() <= 63 && !l.starts_with('-') && !l.ends_with('-') && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))

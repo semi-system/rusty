@@ -74,13 +74,22 @@ docker compose run --rm --name rusty-ctl-1 ctl domain dns example.org      # the
 
 Spam and virus filtering (design: `docs/design-filters-and-resolver.md`), the webmail, two-factor sign-in, a tenant's own certificates, and several instances of a service.
 
-## Mail client auto-setup (Thunderbird)
+## Mail client auto-setup (Thunderbird, Outlook, Apple Mail, and the clients that read the SRV records)
 
-The admin service answers the Mozilla autoconfig request, so a client given only `user@example.org` finds the servers by itself. The edge sends the one request
-`GET http://autoconfig.example.org/mail/config-v1.1.xml?emailaddress=user@example.org` (port 80, host `autoconfig.*`, exactly that path) to the admin service; every other request on
-port 80 is still redirected to HTTPS. The answer names the configured mail host name with IMAP over TLS on 993, submission with STARTTLS on 587 and the address as the user name,
-the same for every domain, so it says nothing about which domains or accounts exist.
+The admin service answers the requests of the clients that set an account up from an address alone. The answer is the same for every domain and says nothing about which domains or accounts exist: it names the
+configured mail host with IMAP over TLS on 993 and submission over TLS on 465 (Thunderbird: STARTTLS on 587), and the address as the user name. Nothing needs a session.
 
-What you do per domain: publish `autoconfig.example.org` (an `A` record, or a `CNAME` to the mail host) and keep port 80 open to the edge. The SRV records the DNS page already lists
-(`_imaps._tcp`, `_submission._tcp`, `_submissions._tcp`, RFC 6186) serve the clients that read those. Not provided: Outlook's `autodiscover` (it needs HTTPS and a certificate for
-`autodiscover.<domain>`, which waits for the per-tenant certificate decision) and an HTTPS autoconfig for the same reason: Thunderbird falls back to plain HTTP for it.
+| Client | How it finds the settings | What serves it |
+|---|---|---|
+| Thunderbird, K-9, FairEmail and others that read Mozilla's autoconfig | `http://autoconfig.<domain>/mail/config-v1.1.xml?emailaddress=...` (port 80) | the edge sends that one request (host `autoconfig.*`, exactly that path) to the admin service; every other request on port 80 is redirected to HTTPS |
+| Outlook (Windows, Mac) | Autodiscover: `POST https://autodiscover.<domain>/autodiscover/autodiscover.xml`, then the SRV record `_autodiscover._tcp.<domain>` (the mail host, port 443) | the edge ends TLS for the **mail host** on 443 and sends exactly `/autodiscover/autodiscover.xml` (either spelling of the path), `/mail/config.mobileconfig` and `/mail/config-v1.1.xml` to the admin service; everything else on the mail host is refused (`421`) |
+| Apple Mail (iPhone, iPad, Mac) | a configuration profile: `https://<mail host>/mail/config.mobileconfig?emailaddress=user@example.org` (give the person this link, or show it as a QR code); installing it adds the account and asks for the password | the same route on the mail host; the profile holds no password and its identifiers depend on the address, so installing it again updates the account |
+| Clients that read RFC 6186 SRV records | `_imaps._tcp`, `_submission._tcp`, `_submissions._tcp` | DNS only |
+
+What you do per domain: publish the records the DNS page lists as optional: `autoconfig.example.org` (an `A`/`AAAA` record at the addresses of the edge, or a `CNAME` to the mail host: the check compares addresses, so
+either passes), `_autodiscover._tcp.example.org` (`SRV 0 1 443 <mail host>`) and the three RFC 6186 SRV records; keep port 80 open to the edge (autoconfig, and the certificate challenges).
+
+Outlook first asks `https://autodiscover.example.org/...`. This installation has a certificate for the mail host and the admin host only, not for every customer domain's `autodiscover.` name, so that first request
+cannot succeed (the TLS handshake is refused, the edge serves no certificate for a name it was not given) and Outlook goes on to the SRV record, which sends it to the mail host: Outlook then asks the person to confirm
+the redirection once. A domain whose owner serves `autodiscover.<domain>` over HTTPS with a certificate of its own (a reverse proxy in front of it) can send that request to `https://<mail host>/autodiscover/autodiscover.xml`
+and avoid the question. Per-domain certificates at the edge (the decided ACME HTTP-01 per domain) would remove it.

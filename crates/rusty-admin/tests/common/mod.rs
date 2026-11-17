@@ -95,6 +95,7 @@ async fn build(with_sealing: bool) -> Rig {
     let router = rusty_admin::monitor::routes(app.clone(), router);
     let router = rusty_admin::admins::routes(app.clone(), router);
     let router = rusty_admin::live::routes(app.clone(), router);
+    let router = rusty_admin::autodiscover::routes(app.clone(), router);
     let h = HttpHandler::new(router, HttpConfig::default());
     let spec = ListenerSpec { name: "admin-test", addr: "127.0.0.1:0".parse().unwrap(), max_connections: 64, max_per_ip: 64 };
     let bound = BoundListener::bind(spec).await.unwrap();

@@ -78,16 +78,25 @@ frontend imaps_in
 #SELF     bind :993 ssl crt /var/lib/haproxy/certs/mail.pem
     default_backend be_imaps
 
-# The admin host: HTTPS only, from the allow-listed networks only.
+# HTTPS on 443 for two host names. The admin host: from the allow-listed networks only. The mail host: only the auto-setup of mail clients that need HTTPS (Outlook's Autodiscover, and
+# the profile Apple Mail installs, and the Mozilla answer again), which the admin service answers without a session; everything else on the mail host is refused. A tenant domain's
+# own `autodiscover.<domain>` has no certificate here: Outlook then follows the `_autodiscover._tcp.<domain>` SRV record to the mail host (docs/first-mail.md).
 frontend admin_https
     mode http
-#ACME     bind :443 ssl crt "@certs/admin.pem" alpn h2,http/1.1
-#SELF     bind :443 ssl crt /var/lib/haproxy/certs/admin.pem alpn h2,http/1.1
+#ACME     bind :443 ssl crt "@certs/admin.pem" crt "@certs/mail.pem" alpn h2,http/1.1
+#SELF     bind :443 ssl crt /var/lib/haproxy/certs/admin.pem crt /var/lib/haproxy/certs/mail.pem alpn h2,http/1.1
     timeout http-request 10s
     acl admin_host hdr(host),lower,field(1,:) -m str @ADMIN_HOST@
     acl admin_net  src @ADMIN_ALLOW@
+    acl mail_host  hdr(host),lower,field(1,:) -m str @MAIL_HOST@
+    acl setup_path path -i -m str /autodiscover/autodiscover.xml
+    acl setup_path path -m str /mail/config.mobileconfig
+    acl setup_path path -m str /mail/config-v1.1.xml
+    acl setup_method method GET POST
+    http-request allow if mail_host setup_path setup_method
     http-request deny deny_status 421 unless admin_host
     http-request deny deny_status 403 unless admin_net
+    use_backend be_admin if mail_host setup_path setup_method
     default_backend be_admin
 
 # The services by NAME, through Docker's resolver, so replicas (`docker compose up -d --scale smtp-in=3`) join and leave by themselves: each A record of the name is one server of the
