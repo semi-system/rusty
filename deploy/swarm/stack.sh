@@ -11,7 +11,12 @@ MIGRATE_STACK=rustymigrate
 REGISTRY="${REGISTRY:-ghcr.io/semi-system}"
 IMAGE_TAG="${IMAGE_TAG:-main}"
 TLS_MODE="${TLS_MODE:-acme}"
-REPLICAS_DEFAULT="${REPLICAS_DEFAULT:-1}"
+# Replicas of the Rusty services: two each, so that an update (a rolling update, one task at a time, the new one up before the old one goes) never leaves a service without a task.
+# The edge, the database and the object store are one task (the edge holds the host ports, the other two hold the data): updating them stops them for a moment.
+# `admin` is one task unless REPLICAS_ADMIN says more: its sessions need the shared key-value store (VALKEY=1) and the one-time setup token and the live-update hub belong to one process.
+REPLICAS_DEFAULT="${REPLICAS_DEFAULT:-2}"
+REPLICAS_ADMIN="${REPLICAS_ADMIN:-1}"
+replicas_of() { case "$1" in admin) echo "$REPLICAS_ADMIN" ;; *) echo "$REPLICAS_DEFAULT" ;; esac; }
 LOG_LEVEL="${LOG_LEVEL:-info}"
 declare -A SECRET_NAME=() CONFIG_NAME=()
 # shellcheck source=validate.sh
@@ -242,7 +247,7 @@ gen_limits() {
   [ "$S3_IN_STACK" = 0 ] || profiles="${profiles:+$profiles,}s3"
   [ "$FILTER" = 0 ] || profiles="${profiles:+$profiles,}filter"
   [ "$VALKEY" = 0 ] || profiles="${profiles:+$profiles,}valkey"
-  if [ "$REPLICAS_DEFAULT" != 1 ]; then for s in smtp-in submission imap outbound gc admin; do reps="${reps:+$reps,}$s=$REPLICAS_DEFAULT"; done; fi
+  for s in smtp-in submission imap outbound gc admin; do [ "$(replicas_of "$s")" = 1 ] || reps="${reps:+$reps,}$s=$(replicas_of "$s")"; done
   LIMITS_FILE="$STATE_DIR/stack/limits.yaml"
   bash "$HERE/../standalone/limits.sh" --total-mem-mib "$((mem / 1048576))" --total-cpus "$(awk -v n="$cpus" 'BEGIN { printf "%.2f", n / 1000000000 }')" ${profiles:+--profiles "$profiles"} ${reps:+--replicas "$reps"} \
     --out "$LIMITS_FILE" > "$STATE_DIR/stack/limits.txt" || { cat "$STATE_DIR/stack/limits.txt" >&2; die "limits: the services do not fit in the nodes (see above)"; }
@@ -420,7 +425,7 @@ gen_rusty_service() { # NAME ROLE-OF-DB NETWORKS(space) [TLS] [UNSEAL] [CONSTRAI
     submission|imap|admin) [ "$VALKEY" != 1 ] || { nets="$nets kv"; kv=1; } ;;
   esac
   y_service_common "$name" "$(rusty_image "$name")"
-  y_deploy "$REPLICAS_DEFAULT" "$constraint" start-first "$name"
+  y_deploy "$(replicas_of "$name")" "$constraint" start-first "$name"
   y_hosts
   printf '    secrets:\n'
   y_secret "pg_$role"

@@ -30,5 +30,7 @@ check_inputs() {
   [ -z "$DB_HOSTADDR" ] || valid_ipv4 "$DB_HOSTADDR" || die "DB_HOSTADDR is an IPv4 address"
   [ -z "${ACME_DIRECTORY:-}" ] || [[ "$ACME_DIRECTORY" =~ ^https://[A-Za-z0-9._:/-]+$ ]] || die "ACME_DIRECTORY is an https URL"
   [[ "$REPLICAS_DEFAULT" =~ ^[1-9][0-9]?$ ]] || die "REPLICAS_DEFAULT is a number from 1 to 99"
+  [[ "$REPLICAS_ADMIN" =~ ^[1-9][0-9]?$ ]] || die "REPLICAS_ADMIN is a number from 1 to 99"
+  [ "$REPLICAS_ADMIN" = 1 ] || [ "${VALKEY:-0}" = 1 ] || die "REPLICAS_ADMIN above 1 needs VALKEY=1: the sessions of the admin console live in the shared key-value store"
   case "$LOG_LEVEL" in error|warn|info|debug|trace) ;; *) die "LOG_LEVEL is error, warn, info, debug or trace" ;; esac
 }
