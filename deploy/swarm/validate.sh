@@ -30,4 +30,5 @@ check_inputs() {
   [ -z "$DB_HOSTADDR" ] || valid_ipv4 "$DB_HOSTADDR" || die "DB_HOSTADDR is an IPv4 address"
   [ -z "${ACME_DIRECTORY:-}" ] || [[ "$ACME_DIRECTORY" =~ ^https://[A-Za-z0-9._:/-]+$ ]] || die "ACME_DIRECTORY is an https URL"
   [[ "$REPLICAS_DEFAULT" =~ ^[1-9][0-9]?$ ]] || die "REPLICAS_DEFAULT is a number from 1 to 99"
+  case "$LOG_LEVEL" in error|warn|info|debug|trace) ;; *) die "LOG_LEVEL is error, warn, info, debug or trace" ;; esac
 }

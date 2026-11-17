@@ -124,6 +124,7 @@ BEGIN
     GRANT SELECT, INSERT, UPDATE, DELETE ON jobs, domain_dns_state, domain_dns_event TO rusty_outbound;
     GRANT UPDATE (created_at) ON domains, accounts TO rusty_outbound;   -- the row locks of the DNS check and of a delivery
     GRANT UPDATE (check_status, checked_at) ON domain_relays TO rusty_outbound;
+    GRANT UPDATE (check_status, checked_at) ON blob_stores, blob_backends TO rusty_outbound;   -- the storage check worker locks the row, then records its result; a tenant's store is used only after a check passed
     -- a bounce (DSN) is delivered to the local sender like any inbound message
     GRANT INSERT, UPDATE ON messages, blobs, blob_locations TO rusty_outbound;
     GRANT INSERT ON keywords, change_log, deliveries TO rusty_outbound;
