@@ -120,7 +120,7 @@ async fn lists_are_paged_by_cursor() {
     assert!(second["next"].is_null(), "the last page has no cursor");
     let ids: BTreeSet<i64> = first["items"].as_array().unwrap().iter().chain(second["items"].as_array().unwrap()).map(|a| a["id"].as_i64().unwrap()).collect();
     assert_eq!(ids.len(), 105, "no row twice, none missed");
-    for bad in ["?after=x", "?after=-1", "?after=+5", "?after=", "?limit=5", "?after=1&after=2"] {
+    for bad in ["?after=x", "?after=-1", "?after=+5", "?after=", "?limit=0", "?after=1&after=2", "?other=5"] {
         assert_eq!(c.get(&format!("/api/v1/domains/home.test/accounts{bad}")).await.status, 400, "{bad}");
     }
 }

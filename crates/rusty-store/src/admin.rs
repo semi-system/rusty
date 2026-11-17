@@ -48,8 +48,13 @@ impl AdminStore {
     }
 
     /// One page of administrators with their addresses; `domain` `Some` lists only those of that domain.
-    pub async fn list_named(&self, after: Option<AccountId>, limit: i64, domain: Option<DomainId>) -> Result<Vec<AdminEntry>> {
-        self.repo.list_named(after, limit.clamp(1, MAX_ADMIN_PAGE), domain).await
+    pub async fn list_named(&self, after: Option<AccountId>, limit: i64, domain: Option<DomainId>, text: Option<&str>) -> Result<Vec<AdminEntry>> {
+        self.repo.list_named(after, limit.clamp(1, MAX_ADMIN_PAGE), domain, text).await
+    }
+
+    /// How many administrators match (the whole list, not the page).
+    pub async fn count_named(&self, domain: Option<DomainId>, text: Option<&str>) -> Result<i64> {
+        self.repo.count_named(domain, text).await
     }
 
     /// Remove the grant, but never the last platform administrator.

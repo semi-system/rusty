@@ -6,6 +6,7 @@
   import DomainShell from '../lib/DomainShell.svelte';
   import ErrorNote from '../lib/ErrorNote.svelte';
   import { labelled } from '../lib/stack';
+  import ListBar from '../lib/ListBar.svelte';
   import { t, tFor } from '../i18n';
 
   const MIN = 8;
@@ -16,6 +17,11 @@
   let loaded = $state(false);
   let error = $state<unknown>(null);
   let notice = $state<string | null>(null);
+  let q = $state('');
+  let status = $state('');
+  let limit = $state(100);
+  let total = $state<number | null>(null);
+  const narrowed = $derived(q.trim() !== '' || status !== '');
   let busy = $state(false);
 
   let local = $state('');
@@ -27,7 +33,8 @@
 
   async function load(after?: number, quiet = false): Promise<void> {
     try {
-      const page = await app.client.accounts(name, after);
+      const page = await app.client.accounts(name, after, { q, status, limit });
+      total = page.total;
       items = after === undefined ? page.items : [...items, ...page.items];
       next = page.next;
     } catch (e) {
@@ -104,10 +111,14 @@
     {#if tooShort}<p class="alert danger" role="alert">{t('accounts.tooShort', { min: MIN })}</p>{/if}
     {#if notice !== null}<p class="alert ok" role="status">{notice}</p>{/if}
 
+    {#if loaded}
+      <ListBar bind:q bind:status bind:limit {total} shown={items.length} label={t('list.searchAccounts')} onchange={() => void load()}
+        statuses={[{ value: 'active', label: t('accounts.status.active') }, { value: 'locked', label: t('accounts.status.locked') }, { value: 'disabled', label: t('accounts.status.disabled') }]} />
+    {/if}
     {#if !loaded}
       <p class="muted" role="status">{t('app.loading')}</p>
     {:else if items.length === 0}
-      <div class="empty"><p>{t('accounts.empty')}</p></div>
+      <div class="empty"><p>{narrowed ? t('list.noMatch') : t('accounts.empty')}</p></div>
     {:else}
       <div class="table-wrap">
         <table use:labelled aria-label={t('accounts.list')}>

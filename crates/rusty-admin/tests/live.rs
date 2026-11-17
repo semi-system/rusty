@@ -44,6 +44,23 @@ impl Events {
         true
     }
 
+    /// Read until `needle` has arrived `times` times.
+    async fn wait_count(&mut self, needle: &str, times: usize, within: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + within;
+        let mut buf = [0u8; 2048];
+        while self.got.matches(needle).count() < times {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            match tokio::time::timeout(left, self.tcp.read(&mut buf)).await {
+                Ok(Ok(n)) if n > 0 => self.got.push_str(&String::from_utf8_lossy(&buf[..n])),
+                _ => return false,
+            }
+        }
+        true
+    }
+
     /// Read for `within` and report whether the stream ended (the server closed it).
     async fn ends_within(&mut self, within: Duration) -> bool {
         let deadline = tokio::time::Instant::now() + within;
@@ -173,4 +190,40 @@ async fn a_session_may_hold_a_few_streams_and_no_more() {
     tokio::time::sleep(Duration::from_millis(700)).await;
     let mut again = Events::open(r.addr, &c.cookie).await;
     assert!(again.wait_for("event: resync", LONG).await, "{}", again.got);
+}
+
+#[tokio::test]
+async fn what_another_process_writes_reaches_the_streams_through_the_database_for_the_right_domain_only() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    make_admin(&r, "boss@one.test", true).await;
+    let root = Client::sign_in(r.addr, "root@home.test").await;
+    let boss = Client::sign_in(r.addr, "boss@one.test").await;
+    root.post("/api/v1/domains", json!({ "name": "two.test" })).await;
+    // The admin service listens to the database, as run.rs makes it do.
+    rusty_admin::live::spawn_feed(r.app.clone(), r.store.admin_feed(), r.stop.clone());
+    let mut by_root = Events::open(r.addr, &root.cookie).await;
+    let mut by_boss = Events::open(r.addr, &boss.cookie).await;
+    assert!(by_root.wait_for("event: resync", LONG).await && by_boss.wait_for("event: resync", LONG).await);
+
+    // Another process (here: raw SQL, as the outbound service's recording of a relay check would be) changes the relay of two.test: the platform administrator hears of it, the administrator of
+    // one.test does not. The database feed may still be subscribing (its connection is one of many when the whole suite runs), and a change made before that is not announced: so the change is
+    // made again until it is heard, which is also what a person's next attempt would be.
+    let two = r.dir.find_domain("two.test").await.unwrap().unwrap().id.0;
+    r.fx.run(&format!("INSERT INTO domain_relays (domain_id, host, port, tls, created_at, updated_at) VALUES ({two}, 'smtp.relay.example', 587, 'starttls', 1, 1)"), &[]).await;
+    let mut heard = false;
+    for i in 0..90 {
+        if by_root.wait_for("\"outbound:two.test\"", Duration::from_secs(1)).await {
+            heard = true;
+            break;
+        }
+        r.fx.run(&format!("UPDATE domain_relays SET port = {} WHERE domain_id = {two}", if i % 2 == 0 { 2525 } else { 587 }), &[]).await;
+    }
+    assert!(heard, "{}", by_root.got);
+    assert!(!by_boss.wait_for("two.test", SHORT).await, "{}", by_boss.got);
+    // And a change of one.test's own: the domain administrator hears of it.
+    let one = r.dir.find_domain("one.test").await.unwrap().unwrap().id.0;
+    r.fx.run(&format!("INSERT INTO domain_relays (domain_id, host, port, tls, created_at, updated_at) VALUES ({one}, 'smtp.relay.example', 587, 'starttls', 1, 1)"), &[]).await;
+    assert!(by_boss.wait_for("\"outbound:one.test\"", LONG).await, "{}", by_boss.got);
+    assert!(!by_boss.got.contains("two.test"), "{}", by_boss.got);
 }

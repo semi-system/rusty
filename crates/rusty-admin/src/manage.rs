@@ -76,26 +76,88 @@ struct List<T> {
     items: Vec<T>,
     /// The cursor of the next page (`after=`), or `null` at the end.
     next: Option<i64>,
+    /// How many rows match the filter in all, whatever the page (the console says "12 of 340").
+    total: i64,
 }
 
-fn list<T>(items: Vec<T>, last: Option<i64>, full: bool) -> Response
+fn list<T>(items: Vec<T>, last: Option<i64>, full: bool, total: i64) -> Response
 where
     T: Serialize,
 {
-    json(200, &List { items, next: if full { last } else { None } })
+    json(200, &List { items, next: if full { last } else { None }, total })
+}
+
+/// The query of a list: `after` (the cursor), `limit` (1 to [`PAGE`], default [`PAGE`]), `q` (a substring of the name: letters, digits and `._@+-`, at most 64, lower-cased, percent-escapes
+/// read) and `status` (one of the list's own statuses). Each at most once; anything else, or a value outside these rules, is `400 invalid` (and nothing is searched).
+pub(crate) struct ListQuery {
+    pub after: Option<i64>,
+    pub limit: usize,
+    pub text: Option<String>,
+    pub status: Option<String>,
+}
+
+impl ListQuery {
+    pub(crate) fn filter(&self) -> rusty_directory::ListFilter {
+        rusty_directory::ListFilter { text: self.text.clone(), status: self.status.clone() }
+    }
+}
+
+/// `%XX` escapes decoded (a `+` stays a `+`: it is a character of an address); `None` when an escape is broken or the result is not UTF-8.
+fn percent_decode(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            let hex = b.get(i + 1..i + 3)?;
+            out.push(u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+pub(crate) fn list_query(req: &Request, statuses: &[&str]) -> Result<ListQuery, Response> {
+    let mut q = ListQuery { after: None, limit: PAGE, text: None, status: None };
+    let Some(raw) = req.query.as_deref() else { return Ok(q) };
+    let (mut seen_after, mut seen_limit, mut seen_q, mut seen_status) = (false, false, false, false);
+    for pair in raw.split('&') {
+        let Some((k, v)) = pair.split_once('=') else { return Err(err(400, "invalid")) };
+        let fresh = |seen: &mut bool| !std::mem::replace(seen, true);
+        match k {
+            "after" if fresh(&mut seen_after) => match v.parse::<i64>() {
+                Ok(n) if n >= 0 && !v.starts_with('+') => q.after = Some(n),
+                _ => return Err(err(400, "invalid")),
+            },
+            "limit" if fresh(&mut seen_limit) => match v.parse::<usize>() {
+                Ok(n) if (1..=PAGE).contains(&n) && !v.starts_with('+') => q.limit = n,
+                _ => return Err(err(400, "invalid")),
+            },
+            "q" if fresh(&mut seen_q) => {
+                let text = percent_decode(v).map(|t| t.trim().to_ascii_lowercase()).ok_or_else(|| err(400, "invalid"))?;
+                if text.len() > 64 || !text.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'@' | b'+' | b'-')) {
+                    return Err(err(400, "invalid"));
+                }
+                q.text = (!text.is_empty()).then_some(text);
+            }
+            "status" if fresh(&mut seen_status) => {
+                if !v.is_empty() {
+                    if !statuses.contains(&v) {
+                        return Err(err(400, "invalid"));
+                    }
+                    q.status = Some(v.to_owned());
+                }
+            }
+            _ => return Err(err(400, "invalid")),
+        }
+    }
+    Ok(q)
 }
 
 // ------------------------------------------------------------------------------------------------ helpers
-
-/// `?after=<id>` and nothing else.
-fn after(req: &Request) -> Result<Option<i64>, Response> {
-    let Some(q) = req.query.as_deref() else { return Ok(None) };
-    let Some(v) = q.strip_prefix("after=") else { return Err(err(400, "invalid")) };
-    match v.parse::<i64>() {
-        Ok(n) if n >= 0 && !v.starts_with('+') => Ok(Some(n)),
-        _ => Err(err(400, "invalid")),
-    }
-}
 
 fn no_query(req: &Request) -> Result<(), Response> {
     if req.query.is_some() {
@@ -159,29 +221,34 @@ async fn list_domains(app: &AdminApp, req: Request) -> Response {
         Ok(x) => x,
         Err(r) => return r,
     };
-    let after = match after(&req) {
-        Ok(a) => a,
+    let query = match list_query(&req, &["active", "disabled"]) {
+        Ok(q) => q,
         Err(r) => return r,
     };
+    let after = query.after;
     // A domain administrator sees its own domain only (named by the address it signed in with, which is in that domain).
     if !p.scope.is_platform() {
         if after.is_some() {
-            return list::<DomainJson>(Vec::new(), None, false);
+            return list::<DomainJson>(Vec::new(), None, false, 0);
         }
         let Some(name) = domain_of(&session.address) else { return err(404, "not_found") };
         return match scoped_domain(app, &p, name).await {
-            Ok(d) => list(vec![domain_json(&d)], None, false),
+            // Its own domain, if it matches what was asked for (the same filter as everyone's).
+            Ok(d) => {
+                let hit = query.text.as_deref().is_none_or(|t| d.name.contains(t)) && query.status.as_deref().is_none_or(|s| d.status.as_str() == s);
+                list(if hit { vec![domain_json(&d)] } else { Vec::new() }, None, false, i64::from(hit))
+            }
             Err(r) => r,
         };
     }
-    match app.directory.list_domains(after.map(DomainId), PAGE).await {
-        Ok(rows) => {
-            let full = rows.len() == PAGE;
-            let last = rows.last().map(|d| d.id.0);
-            list(rows.iter().map(domain_json).collect(), last, full)
-        }
-        Err(e) => fail(&e),
-    }
+    let filter = query.filter();
+    let (rows, total) = match tokio::try_join!(app.directory.search_domains(&filter, after.map(DomainId), query.limit), app.directory.count_domains(&filter)) {
+        Ok(x) => x,
+        Err(e) => return fail(&e),
+    };
+    let full = rows.len() == query.limit;
+    let last = rows.last().map(|d| d.id.0);
+    list(rows.iter().map(domain_json).collect(), last, full, total)
 }
 
 #[derive(Deserialize)]
@@ -245,22 +312,22 @@ async fn list_accounts(app: &AdminApp, req: Request) -> Response {
         Ok(x) => x,
         Err(r) => return r,
     };
-    let after = match after(&req) {
-        Ok(a) => a,
+    let query = match list_query(&req, &["active", "locked", "disabled"]) {
+        Ok(q) => q,
         Err(r) => return r,
     };
     let dom = match scoped_domain(app, &p, req.param("d").unwrap_or_default()).await {
         Ok(d) => d,
         Err(r) => return r,
     };
-    match app.directory.list_accounts(dom.id, after.map(AccountId), PAGE).await {
-        Ok(rows) => {
-            let full = rows.len() == PAGE;
-            let last = rows.last().map(|a| a.id.0);
-            list(rows.iter().map(|a| account_json(a, &dom.name)).collect(), last, full)
-        }
-        Err(e) => fail(&e),
-    }
+    let filter = query.filter();
+    let (rows, total) = match tokio::try_join!(app.directory.search_accounts(dom.id, &filter, query.after.map(AccountId), query.limit), app.directory.count_accounts(dom.id, &filter)) {
+        Ok(x) => x,
+        Err(e) => return fail(&e),
+    };
+    let full = rows.len() == query.limit;
+    let last = rows.last().map(|a| a.id.0);
+    list(rows.iter().map(|a| account_json(a, &dom.name)).collect(), last, full, total)
 }
 
 #[derive(Deserialize)]
@@ -400,22 +467,22 @@ async fn list_aliases(app: &AdminApp, req: Request) -> Response {
         Ok(x) => x,
         Err(r) => return r,
     };
-    let after = match after(&req) {
-        Ok(a) => a,
+    let query = match list_query(&req, &[]) {
+        Ok(q) => q,
         Err(r) => return r,
     };
     let dom = match scoped_domain(app, &p, req.param("d").unwrap_or_default()).await {
         Ok(d) => d,
         Err(r) => return r,
     };
-    match app.directory.list_aliases(dom.id, after, PAGE).await {
-        Ok(rows) => {
-            let full = rows.len() == PAGE;
-            let last = rows.last().map(|a| a.id);
-            list(rows.iter().map(|a| alias_json(a, &dom.name)).collect(), last, full)
-        }
-        Err(e) => fail(&e),
-    }
+    let filter = query.filter();
+    let (rows, total) = match tokio::try_join!(app.directory.search_aliases(dom.id, &filter, query.after, query.limit), app.directory.count_aliases(dom.id, &filter)) {
+        Ok(x) => x,
+        Err(e) => return fail(&e),
+    };
+    let full = rows.len() == query.limit;
+    let last = rows.last().map(|a| a.id);
+    list(rows.iter().map(|a| alias_json(a, &dom.name)).collect(), last, full, total)
 }
 
 #[derive(Deserialize)]

@@ -79,6 +79,10 @@ describe('monitor', () => {
   it('says that a stale row replaced by a newer task is an old version, not a fault', async () => {
     const old = { service: 'imap', status: 'ok', instances: [instance('imap-new'), instance('imap-old', { stale: true, replaced: true, age_secs: 900 })] };
     await open(PLATFORM, { 'GET /api/v1/monitor': ok({ ...MONITOR, services: [old] }) });
+    // Hidden at first: old versions are history.
+    await screen.findByRole('table', { name: t('monitor.instances') });
+    expect(screen.queryByText(t('monitor.instance.replaced'))).toBeNull();
+    await fireEvent.click(screen.getByLabelText(t('monitor.showOld')));
     const inst = await screen.findByRole('table', { name: t('monitor.instances') });
     expect(within(inst).getByText(t('monitor.instance.replaced'))).toBeTruthy();
     expect(within(inst).queryByText(t('monitor.instance.stale'))).toBeNull();

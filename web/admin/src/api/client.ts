@@ -4,10 +4,21 @@
 import type { Account, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, Monitor, Queue, Relay, SetupState, Storage } from './types';
 import type { MessageKey } from '../i18n';
 
-/** A page of a list and the cursor of the next one. */
+/** A page of a list, the cursor of the next one and how many rows match in all. */
 export interface Page<T> {
   items: T[];
   next: number | null;
+  total: number;
+}
+
+/** What narrows a list and sizes its page (the server checks every part of it). */
+export interface ListOptions {
+  /** A substring of the name. */
+  q?: string;
+  /** One status of the list's kind. */
+  status?: string;
+  /** Rows per page, 1 to 100. */
+  limit?: number;
 }
 
 /** What `PUT .../relay` takes (the password only together with a user name). */
@@ -46,7 +57,15 @@ export interface BackendInput extends StorageInput {
 }
 
 const seg = encodeURIComponent;
-const cursor = (after?: number): string => (after === undefined ? '' : `?after=${after}`);
+const cursor = (after?: number, opts: ListOptions = {}): string => {
+  const parts: string[] = [];
+  if (after !== undefined) parts.push(`after=${after}`);
+  if (opts.q !== undefined && opts.q.trim() !== '') parts.push(`q=${encodeURIComponent(opts.q.trim())}`);
+  if (opts.status !== undefined && opts.status !== '') parts.push(`status=${encodeURIComponent(opts.status)}`);
+  // 100 is the server's own page size: nothing to say.
+  if (opts.limit !== undefined && opts.limit !== 100) parts.push(`limit=${opts.limit}`);
+  return parts.length === 0 ? '' : `?${parts.join('&')}`;
+};
 
 /** A failed call: the status, the fixed error code of the contract, and the delay of a throttled one. */
 export class ApiError extends Error {
@@ -179,8 +198,8 @@ export class Client {
     return me;
   }
 
-  domains(after?: number): Promise<Page<Domain>> {
-    return this.call('GET', `/api/v1/domains${cursor(after)}`);
+  domains(after?: number, opts?: ListOptions): Promise<Page<Domain>> {
+    return this.call('GET', `/api/v1/domains${cursor(after, opts)}`);
   }
 
   createDomain(name: string): Promise<Domain> {
@@ -191,8 +210,8 @@ export class Client {
     return this.call('POST', `/api/v1/domains/${seg(name)}/${enabled ? 'enable' : 'disable'}`);
   }
 
-  accounts(domain: string, after?: number): Promise<Page<Account>> {
-    return this.call('GET', `/api/v1/domains/${seg(domain)}/accounts${cursor(after)}`);
+  accounts(domain: string, after?: number, opts?: ListOptions): Promise<Page<Account>> {
+    return this.call('GET', `/api/v1/domains/${seg(domain)}/accounts${cursor(after, opts)}`);
   }
 
   createAccount(domain: string, local: string, password?: string): Promise<AccountCreated> {
@@ -207,8 +226,8 @@ export class Client {
     return this.call('POST', `/api/v1/accounts/${seg(address)}/${action}`);
   }
 
-  aliases(domain: string, after?: number): Promise<Page<Alias>> {
-    return this.call('GET', `/api/v1/domains/${seg(domain)}/aliases${cursor(after)}`);
+  aliases(domain: string, after?: number, opts?: ListOptions): Promise<Page<Alias>> {
+    return this.call('GET', `/api/v1/domains/${seg(domain)}/aliases${cursor(after, opts)}`);
   }
 
   async createAlias(domain: string, local: string, target: string): Promise<void> {
@@ -219,8 +238,8 @@ export class Client {
     await this.call('DELETE', `/api/v1/aliases/${seg(address)}`);
   }
 
-  admins(after?: number): Promise<Page<AdminEntry>> {
-    return this.call('GET', `/api/v1/admins${cursor(after)}`);
+  admins(after?: number, opts?: ListOptions): Promise<Page<AdminEntry>> {
+    return this.call('GET', `/api/v1/admins${cursor(after, opts)}`);
   }
 
   grantAdmin(address: string, domain: string | null): Promise<AdminEntry> {

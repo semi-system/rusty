@@ -248,6 +248,11 @@ impl PgStore {
         crate::feed::PgChangeFeed::new(self.feed_options.clone())
     }
 
+    /// The feed of the admin console's live updates (migration 0028): one dedicated connection that LISTENs. Nothing connects until it is run.
+    pub fn admin_feed(&self) -> crate::feed::PgAdminFeed {
+        crate::feed::PgAdminFeed::new(self.feed_options.clone())
+    }
+
     /// Close all connections and wait for checked-out connections to return.
     pub async fn close(&self) {
         self.pool.close().await;

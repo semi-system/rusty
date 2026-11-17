@@ -10,7 +10,7 @@ use super::PgRepo;
 use crate::map_db_error;
 use crate::repo::directory::{
     capability_expiry, check_list_capacity, check_no_nul, check_page_limit, check_text, decode_account,
-    decode_alias, decode_domain, list_resolution, sql, AccountRow,
+    decode_alias, decode_domain, list_resolution, sql, AccountRow, ListFilter,
     MAX_DOMAIN_BYTES, MAX_EXTERNAL_MEMBER_BYTES, MAX_LOCAL_PART_BYTES, MAX_PLAN_NAME_BYTES,
 };
 use crate::repo::{
@@ -151,6 +151,58 @@ impl DirectoryRepo for PgRepo {
             .await
             .map_err(map_db_error)?;
         rows.into_iter().map(decode_account).collect()
+    }
+
+    async fn search_domains(&self, filter: &ListFilter, after: Option<DomainId>, limit: usize) -> Result<Vec<DomainInfo>> {
+        let limit = check_page_limit(limit)?;
+        let rows: Vec<(i64, String, String, i64)> = sqlx::query_as(r(sql::SEARCH_DOMAINS))
+            .bind(after.map(|d| d.0))
+            .bind(limit)
+            .bind(filter.text.as_deref())
+            .bind(filter.status.as_deref())
+            .fetch_all(self.store.pool())
+            .await
+            .map_err(map_db_error)?;
+        rows.into_iter().map(crate::repo::directory::decode_domain).collect()
+    }
+
+    async fn count_domains(&self, filter: &ListFilter) -> Result<i64> {
+        sqlx::query_scalar(r(sql::COUNT_DOMAINS)).bind(filter.text.as_deref()).bind(filter.status.as_deref()).fetch_one(self.store.pool()).await.map_err(map_db_error)
+    }
+
+    async fn search_accounts(&self, domain: DomainId, filter: &ListFilter, after: Option<AccountId>, limit: usize) -> Result<Vec<AccountInfo>> {
+        let limit = check_page_limit(limit)?;
+        let rows: Vec<AccountRow> = sqlx::query_as(r(sql::SEARCH_ACCOUNTS))
+            .bind(domain.0)
+            .bind(after.map(|a| a.0))
+            .bind(limit)
+            .bind(filter.text.as_deref())
+            .bind(filter.status.as_deref())
+            .fetch_all(self.store.pool())
+            .await
+            .map_err(map_db_error)?;
+        rows.into_iter().map(decode_account).collect()
+    }
+
+    async fn count_accounts(&self, domain: DomainId, filter: &ListFilter) -> Result<i64> {
+        sqlx::query_scalar(r(sql::COUNT_ACCOUNTS)).bind(domain.0).bind(filter.text.as_deref()).bind(filter.status.as_deref()).fetch_one(self.store.pool()).await.map_err(map_db_error)
+    }
+
+    async fn search_aliases(&self, domain: DomainId, filter: &ListFilter, after: Option<i64>, limit: usize) -> Result<Vec<AliasInfo>> {
+        let limit = check_page_limit(limit)?;
+        let rows: Vec<(i64, String, i64, String, String)> = sqlx::query_as(r(sql::SEARCH_ALIASES))
+            .bind(domain.0)
+            .bind(after)
+            .bind(limit)
+            .bind(filter.text.as_deref())
+            .fetch_all(self.store.pool())
+            .await
+            .map_err(map_db_error)?;
+        Ok(rows.into_iter().map(decode_alias).collect())
+    }
+
+    async fn count_aliases(&self, domain: DomainId, filter: &ListFilter) -> Result<i64> {
+        sqlx::query_scalar(r(sql::COUNT_ALIASES)).bind(domain.0).bind(filter.text.as_deref()).fetch_one(self.store.pool()).await.map_err(map_db_error)
     }
 
     async fn list_aliases(

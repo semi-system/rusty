@@ -105,6 +105,11 @@ impl Store {
         Arc::new(self.pg.change_feed())
     }
 
+    /// The feed of the admin console's live updates: run it in the admin service with a sink.
+    pub fn admin_feed(&self) -> Arc<crate::PgAdminFeed> {
+        Arc::new(self.pg.admin_feed())
+    }
+
     /// Graceful shutdown: the pool is closed. Call once after every service holding `Repos` has stopped.
     pub async fn close(&self) -> Result<()> {
         self.pg.close().await;

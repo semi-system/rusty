@@ -191,6 +191,14 @@ pub struct CapabilityGrant {
     pub expires_at: i64,
 }
 
+/// What a list is narrowed to (the admin console's search and status filter). `text` is matched as a plain substring of the name (no wildcard has a meaning in it), lower case;
+/// `status` is the exact status text of the list's kind. `None` for both: the whole list.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ListFilter {
+    pub text: Option<String>,
+    pub status: Option<String>,
+}
+
 #[async_trait]
 pub trait DirectoryRepo: Send + Sync {
     // ------------------------------------------------------------ domains, plans
@@ -218,6 +226,16 @@ pub trait DirectoryRepo: Send + Sync {
         after: Option<AccountId>,
         limit: usize,
     ) -> Result<Vec<AccountInfo>>;
+    /// One page of domains that match `filter`, in the order of `list_domains`.
+    async fn search_domains(&self, filter: &ListFilter, after: Option<DomainId>, limit: usize) -> Result<Vec<DomainInfo>>;
+    /// How many domains match `filter` (all of them, whatever the page).
+    async fn count_domains(&self, filter: &ListFilter) -> Result<i64>;
+    /// One page of the accounts of one domain that match `filter`, in the order of `list_accounts`.
+    async fn search_accounts(&self, domain: DomainId, filter: &ListFilter, after: Option<AccountId>, limit: usize) -> Result<Vec<AccountInfo>>;
+    async fn count_accounts(&self, domain: DomainId, filter: &ListFilter) -> Result<i64>;
+    /// One page of the aliases of one domain whose name, or whose account's name, contains the filter's text (its status is ignored: an alias has none).
+    async fn search_aliases(&self, domain: DomainId, filter: &ListFilter, after: Option<i64>, limit: usize) -> Result<Vec<AliasInfo>>;
+    async fn count_aliases(&self, domain: DomainId, filter: &ListFilter) -> Result<i64>;
     /// One page of the aliases of one domain, cursor `AliasInfo::id`.
     async fn list_aliases(
         &self,
@@ -349,6 +367,28 @@ pub(crate) mod sql {
         CASE WHEN password_set THEN CAST(1 AS BIGINT) ELSE CAST(0 AS BIGINT) END, \
         created_at FROM accounts \
         WHERE domain_id = $1 AND id > COALESCE(CAST($2 AS BIGINT), 0) ORDER BY id LIMIT $3";
+    pub const SEARCH_DOMAINS: &str = "SELECT id, name, status, created_at FROM domains \
+        WHERE id > COALESCE(CAST($1 AS BIGINT), 0) \
+        AND (CAST($3 AS TEXT) IS NULL OR strpos(name, CAST($3 AS TEXT)) > 0) AND (CAST($4 AS TEXT) IS NULL OR status = CAST($4 AS TEXT)) \
+        ORDER BY id LIMIT $2";
+    pub const COUNT_DOMAINS: &str = "SELECT CAST(COUNT(*) AS BIGINT) FROM domains \
+        WHERE (CAST($1 AS TEXT) IS NULL OR strpos(name, CAST($1 AS TEXT)) > 0) AND (CAST($2 AS TEXT) IS NULL OR status = CAST($2 AS TEXT))";
+    pub const SEARCH_ACCOUNTS: &str = "SELECT id, domain_id, local_part, status, \
+        CASE WHEN password_set THEN CAST(1 AS BIGINT) ELSE CAST(0 AS BIGINT) END, \
+        created_at FROM accounts \
+        WHERE domain_id = $1 AND id > COALESCE(CAST($2 AS BIGINT), 0) \
+        AND (CAST($4 AS TEXT) IS NULL OR strpos(local_part, CAST($4 AS TEXT)) > 0) AND (CAST($5 AS TEXT) IS NULL OR status = CAST($5 AS TEXT)) \
+        ORDER BY id LIMIT $3";
+    pub const COUNT_ACCOUNTS: &str = "SELECT CAST(COUNT(*) AS BIGINT) FROM accounts \
+        WHERE domain_id = $1 AND (CAST($2 AS TEXT) IS NULL OR strpos(local_part, CAST($2 AS TEXT)) > 0) AND (CAST($3 AS TEXT) IS NULL OR status = CAST($3 AS TEXT))";
+    pub const SEARCH_ALIASES: &str = "SELECT al.id, al.local_part, a.id, a.local_part, d.name \
+        FROM aliases al JOIN accounts a ON a.id = al.account_id \
+        JOIN domains d ON d.id = a.domain_id \
+        WHERE al.domain_id = $1 AND al.id > COALESCE(CAST($2 AS BIGINT), 0) \
+        AND (CAST($4 AS TEXT) IS NULL OR strpos(al.local_part, CAST($4 AS TEXT)) > 0 OR strpos(a.local_part, CAST($4 AS TEXT)) > 0) \
+        ORDER BY al.id LIMIT $3";
+    pub const COUNT_ALIASES: &str = "SELECT CAST(COUNT(*) AS BIGINT) FROM aliases al JOIN accounts a ON a.id = al.account_id \
+        WHERE al.domain_id = $1 AND (CAST($2 AS TEXT) IS NULL OR strpos(al.local_part, CAST($2 AS TEXT)) > 0 OR strpos(a.local_part, CAST($2 AS TEXT)) > 0)";
     pub const LIST_ALIASES: &str = "SELECT al.id, al.local_part, a.id, a.local_part, d.name \
         FROM aliases al JOIN accounts a ON a.id = al.account_id \
         JOIN domains d ON d.id = a.domain_id \
