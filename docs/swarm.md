@@ -45,6 +45,7 @@ A file of shell variables, yours (not in the repository); `swarm.env.example` is
 | `LOG_LEVEL` | `error`, `warn`, `info` (default), `debug` or `trace`: the log level of every service; raise it to see why something is refused, then `prepare configs` and `deploy` |
 | `IMAGE_TAG`, `REGISTRY` | the image tag when the kit has no digests (a checkout; default `main`), the registry |
 | `REPLICAS_DEFAULT`, `REPLICAS_ADMIN` | tasks per Rusty service (`smtp-in`, `submission`, `imap`, `outbound`, `gc`): default **2**, so an update never leaves one without a task; the admin console: default 1 (more needs `VALKEY=1`) |
+| `POP3` | `1`: POP3 as a listener of the IMAP service (ports 110 with `STLS` and 995; the edge publishes them); default 0, nothing is opened (`docs/design-pop3.md`) |
 | `STATE_DIR` | where the tool keeps what it makes (default `~/.rusty-swarm`, mode 0700): the service passwords, the keys, the certificates, the generated files |
 
 **The high database login stays yours**: it is used for the preparation only, never put in the swarm, and it is how you reach the database for a manual backup or a repair. With the default

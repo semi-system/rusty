@@ -1,0 +1,7 @@
+USER alice
+PASS no
+USER alice
+PASS no
+USER alice
+PASS no
+STAT

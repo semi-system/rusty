@@ -259,6 +259,8 @@ async fn build(
                 Arc::new(InboundHandler::submission(&ctx, options, deps))
             }
             ListenerKind::Imap143 | ListenerKind::Imaps993 => Arc::new(rusty_imap::ImapHandler::new(ctx.clone()).with_budget(budget.clone())),
+            ListenerKind::Pop3110 => Arc::new(rusty_pop3::Pop3Handler::new(ctx.clone(), rusty_pop3::Port::Starttls).with_budget(budget.clone())),
+            ListenerKind::Pop3s995 => Arc::new(rusty_pop3::Pop3Handler::new(ctx.clone(), rusty_pop3::Port::Implicit).with_budget(budget.clone())),
         };
         services.push(Box::new(ListenerService::new(bound, accept, handler)));
     }
@@ -440,6 +442,8 @@ pub fn with_port_offset(mut cfg: StartupConfig, offset: u16) -> Result<StartupCo
     cfg.smtp.listen_465 = shift(cfg.smtp.listen_465)?;
     cfg.imap.listen_143 = shift(cfg.imap.listen_143)?;
     cfg.imap.listen_993 = shift(cfg.imap.listen_993)?;
+    cfg.imap.listen_110 = shift(cfg.imap.listen_110)?;
+    cfg.imap.listen_995 = shift(cfg.imap.listen_995)?;
     Ok(cfg)
 }
 
@@ -457,5 +461,7 @@ pub fn with_bind(mut cfg: StartupConfig, ip: std::net::IpAddr) -> StartupConfig 
     cfg.smtp.listen_465 = on(cfg.smtp.listen_465);
     cfg.imap.listen_143 = on(cfg.imap.listen_143);
     cfg.imap.listen_993 = on(cfg.imap.listen_993);
+    cfg.imap.listen_110 = on(cfg.imap.listen_110);
+    cfg.imap.listen_995 = on(cfg.imap.listen_995);
     cfg
 }

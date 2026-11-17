@@ -30,7 +30,21 @@ fn domain_of(query: Option<&str>) -> Option<String> {
     domain_ok(&domain).then_some(domain)
 }
 
-fn xml(host: &str, domain: &str) -> String {
+fn xml(host: &str, domain: &str, pop3: bool) -> String {
+    // POP3 is offered as a second incoming server only where the installation runs it (TLS on 995, the address as the user name).
+    let pop = if pop3 {
+        format!(
+            "    <incomingServer type=\"pop3\">\n\
+      <hostname>{host}</hostname>\n\
+      <port>995</port>\n\
+      <socketType>SSL</socketType>\n\
+      <authentication>password-cleartext</authentication>\n\
+      <username>%EMAILADDRESS%</username>\n\
+    </incomingServer>\n"
+        )
+    } else {
+        String::new()
+    };
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <clientConfig version=\"1.1\">\n\
@@ -45,6 +59,7 @@ fn xml(host: &str, domain: &str) -> String {
       <authentication>password-cleartext</authentication>\n\
       <username>%EMAILADDRESS%</username>\n\
     </incomingServer>\n\
+{pop}\
     <outgoingServer type=\"smtp\">\n\
       <hostname>{host}</hostname>\n\
       <port>587</port>\n\
@@ -70,16 +85,21 @@ async fn config(app: &AdminApp, req: Request) -> Response {
         .with_header("content-type", "application/xml; charset=utf-8")
         .with_header("cache-control", "public, max-age=3600")
         .with_header("x-content-type-options", "nosniff")
-        .with_body(xml(&host, &domain).into_bytes())
+        .with_body(xml(&host, &domain, mail.pop3).into_bytes())
 }
 
 /// The route of this part of the service.
 pub fn routes(app: Arc<AdminApp>, router: Router) -> Router {
-    let a = app.clone();
-    router.route(Method::Get, "/mail/config-v1.1.xml", handler(move |r: Request| {
-        let a = a.clone();
-        async move { config(&a, r).await }
-    }))
+    // The path Thunderbird asks for, and the same answer where the domain's own web server would give it (`/.well-known/autoconfig/mail/config-v1.1.xml`): served for the clients that are given the mail host.
+    let mut router = router;
+    for path in ["/mail/config-v1.1.xml", "/.well-known/autoconfig/mail/config-v1.1.xml"] {
+        let a = app.clone();
+        router = router.route(Method::Get, path, handler(move |r: Request| {
+            let a = a.clone();
+            async move { config(&a, r).await }
+        }));
+    }
+    router
 }
 
 #[cfg(test)]
@@ -94,6 +114,10 @@ mod tests {
             assert_eq!(domain_of(Some(bad)), None, "{bad}");
         }
         assert_eq!(domain_of(None), None);
-        assert!(!xml("mail.example.org", "example.org").contains("<script"));
+        assert!(!xml("mail.example.org", "example.org", false).contains("<script"));
+        // POP3 is listed only when the installation runs it.
+        assert!(!xml("mail.example.org", "example.org", false).contains("pop3"));
+        let with = xml("mail.example.org", "example.org", true);
+        assert!(with.contains("<incomingServer type=\"pop3\">") && with.contains("<port>995</port>") && with.contains("<incomingServer type=\"imap\">"));
     }
 }

@@ -66,3 +66,32 @@ async fn apple_mail_gets_a_profile_that_adds_the_account_and_holds_no_password()
     }
     assert!(matches!(send(r.addr, "POST", "/mail/config.mobileconfig?email=a@b.test", &[], "").await.status, 404 | 405));
 }
+
+#[tokio::test]
+async fn the_newer_outlook_asks_for_autodiscover_v2_and_is_sent_to_the_xml_form_on_the_mail_host() {
+    let r = rig().await;
+    for path in ["/autodiscover/autodiscover.json", "/Autodiscover/Autodiscover.json"] {
+        let a = send(r.addr, "GET", &format!("{path}?Email=alice%40known.test&Protocol=AutodiscoverV1&RedirectCount=1"), &[], "").await;
+        assert_eq!(a.status, 200, "{path}: {}", a.body);
+        assert!(a.header("content-type").is_some_and(|t| t.starts_with("application/json")), "{:?}", a.header("content-type"));
+        assert!(a.header("set-cookie").is_none());
+        assert_eq!(a.json(), serde_json::json!({ "Protocol": "AutodiscoverV1", "Url": "https://mail.example.org/autodiscover/autodiscover.xml" }));
+    }
+    // Another protocol (ActiveSync, EWS) is not served, in the error shape Outlook reads; so is a request with none.
+    for q in ["?Email=a@b.test&Protocol=ActiveSync", "?Email=a@b.test&Protocol=EWS", "?Email=a@b.test", ""] {
+        let a = send(r.addr, "GET", &format!("/autodiscover/autodiscover.json{q}"), &[], "").await;
+        assert_eq!(a.status, 400, "{q}");
+        assert_eq!(a.json()["ErrorCode"], "InvalidProtocol");
+    }
+    assert!(matches!(send(r.addr, "POST", "/autodiscover/autodiscover.json?Protocol=AutodiscoverV1", &[], "").await.status, 404 | 405));
+}
+
+#[tokio::test]
+async fn the_mozilla_answer_is_also_served_at_the_well_known_path() {
+    let r = rig().await;
+    let a = send(r.addr, "GET", "/.well-known/autoconfig/mail/config-v1.1.xml?emailaddress=alice@known.test", &[], "").await;
+    let b = send(r.addr, "GET", "/mail/config-v1.1.xml?emailaddress=alice@known.test", &[], "").await;
+    assert_eq!(a.status, 200, "{}", a.body);
+    assert_eq!(a.body, b.body, "the same answer at both paths");
+    assert!(a.body.contains("<hostname>mail.example.org</hostname>") && !a.body.contains("pop3"), "POP3 is not offered where it does not run");
+}

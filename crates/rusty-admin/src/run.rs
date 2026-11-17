@@ -109,7 +109,7 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
         jobs: rusty_store::JobQueue::with_repo(repos.jobs.clone()),
         monitor: repos.heartbeat.clone(),
         sealing,
-        mail: cfg.hostname.clone().map(|host| MailSettings { host, public_ips: admin.public_ips.clone(), spf_include: admin.spf_include.clone() }),
+        mail: cfg.hostname.clone().map(|host| MailSettings { host, pop3: admin.pop3, public_ips: admin.public_ips.clone(), spf_include: admin.spf_include.clone() }),
     };
     // The heartbeat of the admin web itself (docs/design-admin-monitor.md).
     {

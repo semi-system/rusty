@@ -31,6 +31,7 @@ check_inputs() {
   [ -z "${ACME_DIRECTORY:-}" ] || [[ "$ACME_DIRECTORY" =~ ^https://[A-Za-z0-9._:/-]+$ ]] || die "ACME_DIRECTORY is an https URL"
   [[ "$REPLICAS_DEFAULT" =~ ^[1-9][0-9]?$ ]] || die "REPLICAS_DEFAULT is a number from 1 to 99"
   [[ "$REPLICAS_ADMIN" =~ ^[1-9][0-9]?$ ]] || die "REPLICAS_ADMIN is a number from 1 to 99"
+  case "${POP3:-0}" in 0|1) ;; *) die "POP3 is 0 or 1" ;; esac
   [ "$REPLICAS_ADMIN" = 1 ] || [ "${VALKEY:-0}" = 1 ] || die "REPLICAS_ADMIN above 1 needs VALKEY=1: the sessions of the admin console live in the shared key-value store"
   case "$LOG_LEVEL" in error|warn|info|debug|trace) ;; *) die "LOG_LEVEL is error, warn, info, debug or trace" ;; esac
 }

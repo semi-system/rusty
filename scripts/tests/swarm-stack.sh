@@ -120,6 +120,21 @@ grep -q '^  filter: { driver: overlay, internal: true }' "$tmp/profiles.stack.ya
 grep -q '^nameserver = "10.0.5.2:53"' "$tmp/state-profiles/stack/etc/smtp_in.toml" || fail "smtp-in does not name the resolver's address"
 grep -q 'replicas: 2' "$tmp/profiles.stack.yaml" || fail "REPLICAS_DEFAULT=2 has no effect"
 
+# POP3 is off unless asked for: no port, no listener, and the edge's POP3 lines stay comments; with POP3=1 the edge publishes 110 and 995, forwards them to the IMAP service and the IMAP service listens.
+! grep -q 'published: 110\|published: 995' "$tmp/external.stack.yaml" || fail "POP3 is off by default but the edge publishes its ports"
+! grep -q '^frontend pop3' "$tmp/state-external/stack/etc/haproxy.cfg" && ! grep -q '^listen_110' "$tmp/state-external/stack/etc/imap.toml" || fail "POP3 is off by default but its listener or frontend is live"
+scenario pop3 "$EXT"$'\nPOP3=1' "edge imap" "db s3"
+grep -q 'published: 110' "$tmp/pop3.stack.yaml" && grep -q 'published: 995' "$tmp/pop3.stack.yaml" || fail "POP3=1: the edge does not publish 110 and 995"
+grep -q '^listen_110 = "0.0.0.0:1110"' "$tmp/state-pop3/stack/etc/imap.toml" && grep -q '^listen_995 = "0.0.0.0:1995"' "$tmp/state-pop3/stack/etc/imap.toml" || fail "POP3=1: the IMAP service does not listen"
+grep -q '^pop3 = true' "$tmp/state-pop3/stack/etc/admin.toml" || fail "POP3=1: the admin web is not told, so the auto-setup would not list POP3"
+! grep -q '^pop3 = true' "$tmp/state-external/stack/etc/admin.toml" || fail "POP3 is off by default but the admin web is told it is on"
+grep -q '^frontend pop3_in' "$tmp/state-pop3/stack/etc/haproxy.cfg" && grep -q '^frontend pop3s_in' "$tmp/state-pop3/stack/etc/haproxy.cfg" || fail "POP3=1: the edge has no POP3 frontend"
+grep -q 'bind :995 ssl crt /var/lib/haproxy/certs/mail.pem' "$tmp/state-pop3/stack/etc/haproxy.cfg" || fail "POP3=1: port 995 does not end TLS with the mail certificate"
+grep -q 'server-template imap 1-8 tasks.imap:1110 ' "$tmp/state-pop3/stack/etc/haproxy.cfg" && grep -q 'server-template imap 1-8 tasks.imap:1995 ' "$tmp/state-pop3/stack/etc/haproxy.cfg" || fail "POP3=1: the edge does not name the IMAP tasks for POP3"
+refuse_pop3() { local e="$tmp/bad.env"; rm -rf "$fake/secrets"/* "$fake/configs"/*; write_env "$e" "$tmp/state-bad" "$EXT" $'\nPOP3=2'; prep_state "$tmp/state-bad" mail.example.org admin.example.org; if run_tool "$e" prepare configs >/dev/null 2>&1; then fail "POP3=2 was accepted"; fi; }
+refuse_pop3
+echo "  ok    pop3 is off by default, on with POP3=1, and refuses other values"
+
 # ---- the configuration keys match those of the standalone templates ----------------------------------------------------------------------------------------------------------------------------
 # section.key of a TOML text; a template's profile markers are switched on, its other comments dropped
 keys_of() { sed -e 's/^#\(FILTER\|VALKEY\|METRICS\) //' -e '/^#/d' | awk '/^\[\[?[a-z0-9_.]+\]\]?$/ { s = $0; gsub(/[][]/, "", s); next } /^[a-z_]+ *=/ { k = $1; print s "." k }' | sort -u; }

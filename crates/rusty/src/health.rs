@@ -1,8 +1,8 @@
 //! `rusty healthcheck`: the container HEALTHCHECK. It reads the same configuration as the daemon
 //! (`--config FILE`, default `/etc/rusty/rusty.toml`, or `--dev ...`) and probes every enabled
 //! listener on the loopback address: a TCP connect for each, and for the plain-text listeners
-//! (25, 587, 143) the greeting line (`220 ` for SMTP, `* OK` for IMAP). Implicit-TLS listeners
-//! (465, 993) are connect-only, so the probe needs no TLS stack, no credentials and creates no
+//! (25, 587, 143, 110) the greeting line (`220 ` for SMTP, `* OK` for IMAP, `+OK` for POP3). Implicit-TLS listeners
+//! (465, 993, 995) are connect-only, so the probe needs no TLS stack, no credentials and creates no
 //! session state. Exit code 0 when every listener answers, 1 otherwise.
 //!
 //! Behind the edge (`proxy_protocol`) a service refuses a connection that does not start with a PROXY header from a trusted address, and its implicit-TLS ports speak
@@ -33,9 +33,11 @@ fn expected_greeting(kind: ListenerKind, proxied: bool) -> Option<&'static str> 
     match kind {
         ListenerKind::Smtp25 | ListenerKind::Submission587 => Some("220 "),
         ListenerKind::Imap143 => Some("* OK"),
+        ListenerKind::Pop3110 => Some("+OK"),
         // TLS ends at the edge when proxied: the service itself speaks plain text on these ports.
         ListenerKind::Submissions465 => proxied.then_some("220 "),
         ListenerKind::Imaps993 => proxied.then_some("* OK"),
+        ListenerKind::Pop3s995 => proxied.then_some("+OK"),
     }
 }
 
