@@ -115,7 +115,26 @@ pub(crate) async fn schema_status_of(pool: &PgPool) -> Result<SchemaStatus> {
     Ok(SchemaStatus { state, applied, expected })
 }
 
-/// The daemon's start-up check: refuse unless the schema is exactly this binary's.
+/// Whether every migration this binary does not know declares (in `schema_compat`) that a binary at schema version `known` keeps working: the rule that lets the old release run on, and
+/// restart on, the schema the new release's migration made (docs/design-zero-downtime.md). A migration with no row, or a row that asks for a newer binary, is not compatible.
+async fn newer_schema_is_compatible(pool: &PgPool, known: i64) -> Result<bool> {
+    let has_table: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('public.schema_compat')::text").fetch_one(pool).await.map_err(q_err)?;
+    if has_table.is_none() {
+        return Ok(false);
+    }
+    let blocking: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM _sqlx_migrations m WHERE m.version > $1 
+         AND NOT EXISTS (SELECT 1 FROM schema_compat c WHERE c.version = m.version AND c.min_binary <= $1)",
+    )
+    .bind(known)
+    .fetch_one(pool)
+    .await
+    .map_err(q_err)?;
+    Ok(blocking == 0)
+}
+
+/// The daemon's start-up check: refuse unless the schema is this binary's, or a newer one whose migrations all keep this binary working.
 pub(crate) async fn require_current_schema(pool: &PgPool) -> Result<()> {
     let s = schema_status_of(pool).await?;
     let newest = |v: &[i64]| v.last().copied().unwrap_or(0);
@@ -129,11 +148,21 @@ pub(crate) async fn require_current_schema(pool: &PgPool) -> Result<()> {
             newest(&s.applied),
             newest(&s.expected)
         ))),
-        SchemaState::Ahead => Err(Error::storage(format!(
-            "database schema is newer than this binary (applied {}, this binary knows {}): run a matching or newer release",
-            newest(&s.applied),
-            newest(&s.expected)
-        ))),
+        SchemaState::Ahead => {
+            let known = newest(&s.expected);
+            // Only a schema that is AHEAD by migrations is a candidate: every migration this binary embeds must be applied and unmodified, or the schema is not the one it was built for.
+            let every_known_applied = s.expected.iter().all(|v| s.applied.contains(v));
+            if every_known_applied && newer_schema_is_compatible(pool, known).await? {
+                tracing::warn!(applied = newest(&s.applied), known, "the schema is newer than this release, and every newer migration keeps it working: running on it (an update is in progress)");
+                Ok(())
+            } else {
+                Err(Error::storage(format!(
+                    "database schema is newer than this binary (applied {}, this binary knows {}) and not compatible with it: run a matching or newer release",
+                    newest(&s.applied),
+                    known
+                )))
+            }
+        }
         SchemaState::Dirty | SchemaState::Mismatch => Err(Error::storage(
             "database schema history is inconsistent (a failed or modified migration): see `rustyctl db status`",
         )),
@@ -207,10 +236,27 @@ pub(crate) async fn verify_runtime_role(pool: &PgPool, config: &PgLimits) -> Res
     Ok(())
 }
 
+/// How long a statement of the migrator waits for a lock: a DDL statement that waits for a table lock makes every query on the table queue behind it, which is an outage of the mail path
+/// however short the DDL itself is. So it gives up after this and the migration is retried (docs/design-zero-downtime.md).
+const MIGRATOR_LOCK_TIMEOUT: &str = "5s";
+/// Attempts at the migrations (and at the privilege matrix) when a lock timeout ends one, and the pause between them.
+const LOCK_RETRIES: u32 = 12;
+const LOCK_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn is_lock_timeout(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Database(d) if d.code().as_deref() == Some("55P03"))
+}
+
 async fn admin_pool(url: &str, security: &PgSecurity) -> Result<PgPool> {
     let options = connect_options(url, security)?;
     PgPoolOptions::new()
         .max_connections(2)
+        .after_connect(|conn, _| {
+            Box::pin(async move {
+                sqlx::query("SELECT set_config('lock_timeout', $1, false)").bind(MIGRATOR_LOCK_TIMEOUT).execute(conn).await?;
+                Ok(())
+            })
+        })
         .connect_with(options)
         .await
         .map_err(|_| Error::storage("cannot connect to Postgres"))
@@ -266,14 +312,36 @@ async fn migrate_on(pool: &PgPool, require_roles: bool) -> Result<MigrationRepor
             "database schema history is inconsistent or newer than this binary: refusing to migrate",
         ));
     }
-    MIGRATOR.run(pool).await.map_err(|_| Error::storage("Postgres migration failed"))?;
+    // Each migration is one transaction and an applied one is skipped, so a run that ended on a lock timeout is simply run again.
+    let mut attempt = 0;
+    loop {
+        match MIGRATOR.run(pool).await {
+            Ok(()) => break,
+            Err(sqlx::migrate::MigrateError::Execute(e)) if is_lock_timeout(&e) && attempt + 1 < LOCK_RETRIES => {
+                attempt += 1;
+                tracing::warn!(attempt, "a migration waited too long for a lock (a long transaction is open); trying again");
+                tokio::time::sleep(LOCK_RETRY_PAUSE).await;
+            }
+            Err(_) => return Err(Error::storage("Postgres migration failed")),
+        }
+    }
     #[cfg(feature = "mutation-testing")]
     for stmt in crate::mutation::post_migrate(crate::mutation::Dialect::Postgres) {
         // Mutation testing only (the feature is never enabled in a release build): the statements come
         // from the checked-in mutation table (src/mutation.rs), not from any runtime input.
         sqlx::query(sqlx::AssertSqlSafe(stmt)).execute(pool).await.map_err(|_| Error::storage("mutation statement failed"))?;
     }
-    sqlx::raw_sql(GRANTS_SQL).execute(pool).await.map_err(|_| Error::storage("applying the privilege matrix failed"))?;
+    let mut attempt = 0;
+    loop {
+        match sqlx::raw_sql(GRANTS_SQL).execute(pool).await {
+            Ok(_) => break,
+            Err(e) if is_lock_timeout(&e) && attempt + 1 < LOCK_RETRIES => {
+                attempt += 1;
+                tokio::time::sleep(LOCK_RETRY_PAUSE).await;
+            }
+            Err(_) => return Err(Error::storage("applying the privilege matrix failed")),
+        }
+    }
     let after = schema_status_of(pool).await?;
     Ok(MigrationReport { before, after, grants_applied: roles_exist })
 }
