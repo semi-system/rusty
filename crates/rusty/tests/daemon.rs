@@ -529,7 +529,9 @@ async fn the_pop3_listener_serves_pop3_refuses_a_password_in_clear_text_and_the_
     probed.smtp.listen_465 = Listen::off();
     probed.imap.listen_143 = Listen::off();
     probed.imap.listen_993 = Listen::off();
-    assert_eq!(rusty::health::check(&probed), Ok(2));
+    // The probe is blocking: on its own thread, or it would hold the runtime that the listener runs on.
+    let probed_result = tokio::task::spawn_blocking(move || rusty::health::check(&probed)).await.unwrap();
+    assert_eq!(probed_result, Ok(2));
     token.cancel();
     run.wait().await.unwrap();
 }

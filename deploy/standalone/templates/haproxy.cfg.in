@@ -109,13 +109,7 @@ frontend admin_https
     http-request deny deny_status 421 unless admin_host
     http-request deny deny_status 403 unless admin_net
     use_backend be_admin if mail_host setup_path setup_method
-    default_#POP3 backend be_pop3
-#POP3     server-template imap 1-8 imap:1110 resolvers docker init-addr none check inter 5s send-proxy-v2
-#POP3
-#POP3 backend be_pop3s
-#POP3     server-template imap 1-8 imap:1995 resolvers docker init-addr none check inter 5s send-proxy-v2
-
-backend be_admin
+    default_backend be_admin
 
 # The services by NAME, through Docker's resolver, so replicas (`docker compose up -d --scale smtp-in=3`) join and leave by themselves: each A record of the name is one server of the
 # template, re-resolved every few seconds, and a replica that does not accept a connection is taken out (`check`). The edge shares only the `app` network with them, so the names
@@ -135,6 +129,12 @@ backend be_imap
 backend be_imaps
     server-template imap 1-8 imap:1993 resolvers docker init-addr none check inter 5s send-proxy-v2
 
+#POP3 backend be_pop3
+#POP3     server-template imap 1-8 imap:1110 resolvers docker init-addr none check inter 5s send-proxy-v2
+#POP3
+#POP3 backend be_pop3s
+#POP3     server-template imap 1-8 imap:1995 resolvers docker init-addr none check inter 5s send-proxy-v2
+#POP3
 backend be_admin
     mode http
     server-template admin 1-4 admin:8080 resolvers docker init-addr none check inter 5s

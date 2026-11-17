@@ -133,6 +133,13 @@ grep -q 'bind :995 ssl crt /var/lib/haproxy/certs/mail.pem' "$tmp/state-pop3/sta
 grep -q 'server-template imap 1-8 tasks.imap:1110 ' "$tmp/state-pop3/stack/etc/haproxy.cfg" && grep -q 'server-template imap 1-8 tasks.imap:1995 ' "$tmp/state-pop3/stack/etc/haproxy.cfg" || fail "POP3=1: the edge does not name the IMAP tasks for POP3"
 refuse_pop3() { local e="$tmp/bad.env"; rm -rf "$fake/secrets"/* "$fake/configs"/*; write_env "$e" "$tmp/state-bad" "$EXT" $'\nPOP3=2'; prep_state "$tmp/state-bad" mail.example.org admin.example.org; if run_tool "$e" prepare configs >/dev/null 2>&1; then fail "POP3=2 was accepted"; fi; }
 refuse_pop3
+# The rendered edge config keeps its shape with POP3 off and on: one be_admin backend, the admin frontend's default, no stray keyword.
+for s in external pop3; do
+  cfg="$tmp/state-$s/stack/etc/haproxy.cfg"
+  [ "$(grep -c '^backend be_admin$' "$cfg")" = 1 ] || fail "$s: haproxy.cfg must have exactly one backend be_admin"
+  grep -q '^    default_backend be_admin$' "$cfg" || fail "$s: the admin frontend lost its default_backend"
+  ! grep -Eq 'default_[^b]' "$cfg" || fail "$s: haproxy.cfg has a stray default_ keyword"
+done
 echo "  ok    pop3 is off by default, on with POP3=1, and refuses other values"
 
 # ---- the configuration keys match those of the standalone templates ----------------------------------------------------------------------------------------------------------------------------
