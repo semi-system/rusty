@@ -44,23 +44,6 @@ impl Events {
         true
     }
 
-    /// Read until `needle` has arrived `times` times.
-    async fn wait_count(&mut self, needle: &str, times: usize, within: Duration) -> bool {
-        let deadline = tokio::time::Instant::now() + within;
-        let mut buf = [0u8; 2048];
-        while self.got.matches(needle).count() < times {
-            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if left.is_zero() {
-                return false;
-            }
-            match tokio::time::timeout(left, self.tcp.read(&mut buf)).await {
-                Ok(Ok(n)) if n > 0 => self.got.push_str(&String::from_utf8_lossy(&buf[..n])),
-                _ => return false,
-            }
-        }
-        true
-    }
-
     /// Read for `within` and report whether the stream ended (the server closed it).
     async fn ends_within(&mut self, within: Duration) -> bool {
         let deadline = tokio::time::Instant::now() + within;
@@ -193,7 +176,7 @@ async fn a_session_may_hold_a_few_streams_and_no_more() {
 }
 
 #[tokio::test]
-async fn what_another_process_writes_reaches_the_streams_through_the_database_for_the_right_domain_only() {
+async fn what_another_process_writes_reaches_the_streams_through_the_database_feed_for_the_right_domain_only() {
     let r = rig().await;
     make_admin(&r, "root@home.test", false).await;
     make_admin(&r, "boss@one.test", true).await;
