@@ -23,10 +23,10 @@
   let password = $state('');
   let spf = $state('');
 
-  async function load(): Promise<void> {
+  async function load(quiet = false): Promise<void> {
     try {
       relay = await app.client.relay(name);
-      if (relay !== null) {
+      if (!quiet && relay !== null) {
         host = relay.host;
         port = relay.port;
         tls = relay.tls === 'implicit' || relay.tls === 'none' ? relay.tls : 'starttls';
@@ -35,13 +35,15 @@
       }
       error = null;
     } catch (e) {
-      error = e;
+      if (!quiet) error = e;
     }
     loaded = true;
   }
 
   onMount(() => {
     void load();
+    // A hint refreshes what is shown in the background, without touching what the person is typing in a form.
+    return app.live.watch(['outbound:' + name.toLowerCase()], () => void load(true));
   });
 
   async function guarded(work: () => Promise<void>): Promise<void> {
@@ -123,7 +125,7 @@
         </ul>
         <div class="form-actions">
           <button type="button" onclick={check} disabled={busy}>{t('relay.check')}</button>
-          <button type="button" class="secondary" onclick={load}>{t('dns.reload')}</button>
+          <button type="button" class="secondary" onclick={() => load()}>{t('dns.reload')}</button>
           <button type="button" class="danger" onclick={remove} disabled={busy}>{t('relay.remove')}</button>
         </div>
       </section>

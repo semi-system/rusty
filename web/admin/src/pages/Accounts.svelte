@@ -25,19 +25,21 @@
   let editing = $state<string | null>(null);
   let fresh = $state('');
 
-  async function load(after?: number): Promise<void> {
+  async function load(after?: number, quiet = false): Promise<void> {
     try {
       const page = await app.client.accounts(name, after);
       items = after === undefined ? page.items : [...items, ...page.items];
       next = page.next;
     } catch (e) {
-      error = e;
+      if (!quiet) error = e;
     }
     loaded = true;
   }
 
   onMount(() => {
     void load();
+    // A hint refreshes the first page in the background: nothing is shown when that fails (the next hint tries again).
+    return app.live.watch(['accounts:' + name.toLowerCase()], () => void load(undefined, true));
   });
 
   async function guarded(work: () => Promise<void>): Promise<void> {

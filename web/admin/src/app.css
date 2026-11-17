@@ -289,3 +289,7 @@ fieldset.panel legend { padding: 0 0.5rem; font-weight: 600; }
   .field-row > label, .field-row > button { flex: 1 1 100%; }
   .field-row input, .field-row select { max-width: none; }
 }
+
+/* the mark that says the console is receiving live updates */
+.live { display: inline-flex; align-items: center; gap: 0.375rem; color: var(--ok); font-size: 0.8125rem; font-weight: 600; }
+.live::before { content: ''; width: 0.4375rem; height: 0.4375rem; border-radius: 50%; background: currentColor; }

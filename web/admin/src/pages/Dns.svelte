@@ -16,17 +16,19 @@
   let notice = $state<string | null>(null);
   let busy = $state(false);
 
-  async function load(): Promise<void> {
+  async function load(quiet = false): Promise<void> {
     try {
       data = await app.client.dns(name);
       error = null;
     } catch (e) {
-      error = e;
+      if (!quiet) error = e;
     }
   }
 
   onMount(() => {
     void load();
+    // A hint refreshes what is shown in the background, without touching what the person is typing in a form.
+    return app.live.watch(['dns:' + name.toLowerCase()], () => void load(true));
   });
 
   async function check(): Promise<void> {
@@ -52,7 +54,7 @@
       <h2>{t('dns.title', { domain: name })}</h2>
       <div class="page-actions">
         <button type="button" onclick={check} disabled={busy}>{t('dns.check')}</button>
-        <button type="button" class="secondary" onclick={load}>{t('dns.reload')}</button>
+        <button type="button" class="secondary" onclick={() => load()}>{t('dns.reload')}</button>
       </div>
     </div>
     <p class="muted">{t('dns.intro')}</p>

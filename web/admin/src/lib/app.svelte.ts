@@ -2,15 +2,19 @@
 
 import { Client } from '../api/client';
 import type { Me } from '../api/types';
+import { Live } from './live.svelte';
 
 export type View = { kind: 'loading' } | { kind: 'signin' } | { kind: 'setup' } | { kind: 'in'; me: Me } | { kind: 'failed'; error: unknown };
 
 export class App {
   view = $state<View>({ kind: 'loading' });
   readonly client: Client;
+  /** The stream of hints that something changed (see live.svelte.ts). Opened by the console frame while someone is signed in. */
+  readonly live: Live;
 
-  constructor(client: Client = new Client()) {
+  constructor(client: Client = new Client(), live: Live = new Live()) {
     this.client = client;
+    this.live = live;
   }
 
   /** Decide the first page: the application when a session exists, else the setup page while it is open, else sign-in. */

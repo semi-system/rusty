@@ -24,22 +24,21 @@
   let address = $state('');
   let domain = $state('');
 
-  async function load(after?: number): Promise<void> {
+  async function load(after?: number, quiet = false): Promise<void> {
     try {
       const page = await app.client.admins(after);
       items = after === undefined ? page.items : [...items, ...page.items];
       next = page.next;
     } catch (e) {
-      error = e;
+      if (!quiet) error = e;
     }
     loaded = true;
   }
 
-  onMount(async () => {
-    void load();
+  // The domains an administrator can be limited to; the list is a convenience for the choice.
+  async function loadDomains(): Promise<void> {
     if (!platform) return;
     try {
-      // The domains an administrator can be limited to; the list is a convenience for the choice.
       let after: number | undefined;
       for (;;) {
         const page = await app.client.domains(after);
@@ -50,6 +49,13 @@
     } catch {
       domains = [];
     }
+  }
+
+  onMount(() => {
+    void load();
+    void loadDomains();
+    // A hint refreshes the first page in the background: nothing is shown when that fails (the next hint tries again).
+    return app.live.watch(['admins'], () => void load(undefined, true));
   });
 
   // What the server refused, in this page's words (the generic text would say only "already exists").

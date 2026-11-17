@@ -28,11 +28,11 @@ data: {"topics":["storage:example.test"]}
 : keep-alive             a comment every 20 seconds (so proxies and the edge keep the connection)
 ```
 
-* **Scope.** A platform administrator receives every topic; a domain administrator only the topics of its own domain (the topic names carry the domain name, the hub filters by the principal's domain). Topics without a domain (`monitor`, `admins`) go to platform administrators only; `domains` goes to both (a domain administrator's list shows its own domain's status).
+* **Scope.** A platform administrator receives every topic; a domain administrator only the topics of its own domain (the topic names carry the domain name, the hub filters by the principal's domain). `monitor` goes to platform administrators only. `domains` and `admins` go to both: the hint carries nothing, and a domain administrator's own pages ask the API, which shows its own domain only.
 * **The session ends the stream.** The hub looks at the session on connect and on every keep-alive; a revoked or expired session, a revoked grant or the shutdown of the service ends the stream. A stream lives at most 30 minutes; the browser's `EventSource` reconnects by itself (and gets `resync`).
 * **Limits.** At most 4 streams per session and 256 per process; a further connection is `429 throttled`. Each stream has a small queue (64 hints); a stream that cannot keep up is not buffered without bound: its queue is merged into one `resync` (hints are idempotent).
-* **No new port, no new service.** It is a route of the admin service, behind the same edge route as the rest of the API. The edge must allow a long response: `timeout server` (and `timeout tunnel`) of the admin backend at least 90 seconds with the 20 second keep-alive (swarm and standalone templates).
-* **HTTP server.** `rusty-http` gets a streaming body (`Response::stream`): a bounded channel of byte chunks behind a hyper body. The request timeout covers the handler up to the response head, as now; the stream is ended by its own rules above and by the service's shutdown token. Other responses are unchanged.
+* **No new port, no new service.** It is a route of the admin service, behind the same edge route as the rest of the API. The edge needs no change: HAProxy forwards the stream as it arrives, and its `timeout client` and `timeout server` (5 minutes in `haproxy.cfg.in`) are far above the 20 second keep-alive.
+* **HTTP server.** `rusty-http` gets a streaming body (`Response::stream`): a bounded channel of byte chunks behind a hyper body. The request timeout covers the handler up to the response head, as now; the stream is ended by its own rules above; when the service shuts down the server drops the connection, which ends the stream. Other responses are unchanged.
 
 ## 4. Topics
 

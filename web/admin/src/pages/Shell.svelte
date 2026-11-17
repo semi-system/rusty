@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import type { App } from '../lib/app.svelte';
   import type { Me } from '../api/types';
   import { nav } from '../lib/nav.svelte';
@@ -56,6 +57,12 @@
     return [{ label: t('nav.domains'), to: '/' }, { label: name, to: href('/domains/{name}/overview', { name }) }, { label: key ? t(key) : '' }];
   });
 
+  // One stream of hints for the whole console while someone is signed in (the frame lives exactly that long).
+  onMount(() => {
+    app.live.start();
+    return () => app.live.stop();
+  });
+
   // On a narrow screen the sidebar is a drawer: opened by the menu button, closed by a choice, the scrim or Escape.
   let menuOpen = $state(false);
   $effect(() => {
@@ -109,6 +116,7 @@
         {/if}
       </div>
       <div class="who">
+        {#if app.live.connected}<span class="live" title={t('nav.liveHint')}>{t('nav.live')}</span>{/if}
         <div class="who-text">
           <div class="who-address">{me.address}</div>
           <div class="who-scope">{me.scope === 'platform' ? t('home.scopePlatform') : t('home.scopeDomain')}</div>
