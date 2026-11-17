@@ -64,6 +64,10 @@ export interface AliasList {
   next: number | null;
 }
 
+export interface Hint {
+  topics: string[];
+}
+
 export interface AdminEntry {
   id: number;
   address: string;

@@ -144,6 +144,15 @@ impl SessionStore {
     /// The live session of `id`, with its idle time renewed; `None` when there is none (unknown, expired, revoked, malformed).
     /// `Err` when the store cannot answer: the caller must treat that as "not signed in" and not as a reason to let anyone in.
     pub async fn get(&self, id: &str) -> Result<Option<Session>> {
+        self.lookup(id, true).await
+    }
+
+    /// The same checks as [`SessionStore::get`], **without** renewing the idle time: for what only watches a session (an open event stream must not keep it alive).
+    pub async fn peek(&self, id: &str) -> Result<Option<Session>> {
+        self.lookup(id, false).await
+    }
+
+    async fn lookup(&self, id: &str, renew: bool) -> Result<Option<Session>> {
         if !id_ok(id) {
             return Ok(None);
         }
@@ -168,7 +177,7 @@ impl SessionStore {
         }
         session.last_seen = now;
         // Renew the idle time. A session that vanished between the read and now is gone (touch creates nothing).
-        if !self.kv.touch(&key, self.cfg.idle).await? {
+        if renew && !self.kv.touch(&key, self.cfg.idle).await? {
             return Ok(None);
         }
         Ok(Some(session))

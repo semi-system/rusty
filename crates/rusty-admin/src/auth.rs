@@ -130,7 +130,17 @@ impl AdminAuth {
     /// database's, not the session's). `None` is "not signed in" (including a session whose grant or account has gone, which is also ended).
     /// `Err` means a store could not answer: treat as not signed in.
     pub async fn principal(&self, session_id: &str) -> Result<Option<(Session, Principal)>> {
-        let Some(session) = self.sessions.get(session_id).await? else { return Ok(None) };
+        self.principal_of(session_id, true).await
+    }
+
+    /// [`AdminAuth::principal`] for a watcher: the same checks, but the session's idle time is not renewed.
+    pub async fn principal_peek(&self, session_id: &str) -> Result<Option<(Session, Principal)>> {
+        self.principal_of(session_id, false).await
+    }
+
+    async fn principal_of(&self, session_id: &str, renew: bool) -> Result<Option<(Session, Principal)>> {
+        let found = if renew { self.sessions.get(session_id).await? } else { self.sessions.peek(session_id).await? };
+        let Some(session) = found else { return Ok(None) };
         let account = session.account_id();
         let active = matches!(self.directory.account_status(account).await?, Some(rusty_directory::AccountStatus::Active));
         let grant = if active { self.admins.get(account).await? } else { None };
