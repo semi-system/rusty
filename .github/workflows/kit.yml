@@ -1,0 +1,63 @@
+# The deployment kit of `main` on a Release: after docker.yml has built and signed the images of a commit on main, this makes rusty-deploy-main-<sha>.tar.gz and .zip (scripts/package-deploy.sh) with the
+# images of THAT commit pinned by digest (scripts/pin-release-images.sh, which only pins an image that carries docker.yml's signature on refs/heads/main), signs SHA256SUMS with cosign, and puts them on
+# the prerelease `kit-main`, replacing what was there: it always holds the kit of the newest main. A tagged release (release.yml) has its own kit, from the same scripts.
+# Security rules as in release.yml: actions pinned by SHA, no code of a pull request runs here (only commits of main), the token is the job's own.
+name: kit
+
+on:
+  workflow_run:
+    workflows: [docker]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: kit
+  cancel-in-progress: false # a publish that is half done is not stopped
+
+jobs:
+  kit:
+    name: kit of main on a release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    permissions:
+      contents: write # the release and its assets
+      packages: read # the digests of the images docker.yml published
+      id-token: write # keyless cosign signing
+    env:
+      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      GH_ACTOR: ${{ github.actor }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      - name: Build the kit with the images of this commit pinned by digest
+        run: |
+          set -euo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "bad commit" >&2; exit 1; }
+          short="${SHA:0:7}"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GH_ACTOR" --password-stdin
+          bash scripts/pin-release-images.sh "main-$short" "$REPO" pins.txt --image-tag "sha-$short" --ref refs/heads/main
+          bash scripts/package-deploy.sh "main-$short" dist pins.txt
+          rm -f dist/*.sha256
+          cd dist
+          sha256sum -- * > SHA256SUMS
+          cosign sign-blob --yes --bundle SHA256SUMS.cosign.bundle SHA256SUMS
+          ls -l
+      - name: Put it on the release kit-main
+        run: |
+          set -euo pipefail
+          short="${SHA:0:7}"
+          notes="The deployment kit built from main at commit ${SHA}: unpack it and run ./rusty-swarm init (docs/swarm.md). The images are pinned by digest to that commit's, SHA256SUMS is signed with cosign (docs/docker.md). This prerelease is replaced at every build of main: for a fixed version use a tagged release."
+          gh release view kit-main >/dev/null 2>&1 || gh release create kit-main --prerelease --target "$SHA" --title "Deployment kit of main (latest)" --notes "$notes"
+          for old in $(gh release view kit-main --json assets -q '.assets[].name'); do gh release delete-asset kit-main "$old" --yes; done
+          gh release upload kit-main dist/*
+          gh release edit kit-main --notes "$notes" --title "Deployment kit of main (latest: ${short})"
+          echo "https://github.com/${REPO}/releases/tag/kit-main"
