@@ -52,6 +52,8 @@ pub struct Services {
     pub monitor: Arc<dyn rusty_store::HeartbeatRepo>,
     /// The protocol switches (docs/design-protocols.md).
     pub settings: Arc<dyn rusty_store::SettingsRepo>,
+    /// The plans and the usage of accounts (docs/design-plans-quota.md).
+    pub plans: Arc<dyn rusty_store::PlanRepo>,
     /// `[sealing] public_key`: what secrets are sealed to. `None`: nothing can be sealed, the endpoints that need it answer `503 unavailable`.
     pub sealing: Option<rusty_seal::SealingKey>,
     /// `None` (no host name configured): the DNS page answers `503 unavailable`.

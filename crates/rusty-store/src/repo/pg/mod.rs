@@ -12,6 +12,7 @@ mod blob_pool;
 mod heartbeat;
 mod relay;
 mod settings;
+mod plans;
 mod admin;
 pub mod tx;
 

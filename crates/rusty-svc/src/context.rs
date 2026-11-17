@@ -63,11 +63,12 @@ impl Context {
         let auth: Arc<dyn Authenticator> = Arc::new(LocalAuthenticator::new(directory.clone()).await?);
         let limits = MailboxLimits {
             max_message_bytes: usize::try_from(cfg.max_message_bytes).unwrap_or(usize::MAX),
+            quota_bytes: None,
         };
         let stores: Arc<dyn BlobRouter> = Arc::new(BlobStores::new(blobs.clone(), repos.blob_stores.clone(), opener));
         Ok(Context {
             auth,
-            hub: MailboxHub::new(repos.mailbox.clone(), stores.clone(), limits),
+            hub: MailboxHub::new(repos.mailbox.clone(), stores.clone(), limits).with_directory(directory.clone()),
             jobs: JobQueue::with_repo(repos.jobs.clone()),
             gc: Gc::new(repos.gc.clone()),
             directory,

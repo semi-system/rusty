@@ -201,6 +201,15 @@ async fn insert_messages(
         .await?
         .ok_or_else(not_found_mailbox)?;
 
+    // The quota (docs/design-plans-quota.md): the row is locked by the statement above, so the usage read here is the one the insert below adds to.
+    if let Some(limit) = msgs.iter().find_map(|m| m.quota_bytes) {
+        let used: i64 = sqlx::query_scalar(crate::repo::pg_lit(q::USED_BYTES)).bind(mb).fetch_one(&mut *c).await?;
+        let add: i64 = msgs.iter().map(|m| m.size).sum();
+        if used.saturating_add(add) > limit {
+            return Err(rusty_core::Error::Quota("mailbox is full".into()).into());
+        }
+    }
+
     // One statement per distinct folder (ascending id) allocates its uid range.
     let mut next_uid: BTreeMap<i64, i64> = BTreeMap::new();
     let mut per_folder: BTreeMap<i64, i64> = BTreeMap::new();

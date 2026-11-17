@@ -109,6 +109,7 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
         jobs: rusty_store::JobQueue::with_repo(repos.jobs.clone()),
         monitor: repos.heartbeat.clone(),
         settings: repos.settings.clone(),
+        plans: repos.plans.clone(),
         sealing,
         mail: cfg.hostname.clone().map(|host| MailSettings { host, public_ips: admin.public_ips.clone(), spf_include: admin.spf_include.clone() }),
     };
@@ -129,6 +130,7 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     let router = crate::admins::routes(app.clone(), router);
     let router = crate::live::routes(app.clone(), router);
     let router = crate::protocols::routes(app.clone(), router);
+    let router = crate::plans::routes(app.clone(), router);
     let router = crate::autoconfig::routes(app.clone(), router);
     let router = crate::autodiscover::routes(app.clone(), router);
     let router = crate::monitor::routes(app.clone(), router);

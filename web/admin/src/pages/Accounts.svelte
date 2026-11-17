@@ -2,7 +2,8 @@
   import Badge from '../lib/Badge.svelte';
   import { onMount } from 'svelte';
   import type { App } from '../lib/app.svelte';
-  import type { Account } from '../api/types';
+  import type { Account, Plan } from '../api/types';
+  import { bytes } from '../lib/bytes';
   import DomainShell from '../lib/DomainShell.svelte';
   import ErrorNote from '../lib/ErrorNote.svelte';
   import { labelled } from '../lib/stack';
@@ -44,7 +45,20 @@
     loaded = true;
   }
 
+  // The plans an account can be put on; when they cannot be read the column shows the plan name and offers no choice.
+  let plans = $state<Plan[]>([]);
+  const setPlan = (a: Account, plan: string): Promise<void> =>
+    guarded(async () => {
+      await app.client.setAccountPlan(a.address, plan === '' ? null : plan);
+      await load(undefined, true);
+    });
+
+  /** What the account holds and may hold: `12 MB of 1 GB`, or just what it holds without a quota. */
+  const storage = (a: Account): string => (a.quota_bytes === null ? bytes(a.used_bytes) : t('accounts.storageOf', { used: bytes(a.used_bytes), quota: bytes(a.quota_bytes) }));
+  const nearFull = (a: Account): boolean => a.quota_bytes !== null && a.used_bytes >= a.quota_bytes * 0.9;
+
   onMount(() => {
+    void app.client.plans().then((p) => (plans = p), () => undefined);
     void load();
     // A hint refreshes the first page in the background: nothing is shown when that fails (the next hint tries again).
     return app.live.watch(['accounts:' + name.toLowerCase()], () => void load(undefined, true));
@@ -128,6 +142,8 @@
               <th scope="col">{t('accounts.address')}</th>
               <th scope="col">{t('accounts.status')}</th>
               <th scope="col">{t('accounts.password')}</th>
+              <th scope="col">{t('accounts.plan')}</th>
+              <th scope="col">{t('accounts.storage')}</th>
               <th scope="col">{t('accounts.lastLogin')}</th>
               <th scope="col" class="col-actions"><span class="sr">{t('domain.accounts')}</span></th>
             </tr>
@@ -138,6 +154,15 @@
                 <th scope="row">{a.address}</th>
                 <td><Badge tone={a.status === 'active' ? 'ok' : 'warn'}>{tFor('accounts.status.', a.status, 'accounts.status.active')}</Badge></td>
                 <td>{a.has_password ? t('accounts.hasPassword') : t('accounts.noPassword')}</td>
+                <td>
+                  {#if plans.length > 0}
+                    <select aria-label={t('accounts.planFor', { address: a.address })} disabled={busy} value={a.plan ?? ''} onchange={(e) => setPlan(a, e.currentTarget.value)}>
+                      <option value="">{t('accounts.noPlan')}</option>
+                      {#each plans as p (p.name)}<option value={p.name}>{p.name}</option>{/each}
+                    </select>
+                  {:else}{a.plan ?? t('accounts.noPlan')}{/if}
+                </td>
+                <td>{storage(a)}{#if nearFull(a)} <Badge tone="warn">{t('accounts.nearFull')}</Badge>{/if}</td>
                 <td>{a.last_login_at === null ? t('common.never') : when(a.last_login_at)}</td>
                 <td class="col-actions">
                   <div class="row-actions">

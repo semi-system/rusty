@@ -69,6 +69,8 @@ pub struct NewMessage {
     /// The client's internal date (IMAP APPEND); `None` = database clock. The facade bounds it with
     /// `MAX_SUPPLIED_TIME`. Honoured by `append` (a delivery's own `created_at` wins).
     pub internal_date: Option<i64>,
+    /// The quota of the mailbox in bytes (`None`: unlimited): the write is refused with `Quota` when the usage and this message together would pass it. Checked in the transaction, with the mailbox row locked.
+    pub quota_bytes: Option<i64>,
 }
 
 /// Idempotency key of a delivery. `created_at: None` = database clock; `Some(t)` is stored
@@ -396,6 +398,8 @@ pub mod sql_text {
         WHERE mailbox_id = $1 AND id = $2 RETURNING next_uid - $3";
     /// Allocate `$2` message ids AND `$2` change seqs (one per created message); returns both
     /// firsts. Message creation always consumes one of each, so one statement serves a batch.
+    /// The bytes the mailbox holds (migration 0032); read after `TAKE_MSG_IDS_AND_SEQS` has locked the row.
+    pub const USED_BYTES: &str = "SELECT used_bytes FROM mailboxes WHERE id = $1";
     pub const TAKE_MSG_IDS_AND_SEQS: &str = "UPDATE mailboxes \
         SET next_msg_id = next_msg_id + $2, next_change_seq = next_change_seq + $2 \
         WHERE id = $1 RETURNING next_msg_id - $2, next_change_seq - $2";

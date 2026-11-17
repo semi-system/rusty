@@ -56,10 +56,34 @@ struct AccountJson {
     has_password: bool,
     /// When the account last signed in (seconds; at most an hour late), `null` if it never did.
     last_login_at: Option<i64>,
+    /// The plan the account is on, `null` for none.
+    plan: Option<String>,
+    /// Bytes the mailbox holds.
+    used_bytes: i64,
+    /// The quota that applies in bytes (account, plan, domain, global), `null` for unlimited.
+    quota_bytes: Option<i64>,
 }
 
-fn account_json(a: &AccountInfo, domain: &str) -> AccountJson {
-    AccountJson { id: a.id.0, address: format!("{}@{domain}", a.local), status: a.status.as_str(), has_password: a.has_password, last_login_at: a.last_login_at }
+fn account_json(a: &AccountInfo, domain: &str, usage: Option<&rusty_store::AccountUsage>) -> AccountJson {
+    AccountJson {
+        id: a.id.0,
+        address: format!("{}@{domain}", a.local),
+        status: a.status.as_str(),
+        has_password: a.has_password,
+        last_login_at: a.last_login_at,
+        plan: usage.and_then(|u| u.plan.clone()),
+        used_bytes: usage.map_or(0, |u| u.used_bytes),
+        quota_bytes: usage.and_then(|u| u.quota_bytes),
+    }
+}
+
+/// The accounts of one page as JSON, with their usage, plan and quota from one read.
+async fn accounts_json(app: &AdminApp, rows: &[AccountInfo], domain: &str) -> Result<Vec<AccountJson>, Error> {
+    let usage = match app.services.as_ref() {
+        Some(s) if !rows.is_empty() => s.plans.usage_of(&rows.iter().map(|a| a.id.0).collect::<Vec<_>>()).await?,
+        _ => Vec::new(),
+    };
+    Ok(rows.iter().map(|a| account_json(a, domain, usage.iter().find(|u| u.account == a.id.0))).collect())
 }
 
 #[derive(Serialize)]
@@ -191,7 +215,7 @@ pub(crate) async fn scoped_domain(app: &AdminApp, p: &Principal, name: &str) -> 
 }
 
 /// The account with this address, with its domain name, if the administrator may touch its domain.
-async fn scoped_account(app: &AdminApp, p: &Principal, address: &str) -> Result<(AccountInfo, DomainInfo), Response> {
+pub(crate) async fn scoped_account(app: &AdminApp, p: &Principal, address: &str) -> Result<(AccountInfo, DomainInfo), Response> {
     let Ok((_, domain)) = parse_address(address) else { return Err(err(404, "not_found")) };
     let dom = scoped_domain(app, p, &domain).await?;
     match app.directory.find_account(address).await {
@@ -329,7 +353,10 @@ async fn list_accounts(app: &AdminApp, req: Request) -> Response {
     };
     let full = rows.len() == query.limit;
     let last = rows.last().map(|a| a.id.0);
-    list(rows.iter().map(|a| account_json(a, &dom.name)).collect(), last, full, total)
+    match accounts_json(app, &rows, &dom.name).await {
+        Ok(items) => list(items, last, full, total),
+        Err(e) => fail(&e),
+    }
 }
 
 #[derive(Deserialize)]
@@ -399,7 +426,11 @@ async fn create_account(app: &AdminApp, req: Request) -> Response {
             }
         }
     }
-    json(201, &Created { account: account_json(&info, &dom.name), aliases_created: aliased })
+    let account = match accounts_json(app, std::slice::from_ref(&info), &dom.name).await {
+        Ok(mut v) => v.remove(0),
+        Err(e) => return fail(&e),
+    };
+    json(201, &Created { account, aliases_created: aliased })
 }
 
 #[derive(Deserialize)]
@@ -459,7 +490,10 @@ async fn set_account_status(app: &AdminApp, req: Request, status: AccountStatus)
     if status != AccountStatus::Active && app.auth.revoke_account(acc.id).await.is_err() {
         return err(503, "busy");
     }
-    json(200, &account_json(&AccountInfo { status, ..acc }, &dom.name))
+    match accounts_json(app, &[AccountInfo { status, ..acc }], &dom.name).await {
+        Ok(mut v) => json(200, &v.remove(0)),
+        Err(e) => fail(&e),
+    }
 }
 
 // ------------------------------------------------------------------------------------------------ aliases

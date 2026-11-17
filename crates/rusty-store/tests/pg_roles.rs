@@ -114,12 +114,12 @@ async fn the_definer_functions_are_owned_by_the_migrator_with_a_pinned_search_pa
     let rows: Vec<(String, bool, Option<Vec<String>>, String)> = sqlx::query_as(
         "SELECT p.proname::text, p.prosecdef, p.proconfig, pg_get_userbyid(p.proowner)::text \
          FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
-         WHERE n.nspname = 'public' AND p.proname IN ('rs_address_unique', 'rs_address_truncate', 'rs_heartbeat') ORDER BY 1",
+         WHERE n.nspname = 'public' AND p.proname IN ('rs_address_unique', 'rs_address_truncate', 'rs_heartbeat', 'rs_messages_usage_ins', 'rs_messages_usage_del', 'rs_messages_usage_upd') ORDER BY 1",
     )
     .fetch_all(&a)
     .await
     .unwrap();
-    assert_eq!(rows.len(), 3);
+    assert_eq!(rows.len(), 6);
     for (name, definer, config, owner) in rows {
         assert!(definer, "{name} must be SECURITY DEFINER");
         assert_eq!(owner, "rusty_migrator", "{name} must be owned by the migrator");
@@ -129,7 +129,7 @@ async fn the_definer_functions_are_owned_by_the_migrator_with_a_pinned_search_pa
     // Every other trigger function stays SECURITY INVOKER with a pinned search_path.
     let others: Vec<(String,)> = sqlx::query_as(
         "SELECT p.proname::text FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
-         WHERE n.nspname = 'public' AND p.prosecdef AND p.proname NOT IN ('rs_address_unique', 'rs_address_truncate', 'rs_heartbeat')",
+         WHERE n.nspname = 'public' AND p.prosecdef AND p.proname NOT IN ('rs_address_unique', 'rs_address_truncate', 'rs_heartbeat', 'rs_messages_usage_ins', 'rs_messages_usage_del', 'rs_messages_usage_upd')",
     )
     .fetch_all(&a)
     .await

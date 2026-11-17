@@ -1,7 +1,7 @@
 // The API client: the contract's endpoints as typed calls. It knows the three rules of a state-changing request (design section 5): the JSON content type,
 // the CSRF token of the session (the browser adds `Origin` itself) and that a failure is a fixed code, never text to show.
 
-import type { Account, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, Monitor, Protocols, Queue, Relay, SetupState, Storage } from './types';
+import type { Account, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, Monitor, Plan, PlanList, Protocols, Queue, Relay, SetupState, Storage } from './types';
 import type { MessageKey } from '../i18n';
 
 /** A page of a list, the cursor of the next one and how many rows match in all. */
@@ -329,6 +329,21 @@ export class Client {
   /** The optional protocols and whether each is on (platform administrators only). */
   protocols(): Promise<Protocols> {
     return this.call('GET', '/api/v1/protocols');
+  }
+
+  /** The plans (any administrator). */
+  async plans(): Promise<Plan[]> {
+    return (await this.call<PlanList>('GET', '/api/v1/plans')).items;
+  }
+
+  /** Create a plan or change its limits (platform administrators): a null limit removes it. */
+  putPlan(name: string, quotaBytes: number | null, maxMessageBytes: number | null): Promise<Plan> {
+    return this.call('PUT', '/api/v1/plans', { name, quota_bytes: quotaBytes, max_message_bytes: maxMessageBytes });
+  }
+
+  /** Put an account on a plan, or on none. */
+  async setAccountPlan(address: string, plan: string | null): Promise<void> {
+    await this.call('PUT', `/api/v1/accounts/${seg(address)}/plan`, { plan });
   }
 
   /** Switch a protocol on or off for every replica of the mail services. */
