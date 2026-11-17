@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Badge from '../lib/Badge.svelte';
   import { untrack } from 'svelte';
   import type { App } from '../lib/app.svelte';
   import type { Storage, StorageBackend } from '../api/types';
@@ -103,145 +104,165 @@
 </script>
 
 {#if storage !== null && storage.kind === 'pool'}
-  <h3>{t('pool.backends')}</h3>
-  {#if backends.length === 0}
-    <p class="muted">{t('pool.noBackends')}</p>
-  {:else}
-    <table>
-      <thead>
-        <tr>
-          <th>{t('pool.name')}</th>
-          <th>{t('pool.state')}</th>
-          <th>{t('pool.weight')}</th>
-          <th>{t('storage.lastCheck')}</th>
-          {#if platform}<th>{t('pool.objects')}</th>{/if}
-        </tr>
-      </thead>
-      <tbody>
-        {#each backends as b (b.name)}
-          <tr>
-            <td>{b.name}{#if b.settings !== null}<br /><span class="muted">{b.settings.bucket} · {b.settings.endpoint}</span>{/if}</td>
-            <td>{tFor('pool.state.', b.state, 'pool.state.unknown')}</td>
-            <td>{b.weight}</td>
-            <td>
-              {#if b.check_status === 'unchecked' || b.checked_at === null}
-                {t('storage.neverChecked')}
-              {:else}
-                {tFor('storage.check.', b.check_status, 'storage.check.unknown')} <span class="muted">({when(b.checked_at)})</span>
-              {/if}
-            </td>
-            {#if platform}<td>{b.objects ?? 0}</td>{/if}
-          </tr>
-        {/each}
-      </tbody>
-    </table>
-  {/if}
+  <section aria-labelledby="pool-backends">
+    <div class="section-head"><h3 id="pool-backends">{t('pool.backends')}</h3></div>
+    {#if backends.length === 0}
+      <div class="empty"><p>{t('pool.noBackends')}</p></div>
+    {:else}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>{t('pool.name')}</th>
+              <th>{t('pool.state')}</th>
+              <th>{t('pool.weight')}</th>
+              <th>{t('storage.lastCheck')}</th>
+              {#if platform}<th>{t('pool.objects')}</th>{/if}
+            </tr>
+          </thead>
+          <tbody>
+            {#each backends as b (b.name)}
+              <tr>
+                <td>{b.name}{#if b.settings !== null}<br /><span class="muted mono">{b.settings.bucket} · {b.settings.endpoint}</span>{/if}</td>
+                <td><Badge tone={b.state === 'active' ? 'ok' : b.state === 'disabled' ? 'danger' : 'warn'}>{tFor('pool.state.', b.state, 'pool.state.unknown')}</Badge></td>
+                <td>{b.weight}</td>
+                <td>
+                  {#if b.check_status === 'unchecked' || b.checked_at === null}
+                    <Badge>{t('storage.neverChecked')}</Badge>
+                  {:else}
+                    <Badge tone={b.check_status === 'ok' ? 'ok' : 'danger'}>{tFor('storage.check.', b.check_status, 'storage.check.unknown')}</Badge> <span class="muted">({when(b.checked_at)})</span>
+                  {/if}
+                </td>
+                {#if platform}<td>{b.objects ?? 0}</td>{/if}
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </section>
 {/if}
 
-{#if notice !== null}<p role="status">{notice}</p>{/if}
+{#if notice !== null}<p class="alert ok" role="status">{notice}</p>{/if}
 {#if error !== null}<ErrorNote {error} />{/if}
 
 {#if platform}
-  <form onsubmit={savePolicy}>
-    <h3>{t('pool.policy')}</h3>
-    <p class="muted">{t('pool.policyHelp')}</p>
-    <label>
-      {t('pool.copies')}
-      <input bind:value={copies} name="copies" type="number" min="1" max="8" required />
-    </label>
-    <label>
-      {t('pool.syncCopies')}
-      <input bind:value={syncCopies} name="sync_copies" type="number" min="1" max="8" required />
-    </label>
-    <label>
-      {t('pool.placement')}
-      <select bind:value={placement} name="placement">
-        <option value="weighted">{t('pool.placement.weighted')}</option>
-        <option value="ordered">{t('pool.placement.ordered')}</option>
-      </select>
-    </label>
-    <label>
-      {t('pool.read')}
-      <select bind:value={read} name="read">
-        <option value="located">{t('pool.read.located')}</option>
-        <option value="ordered">{t('pool.read.ordered')}</option>
-        <option value="round_robin">{t('pool.read.round_robin')}</option>
-        <option value="fastest">{t('pool.read.fastest')}</option>
-      </select>
-    </label>
-    <button type="submit" disabled={busy}>{busy ? t('common.saving') : t('pool.save')}</button>
-  </form>
-
-  {#if storage !== null && storage.kind === 'pool'}
-    {#each backends as b (b.name)}
-      <fieldset>
-        <legend>{b.name}</legend>
+  <section class="panel">
+    <form onsubmit={savePolicy}>
+      <div>
+        <h3>{t('pool.policy')}</h3>
+        <p class="hint">{t('pool.policyHelp')}</p>
+      </div>
+      <div class="form-grid">
         <label>
-          {t('pool.state')}
-          <select value={states[b.name] ?? b.state} onchange={(e) => (states[b.name] = e.currentTarget.value)}>
-            <option value="active">{t('pool.state.active')}</option>
-            <option value="readonly">{t('pool.state.readonly')}</option>
-            <option value="draining">{t('pool.state.draining')}</option>
-            <option value="disabled">{t('pool.state.disabled')}</option>
+          {t('pool.copies')}
+          <input bind:value={copies} name="copies" type="number" min="1" max="8" required />
+        </label>
+        <label>
+          {t('pool.syncCopies')}
+          <input bind:value={syncCopies} name="sync_copies" type="number" min="1" max="8" required />
+        </label>
+        <label>
+          {t('pool.placement')}
+          <select bind:value={placement} name="placement">
+            <option value="weighted">{t('pool.placement.weighted')}</option>
+            <option value="ordered">{t('pool.placement.ordered')}</option>
           </select>
         </label>
         <label>
-          {t('pool.weight')}
-          <input value={weights[b.name] ?? b.weight} type="number" min="1" max="1000" oninput={(e) => (weights[b.name] = Number(e.currentTarget.value))} />
+          {t('pool.read')}
+          <select bind:value={read} name="read">
+            <option value="located">{t('pool.read.located')}</option>
+            <option value="ordered">{t('pool.read.ordered')}</option>
+            <option value="round_robin">{t('pool.read.round_robin')}</option>
+            <option value="fastest">{t('pool.read.fastest')}</option>
+          </select>
         </label>
-        <button type="button" onclick={() => update(b)} disabled={busy}>{t('pool.update')}</button>
-        <label>
-          {t('storage.accessKey')}
-          <input value={newAccess[b.name] ?? ''} type="text" autocomplete="off" autocapitalize="none" spellcheck="false" oninput={(e) => (newAccess[b.name] = e.currentTarget.value)} />
-        </label>
-        <label>
-          {t('storage.secretKey')}
-          <input value={newSecret[b.name] ?? ''} type="password" autocomplete="new-password" oninput={(e) => (newSecret[b.name] = e.currentTarget.value)} />
-        </label>
-        <button type="button" onclick={() => rekey(b)} disabled={busy}>{t('pool.rekey')}</button>
-        <button type="button" onclick={() => remove(b)} disabled={busy}>{t('pool.remove')}</button>
+      </div>
+      <div class="form-actions"><button type="submit" disabled={busy}>{busy ? t('common.saving') : t('pool.save')}</button></div>
+    </form>
+  </section>
+
+  {#if storage !== null && storage.kind === 'pool'}
+    {#each backends as b (b.name)}
+      <fieldset class="panel">
+        <legend>{b.name}</legend>
+        <div class="form-grid">
+          <label>
+            {t('pool.state')}
+            <select value={states[b.name] ?? b.state} onchange={(e) => (states[b.name] = e.currentTarget.value)}>
+              <option value="active">{t('pool.state.active')}</option>
+              <option value="readonly">{t('pool.state.readonly')}</option>
+              <option value="draining">{t('pool.state.draining')}</option>
+              <option value="disabled">{t('pool.state.disabled')}</option>
+            </select>
+          </label>
+          <label>
+            {t('pool.weight')}
+            <input value={weights[b.name] ?? b.weight} type="number" min="1" max="1000" oninput={(e) => (weights[b.name] = Number(e.currentTarget.value))} />
+          </label>
+        </div>
+        <div class="form-actions"><button type="button" onclick={() => update(b)} disabled={busy}>{t('pool.update')}</button></div>
+        <div class="form-grid">
+          <label>
+            {t('storage.accessKey')}
+            <input value={newAccess[b.name] ?? ''} type="text" autocomplete="off" autocapitalize="none" spellcheck="false" oninput={(e) => (newAccess[b.name] = e.currentTarget.value)} />
+          </label>
+          <label>
+            {t('storage.secretKey')}
+            <input value={newSecret[b.name] ?? ''} type="password" autocomplete="new-password" oninput={(e) => (newSecret[b.name] = e.currentTarget.value)} />
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="button" onclick={() => rekey(b)} disabled={busy}>{t('pool.rekey')}</button>
+          <button type="button" class="danger" onclick={() => remove(b)} disabled={busy}>{t('pool.remove')}</button>
+        </div>
       </fieldset>
     {/each}
 
-    <form onsubmit={addBackend}>
-      <h3>{t('pool.addBackend')}</h3>
-      <label>
-        {t('pool.name')}
-        <input bind:value={bname} name="name" type="text" autocapitalize="none" spellcheck="false" required />
-      </label>
-      <label>
-        {t('storage.endpoint')}
-        <input bind:value={endpoint} name="endpoint" type="text" autocapitalize="none" spellcheck="false" required />
-      </label>
-      <label>
-        {t('storage.region')}
-        <input bind:value={region} name="region" type="text" autocapitalize="none" spellcheck="false" required />
-      </label>
-      <label>
-        {t('storage.bucket')}
-        <input bind:value={bucket} name="bucket" type="text" autocapitalize="none" spellcheck="false" required />
-      </label>
-      <label>
-        {t('storage.prefix')}
-        <input bind:value={prefix} name="prefix" type="text" autocapitalize="none" spellcheck="false" />
-      </label>
-      <label>
-        <input bind:checked={pathStyle} name="path_style" type="checkbox" />
-        {t('storage.pathStyle')}
-      </label>
-      <label>
-        {t('pool.weight')}
-        <input bind:value={weight} name="weight" type="number" min="1" max="1000" required />
-      </label>
-      <label>
-        {t('storage.accessKey')}
-        <input bind:value={accessKey} name="access_key" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" required />
-      </label>
-      <label>
-        {t('storage.secretKey')}
-        <input bind:value={secretKey} name="secret_key" type="password" autocomplete="new-password" required />
-      </label>
-      <button type="submit" disabled={busy}>{busy ? t('common.saving') : t('pool.addBackendSave')}</button>
-    </form>
+    <section class="panel">
+      <form onsubmit={addBackend}>
+        <h3>{t('pool.addBackend')}</h3>
+        <div class="form-grid">
+          <label>
+            {t('pool.name')}
+            <input bind:value={bname} name="name" type="text" autocapitalize="none" spellcheck="false" required />
+          </label>
+          <label>
+            {t('storage.endpoint')}
+            <input bind:value={endpoint} name="endpoint" type="text" autocapitalize="none" spellcheck="false" required />
+          </label>
+          <label>
+            {t('storage.region')}
+            <input bind:value={region} name="region" type="text" autocapitalize="none" spellcheck="false" required />
+          </label>
+          <label>
+            {t('storage.bucket')}
+            <input bind:value={bucket} name="bucket" type="text" autocapitalize="none" spellcheck="false" required />
+          </label>
+          <label>
+            {t('storage.prefix')}
+            <input bind:value={prefix} name="prefix" type="text" autocapitalize="none" spellcheck="false" />
+          </label>
+          <label>
+            {t('pool.weight')}
+            <input bind:value={weight} name="weight" type="number" min="1" max="1000" required />
+          </label>
+          <label>
+            {t('storage.accessKey')}
+            <input bind:value={accessKey} name="access_key" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" required />
+          </label>
+          <label>
+            {t('storage.secretKey')}
+            <input bind:value={secretKey} name="secret_key" type="password" autocomplete="new-password" required />
+          </label>
+        </div>
+        <label class="check">
+          <input bind:checked={pathStyle} name="path_style" type="checkbox" />
+          {t('storage.pathStyle')}
+        </label>
+        <div class="form-actions"><button type="submit" disabled={busy}>{busy ? t('common.saving') : t('pool.addBackendSave')}</button></div>
+      </form>
+    </section>
   {/if}
 {/if}

@@ -18,8 +18,9 @@
   ];
 </script>
 
-<p><Link href="/">{t('common.back')}</Link></p>
-<h1>{name}</h1>
+<header class="page-head">
+  <h1>{name}</h1>
+</header>
 <nav class="tabs" aria-label={t('domain.tabs', { name })}>
   {#each tabs as tab (tab.page)}
     {@const to = href('/domains/{name}/' + tab.page, { name })}

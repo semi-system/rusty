@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Badge from '../lib/Badge.svelte';
   import { onMount } from 'svelte';
   import type { App } from '../lib/app.svelte';
   import type { Dkim } from '../api/types';
@@ -49,34 +50,44 @@
 
 <main id="content" tabindex="-1">
   <DomainShell {name}>
-    <h2>{t('dkim.title', { domain: name })}</h2>
+    <div class="section-head">
+      <h2>{t('dkim.title', { domain: name })}</h2>
+      <p>{t('dkim.lede')}</p>
+    </div>
     <p class="muted">{t('dkim.intro')}</p>
+    {#if error !== null}<ErrorNote {error} />{/if}
+    {#if notice !== null}<p class="alert ok" role="status">{notice}</p>{/if}
+
     {#if !loaded}
       <p class="muted" role="status">{t('app.loading')}</p>
     {:else if items.length === 0}
-      <p class="muted">{t('dkim.empty')}</p>
+      <div class="empty"><p>{t('dkim.empty')}</p></div>
     {:else}
       <ul aria-label={t('dkim.list')} class="plain">
         {#each items as k (k.selector)}
-          <li>
-            <h3>{k.selector}</h3>
-            <p>{k.sealed ? t('dkim.sealed') : t('dkim.notSealed')}</p>
+          <li class="panel">
+            <div class="page-title-row">
+              <h3>{k.selector}</h3>
+              <Badge tone={k.sealed ? 'ok' : 'warn'}>{k.sealed ? t('dkim.sealed') : t('dkim.notSealed')}</Badge>
+            </div>
             <p>{t('dkim.recordName')} <Copy value={k.record_name} label={t('dkim.recordName')} /></p>
             <p>{t('dkim.recordValue')} <Copy value={k.record_value} label={t('dkim.recordValue')} /></p>
           </li>
         {/each}
       </ul>
     {/if}
-    {#if error !== null}<ErrorNote {error} />{/if}
-    {#if notice !== null}<p role="status">{notice}</p>{/if}
 
-    <h2>{t('dkim.new')}</h2>
-    <form onsubmit={make}>
-      <label>
-        {t('dkim.newSelector')}
-        <input bind:value={selector} name="selector" type="text" autocapitalize="none" spellcheck="false" />
-      </label>
-      <button type="submit" disabled={busy}>{busy ? t('common.creating') : t('dkim.new')}</button>
-    </form>
+    <section class="panel" aria-labelledby="new-dkim">
+      <h2 id="new-dkim">{t('dkim.new')}</h2>
+      <form onsubmit={make}>
+        <div class="field-row">
+          <label>
+            {t('dkim.newSelector')}
+            <input bind:value={selector} name="selector" type="text" autocapitalize="none" spellcheck="false" />
+          </label>
+          <button type="submit" disabled={busy}>{busy ? t('common.creating') : t('dkim.new')}</button>
+        </div>
+      </form>
+    </section>
   </DomainShell>
 </main>
