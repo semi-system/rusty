@@ -318,6 +318,8 @@ export const en = {
   'nav.closeMenu': 'Close the menu',
   'nav.breadcrumb': 'You are here',
   'nav.administrators': 'Administrators',
+  'nav.live': 'Live',
+  'nav.liveHint': 'This page updates by itself when something changes.',
   'admins.title': 'Administrators',
   'admins.lede': 'Accounts that may sign in to this console, and what each of them may manage.',
   'admins.list': 'List of administrators',

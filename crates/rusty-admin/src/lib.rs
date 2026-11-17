@@ -13,6 +13,7 @@ pub mod auth;
 pub mod autoconfig;
 pub mod dns;
 pub mod health;
+pub mod live;
 pub mod manage;
 pub mod monitor;
 pub mod outbound;

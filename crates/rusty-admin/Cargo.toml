@@ -25,7 +25,8 @@ serde_json.workspace = true
 sha2.workspace = true
 hex.workspace = true
 rand_core.workspace = true
-tokio = { workspace = true, features = ["sync", "rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["sync", "rt-multi-thread", "macros", "time"] }
+bytes.workspace = true
 
 [dev-dependencies]
 rusty-store = { path = "../rusty-store", features = ["test-fixtures"] }

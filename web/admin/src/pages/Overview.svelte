@@ -18,7 +18,7 @@
   let error = $state<unknown>(null);
   let busy = $state(false);
 
-  onMount(async () => {
+  async function load(quiet = false): Promise<void> {
     try {
       // The list holds the domains this administrator may see; the one named here is among them or it is not found.
       let after: number | undefined;
@@ -33,16 +33,23 @@
         after = page.next;
       }
       queue = await app.client.outbound(name);
+      error = null;
     } catch (e) {
-      error = e;
+      if (!quiet) error = e;
       return;
     }
     // The progress of the setup is a convenience: when the records cannot be read the card says nothing rather than failing the page.
     try {
       records = (await app.client.dns(name)).records;
     } catch {
-      records = null;
+      if (!quiet) records = null;
     }
+  }
+
+  onMount(() => {
+    void load();
+    // The status of the domain, its queue and its DNS records refresh in the background when a hint says one of them changed.
+    return app.live.watch(['domains', 'outbound:' + name.toLowerCase(), 'dns:' + name.toLowerCase()], () => void load(true));
   });
 
   async function toggle(): Promise<void> {

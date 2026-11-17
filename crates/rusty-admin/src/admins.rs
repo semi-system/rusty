@@ -165,10 +165,20 @@ pub fn routes(app: Arc<AdminApp>, router: Router) -> Router {
     let a = app.clone();
     let router = router.route(Method::Post, "/api/v1/admins", handler(move |r: Request| {
         let a = a.clone();
-        async move { grant_admin(&a, r).await }
+        async move {
+            let topics = crate::live::topics_of(&r);
+            let resp = grant_admin(&a, r).await;
+            a.announce_after(&resp, topics);
+            resp
+        }
     }));
     router.route(Method::Delete, "/api/v1/admins/{a}", handler(move |r: Request| {
         let a = app.clone();
-        async move { revoke_admin(&a, r).await }
+        async move {
+        let topics = crate::live::topics_of(&r);
+        let resp = revoke_admin(&a, r).await;
+        a.announce_after(&resp, topics);
+        resp
+    }
     }))
 }

@@ -20,20 +20,22 @@
   let busy = $state(false);
   let created = $state<string | null>(null);
 
-  async function load(after?: number): Promise<void> {
+  async function load(after?: number, quiet = false): Promise<void> {
     try {
       const page = await app.client.domains(after);
       items = after === undefined ? page.items : [...items, ...page.items];
       next = page.next;
       error = null;
     } catch (e) {
-      error = e;
+      if (!quiet) error = e;
     }
     loaded = true;
   }
 
   onMount(() => {
     void load();
+    // A hint refreshes the first page in the background: nothing is shown when that fails (the next hint tries again).
+    return app.live.watch(['domains'], () => void load(undefined, true));
   });
 
   async function create(e: SubmitEvent): Promise<void> {

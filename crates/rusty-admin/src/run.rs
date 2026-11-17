@@ -118,7 +118,7 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
         tokio::spawn(async move { beat.run_until(stop).await });
     }
     let app = Arc::new(AdminApp::new(auth, directory, admins, gate, &admin.public_origin, SessionConfig::default()).with_services(services));
-    let router = crate::autoconfig::routes(app.clone(), crate::admins::routes(app.clone(), crate::dns::routes(app.clone(), crate::outbound::routes(app.clone(), crate::storage::routes(app.clone(), crate::manage::routes(app.clone(), routes(app.clone(), Router::new())))))));
+    let router = crate::autoconfig::routes(app.clone(), crate::live::routes(app.clone(), crate::admins::routes(app.clone(), crate::dns::routes(app.clone(), crate::outbound::routes(app.clone(), crate::storage::routes(app.clone(), crate::manage::routes(app.clone(), routes(app.clone(), Router::new()))))))));
     let router = crate::monitor::routes(app.clone(), router);
     // The front end embedded at build time answers every other path (and the single-page routes); without one this is an API server only.
     let router = match crate::web::handler() {

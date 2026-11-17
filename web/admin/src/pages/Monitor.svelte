@@ -28,7 +28,12 @@
   onMount(() => {
     void refresh();
     const timer = setInterval(() => void refresh(), EVERY_MS);
-    return () => clearInterval(timer);
+    // The stream says `monitor` changed every few seconds; the timer stays as the way to refresh without a stream.
+    const stop = app.live.watch(['monitor'], () => void load.run());
+    return () => {
+      clearInterval(timer);
+      stop();
+    };
   });
 
   /** A length of time in the two largest units that matter: `2 min`, `1 h 2 min`, `1 d 1 h`. */

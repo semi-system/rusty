@@ -62,6 +62,8 @@ pub struct AdminApp {
     pub admins: AdminStore,
     /// `Some` when the service started with no administrator (the token was printed); `None` otherwise.
     pub setup: Option<SetupGate>,
+    /// The live-update hub of this process (docs/design-live-updates.md).
+    pub live: Arc<crate::live::Hub>,
     /// `https://host[:port]` of the admin host name, as the browser sends it in `Origin`.
     pub public_origin: String,
     pub session_cfg: SessionConfig,
@@ -72,7 +74,27 @@ pub struct AdminApp {
 
 impl AdminApp {
     pub fn new(auth: AdminAuth, directory: Directory, admins: AdminStore, setup: Option<SetupGate>, public_origin: &str, session_cfg: SessionConfig) -> AdminApp {
-        AdminApp { auth, directory, admins, setup, public_origin: public_origin.to_owned(), session_cfg, services: None, setup_lock: tokio::sync::Mutex::new(()) }
+        AdminApp { auth, directory, admins, setup, live: crate::live::Hub::new(), public_origin: public_origin.to_owned(), session_cfg, services: None, setup_lock: tokio::sync::Mutex::new(()) }
+    }
+
+    /// Tell the streams about `topics` when `resp` says the change was made (a `2xx`).
+    pub fn announce_after(&self, resp: &Response, topics: Vec<crate::live::Topic>) {
+        if (200..300).contains(&resp.status) {
+            for t in topics {
+                self.live.announce(&t);
+            }
+        }
+    }
+
+    /// Tell the streams that may see `topic` that something changed (a hint; the page asks the API again).
+    pub fn announce(&self, topic: crate::live::Topic) {
+        self.live.announce(&topic);
+    }
+
+    /// Use another hub (tests choose short intervals).
+    pub fn with_live(mut self, hub: Arc<crate::live::Hub>) -> AdminApp {
+        self.live = hub;
+        self
     }
 
     /// Give the app the stores of the outbound endpoints.

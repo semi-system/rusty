@@ -17,17 +17,19 @@
   let busy = $state(false);
   let selector = $state('');
 
-  async function load(): Promise<void> {
+  async function load(quiet = false): Promise<void> {
     try {
       items = await app.client.dkim(name);
     } catch (e) {
-      error = e;
+      if (!quiet) error = e;
     }
     loaded = true;
   }
 
   onMount(() => {
     void load();
+    // A hint refreshes what is shown in the background, without touching what the person is typing in a form.
+    return app.live.watch(['dns:' + name.toLowerCase()], () => void load(true));
   });
 
   async function make(e: SubmitEvent): Promise<void> {

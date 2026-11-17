@@ -485,7 +485,13 @@ macro_rules! route {
         let $a = $app.clone();
         $router.route($method, $path, handler(move |$r: Request| {
             let $a = $a.clone();
-            async move { $body }
+            async move {
+                // What this request changes, told to the open streams once it succeeded (docs/design-live-updates.md).
+                let topics = crate::live::topics_of(&$r);
+                let resp = $body;
+                $a.announce_after(&resp, topics);
+                resp
+            }
         }))
     }};
 }

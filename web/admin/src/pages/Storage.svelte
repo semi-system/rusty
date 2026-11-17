@@ -29,11 +29,11 @@
   let accessKey = $state('');
   let secretKey = $state('');
 
-  async function load(): Promise<void> {
+  async function load(quiet = false): Promise<void> {
     try {
       storage = await app.client.storage(name);
       const s = storage?.settings ?? null;
-      if (s !== null) {
+      if (!quiet && s !== null) {
         endpoint = s.endpoint;
         region = s.region;
         bucket = s.bucket;
@@ -42,13 +42,15 @@
       }
       error = null;
     } catch (e) {
-      error = e;
+      if (!quiet) error = e;
     }
     loaded = true;
   }
 
   onMount(() => {
     void load();
+    // A hint refreshes what is shown in the background, without touching what the person is typing in a form.
+    return app.live.watch(['storage:' + name.toLowerCase()], () => void load(true));
   });
 
   async function guarded(work: () => Promise<void>): Promise<void> {
@@ -123,11 +125,11 @@
       {#if platform && storage !== null}
         <div class="form-actions">
           <button type="button" onclick={check} disabled={busy}>{t('storage.check')}</button>
-          <button type="button" class="secondary" onclick={load}>{t('dns.reload')}</button>
+          <button type="button" class="secondary" onclick={() => load()}>{t('dns.reload')}</button>
         </div>
       {:else if !platform}
         <p class="muted">{t('storage.platformOnly')}</p>
-        <div class="form-actions"><button type="button" class="secondary" onclick={load}>{t('dns.reload')}</button></div>
+        <div class="form-actions"><button type="button" class="secondary" onclick={() => load()}>{t('dns.reload')}</button></div>
       {/if}
     {:else if platform}
       <section class="panel">
@@ -168,7 +170,7 @@
       <div class="form-actions">
         {#if storage !== null && storage.kind === 's3'}
           <button type="button" onclick={check} disabled={busy}>{t('storage.check')}</button>
-          <button type="button" class="secondary" onclick={load}>{t('dns.reload')}</button>
+          <button type="button" class="secondary" onclick={() => load()}>{t('dns.reload')}</button>
         {/if}
         {#if storage === null && loaded}
           <button type="button" class="secondary" onclick={() => (poolMode = true)}>{t('pool.use')}</button>
@@ -176,7 +178,7 @@
       </div>
     {:else if loaded}
       <p class="muted">{t('storage.platformOnly')}</p>
-      <div class="form-actions"><button type="button" class="secondary" onclick={load}>{t('dns.reload')}</button></div>
+      <div class="form-actions"><button type="button" class="secondary" onclick={() => load()}>{t('dns.reload')}</button></div>
     {/if}
   </DomainShell>
 </main>

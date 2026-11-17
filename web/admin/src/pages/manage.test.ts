@@ -6,6 +6,7 @@ import { App as State } from '../lib/app.svelte';
 import { nav } from '../lib/nav.svelte';
 import { en } from '../i18n/en';
 import { setCatalogue, t } from '../i18n';
+import { Live } from '../lib/live.svelte';
 import { PLATFORM, TENANT, created, fail, fakeServer, ok, signedIn, type Answer, type Handler } from '../test-support';
 
 const D1: Domain = { id: 1, name: 'example.org', status: 'active' };
@@ -561,5 +562,31 @@ describe('administrators', () => {
     await screen.findByRole('table', { name: t('admins.list') });
     expect(screen.queryByRole('button', { name: t('common.remove') })).toBeNull();
     expect(screen.queryByText(t('admins.new'))).toBeNull();
+  });
+});
+
+describe('live updates', () => {
+  it('refreshes the accounts of a domain when a hint says they changed, and keeps what the person typed', async () => {
+    const listeners = new Map<string, (e: MessageEvent<string>) => void>();
+    const fake = {
+      onopen: null as ((e: Event) => unknown) | null,
+      onerror: null as ((e: Event) => unknown) | null,
+      addEventListener: (type: string, l: (e: MessageEvent<string>) => void) => void listeners.set(type, l),
+      close: () => undefined,
+    };
+    nav.go('/domains/example.org/accounts', true);
+    const first: Answer = ok({ items: [ACC], next: null });
+    const second: Answer = ok({ items: [ACC, ACC2], next: null });
+    const s = fakeServer(signedIn(PLATFORM, { 'GET /api/v1/domains/example.org/accounts': [first, second] }));
+    render(App, { app: new State(s.client, new Live(() => fake)) });
+    await screen.findByText('alice@example.org');
+    await type(t('accounts.local'), 'half-typed');
+    listeners.get('changed')?.({ data: '{"topics":["accounts:example.org"]}' } as MessageEvent<string>);
+    expect(await screen.findByText('bob@example.org', undefined, { timeout: 2000 })).toBeTruthy();
+    expect((screen.getByLabelText(t('accounts.local')) as HTMLInputElement).value).toBe('half-typed');
+    // A hint for another domain does nothing.
+    listeners.get('changed')?.({ data: '{"topics":["accounts:other.org"]}' } as MessageEvent<string>);
+    await new Promise((r) => setTimeout(r, 400));
+    expect(s.calls.filter((c) => c.key === 'GET /api/v1/domains/example.org/accounts')).toHaveLength(2);
   });
 });

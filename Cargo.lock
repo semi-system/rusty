@@ -2130,6 +2130,7 @@ name = "rusty-admin"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "hex",
  "rand_core 0.6.4",
  "rusty-core",
