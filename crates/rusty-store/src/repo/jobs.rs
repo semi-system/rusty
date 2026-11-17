@@ -94,6 +94,8 @@ pub struct ClaimRequest<'a> {
     pub worker: &'a str,
     pub kinds: &'a [&'a str],
     pub lease_secs: u32,
+    /// At most this many jobs of one tenant (a domain; the jobs with none are one tenant) run at once: a tenant at its cap is not served until one of its jobs ends. `None`: no cap.
+    pub tenant_cap: Option<u32>,
     pub now: Option<i64>,
 }
 
@@ -164,6 +166,10 @@ pub(crate) mod sql {
     pub const CLAIM_UPDATE: &str = "UPDATE jobs SET state = 'running', attempts = attempts + 1, \
         epoch = epoch + 1, lease_owner = $2, lease_expires_at = $3, updated_at = $4 \
         WHERE id = $1 RETURNING id, kind, domain_id, payload, epoch, attempts, created_at";
+    /// How many jobs of a tenant (`$1` = the domain id, 0 for none) of a kind are running with an unexpired lease.
+    pub const TENANT_RUNNING: &str = "SELECT count(*) FROM jobs WHERE state = 'running' AND COALESCE(domain_id, 0) = $1 AND kind = $2 AND lease_expires_at > $3";
+    /// The turn of a tenant (docs/design-fair-claim.md): the number of its last claim, from one global sequence.
+    pub const TURN: &str = "INSERT INTO job_turns (scope, kind, last_claim) VALUES ($1, $2, nextval('job_turn_seq')) \n        ON CONFLICT (scope, kind) DO UPDATE SET last_claim = excluded.last_claim";
 }
 
 /// `Ok` iff exactly one row was affected by a fenced update.

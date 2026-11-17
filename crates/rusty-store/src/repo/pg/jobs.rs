@@ -17,44 +17,52 @@ use crate::repo::{render_pg as r, JobFence, JobRepo};
 const NO_DOMAIN_LOCK_CLASS: i32 = 0x4A4F_4253; // "JOBS"
 const NO_DOMAIN_LOCK_KEY: i32 = 1;
 
-/// Candidates fetched per probe round (see `next_candidate`).
+/// Advisory lock keys of the tenants' claim turns: this base plus the domain id (0 for no domain), clear of the keys above.
+const TENANT_LOCK_BASE: i64 = 1 << 40;
+
+/// Candidates fetched per claim (see `CLAIM_PEEK`).
 const CLAIM_WINDOW: i64 = 32;
 // The statements spell the window as a literal (a bound LIMIT makes generic plans assume 10%).
 const _: () = assert!(CLAIM_WINDOW == 32);
-/// Probe rounds per candidate search: with `CLAIM_WINDOW` this bounds a claim to 512 rows read
-/// even if other claimers hold locks on all of them.
-const CLAIM_MAX_ROUNDS: u32 = 16;
-
-/// Step 1 of a claim: the next `CLAIM_WINDOW` eligible job ids in `(run_after, id)` order after
-/// the key `($3, $4)`, WITHOUT locking, plus the decision time. Two ordered index probes
-/// (review PG5 I3): queued rows by `jobs_queued_order (run_after, id) WHERE state = 'queued'`,
-/// running rows with an expired lease by `jobs_running_lease (lease_expires_at) WHERE state =
-/// 'running'` (the expired set is small: crashed workers, reaped by the next claims). The old
-/// single disjunction could use neither index and read, sorted and filtered every job row
-/// (61 ms per claim at 500k rows). `$2` = the supplied time of the `_at` twins, else the
-/// database clock; the same value is bound into the later statements.
-const CLAIM_PEEK: &str = "SELECT c.id, c.run_after, COALESCE($2, {NOW}) AS now FROM (\
-      SELECT u.id, u.run_after FROM (\
-        (SELECT id, run_after FROM jobs \
-          WHERE state = 'queued' AND run_after <= COALESCE($2, {NOW}) AND kind = ANY($1) \
-            AND (run_after, id) > ($3, $4) \
+/// Step 1 of a claim: up to `CLAIM_WINDOW` eligible job ids in CLAIM ORDER, WITHOUT locking, plus the decision time (docs/design-fair-claim.md). The order is: a running job whose lease
+/// expired (a worker that died: oldest first), then the queued jobs by their place in their own tenant's line (the oldest of every tenant first, then the second oldest of every tenant,
+/// ...), and inside a place the tenant served least recently first (a tenant never served first). So a tenant with a large backlog gets one job per round like every other, and when
+/// the first job of a tenant is held by another claimer the next claimer takes the next job, of the same tenant if no other has a job due.
+/// `$4` is how many jobs of a tenant may be running at once: a tenant at its cap is left out of the window (one worker per tenant at a time when it is 1; docs/design-fair-claim.md).
+/// `$3` is how many jobs of each tenant the window starts behind: round 0 starts at 0 and a round in which every job of the window is held by other claimers asks again `CLAIM_DEPTH`
+/// deeper. The tenants are found by a skip scan on `jobs_queued_scope` (one index probe per tenant that has queued jobs), the jobs of a tenant by one probe of the same index, the
+/// expired leases by `jobs_running_lease`. `$2` = the supplied time of the `_at` twins, else the database clock; the same value is bound into the later statements.
+const CLAIM_PEEK: &str = "WITH RECURSIVE s(scope) AS (\
+      (SELECT COALESCE(domain_id, 0) FROM jobs WHERE state = 'queued' ORDER BY COALESCE(domain_id, 0) LIMIT 1) \
+      UNION ALL \
+      SELECT (SELECT COALESCE(j.domain_id, 0) FROM jobs j WHERE j.state = 'queued' AND COALESCE(j.domain_id, 0) > s.scope \
+              ORDER BY COALESCE(j.domain_id, 0) LIMIT 1) FROM s WHERE s.scope IS NOT NULL) \
+    SELECT c.id, c.run_after, COALESCE($2, {NOW}) AS now FROM (\
+      SELECT u.id, u.run_after, u.prio, u.place, u.turn FROM (\
+        (SELECT id, run_after, 0 AS prio, CAST(0 AS BIGINT) AS place, CAST(0 AS BIGINT) AS turn FROM jobs \
+          WHERE state = 'running' AND lease_expires_at <= COALESCE($2, {NOW}) AND kind = ANY($1) AND $3 = 0 \
           ORDER BY run_after, id LIMIT 32) \
         UNION ALL \
-        (SELECT id, run_after FROM jobs \
-          WHERE state = 'running' AND lease_expires_at <= COALESCE($2, {NOW}) AND kind = ANY($1) \
-            AND (run_after, id) > ($3, $4) \
-          ORDER BY run_after, id LIMIT 32)\
-      ) u ORDER BY u.run_after, u.id LIMIT 32\
-    ) c ORDER BY c.run_after, c.id";
+        (SELECT h.id, h.run_after, 1 AS prio, h.place, COALESCE(t.last_claim, 0) AS turn FROM s \
+          CROSS JOIN LATERAL (SELECT q.id, q.run_after, q.kind, row_number() OVER (ORDER BY q.run_after, q.id) AS place FROM (\
+              SELECT id, run_after, kind FROM jobs \
+              WHERE state = 'queued' AND COALESCE(domain_id, 0) = s.scope AND run_after <= COALESCE($2, {NOW}) AND kind = ANY($1) \
+              ORDER BY run_after, id OFFSET $3 LIMIT 8) q) h \
+          LEFT JOIN job_turns t ON t.scope = s.scope AND t.kind = h.kind \
+          WHERE s.scope IS NOT NULL AND (CASE WHEN s.scope = 0 THEN \
+              (SELECT count(*) FROM jobs r WHERE r.state = 'running' AND r.domain_id IS NULL AND r.lease_expires_at > COALESCE($2, {NOW}) AND r.kind = ANY($1)) \
+            ELSE (SELECT count(*) FROM jobs r WHERE r.state = 'running' AND r.domain_id = s.scope AND r.lease_expires_at > COALESCE($2, {NOW}) AND r.kind = ANY($1)) END) < $4 \
+          ORDER BY h.place, COALESCE(t.last_claim, 0), h.run_after, h.id LIMIT 32)\
+      ) u ORDER BY u.prio, u.place, u.turn, u.run_after, u.id LIMIT 32\
+    ) c ORDER BY c.prio, c.place, c.turn, c.run_after, c.id";
 
-/// Step 2: lock the first of those ids that is still eligible (READ COMMITTED re-evaluates the
-/// predicate on a row another claimer changed) and not locked by another claimer. Primary-key
-/// probes only. `$1` = ids from step 1, `$2` = the decision time of step 1.
-const CLAIM_LOCK: &str = "SELECT j.id, j.state, j.attempts, j.max_attempts FROM jobs j \
+/// Step 2: lock the first of those ids, in the order of the window, that is still eligible (READ COMMITTED re-evaluates the predicate on a row another claimer changed) and not locked by
+/// another claimer. Primary-key probes only. `$1` = ids from step 1 in claim order, `$2` = the decision time of step 1.
+const CLAIM_LOCK: &str = "SELECT j.id, j.state, j.attempts, j.max_attempts, COALESCE(j.domain_id, 0) AS scope, j.kind FROM jobs j \
     WHERE j.id = ANY($1) \
       AND ((j.state = 'queued' AND j.run_after <= $2) \
         OR (j.state = 'running' AND j.lease_expires_at <= $2)) \
-    ORDER BY j.run_after, j.id LIMIT 1 FOR UPDATE OF j SKIP LOCKED";
+    ORDER BY array_position($1, j.id) LIMIT 1 FOR UPDATE OF j SKIP LOCKED";
 
 /// The two claim probe statements, rendered for Postgres, for the plan tests.
 #[cfg(feature = "test-knobs")]
@@ -67,50 +75,45 @@ struct Candidate {
     state: String,
     attempts: i64,
     max_attempts: i64,
+    /// The tenant (the domain id, 0 for a job with none) and the kind: whose turn this claim uses up.
+    scope: i64,
+    kind: String,
     now: i64,
 }
 
-/// The first eligible job in `(run_after, id)` order that no other transaction has locked, now
-/// locked by this one: `ORDER BY .. LIMIT 1 FOR UPDATE SKIP LOCKED` semantics over the whole
-/// queue, with every round bounded by index probes. A round whose window was full but yielded
-/// nothing lockable (every row held by other claimers) continues after its last key.
+/// Jobs of one tenant the window holds per round, and how many rounds a claim makes: with `CLAIM_WINDOW` a claim reads at most `CLAIM_MAX_ROUNDS * CLAIM_DEPTH` jobs of a tenant even if
+/// other claimers hold them all.
+const CLAIM_DEPTH: i64 = 8;
+const _: () = assert!(CLAIM_DEPTH == 8);
+const CLAIM_MAX_ROUNDS: i64 = 16;
+
+/// The first eligible job of the claim order (see `CLAIM_PEEK`) that no other transaction has locked, now locked by this one. A round whose jobs are all held by other claimers is followed by
+/// one that starts `CLAIM_DEPTH` deeper in every tenant's line; a round with no job at all ends the search.
 async fn next_candidate(
     c: &mut sqlx::PgConnection,
     kinds: &[&str],
     now: Option<i64>,
+    cap: i64,
 ) -> std::result::Result<Option<Candidate>, sqlx::Error> {
-    let mut after = (i64::MIN, i64::MIN);
-    for _ in 0..CLAIM_MAX_ROUNDS {
-        let window = sqlx::query(r(CLAIM_PEEK))
-            .bind(kinds)
-            .bind(now)
-            .bind(after.0)
-            .bind(after.1)
-            .fetch_all(&mut *c)
-            .await?;
-        let (Some(first), Some(last)) = (window.first(), window.last()) else {
+    for round in 0..CLAIM_MAX_ROUNDS {
+        let window = sqlx::query(r(CLAIM_PEEK)).bind(kinds).bind(now).bind(round * CLAIM_DEPTH).bind(cap).fetch_all(&mut *c).await?;
+        let Some(first) = window.first() else {
             return Ok(None);
         };
         let decided: i64 = first.try_get("now")?;
         let ids: Vec<i64> = window.iter().map(|w| w.try_get("id")).collect::<std::result::Result<_, sqlx::Error>>()?;
-        if let Some(row) = sqlx::query(crate::repo::pg_lit(CLAIM_LOCK))
-            .bind(&ids)
-            .bind(decided)
-            .fetch_optional(&mut *c)
-            .await?
-        {
+        let row = sqlx::query(crate::repo::pg_lit(CLAIM_LOCK)).bind(&ids).bind(decided).fetch_optional(&mut *c).await?;
+        if let Some(row) = row {
             return Ok(Some(Candidate {
                 id: row.try_get("id")?,
                 state: row.try_get("state")?,
                 attempts: row.try_get("attempts")?,
                 max_attempts: row.try_get("max_attempts")?,
+                scope: row.try_get("scope")?,
+                kind: row.try_get("kind")?,
                 now: decided,
             }));
         }
-        if (window.len() as i64) < CLAIM_WINDOW {
-            return Ok(None);
-        }
-        after = (last.try_get("run_after")?, last.try_get("id")?);
     }
     Ok(None)
 }
@@ -323,6 +326,7 @@ impl JobRepo for PgRepo {
 
     async fn claim(&self, req: &ClaimRequest<'_>) -> Result<Option<ClaimedJob>> {
         let kinds: Vec<&str> = req.kinds.to_vec();
+        let cap = req.tenant_cap.map_or(i64::MAX, i64::from);
         let claimed = tx_retry!(self, None, |c| {
             {
                 let mut settled = 0u32;
@@ -330,10 +334,10 @@ impl JobRepo for PgRepo {
                     if settled >= MAX_SETTLED_PER_CLAIM {
                         break Ok(None);
                     }
-                    let Some(cand) = next_candidate(&mut *c, &kinds, req.now).await? else {
+                    let Some(cand) = next_candidate(&mut *c, &kinds, req.now, cap).await? else {
                         break Ok(None);
                     };
-                    let Candidate { id, state, attempts, max_attempts, now } = cand;
+                    let Candidate { id, state, attempts, max_attempts, scope, kind, now } = cand;
                     if attempts >= max_attempts {
                         sqlx::query(crate::repo::pg_lit(sql::SETTLE_DEAD))
                             .bind(id)
@@ -344,6 +348,14 @@ impl JobRepo for PgRepo {
                         settled += 1;
                         continue;
                     }
+                    // The cap holds across workers: claims of one tenant queue up on this lock, and the count is taken again once it is held (the window counted before any lock).
+                    if let Some(limit) = req.tenant_cap {
+                        sqlx::query(crate::repo::pg_lit("SELECT pg_advisory_xact_lock($1)")).bind(TENANT_LOCK_BASE + scope).execute(&mut *c).await?;
+                        let running: i64 = sqlx::query_scalar(crate::repo::pg_lit(sql::TENANT_RUNNING)).bind(scope).bind(&kind).bind(now).fetch_one(&mut *c).await?;
+                        if running >= i64::from(limit) {
+                            break Ok(None);
+                        }
+                    }
                     let row = sqlx::query(sql::CLAIM_UPDATE)
                         .bind(id)
                         .bind(req.worker)
@@ -351,6 +363,8 @@ impl JobRepo for PgRepo {
                         .bind(now)
                         .fetch_one(&mut *c)
                         .await?;
+                    // This tenant has had its turn: the others go before it next time.
+                    sqlx::query(sql::TURN).bind(scope).bind(&kind).execute(&mut *c).await?;
                     let text: String = row.try_get("payload")?;
                     let attempts: i64 = row.try_get("attempts")?;
                     match parse_payload(&text) {

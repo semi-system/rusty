@@ -185,6 +185,12 @@ pub struct OutboundConfig {
     /// Simultaneous deliveries in all.
     #[serde(default = "d_concurrent")]
     pub max_concurrent: u32,
+    /// Simultaneous deliveries of one sending tenant (domain): 1 means each tenant is worked by one worker at a time and the workers run different tenants side by side (docs/design-fair-claim.md).
+    #[serde(default = "d_per_tenant")]
+    pub max_concurrent_per_tenant: u32,
+    /// How many deliveries one tenant may have at once while worker slots would otherwise be idle (no other tenant has a job due): idle workers are reused up to this number. At least `max_concurrent_per_tenant`.
+    #[serde(default = "d_tenant_burst")]
+    pub max_concurrent_per_tenant_burst: u32,
     #[serde(default = "d_connect")]
     pub connect_timeout_secs: u64,
     /// Per command/reply round trip.
@@ -273,6 +279,12 @@ fn d_per_domain() -> u32 {
 fn d_concurrent() -> u32 {
     20
 }
+fn d_per_tenant() -> u32 {
+    1
+}
+fn d_tenant_burst() -> u32 {
+    5
+}
 fn d_connect() -> u64 {
     30
 }
@@ -296,6 +308,8 @@ impl Default for OutboundConfig {
             backoff_secs: d_backoff(),
             max_concurrent_per_domain: d_per_domain(),
             max_concurrent: d_concurrent(),
+            max_concurrent_per_tenant: d_per_tenant(),
+            max_concurrent_per_tenant_burst: d_tenant_burst(),
             connect_timeout_secs: d_connect(),
             command_timeout_secs: d_command(),
             data_timeout_secs: d_data(),
@@ -343,7 +357,7 @@ impl OutboundConfig {
         if self.max_pending_per_account == 0 || !(60..=7 * 86_400).contains(&self.submit_window_secs) || self.submit_max_jobs == 0 || self.submit_max_recipients == 0 || self.submit_max_bytes == 0 {
             return Err(bad("outbound submission limits are out of range"));
         }
-        if !(1..=1000).contains(&self.max_concurrent_per_domain) || !(1..=10_000).contains(&self.max_concurrent) {
+        if !(1..=1000).contains(&self.max_concurrent_per_domain) || !(1..=10_000).contains(&self.max_concurrent) || !(1..=1000).contains(&self.max_concurrent_per_tenant) || !(self.max_concurrent_per_tenant..=1000).contains(&self.max_concurrent_per_tenant_burst) {
             return Err(bad("outbound concurrency limits are out of range"));
         }
         for t in [self.connect_timeout_secs, self.command_timeout_secs, self.data_timeout_secs] {

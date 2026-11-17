@@ -96,8 +96,8 @@ async fn claim_probes_use_index_scans_at_scale() {
     let concrete_sql = peek
         .replace("$1", "ARRAY['common']")
         .replace("$2", "NULL::bigint")
-        .replace("$3", "-9223372036854775807")
-        .replace("$4", "-9223372036854775807");
+        .replace("$3", "0")
+        .replace("$4", "9223372036854775807");
     let concrete: Vec<String> =
         sqlx::query_scalar(sqlx::AssertSqlSafe(format!("EXPLAIN (ANALYZE, BUFFERS OFF, TIMING OFF) {concrete_sql}")))
             .fetch_all(&mut conn)
@@ -107,7 +107,7 @@ async fn claim_probes_use_index_scans_at_scale() {
     for (what, plan) in [("generic", &generic), ("concrete", &concrete)] {
         assert!(!plan.contains("Seq Scan on jobs"), "{what} claim probe scans jobs:\n{plan}");
         assert!(!plan.contains("Bitmap"), "{what} claim probe is a bitmap scan:\n{plan}");
-        assert!(plan.contains("jobs_queued_order"), "{what}: queued arm misses its index:\n{plan}");
+        assert!(plan.contains("jobs_queued_scope"), "{what}: queued arm misses its index:\n{plan}");
         assert!(plan.contains("jobs_running_lease"), "{what}: running arm misses its index:\n{plan}");
     }
     // The arms stop at their LIMIT: they read about a window of rows, not the backlog.

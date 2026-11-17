@@ -73,7 +73,7 @@ const BUDGET: &[(&str, usize)] = &[
     ("enqueue (domain)", 5),
     ("enqueue (no domain)", 5),
     ("enqueue_batch (domain)", 6),
-    ("claim (job available)", 5),
+    ("claim (job available)", 6),   // + the turn of the tenant (docs/design-fair-claim.md)
     ("claim (nothing)", 3),
     ("heartbeat", 3),
     ("fence_check", 1),
