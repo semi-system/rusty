@@ -1,6 +1,6 @@
 # Design: the admin console compared with Zimbra, and the plan to close the gap
 
-Status: **proposed 2026-11-17** (the owner asked for a comparison with Zimbra and for its functions to be completed). Written before any code, as the project requires; the phases below are built as series of small pull
+Status: **proposed 2026-11-17; the decisions of section 4 were taken the same day** (the owner asked for a comparison with Zimbra and for its functions to be completed). Written before any code, as the project requires; the phases below are built as series of small pull
 requests, each with its tests, its entries in the message catalogue (`web/admin/src/i18n`), its contract change (`contract/v1.json`) and, where it reads or writes the database, its query shape and budget.
 
 ## 1. How the comparison was made
@@ -107,14 +107,19 @@ backup status, cross-mailbox search for platform administrators, the IMAP migrat
 
 **P4: deferred by the owner.** 2FA, app passwords, SSO.
 
-## 4. Decisions for the owner (each has a recommendation; nothing below is built before it is answered)
+## 4. Decisions (owner, 2026-11-17)
 
-* **D1. Groupware** (calendar, contacts, tasks, briefcase, ActiveSync, resources): Zimbra is a collaboration suite, this project is a mail server. *Recommended: out of scope now.* If wanted later, CalDAV and CardDAV are
-  separate services with their own design, not part of the admin work.
-* **D2. POP3.** *Recommended: yes, in P3, as a small service on the shared mailbox code* (some old clients and devices still need it).
-* **D3. Per-domain external authentication** (LDAP or AD of the customer, SSO). *Recommended: stays deferred as decided.*
-* **D4. Archiving and legal hold.** *Recommended: no;* a retention rule per plan (P3) covers the usual need.
-* **D5. Cross-mailbox search by administrators.** *Recommended: build it only with the audit log, for platform administrators, off by default,* because it lets an administrator read other people's mail.
+* **D1. Groupware** (calendar, contacts, tasks): **yes, to be built**, after P2, as separate services (CalDAV and CardDAV) with a design of their own; resources (rooms, equipment) come with the calendar. Briefcase,
+  ActiveSync, chat and video are not part of it.
+* **D2. POP3:** **yes**, a small service on the shared mailbox code, in P3.
+* **D3. Per-domain external authentication** (LDAP, AD, SSO): **later**, as before.
+* **D4. Archiving and legal hold:** **later**; a retention rule per plan (P3) covers the usual need until then.
+* **D5. Cross-mailbox search by administrators:** **yes**, in P3, with the conditions of the recommendation: platform administrators only, every search written to the audit log, off by default.
+* **The webmail and the users' portal live on a host of their own**, not on the admin host (`webmail.example.org` next to `admin.example.org`): a different origin, its own certificate and its own cookie, so that a
+  flaw in what a message can show can never reach the administrators' session. The admin console stays for administrators; what a user does for himself (password, forwarding, vacation, filters) is in the portal of the webmail.
+  The edge routes the two hosts to two services; `rusty-swarm` asks for the second host name when the webmail is switched on.
+
+The admin console is finished first (P1 and P2), then the users' side (P3), then groupware.
 
 ## 5. Rules every item follows
 
