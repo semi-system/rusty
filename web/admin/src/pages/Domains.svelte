@@ -2,8 +2,10 @@
   import { onMount } from 'svelte';
   import type { App } from '../lib/app.svelte';
   import type { Domain, Me } from '../api/types';
+  import Badge from '../lib/Badge.svelte';
   import ErrorNote from '../lib/ErrorNote.svelte';
   import Link from '../lib/Link.svelte';
+  import PageHead from '../lib/PageHead.svelte';
   import { href } from '../lib/router';
   import { t, tFor } from '../i18n';
 
@@ -52,40 +54,47 @@
 </script>
 
 <main id="content" tabindex="-1">
-  <h1>{t('domains.title')}</h1>
+  <PageHead title={t('domains.title')} lede={t('domains.lede')} />
+
+  {#if error !== null}<ErrorNote {error} />{/if}
+  {#if created !== null}<p class="alert ok" role="status">{t('domains.created', { name: created })}</p>{/if}
+
   {#if !loaded}
     <p class="muted" role="status">{t('app.loading')}</p>
   {:else if items.length === 0 && error === null}
-    <p class="muted">{t('domains.empty')}</p>
+    <div class="empty"><p>{t('domains.empty')}</p></div>
   {:else}
-    <table aria-label={t('domains.list')}>
-      <thead>
-        <tr><th scope="col">{t('domains.name')}</th><th scope="col">{t('domains.status')}</th></tr>
-      </thead>
-      <tbody>
-        {#each items as d (d.id)}
-          <tr>
-            <th scope="row"><Link href={href('/domains/{name}/overview', { name: d.name })}>{d.name}</Link></th>
-            <td>{tFor('domain.status.', d.status, 'domain.status.active')}</td>
-          </tr>
-        {/each}
-      </tbody>
-    </table>
+    <div class="table-wrap">
+      <table aria-label={t('domains.list')}>
+        <thead>
+          <tr><th scope="col">{t('domains.name')}</th><th scope="col">{t('domains.status')}</th></tr>
+        </thead>
+        <tbody>
+          {#each items as d (d.id)}
+            <tr>
+              <th scope="row"><Link href={href('/domains/{name}/overview', { name: d.name })}>{d.name}</Link></th>
+              <td><Badge tone={d.status === 'active' ? 'ok' : 'warn'}>{tFor('domain.status.', d.status, 'domain.status.active')}</Badge></td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
     {#if next !== null}
-      <p><button type="button" onclick={() => load(next ?? undefined)}>{t('common.loadMore')}</button></p>
+      <p class="form-actions"><button type="button" class="secondary" onclick={() => load(next ?? undefined)}>{t('common.loadMore')}</button></p>
     {/if}
   {/if}
-  {#if error !== null}<ErrorNote {error} />{/if}
-  {#if created !== null}<p role="status">{t('domains.created', { name: created })}</p>{/if}
 
   {#if me.scope === 'platform'}
-    <h2>{t('domains.new')}</h2>
-    <form onsubmit={create}>
-      <label>
-        {t('domains.newName')}
-        <input bind:value={name} name="name" type="text" autocapitalize="none" spellcheck="false" required />
-      </label>
-      <button type="submit" disabled={busy}>{busy ? t('common.creating') : t('common.create')}</button>
-    </form>
+    <section class="panel" aria-labelledby="new-domain">
+      <h2 id="new-domain">{t('domains.new')}</h2>
+      <p class="hint">{t('domains.newLede')}</p>
+      <form class="field-row" onsubmit={create}>
+        <label>
+          {t('domains.newName')}
+          <input bind:value={name} name="name" type="text" autocapitalize="none" spellcheck="false" required />
+        </label>
+        <button type="submit" disabled={busy}>{busy ? t('common.creating') : t('common.create')}</button>
+      </form>
+    </section>
   {/if}
 </main>

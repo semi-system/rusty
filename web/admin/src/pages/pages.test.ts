@@ -40,7 +40,7 @@ describe('boot', () => {
   it('shows the application when a session exists', async () => {
     const s = server({ 'GET /api/v1/session': { status: 200, body: ME } });
     render(App, { app: new State(s.client) });
-    expect(await screen.findByText(t('home.signedInAs', { address: ME.address }), { exact: false })).toBeTruthy();
+    expect(await screen.findByText(ME.address)).toBeTruthy();
     expect(screen.getByText(t('home.scopePlatform'), { exact: false })).toBeTruthy();
     expect(s.calls).toEqual(['GET /api/v1/session', 'GET /api/v1/domains']);
   });
@@ -87,7 +87,7 @@ describe('sign-in', () => {
     await fireEvent.input(screen.getByLabelText(t('login.address')), { target: { value: 'root@example.org' } });
     await fireEvent.input(screen.getByLabelText(t('login.password')), { target: { value: 'pw' } });
     await fireEvent.click(screen.getByRole('button', { name: t('login.submit') }));
-    expect(await screen.findByText(t('home.signedInAs', { address: ME.address }), { exact: false })).toBeTruthy();
+    expect(await screen.findByText(ME.address)).toBeTruthy();
     expect(s.bodies.find((b) => b !== undefined)).toEqual({ address: 'root@example.org', password: 'pw' });
   });
 
@@ -146,7 +146,7 @@ describe('setup', () => {
     const s = await setupPage({ 'POST /api/v1/setup': { status: 201, body: ME } });
     expect((screen.getByLabelText(t('setup.token')) as HTMLInputElement).type).toBe('password');
     await fill('  tok123  ', 'root@example.org', 'a-long-password-1', 'a-long-password-1');
-    expect(await screen.findByText(t('home.signedInAs', { address: ME.address }), { exact: false })).toBeTruthy();
+    expect(await screen.findByText(ME.address)).toBeTruthy();
     expect(s.bodies.find((b) => typeof b === 'object' && b !== null && 'token' in b)).toEqual({ token: 'tok123', address: 'root@example.org', password: 'a-long-password-1' });
   });
 

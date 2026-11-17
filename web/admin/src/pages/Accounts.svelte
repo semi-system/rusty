@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Badge from '../lib/Badge.svelte';
   import { onMount } from 'svelte';
   import type { App } from '../lib/app.svelte';
   import type { Account } from '../api/types';
@@ -92,61 +93,73 @@
 
 <main id="content" tabindex="-1">
   <DomainShell {name}>
-    <h2>{t('accounts.title', { domain: name })}</h2>
+    <div class="section-head">
+      <h2>{t('accounts.title', { domain: name })}</h2>
+      <p>{t('accounts.lede')}</p>
+    </div>
+    {#if error !== null}<ErrorNote {error} />{/if}
+    {#if tooShort}<p class="alert danger" role="alert">{t('accounts.tooShort', { min: MIN })}</p>{/if}
+    {#if notice !== null}<p class="alert ok" role="status">{notice}</p>{/if}
+
     {#if !loaded}
       <p class="muted" role="status">{t('app.loading')}</p>
     {:else if items.length === 0}
-      <p class="muted">{t('accounts.empty')}</p>
+      <div class="empty"><p>{t('accounts.empty')}</p></div>
     {:else}
-      <table aria-label={t('accounts.list')}>
-        <thead>
-          <tr>
-            <th scope="col">{t('accounts.address')}</th>
-            <th scope="col">{t('accounts.status')}</th>
-            <th scope="col">{t('accounts.password')}</th>
-            <th scope="col"><span class="sr">{t('domain.accounts')}</span></th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each items as a (a.id)}
+      <div class="table-wrap">
+        <table aria-label={t('accounts.list')}>
+          <thead>
             <tr>
-              <th scope="row">{a.address}</th>
-              <td>{tFor('accounts.status.', a.status, 'accounts.status.active')}</td>
-              <td>{a.has_password ? t('accounts.hasPassword') : t('accounts.noPassword')}</td>
-              <td>
-                <button type="button" disabled={busy} onclick={() => toggle(a)}>{a.status === 'active' ? t('accounts.disable', { address: a.address }) : t('accounts.enable', { address: a.address })}</button>
-                <button type="button" onclick={() => { editing = editing === a.address ? null : a.address; fresh = ''; tooShort = false; }}>{t('accounts.setPassword', { address: a.address })}</button>
-                {#if editing === a.address}
-                  <form onsubmit={(e) => changePassword(e, a.address)}>
-                    <label>
-                      {t('accounts.passwordFor', { address: a.address })}
-                      <input bind:value={fresh} name="password" type="password" autocomplete="new-password" required />
-                    </label>
-                    <button type="submit" disabled={busy}>{busy ? t('common.saving') : t('common.save')}</button>
-                  </form>
-                {/if}
-              </td>
+              <th scope="col">{t('accounts.address')}</th>
+              <th scope="col">{t('accounts.status')}</th>
+              <th scope="col">{t('accounts.password')}</th>
+              <th scope="col" class="col-actions"><span class="sr">{t('domain.accounts')}</span></th>
             </tr>
-          {/each}
-        </tbody>
-      </table>
-      {#if next !== null}<p><button type="button" onclick={() => load(next ?? undefined)}>{t('common.loadMore')}</button></p>{/if}
+          </thead>
+          <tbody>
+            {#each items as a (a.id)}
+              <tr>
+                <th scope="row">{a.address}</th>
+                <td><Badge tone={a.status === 'active' ? 'ok' : 'warn'}>{tFor('accounts.status.', a.status, 'accounts.status.active')}</Badge></td>
+                <td>{a.has_password ? t('accounts.hasPassword') : t('accounts.noPassword')}</td>
+                <td class="col-actions">
+                  <div class="row-actions">
+                    <button type="button" disabled={busy} aria-label={a.status === 'active' ? t('accounts.disable', { address: a.address }) : t('accounts.enable', { address: a.address })} onclick={() => toggle(a)}>{a.status === 'active' ? t('accounts.disableShort') : t('accounts.enableShort')}</button>
+                    <button type="button" aria-label={t('accounts.setPassword', { address: a.address })} onclick={() => { editing = editing === a.address ? null : a.address; fresh = ''; tooShort = false; }}>{t('accounts.setPasswordShort')}</button>
+                  </div>
+                  {#if editing === a.address}
+                    <form class="row-form" onsubmit={(e) => changePassword(e, a.address)}>
+                      <label>
+                        {t('accounts.passwordFor', { address: a.address })}
+                        <input bind:value={fresh} name="password" type="password" autocomplete="new-password" required />
+                      </label>
+                      <div class="form-actions"><button type="submit" class="primary" disabled={busy}>{busy ? t('common.saving') : t('common.save')}</button></div>
+                    </form>
+                  {/if}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      {#if next !== null}<p class="form-actions"><button type="button" class="secondary" onclick={() => load(next ?? undefined)}>{t('common.loadMore')}</button></p>{/if}
     {/if}
-    {#if error !== null}<ErrorNote {error} />{/if}
-    {#if tooShort}<p class="note" role="alert">{t('accounts.tooShort', { min: MIN })}</p>{/if}
-    {#if notice !== null}<p role="status">{notice}</p>{/if}
 
-    <h2>{t('accounts.new')}</h2>
-    <form onsubmit={create}>
-      <label>
-        {t('accounts.local')}
-        <input bind:value={local} name="local" type="text" autocapitalize="none" spellcheck="false" required />
-      </label>
-      <label>
-        {t('accounts.newPassword', { min: MIN })}
-        <input bind:value={password} name="newpassword" type="password" autocomplete="new-password" />
-      </label>
-      <button type="submit" disabled={busy}>{busy ? t('common.creating') : t('common.create')}</button>
-    </form>
+    <section class="panel" aria-labelledby="new-account">
+      <h2 id="new-account">{t('accounts.new')}</h2>
+      <form onsubmit={create}>
+        <div class="field-row">
+          <label>
+            {t('accounts.local')}
+            <input bind:value={local} name="local" type="text" autocapitalize="none" spellcheck="false" required />
+          </label>
+          <label>
+            {t('accounts.newPassword', { min: MIN })}
+            <input bind:value={password} name="newpassword" type="password" autocomplete="new-password" />
+          </label>
+          <button type="submit" disabled={busy}>{busy ? t('common.creating') : t('common.create')}</button>
+        </div>
+      </form>
+    </section>
   </DomainShell>
 </main>

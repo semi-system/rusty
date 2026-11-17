@@ -65,42 +65,52 @@
 
 <main id="content" tabindex="-1">
   <DomainShell {name}>
-    <h2>{t('aliases.title', { domain: name })}</h2>
+    <div class="section-head">
+      <h2>{t('aliases.title', { domain: name })}</h2>
+      <p>{t('aliases.lede')}</p>
+    </div>
+    {#if error !== null}<ErrorNote {error} />{/if}
+    {#if notice !== null}<p class="alert ok" role="status">{notice}</p>{/if}
+
     {#if !loaded}
       <p class="muted" role="status">{t('app.loading')}</p>
     {:else if items.length === 0}
-      <p class="muted">{t('aliases.empty')}</p>
+      <div class="empty"><p>{t('aliases.empty')}</p></div>
     {:else}
-      <table aria-label={t('aliases.list')}>
-        <thead>
-          <tr><th scope="col">{t('aliases.alias')}</th><th scope="col">{t('aliases.target')}</th><th scope="col"><span class="sr">{t('domain.aliases')}</span></th></tr>
-        </thead>
-        <tbody>
-          {#each items as a (a.id)}
-            <tr>
-              <th scope="row">{a.alias}</th>
-              <td>{a.target}</td>
-              <td><button type="button" disabled={busy} onclick={() => remove(a)}>{t('aliases.remove', { alias: a.alias })}</button></td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-      {#if next !== null}<p><button type="button" onclick={() => load(next ?? undefined)}>{t('common.loadMore')}</button></p>{/if}
+      <div class="table-wrap">
+        <table aria-label={t('aliases.list')}>
+          <thead>
+            <tr><th scope="col">{t('aliases.alias')}</th><th scope="col">{t('aliases.target')}</th><th scope="col" class="col-actions"><span class="sr">{t('domain.aliases')}</span></th></tr>
+          </thead>
+          <tbody>
+            {#each items as a (a.id)}
+              <tr>
+                <th scope="row">{a.alias}</th>
+                <td>{a.target}</td>
+                <td class="col-actions"><button type="button" class="danger" disabled={busy} aria-label={t('aliases.remove', { alias: a.alias })} onclick={() => remove(a)}>{t('aliases.removeShort')}</button></td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      {#if next !== null}<p class="form-actions"><button type="button" class="secondary" onclick={() => load(next ?? undefined)}>{t('common.loadMore')}</button></p>{/if}
     {/if}
-    {#if error !== null}<ErrorNote {error} />{/if}
-    {#if notice !== null}<p role="status">{notice}</p>{/if}
 
-    <h2>{t('aliases.new')}</h2>
-    <form onsubmit={create}>
-      <label>
-        {t('aliases.local')}
-        <input bind:value={local} name="local" type="text" autocapitalize="none" spellcheck="false" required />
-      </label>
-      <label>
-        {t('aliases.targetAddress')}
-        <input bind:value={target} name="target" type="text" inputmode="email" autocapitalize="none" spellcheck="false" required />
-      </label>
-      <button type="submit" disabled={busy}>{busy ? t('common.creating') : t('common.create')}</button>
-    </form>
+    <section class="panel" aria-labelledby="new-alias">
+      <h2 id="new-alias">{t('aliases.new')}</h2>
+      <form onsubmit={create}>
+        <div class="field-row">
+          <label>
+            {t('aliases.local')}
+            <input bind:value={local} name="local" type="text" autocapitalize="none" spellcheck="false" required />
+          </label>
+          <label>
+            {t('aliases.targetAddress')}
+            <input bind:value={target} name="target" type="text" inputmode="email" autocapitalize="none" spellcheck="false" required />
+          </label>
+          <button type="submit" disabled={busy}>{busy ? t('common.creating') : t('common.create')}</button>
+        </div>
+      </form>
+    </section>
   </DomainShell>
 </main>

@@ -6,4 +6,4 @@
   const m = $derived(errorMessage(error));
 </script>
 
-<p class="note" role="alert">{t(m.key, m.params)}</p>
+<p class="alert danger" role="alert">{t(m.key, m.params)}</p>

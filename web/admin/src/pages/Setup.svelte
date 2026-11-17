@@ -40,29 +40,40 @@
   }
 </script>
 
-<main id="content">
-  <h1>{t('setup.title')}</h1>
-  <p class="muted">{t('setup.intro')}</p>
-  <form onsubmit={submit}>
-    <label>
-      {t('setup.token')}
-      <input bind:this={first} bind:value={token} name="token" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" required />
-    </label>
-    <label>
-      {t('setup.address')}
-      <input bind:value={address} name="address" type="text" inputmode="email" autocomplete="username" autocapitalize="none" spellcheck="false" required />
-    </label>
-    <label>
-      {t('setup.password', { min: MIN })}
-      <input bind:value={password} name="password" type="password" autocomplete="new-password" required />
-    </label>
-    <label>
-      {t('setup.confirm')}
-      <input bind:value={confirm} name="confirm" type="password" autocomplete="new-password" required />
-    </label>
-    {#if problem === 'short'}<p class="note" role="alert">{t('setup.tooShort', { min: MIN })}</p>{/if}
-    {#if problem === 'mismatch'}<p class="note" role="alert">{t('setup.mismatch')}</p>{/if}
-    {#if error !== null}<ErrorNote {error} />{/if}
-    <button type="submit" disabled={busy}>{busy ? t('setup.submitting') : t('setup.submit')}</button>
-  </form>
+<main class="auth" id="content">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <span class="brand-mark" aria-hidden="true">{t('app.mark')}</span>
+      <div>
+        <div class="brand-name">{t('app.title')}</div>
+        <div class="brand-sub">{t('app.productSub')}</div>
+      </div>
+    </div>
+    <div class="panel">
+      <h1>{t('setup.title')}</h1>
+      <p class="lede">{t('setup.intro')}</p>
+    <form onsubmit={submit}>
+      <label>
+        {t('setup.token')}
+        <input bind:this={first} bind:value={token} name="token" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" required />
+      </label>
+      <label>
+        {t('setup.address')}
+        <input bind:value={address} name="address" type="text" inputmode="email" autocomplete="username" autocapitalize="none" spellcheck="false" required />
+      </label>
+      <label>
+        {t('setup.password', { min: MIN })}
+        <input bind:value={password} name="password" type="password" autocomplete="new-password" required />
+      </label>
+      <label>
+        {t('setup.confirm')}
+        <input bind:value={confirm} name="confirm" type="password" autocomplete="new-password" required />
+      </label>
+      {#if problem === 'short'}<p class="note" role="alert">{t('setup.tooShort', { min: MIN })}</p>{/if}
+      {#if problem === 'mismatch'}<p class="note" role="alert">{t('setup.mismatch')}</p>{/if}
+      {#if error !== null}<ErrorNote {error} />{/if}
+      <button type="submit" disabled={busy}>{busy ? t('setup.submitting') : t('setup.submit')}</button>
+    </form>
+    </div>
+  </div>
 </main>
