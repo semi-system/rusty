@@ -108,6 +108,10 @@ grep -q '^inflight_message_mib = ' "$tmp/state-external/stack/etc/smtp_in.toml" 
 
 scenario defaults $'TLS_MODE=acme\nS3_ACCESS_KEY=\nDB_HOST=\nS3_ENDPOINT=' "edge smtp-in submission imap outbound gc admin db s3" "resolver rspamd clamd freshclam valkey"
 ! grep -q 'edge_mail_pem' "$tmp/defaults.stack.yaml" || fail "acme: the edge must get its certificate itself, not from a secret"
+# replicas: the Rusty services run two tasks (rolling updates never leave one without a task); the edge, the database, the object store and the admin console one
+tasks_of() { awk -v s="$2" '$0 == "  " s ":" { on = 1; next } on && /^  [a-z0-9-]+:$/ { exit } on && /replicas:/ { gsub(/[^0-9]/, "", $2); print $2; exit }' "$1"; }
+for s in smtp-in submission imap outbound gc; do [ "$(tasks_of "$tmp/defaults.stack.yaml" "$s")" = 2 ] || fail "$s does not run two tasks by default"; done
+for s in edge db s3 admin; do [ "$(tasks_of "$tmp/defaults.stack.yaml" "$s")" = 1 ] || fail "$s must run one task by default"; done
 grep -q 'edgedata:' "$tmp/defaults.stack.yaml" || fail "acme: no volume for the edge's account key and certificates"
 grep -q '^  pgdata:' "$tmp/defaults.stack.yaml" && grep -q '^  s3data:' "$tmp/defaults.stack.yaml" || fail "the default PostgreSQL and S3 have no volumes"
 
@@ -149,5 +153,7 @@ refuse "a bad bucket" 'S3_BUCKET=Bad_Bucket'
 refuse "a bad endpoint" 'S3_ENDPOINT="https://s3.example.org/x y"'
 refuse "a bad port" 'DB_PORT=99999'
 refuse "a bad database name" 'DB_NAME=Rusty-DB'
+refuse "two admin tasks without the shared session store" 'REPLICAS_ADMIN=2'
+refuse "no tasks" 'REPLICAS_DEFAULT=0'
 echo "  ok    bad values are refused"
 echo "swarm-stack OK"

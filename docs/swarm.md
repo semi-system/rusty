@@ -43,7 +43,8 @@ A file of shell variables, yours (not in the repository); `swarm.env.example` is
 | `TLS_MODE` | `acme` (default): the edge gets and renews the certificates of `MAIL_HOST` and `ADMIN_HOST` from Let's Encrypt (HTTP-01 on port 80; the names must point at the Manager). `self`: self-signed (a test installation). `ACME_DIRECTORY` names another ACME server (the staging one while you try) |
 | `FILTER=1`, `VALKEY=1` | the spam and virus filters (a validating resolver, rspamd, ClamAV; the scanners are on an internal network, ClamAV and its updater on the node labelled `av=true`; they need about 3 GB of memory) and the shared key-value store (TLS and one login per service) that makes the sending budget, the login throttle and the admin sessions one for every replica: turn it on when a service has more than one replica |
 | `LOG_LEVEL` | `error`, `warn`, `info` (default), `debug` or `trace`: the log level of every service; raise it to see why something is refused, then `prepare configs` and `deploy` |
-| `IMAGE_TAG`, `REGISTRY`, `REPLICAS_DEFAULT` | the image tag when the kit has no digests (a checkout; default `main`), the registry, replicas per service (default 1) |
+| `IMAGE_TAG`, `REGISTRY` | the image tag when the kit has no digests (a checkout; default `main`), the registry |
+| `REPLICAS_DEFAULT`, `REPLICAS_ADMIN` | tasks per Rusty service (`smtp-in`, `submission`, `imap`, `outbound`, `gc`): default **2**, so an update never leaves one without a task; the admin console: default 1 (more needs `VALKEY=1`) |
 | `STATE_DIR` | where the tool keeps what it makes (default `~/.rusty-swarm`, mode 0700): the service passwords, the keys, the certificates, the generated files |
 
 **The high database login stays yours**: it is used for the preparation only, never put in the swarm, and it is how you reach the database for a manual backup or a repair. With the default
@@ -77,7 +78,11 @@ replica takes its share and a replica that stops answering is taken out.
 
 * **A new configuration or password**: edit `swarm.env` (or a file it names), then `./rusty-swarm prepare secrets`, `prepare configs`, `deploy`. A changed secret or config is a new object with a new name,
   so the affected services are updated one by one (a failed update goes back by itself: `failure_action: rollback`).
-* **More replicas**: `REPLICAS_DEFAULT=2` and `deploy`.
+* **Replicas and updates**: the Rusty services run two tasks each (`REPLICAS_DEFAULT`) and are updated one task at a time with the new task started before the old one stops (`start-first`, 10 s apart, a task that does
+  not stay up for 20 s is rolled back), so a service is never without a task and a client that is cut off reconnects to the other one. Not covered: the **edge** (it holds the host ports, so the old task stops before
+  the new one starts), the **database** and the **object store** (one task each, they hold the data): updating those stops them for a moment, and so does the first `upgrade` that moves the stack from one task to two
+  (memory use doubles: the limits are recomputed from the nodes, `limits.txt`). The admin console is one task: its sessions are in its own memory unless `VALKEY=1`, and the setup token and the live updates belong to one
+  process; `REPLICAS_ADMIN=2` is accepted only with `VALKEY=1`. Two tasks count the failed logins of a client separately unless `VALKEY=1` shares the counters.
 * **A new release**: unpack its kit, run `./rusty-swarm migrate` then `deploy` with the same `swarm.env` and `STATE_DIR`. The migration runs first, on the new image; take a backup before (`operations.md`:
   a migration is forward only, the way back is a restore).
 
