@@ -60,4 +60,10 @@ archive="$out/$name.tar.gz"
 # Reproducible: names sorted, one fixed time, no owner; gzip without a name or time.
 ( cd "$stage" && find "$name" -print0 | LC_ALL=C sort -z | tar --null --no-recursion --owner=0 --group=0 --numeric-owner --mtime='2000-01-01 00:00:00 UTC' -cf - -T - ) | gzip -n -9 > "$archive"
 ( cd "$out" && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256" )
+# The same kit as a .zip (for a machine that has no tar, or a person who prefers it), when `zip` is here; times fixed so that it is reproducible too.
+if command -v zip >/dev/null 2>&1; then
+  find "$stage/$name" -exec touch -d '2000-01-01 00:00:00 UTC' {} +
+  outabs="$(cd "$out" && pwd)"
+  ( cd "$stage" && find "$name" -print | LC_ALL=C sort | zip -X -q "$outabs/$name.zip" -@ ) || { echo "package-deploy: zip failed" >&2; exit 1; }
+fi
 echo "package-deploy: $archive ($(wc -c < "$archive") bytes)"
