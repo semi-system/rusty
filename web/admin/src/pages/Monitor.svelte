@@ -43,6 +43,7 @@
   }
 
   function stateText(i: MonitorInstance): string {
+    if (i.replaced) return t('monitor.instance.replaced');
     if (i.stale) return t('monitor.instance.stale');
     return i.status === 'ok' ? t('monitor.instance.ok') : t('monitor.instance.degraded');
   }
@@ -101,7 +102,7 @@
                   <td>{span(i.uptime_secs)}</td>
                   <td>{t('monitor.ago', { age: span(i.age_secs) })}</td>
                   <td>{i.listeners ?? ''}</td>
-                  <td><Badge tone={i.stale ? 'danger' : i.status === 'ok' ? 'ok' : 'warn'}>{stateText(i)}</Badge></td>
+                  <td><Badge tone={i.replaced ? 'neutral' : i.stale ? 'danger' : i.status === 'ok' ? 'ok' : 'warn'}>{stateText(i)}</Badge></td>
                 </tr>
               {/each}
             {/each}

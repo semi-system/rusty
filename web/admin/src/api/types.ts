@@ -181,6 +181,7 @@ export interface MonitorInstance {
   uptime_secs: number;
   age_secs: number;
   stale: boolean;
+  replaced: boolean;
   status: string;
   listeners: number | null;
 }

@@ -43,7 +43,7 @@
     "DnsRecord": { "name": "string", "type": "string", "value": "string", "ttl": "integer", "purpose": "string", "required": "string", "status": "string", "seen": "string|null", "last_checked_at": "integer|null" },
     "DnsRecords": { "records": "DnsRecord[]", "warnings": "string[]" },
     "Queue": { "queued": "integer", "running": "integer", "failed": "integer", "dead": "integer" },
-    "MonitorInstance": { "instance": "string", "version": "string", "uptime_secs": "integer", "age_secs": "integer", "stale": "boolean", "status": "string", "listeners": "integer|null" },
+    "MonitorInstance": { "instance": "string", "version": "string", "uptime_secs": "integer", "age_secs": "integer", "stale": "boolean", "replaced": "boolean", "status": "string", "listeners": "integer|null" },
     "MonitorService": { "service": "string", "status": "string", "instances": "MonitorInstance[]" },
     "MonitorQueue": { "queued": "integer", "running": "integer", "failed": "integer", "dead": "integer", "oldest_due_secs": "integer" },
     "MonitorCount": { "status": "string", "count": "integer" },

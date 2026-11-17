@@ -20,6 +20,7 @@ const instance = (name: string, over: Partial<Monitor['services'][0]['instances'
   uptime_secs: 3725,
   age_secs: 4,
   stale: false,
+  replaced: false,
   status: 'ok',
   listeners: 2,
   ...over,
@@ -73,6 +74,14 @@ describe('monitor', () => {
     expect(within(row('imap-2')).getByText(t('monitor.instance.stale'))).toBeTruthy();
     expect(within(row('gc-1')).getByText(t('monitor.instance.degraded'))).toBeTruthy();
     expect(within(row('smtp-in-1')).getByText(t('monitor.instance.ok'))).toBeTruthy();
+  });
+
+  it('says that a stale row replaced by a newer task is an old version, not a fault', async () => {
+    const old = { service: 'imap', status: 'ok', instances: [instance('imap-new'), instance('imap-old', { stale: true, replaced: true, age_secs: 900 })] };
+    await open(PLATFORM, { 'GET /api/v1/monitor': ok({ ...MONITOR, services: [old] }) });
+    const inst = await screen.findByRole('table', { name: t('monitor.instances') });
+    expect(within(inst).getByText(t('monitor.instance.replaced'))).toBeTruthy();
+    expect(within(inst).queryByText(t('monitor.instance.stale'))).toBeNull();
   });
 
   it('shows the queue, the storage checks and the DNS problems', async () => {

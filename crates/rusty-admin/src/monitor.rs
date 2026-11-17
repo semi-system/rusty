@@ -34,6 +34,8 @@ struct InstanceJson {
     uptime_secs: i64,
     age_secs: i64,
     stale: bool,
+    /// A stale instance that a newer one has taken the place of (an upgrade or a restart replaced the task): an old version, not a fault.
+    replaced: bool,
     status: String,
     /// The number of listeners the instance reported, when it did.
     listeners: Option<i64>,
@@ -81,6 +83,16 @@ pub(crate) fn service_status(instances: &[InstanceJsonView]) -> &'static str {
     }
 }
 
+/// A stale instance is `replaced` when a live one of the same service started after the stale one last beat: swarm replaced the task (an upgrade, a restart, a move to another node),
+/// so the row is the old version, not a replica that was lost. A stale instance that no later one has replaced stays a fault.
+fn mark_replaced(instances: &mut [InstanceJson]) {
+    let newest_uptime = instances.iter().filter(|i| !i.stale).map(|i| i.uptime_secs).min();
+    for i in instances.iter_mut().filter(|i| i.stale) {
+        // Seconds since the live instance started (its uptime) against seconds since the stale one last beat: the smaller number is the later moment.
+        i.replaced = newest_uptime.is_some_and(|up| up < i.age_secs);
+    }
+}
+
 /// What `service_status` looks at of an instance.
 pub(crate) struct InstanceJsonView<'a> {
     pub stale: bool,
@@ -89,7 +101,7 @@ pub(crate) struct InstanceJsonView<'a> {
 
 fn instance(h: &HeartbeatRow) -> InstanceJson {
     let listeners = serde_json::from_str::<serde_json::Value>(&h.detail).ok().and_then(|v| v.get("listeners").and_then(serde_json::Value::as_i64));
-    InstanceJson { instance: h.instance.clone(), version: h.version.clone(), uptime_secs: h.uptime_secs, age_secs: h.age_secs, stale: h.age_secs > STALE_AFTER_SECS, status: h.status.clone(), listeners }
+    InstanceJson { instance: h.instance.clone(), version: h.version.clone(), uptime_secs: h.uptime_secs, age_secs: h.age_secs, stale: h.age_secs > STALE_AFTER_SECS, replaced: false, status: h.status.clone(), listeners }
 }
 
 /// Everything the monitor shows, read from the stores (the page and the metrics collector share it).
@@ -101,8 +113,10 @@ async fn snapshot(monitor: &dyn rusty_store::HeartbeatRepo, jobs: &rusty_store::
     let services = SERVICES
         .iter()
         .map(|name| {
-            let instances: Vec<InstanceJson> = rows.iter().filter(|h| h.service == *name).map(instance).collect();
-            let views: Vec<InstanceJsonView> = instances.iter().map(|i| InstanceJsonView { stale: i.stale, status: &i.status }).collect();
+            let mut instances: Vec<InstanceJson> = rows.iter().filter(|h| h.service == *name).map(instance).collect();
+            mark_replaced(&mut instances);
+            // An instance that was replaced is history: it does not make the service degraded.
+            let views: Vec<InstanceJsonView> = instances.iter().filter(|i| !i.replaced).map(|i| InstanceJsonView { stale: i.stale, status: &i.status }).collect();
             ServiceJson { service: name, status: service_status(&views), instances }
         })
         .collect();
@@ -121,9 +135,11 @@ fn samples_of(m: &MonitorJson) -> Vec<rusty_metrics::Sample> {
     let mut out = Vec::new();
     for s in &m.services {
         out.push(Sample::new("rusty_service_up", "1 when at least one instance of the service beats, else 0.", Gauge, &[("service", s.service)], if s.status == "down" { 0.0 } else { 1.0 }));
-        let live = s.instances.iter().filter(|i| !i.stale).count();
+        // A replaced instance is history: it is neither live nor stale for the gauges.
+        let current: Vec<&InstanceJson> = s.instances.iter().filter(|i| !i.replaced).collect();
+        let live = current.iter().filter(|i| !i.stale).count();
         out.push(Sample::new("rusty_service_instances", "Instances of a service by state (live: beating, stale: stopped beating).", Gauge, &[("service", s.service), ("state", "live")], live as f64));
-        out.push(Sample::new("rusty_service_instances", "Instances of a service by state (live: beating, stale: stopped beating).", Gauge, &[("service", s.service), ("state", "stale")], (s.instances.len() - live) as f64));
+        out.push(Sample::new("rusty_service_instances", "Instances of a service by state (live: beating, stale: stopped beating).", Gauge, &[("service", s.service), ("state", "stale")], (current.len() - live) as f64));
     }
     for (state, n) in [("queued", m.queue.queued), ("running", m.queue.running), ("failed", m.queue.failed), ("dead", m.queue.dead)] {
         out.push(Sample::new("rusty_outbound_queue_jobs", "Jobs of the outbound queue by state.", Gauge, &[("state", state)], n as f64));
@@ -184,10 +200,30 @@ pub fn routes(app: Arc<AdminApp>, router: Router) -> Router {
 
 #[cfg(test)]
 mod tests {
-    use super::{samples_of, service_status, CountJson, InstanceJson, InstanceJsonView, MonitorJson, QueueJson, ServiceJson};
+    use super::{mark_replaced, samples_of, service_status, CountJson, InstanceJson, InstanceJsonView, MonitorJson, QueueJson, ServiceJson};
 
     fn inst(name: &str, stale: bool) -> InstanceJson {
-        InstanceJson { instance: name.into(), version: "1".into(), uptime_secs: 5, age_secs: if stale { 99 } else { 3 }, stale, status: "ok".into(), listeners: None }
+        InstanceJson { instance: name.into(), version: "1".into(), uptime_secs: 5, age_secs: if stale { 99 } else { 3 }, stale, replaced: false, status: "ok".into(), listeners: None }
+    }
+
+    fn at(name: &str, uptime_secs: i64, age_secs: i64) -> InstanceJson {
+        InstanceJson { instance: name.into(), version: "1".into(), uptime_secs, age_secs, stale: age_secs > super::STALE_AFTER_SECS, replaced: false, status: "ok".into(), listeners: None }
+    }
+
+    #[test]
+    fn an_instance_that_a_newer_one_replaced_is_an_old_version_and_one_that_was_merely_lost_is_not() {
+        // After an upgrade: the new task started 120 s ago, the old one last beat 600 s ago.
+        let mut after_upgrade = vec![at("new", 120, 3), at("old", 9000, 600)];
+        mark_replaced(&mut after_upgrade);
+        assert!(!after_upgrade[0].replaced && after_upgrade[1].replaced);
+        // Two replicas, one lost 60 s ago while the other has been up for hours: nothing replaced it.
+        let mut lost = vec![at("a", 20_000, 3), at("b", 20_000, 60)];
+        mark_replaced(&mut lost);
+        assert!(!lost[1].replaced, "a lost replica stays a fault");
+        // Nothing alive: nothing replaced anything (the service is down).
+        let mut down = vec![at("old", 9000, 600)];
+        mark_replaced(&mut down);
+        assert!(!down[0].replaced);
     }
 
     #[test]

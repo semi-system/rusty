@@ -285,6 +285,7 @@ export const en = {
   'monitor.instance.ok': 'Running',
   'monitor.instance.degraded': 'Reports a problem',
   'monitor.instance.stale': 'Not responding',
+  'monitor.instance.replaced': 'Old version, replaced by a newer one',
   'monitor.noInstances': 'No instance is running',
   'monitor.ago': '{age} ago',
   'monitor.queue': 'Outbound queue',

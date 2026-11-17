@@ -59,12 +59,23 @@ async fn a_service_is_ok_degraded_or_down_by_its_heartbeats_as_the_database_sees
 
     // One replica stops beating (its last beat is old by the database clock): degraded while the other lives, down when none does.
     r.fx.run("UPDATE service_heartbeats SET last_seen = last_seen - 100 WHERE instance = 'imap-1'", &[]).await;
-    beat(&r, "imap", "imap-2", "ok", "{}").await;
+    // The survivor has been up for hours: it did not start after the other one stopped, so it did not replace it.
+    r.outbound.repos().heartbeat.beat("imap", "imap-2", "1.2.3", 20_000, "ok", "{}").await.unwrap();
     let m = root.get("/api/v1/monitor").await.json();
     let imap = service(&m, "imap");
     assert_eq!(imap["status"], "degraded", "{imap}");
     assert_eq!(imap["instances"][0]["stale"], true);
+    assert_eq!(imap["instances"][0]["replaced"], false, "a replica that was lost is a fault");
     assert_eq!(imap["instances"][1]["stale"], false);
+    // A task that started after the stale one stopped replaces it (an upgrade): the old row is an old version, and the service is ok.
+    r.fx.run("DELETE FROM service_heartbeats WHERE instance = 'imap-2'", &[]).await;
+    r.outbound.repos().heartbeat.beat("imap", "imap-3", "1.2.4", 10, "ok", "{}").await.unwrap();
+    let imap = service(&root.get("/api/v1/monitor").await.json(), "imap").clone();
+    assert_eq!(imap["instances"][0]["replaced"], true, "{imap}");
+    assert_eq!(imap["status"], "ok", "an old version that was replaced is not a fault: {imap}");
+    // Back to the earlier picture: the upgraded task goes away and the survivor beats again.
+    r.fx.run("DELETE FROM service_heartbeats WHERE instance = 'imap-3'", &[]).await;
+    r.outbound.repos().heartbeat.beat("imap", "imap-2", "1.2.3", 20_000, "ok", "{}").await.unwrap();
     r.fx.run("UPDATE service_heartbeats SET last_seen = last_seen - 100 WHERE instance = 'imap-2'", &[]).await;
     assert_eq!(service(&root.get("/api/v1/monitor").await.json(), "imap")["status"], "down");
 }
