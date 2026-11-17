@@ -292,3 +292,24 @@ async fn changing_or_disabling_an_administrators_account_ends_its_sessions() {
     assert_eq!(root.post_empty("/api/v1/accounts/boss@home.test/disable").await.status, 200);
     assert_eq!(send(r.addr, "GET", "/api/v1/session", &[("Cookie", &boss2)], "").await.status, 401);
 }
+
+#[tokio::test]
+async fn a_locked_account_cannot_sign_in_but_stays_an_account_and_cannot_lock_itself() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    make_admin(&r, "boss@home.test", true).await;
+    let root = Client::sign_in(r.addr, "root@home.test").await;
+    let boss = Client::sign_in(r.addr, "boss@home.test").await;
+    assert_eq!(root.post_empty("/api/v1/accounts/root@home.test/lock").await.status, 400, "not the account it is signed in with");
+    let locked = root.post_empty("/api/v1/accounts/boss@home.test/lock").await;
+    assert_eq!(locked.status, 200);
+    conforms(&locked.json(), "Account");
+    assert_eq!(locked.json()["status"], "locked");
+    assert_eq!(boss.get("/api/v1/session").await.status, 401, "its open session ended");
+    let body = json!({ "address": "boss@home.test", "password": PW }).to_string();
+    let again = send(r.addr, "POST", "/api/v1/session", &[("Content-Type", "application/json"), ("Origin", ORIGIN)], &body).await;
+    assert_eq!(again.status, 401, "a locked account does not sign in");
+    assert_eq!(root.post_empty("/api/v1/accounts/boss@home.test/enable").await.status, 200);
+    r.now.advance(Duration::from_secs(5));
+    assert_eq!(Client::sign_in(r.addr, "boss@home.test").await.get("/api/v1/session").await.status, 200);
+}

@@ -64,6 +64,7 @@
     { "method": "POST", "path": "/api/v1/domains/{d}/accounts", "auth": "admin", "request": { "local": "string", "password": "string|null (optional)" }, "response": "AccountCreated", "status": 201 },
     { "method": "POST", "path": "/api/v1/accounts/{a}/password", "auth": "admin", "request": { "password": "string" }, "response": "Empty", "status": 200 },
     { "method": "POST", "path": "/api/v1/accounts/{a}/disable", "auth": "admin", "request": null, "response": "Account", "status": 200 },
+    { "method": "POST", "path": "/api/v1/accounts/{a}/lock", "auth": "admin", "request": null, "response": "Account", "status": 200, "note": "locked: cannot sign in, mail still arrives; disable (closed): neither" },
     { "method": "POST", "path": "/api/v1/accounts/{a}/enable", "auth": "admin", "request": null, "response": "Account", "status": 200 },
     { "method": "GET", "path": "/api/v1/domains/{d}/aliases", "auth": "admin", "request": null, "response": "AliasList", "status": 200 },
     { "method": "POST", "path": "/api/v1/domains/{d}/aliases", "auth": "admin", "request": { "local": "string", "target": "string" }, "response": "AliasCreated", "status": 201 },

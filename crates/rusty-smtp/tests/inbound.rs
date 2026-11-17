@@ -78,8 +78,10 @@ async fn unknown_suspended_and_disabled_domain_recipients() {
         b.seed.set_status(bob, AccountStatus::Disabled).await.unwrap();
         let r = c.cmd("RCPT TO:<bob@example.net>").await;
         assert!(r.starts_with("550 5.2.1"), "suspended account: {r}");
+        // Locked: the person cannot sign in, but mail for the account is still accepted.
         b.seed.set_status(bob, AccountStatus::Locked).await.unwrap();
-        assert!(c.cmd("RCPT TO:<bob@example.net>").await.starts_with("550 5.2.1"));
+        let r = c.cmd("RCPT TO:<bob@example.net>").await;
+        assert!(r.starts_with("250"), "a locked account still receives: {r}");
         b.seed.set_domain_status(off, rusty_directory::DomainStatus::Disabled).await.unwrap();
         let r = c.cmd("RCPT TO:<x@off.test>").await;
         assert!(r.starts_with("554 5.7.1"), "a disabled domain is not local: {r}");
