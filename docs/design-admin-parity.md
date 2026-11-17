@@ -90,7 +90,8 @@ The reference is the Zimbra Open Source Edition admin console (Zimbra 10: Home, 
 | ManageSieve and server-side filters | no | **P3** |
 | Calendar (CalDAV), contacts (CardDAV), tasks, briefcase, ActiveSync, chat, video | no | D1 (recommended: not part of this server now; a separate service later if wanted) |
 | Webmail | designed (`design-webmail.md`, SolidJS) | **P3** |
-| 2FA, app passwords, SSO | deferred by the owner | D3 |
+| 2FA, app passwords | none | **P3** (owner, 2026-11-17: everything except SSO is to be built) |
+| SSO, external authentication (LDAP, AD) | none | deferred by the owner, D3 |
 
 ## 3. Phases
 
@@ -105,15 +106,15 @@ mailbox export and import, deleted items.
 **P3: users' own features.** The users' portal and the webmail (self-service password, forwarding, vacation, signatures, filters with ManageSieve), POP3 if D2 says yes, the global address list, retention rules,
 backup status, cross-mailbox search for platform administrators, the IMAP migration job.
 
-**P4: deferred by the owner.** 2FA, app passwords, SSO.
+**P4: deferred by the owner.** SSO and the external authentication of a domain (D3). 2FA and app passwords moved into P3 on 2026-11-17 ("everything except SSO").
 
 ## 4. Decisions (owner, 2026-11-17)
 
 * **D1. Groupware** (calendar, contacts, tasks): **yes, to be built**, after P2, as separate services (CalDAV and CardDAV) with a design of their own; resources (rooms, equipment) come with the calendar. Briefcase,
   ActiveSync, chat and video are not part of it.
-* **D2. POP3:** **yes**, a small service on the shared mailbox code, in P3.
+* **D2. POP3:** **yes**, a small service on the shared mailbox code; on 2026-11-17 the owner asked for it to be built now, ahead of the rest of P3.
 * **D3. Per-domain external authentication** (LDAP, AD, SSO): **later**, as before.
-* **D4. Archiving and legal hold:** **later**; a retention rule per plan (P3) covers the usual need until then.
+* **D4. Archiving and legal hold:** first **later**; on 2026-11-17 the owner asked for every function except SSO, so they are in P3 (a retention rule per plan first, then archiving and legal hold).
 * **D5. Cross-mailbox search by administrators:** **yes**, in P3, with the conditions of the recommendation: platform administrators only, every search written to the audit log, off by default.
 * **The webmail and the users' portal live on a host of their own**, not on the admin host (`webmail.example.org` next to `admin.example.org`): a different origin, its own certificate and its own cookie, so that a
   flaw in what a message can show can never reach the administrators' session. The admin console stays for administrators; what a user does for himself (password, forwarding, vacation, filters) is in the portal of the webmail.
