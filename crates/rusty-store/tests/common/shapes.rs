@@ -35,6 +35,7 @@ async fn new_msg(b: &Backend, folder: FolderId, subject: &str) -> NewMessage {
         flags: Flags::default(),
         env: rusty_mime::parse_envelope(&bytes).unwrap(),
         internal_date: None,
+        quota_bytes: None,
     }
 }
 

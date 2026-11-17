@@ -70,12 +70,15 @@ pub const MAX_PAGE: u32 = 1000;
 pub struct MailboxLimits {
     /// Largest accepted raw message; larger appends fail with `Error::Quota`.
     pub max_message_bytes: usize,
+    /// The mailbox's quota in bytes (`None`: unlimited): a write that would take the usage past it fails with `Error::Quota`, in the transaction (docs/design-plans-quota.md).
+    pub quota_bytes: Option<u64>,
 }
 
 impl Default for MailboxLimits {
     fn default() -> Self {
         Self {
             max_message_bytes: DEFAULT_MAX_MESSAGE_BYTES,
+            quota_bytes: None,
         }
     }
 }
@@ -364,6 +367,11 @@ impl Mailbox {
         self.id
     }
 
+    /// The quota as the repository takes it.
+    pub(crate) fn quota_bytes(&self) -> Option<i64> {
+        self.limits.quota_bytes.map(|q| i64::try_from(q).unwrap_or(i64::MAX))
+    }
+
     pub fn limits(&self) -> MailboxLimits {
         self.limits
     }
@@ -560,6 +568,7 @@ impl Mailbox {
             flags,
             env: parsed.1,
             internal_date: None,
+            quota_bytes: self.quota_bytes(),
         })
     }
 
@@ -783,6 +792,7 @@ impl Mailbox {
                     flags: it.flags,
                     env,
                     internal_date: None,
+                    quota_bytes: self.quota_bytes(),
                 },
                 delivery_id: it.delivery_id,
             });

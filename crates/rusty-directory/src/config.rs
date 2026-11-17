@@ -52,15 +52,24 @@ impl Directory {
     /// A JSON `null` value for the key means "inherit": that layer is skipped and lower layers
     /// are consulted; if every layer is null or absent the result is `None`.
     pub async fn effective_config(&self, account: AccountId, key: &str) -> Result<Option<Value>> {
+        Ok(self.effective_configs(account, &[key]).await?.remove(0))
+    }
+
+    /// [`effective_config`](Self::effective_config) for several keys from one read of the layers (one query): the values in the order of `keys`.
+    pub async fn effective_configs(&self, account: AccountId, keys: &[&str]) -> Result<Vec<Option<Value>>> {
         let layers = self.repo().config_layers(account).await?;
-        if let Some(v) = lookup(&layers.account, key)? {
-            return Ok(Some(v));
-        }
-        for layer in [&layers.plan, &layers.domain, &layers.global] {
-            if let Some(v) = layer.as_deref().map(|c| lookup(c, key)).transpose()?.flatten() {
-                return Ok(Some(v));
-            }
-        }
-        Ok(None)
+        keys.iter()
+            .map(|key| {
+                if let Some(v) = lookup(&layers.account, key)? {
+                    return Ok(Some(v));
+                }
+                for layer in [&layers.plan, &layers.domain, &layers.global] {
+                    if let Some(v) = layer.as_deref().map(|c| lookup(c, key)).transpose()?.flatten() {
+                        return Ok(Some(v));
+                    }
+                }
+                Ok(None)
+            })
+            .collect()
     }
 }

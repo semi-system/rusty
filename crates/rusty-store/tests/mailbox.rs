@@ -171,6 +171,7 @@ async fn append_over_limit_is_quota() {
     for_each_env(|e| async move {
         let mb = e.mb.clone().with_limits(MailboxLimits {
             max_message_bytes: 100,
+            ..MailboxLimits::default()
         });
         let r = mb.append(INBOX, sized(101), Flags::empty()).await;
         assert!(matches!(r, Err(Error::Quota(_))), "{r:?}");

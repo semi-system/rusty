@@ -378,7 +378,8 @@ impl StartupConfig {
                 listen_143: Listen::loopback(1143),
                 listen_993: Listen::loopback(9993),
                 listen_110: Listen::loopback(1110),
-                listen_995: Listen::loopback(9995),
+                // Not near 9993: the dev daemons of the tests are started with port offsets of a few units, and 9995 + n would be 9993 + n + 2.
+                listen_995: Listen::loopback(9895),
                 ..ImapConfig::default()
             },
             outbound: OutboundConfig::default(),

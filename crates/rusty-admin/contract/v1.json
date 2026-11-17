@@ -21,8 +21,8 @@
     "Me": { "address": "string", "scope": "string", "domain": "integer|null", "csrf": "string" },
     "SetupState": { "required": "boolean" },
     "Domain": { "id": "integer", "name": "string", "status": "string" },
-    "Account": { "id": "integer", "address": "string", "status": "string", "has_password": "boolean", "last_login_at": "integer|null" },
-    "AccountCreated": { "id": "integer", "address": "string", "status": "string", "has_password": "boolean", "last_login_at": "integer|null", "aliases_created": "string[]" },
+    "Account": { "id": "integer", "address": "string", "status": "string", "has_password": "boolean", "last_login_at": "integer|null", "plan": "string|null", "used_bytes": "integer", "quota_bytes": "integer|null" },
+    "AccountCreated": { "id": "integer", "address": "string", "status": "string", "has_password": "boolean", "last_login_at": "integer|null", "plan": "string|null", "used_bytes": "integer", "quota_bytes": "integer|null", "aliases_created": "string[]" },
     "Alias": { "id": "integer", "alias": "string", "target": "string" },
     "AliasCreated": { "alias": "string", "target": "string" },
     "DomainList": { "items": "Domain[]", "next": "integer|null", "total": "integer" },
@@ -50,7 +50,10 @@
     "MonitorCount": { "status": "string", "count": "integer" },
     "Monitor": { "services": "MonitorService[]", "queue": "MonitorQueue", "storage": "MonitorCount[]", "dns_problem_domains": "integer" },
     "Protocol": { "name": "string", "enabled": "boolean" },
-    "Protocols": { "protocols": "Protocol[]" }
+    "Protocols": { "protocols": "Protocol[]" },
+    "Plan": { "name": "string", "quota_bytes": "integer|null", "max_message_bytes": "integer|null" },
+    "PlanList": { "items": "Plan[]" },
+    "AccountPlan": { "plan": "string|null" }
   },
   "endpoints": [
     { "method": "GET", "path": "/mail/config-v1.1.xml", "auth": "none", "request": { "emailaddress": "string (query, optional)" }, "response": null, "status": 200, "note": "Mozilla autoconfig XML for mail clients (the platform's IMAP and submission servers), whatever the domain; served on port 80 for hosts autoconfig.*; 404 when no mail host is configured" },
@@ -95,6 +98,9 @@
     { "method": "POST", "path": "/api/v1/domains/{d}/dns/check", "auth": "admin", "request": null, "response": "Queued", "status": 200, "note": "the service that can query DNS runs it; the result shows in GET dns" },
     { "method": "GET", "path": "/api/v1/monitor", "auth": "platform", "request": null, "response": "Monitor", "status": 200, "note": "the services (ok, degraded or down by their heartbeats, per instance), the outbound queue of every domain, the storage check states and the domains with DNS problems; computed on the server" },
     { "method": "GET", "path": "/api/v1/protocols", "auth": "platform", "request": null, "response": "Protocols", "status": 200, "note": "the optional protocols (pop3) and whether each is on; one never set is on" },
-    { "method": "PUT", "path": "/api/v1/protocols", "auth": "platform", "request": { "protocol": "string", "enabled": "boolean" }, "response": "Protocols", "status": 200, "note": "switch a protocol on or off for every replica of the mail services (they read the setting within a few seconds); 400 invalid for an unknown protocol" }
+    { "method": "PUT", "path": "/api/v1/protocols", "auth": "platform", "request": { "protocol": "string", "enabled": "boolean" }, "response": "Protocols", "status": 200, "note": "switch a protocol on or off for every replica of the mail services (they read the setting within a few seconds); 400 invalid for an unknown protocol" },
+    { "method": "GET", "path": "/api/v1/plans", "auth": "admin", "request": null, "response": "PlanList", "status": 200 },
+    { "method": "PUT", "path": "/api/v1/plans", "auth": "platform", "request": { "name": "string", "quota_bytes": "integer|null", "max_message_bytes": "integer|null" }, "response": "Plan", "status": 200, "note": "creates the plan (201) or changes its limits; a null limit removes it; the services read the limits when they open a mailbox" },
+    { "method": "PUT", "path": "/api/v1/accounts/{a}/plan", "auth": "admin", "request": { "plan": "string|null" }, "response": "AccountPlan", "status": 200, "note": "put the account on the plan, or on none with null" }
   ]
 }

@@ -18,6 +18,7 @@ pub mod live;
 pub mod manage;
 pub mod monitor;
 pub mod outbound;
+pub mod plans;
 pub mod protocols;
 pub mod run;
 pub mod session;

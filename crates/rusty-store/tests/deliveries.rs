@@ -308,6 +308,7 @@ async fn quota_and_size_limits_apply_to_deliver() {
             .unwrap()
             .with_limits(MailboxLimits {
                 max_message_bytes: 64,
+                ..MailboxLimits::default()
             });
         let r = small
             .deliver(INBOX, sized(65), Flags::empty(), did(1))

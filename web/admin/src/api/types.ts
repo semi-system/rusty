@@ -29,6 +29,9 @@ export interface Account {
   status: string;
   has_password: boolean;
   last_login_at: number | null;
+  plan: string | null;
+  used_bytes: number;
+  quota_bytes: number | null;
 }
 
 export interface AccountCreated {
@@ -37,6 +40,9 @@ export interface AccountCreated {
   status: string;
   has_password: boolean;
   last_login_at: number | null;
+  plan: string | null;
+  used_bytes: number;
+  quota_bytes: number | null;
   aliases_created: string[];
 }
 
@@ -229,4 +235,18 @@ export interface Protocol {
 
 export interface Protocols {
   protocols: Protocol[];
+}
+
+export interface Plan {
+  name: string;
+  quota_bytes: number | null;
+  max_message_bytes: number | null;
+}
+
+export interface PlanList {
+  items: Plan[];
+}
+
+export interface AccountPlan {
+  plan: string | null;
 }
