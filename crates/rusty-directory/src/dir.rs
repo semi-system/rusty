@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use rusty_core::{AccountId, DomainId, Error, ListId, MailboxId, PlanId, Result};
 use rusty_store::repo::{
-    AccountInfo, AccountStatus, AliasInfo, DirectoryRepo, DomainInfo, DomainStatus, ListMember, NewAccount,
+    AccountInfo, AccountStatus, AliasInfo, DirectoryRepo, DomainInfo, DomainStatus, ListFilter, ListMember, NewAccount,
     Resolution, GLOBAL_PLAN,
 };
 
@@ -301,6 +301,34 @@ impl Directory {
         limit: usize,
     ) -> Result<Vec<AliasInfo>> {
         self.repo.list_aliases(domain, after, limit).await
+    }
+
+    /// One page of domains that match `filter` (a substring of the name, an exact status), in creation order.
+    pub async fn search_domains(&self, filter: &ListFilter, after: Option<DomainId>, limit: usize) -> Result<Vec<DomainInfo>> {
+        self.repo.search_domains(filter, after, limit).await
+    }
+
+    /// How many domains match `filter`, whatever the page.
+    pub async fn count_domains(&self, filter: &ListFilter) -> Result<i64> {
+        self.repo.count_domains(filter).await
+    }
+
+    /// One page of the accounts of a domain that match `filter`.
+    pub async fn search_accounts(&self, domain: DomainId, filter: &ListFilter, after: Option<AccountId>, limit: usize) -> Result<Vec<AccountInfo>> {
+        self.repo.search_accounts(domain, filter, after, limit).await
+    }
+
+    pub async fn count_accounts(&self, domain: DomainId, filter: &ListFilter) -> Result<i64> {
+        self.repo.count_accounts(domain, filter).await
+    }
+
+    /// One page of the aliases of a domain whose name or whose account's name contains the filter's text.
+    pub async fn search_aliases(&self, domain: DomainId, filter: &ListFilter, after: Option<i64>, limit: usize) -> Result<Vec<AliasInfo>> {
+        self.repo.search_aliases(domain, filter, after, limit).await
+    }
+
+    pub async fn count_aliases(&self, domain: DomainId, filter: &ListFilter) -> Result<i64> {
+        self.repo.count_aliases(domain, filter).await
     }
 
     /// The lifecycle state of an account (`None`: no such account). Delivery refuses accounts that

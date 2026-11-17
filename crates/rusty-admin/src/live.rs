@@ -308,6 +308,102 @@ async fn events(app: Arc<AdminApp>, req: Request) -> Response {
         .with_header("x-accel-buffering", "no")
 }
 
+impl Hub {
+    /// Tell every stream to refresh everything it shows (the database feed was away and what it announced meanwhile is lost). A stream whose queue is full already has that flag.
+    pub fn resync_all(&self) {
+        let Ok(g) = self.inner.lock() else { return };
+        for sub in g.subs.values() {
+            sub.overflow.store(true, Ordering::SeqCst);
+            // The stream is woken by any hint: the flag turns it into a `resync`.
+            let _ = sub.tx.try_send(Topic::Domains);
+        }
+    }
+}
+
+/// What the database announced, on its way from the feed's single task to the hub: the names of domains are looked up by a task of its own, never by the feed.
+enum Heard {
+    Change(rusty_store::AdminChange),
+    Resync,
+}
+
+struct FeedSink(mpsc::UnboundedSender<Heard>);
+
+impl rusty_store::AdminSink for FeedSink {
+    fn changed(&self, change: rusty_store::AdminChange) {
+        let _ = self.0.send(Heard::Change(change));
+    }
+    fn resync(&self) {
+        let _ = self.0.send(Heard::Resync);
+    }
+    fn lost(&self) {
+        tracing::warn!("the admin console's database feed lost its connection; it will retry (live updates of other processes' changes pause meanwhile)");
+    }
+}
+
+/// Every domain's id and name (the directory has no lookup by id, and the whole list is short).
+async fn domain_names(directory: &rusty_directory::Directory) -> std::collections::HashMap<i64, String> {
+    let mut names = std::collections::HashMap::new();
+    let mut after = None;
+    loop {
+        let Ok(page) = directory.list_domains(after, crate::manage::PAGE).await else { break };
+        after = page.last().map(|d| d.id);
+        let n = page.len();
+        names.extend(page.into_iter().map(|d| (d.id.0, d.name)));
+        if n < crate::manage::PAGE {
+            break;
+        }
+    }
+    names
+}
+
+/// The topics a change of the database concerns (a change of a domain that is gone has none).
+fn topics_for(change: rusty_store::AdminChange, names: &std::collections::HashMap<i64, String>) -> Vec<Topic> {
+    use rusty_store::AdminKind as K;
+    let name = || change.domain.and_then(|id| names.get(&id)).cloned();
+    match change.kind {
+        K::Domains => vec![Topic::Domains],
+        K::Admins => vec![Topic::Admins],
+        K::Accounts => name().map(Topic::Accounts).into_iter().collect(),
+        K::Dns => name().map(Topic::Dns).into_iter().collect(),
+        K::Outbound => name().map(Topic::Outbound).into_iter().collect(),
+        K::Storage => name().map(Topic::Storage).into_iter().collect(),
+    }
+}
+
+/// Run the database feed for this process: what other processes write (a check the outbound service recorded, another replica's change, `rustyctl`) is announced to the open streams.
+/// Without it the streams still carry what this process changes itself. Ends with `shutdown`.
+pub fn spawn_feed(app: Arc<AdminApp>, feed: Arc<rusty_store::PgAdminFeed>, shutdown: tokio_util::sync::CancellationToken) {
+    let (tx, mut rx) = mpsc::unbounded_channel::<Heard>();
+    let stop = shutdown.clone();
+    tokio::spawn(async move {
+        let _ = feed.run(Arc::new(FeedSink(tx)), stop).await;
+    });
+    tokio::spawn(async move {
+        let mut names = std::collections::HashMap::new();
+        loop {
+            let heard = tokio::select! {
+                () = shutdown.cancelled() => return,
+                h = rx.recv() => match h { Some(h) => h, None => return },
+            };
+            match heard {
+                Heard::Resync => {
+                    names = domain_names(&app.directory).await;
+                    app.live.resync_all();
+                }
+                Heard::Change(change) => {
+                    // A domain that was created or renamed since the list was read: look again before giving up on its name.
+                    if change.kind == rusty_store::AdminKind::Domains || change.domain.is_some_and(|id| !names.contains_key(&id)) {
+                        names = domain_names(&app.directory).await;
+                    }
+                    for t in topics_for(change, &names) {
+                        app.live.announce(&t);
+                    }
+                }
+            }
+        }
+    });
+}
+
 /// The routes of this part of the API.
 pub fn routes(app: Arc<AdminApp>, router: Router) -> Router {
     router.route(Method::Get, "/api/v1/events", handler(move |r: Request| {

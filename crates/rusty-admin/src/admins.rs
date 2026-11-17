@@ -15,7 +15,7 @@ use rusty_store::{AdminEntry, Revoked};
 use serde::{Deserialize, Serialize};
 
 use crate::api::{fail, AdminApp};
-use crate::manage::{platform_only, scoped_domain, PAGE};
+use crate::manage::{list_query, platform_only, scoped_domain};
 
 fn err(status: u16, code: &'static str) -> Response {
     Response::error(status, code).with_header("cache-control", "no-store")
@@ -41,6 +41,8 @@ fn admin_json(e: &AdminEntry) -> AdminJson {
 struct AdminList {
     items: Vec<AdminJson>,
     next: Option<i64>,
+    /// How many administrators match in all, whatever the page.
+    total: i64,
 }
 
 async fn list_admins(app: &AdminApp, req: Request) -> Response {
@@ -48,24 +50,22 @@ async fn list_admins(app: &AdminApp, req: Request) -> Response {
         Ok(x) => x,
         Err(r) => return r,
     };
-    let after = match req.query.as_deref() {
-        None => None,
-        Some(q) => match q.strip_prefix("after=").filter(|v| !v.starts_with('+')).and_then(|v| v.parse::<i64>().ok()).filter(|n| *n >= 0) {
-            Some(n) => Some(rusty_core::AccountId(n)),
-            None => return err(400, "invalid"),
-        },
+    let query = match list_query(&req, &[]) {
+        Ok(q) => q,
+        Err(r) => return r,
     };
     let only = match p.scope {
         crate::auth::Scope::Platform => None,
         crate::auth::Scope::Domain(d) => Some(d),
     };
-    match app.admins.list_named(after, PAGE as i64, only).await {
-        Ok(rows) => {
-            let next = if rows.len() == PAGE { rows.last().map(|e| e.grant.account.0) } else { None };
-            Response::json(200, &AdminList { items: rows.iter().map(admin_json).collect(), next }).with_header("cache-control", "no-store")
-        }
-        Err(e) => fail(&e),
-    }
+    let after = query.after.map(rusty_core::AccountId);
+    let text = query.text.as_deref();
+    let (rows, total) = match tokio::try_join!(app.admins.list_named(after, query.limit as i64, only, text), app.admins.count_named(only, text)) {
+        Ok(x) => x,
+        Err(e) => return fail(&e),
+    };
+    let next = if rows.len() == query.limit { rows.last().map(|e| e.grant.account.0) } else { None };
+    Response::json(200, &AdminList { items: rows.iter().map(admin_json).collect(), next, total }).with_header("cache-control", "no-store")
 }
 
 #[derive(Deserialize)]

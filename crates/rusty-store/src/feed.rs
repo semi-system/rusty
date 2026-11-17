@@ -157,9 +157,140 @@ impl ChangeFeed for PgChangeFeed {
     }
 }
 
+/// `NOTIFY` channel of the admin console's live updates (migration 0028); payload `<kind>:<domain id>`.
+pub const CHANNEL_ADMIN: &str = "rusty_admin";
+
+/// What a change announced on [`CHANNEL_ADMIN`] concerns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdminKind {
+    Domains,
+    Accounts,
+    Dns,
+    Outbound,
+    Storage,
+    Admins,
+}
+
+/// One announcement: something of `kind` changed, in the domain with this id when the kind has one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdminChange {
+    pub kind: AdminKind,
+    pub domain: Option<i64>,
+}
+
+/// `"<kind>:<id or nothing>"`; anything else is ignored (a foreign or damaged payload must not reach a sink).
+pub(crate) fn parse_admin_payload(payload: &str) -> Option<AdminChange> {
+    if payload.len() > MAX_PAYLOAD {
+        return None;
+    }
+    let (kind, id) = payload.split_once(':')?;
+    let kind = match kind {
+        "domains" => AdminKind::Domains,
+        "accounts" => AdminKind::Accounts,
+        "dns" => AdminKind::Dns,
+        "outbound" => AdminKind::Outbound,
+        "storage" => AdminKind::Storage,
+        "admins" => AdminKind::Admins,
+        _ => return None,
+    };
+    let domain = if id.is_empty() {
+        None
+    } else if id.bytes().all(|b| b.is_ascii_digit()) {
+        Some(id.parse::<i64>().ok().filter(|n| *n >= 1)?)
+    } else {
+        return None;
+    };
+    Some(AdminChange { kind, domain })
+}
+
+/// Where the admin feed delivers. Every method must return immediately (the feed has one task).
+pub trait AdminSink: Send + Sync {
+    fn changed(&self, change: AdminChange);
+    /// The feed has (re)subscribed: whatever was announced while it was away is lost, so every page refreshes.
+    fn resync(&self);
+    /// The feed lost its connection (or could not make one) and will retry.
+    fn lost(&self) {}
+}
+
+/// The admin console's own feed: one dedicated connection that LISTENs on [`CHANNEL_ADMIN`], with the retry and the `resync` of [`PgChangeFeed`].
+pub struct PgAdminFeed {
+    pool: PgPool,
+}
+
+impl PgAdminFeed {
+    pub(crate) fn new(options: sqlx::postgres::PgConnectOptions) -> PgAdminFeed {
+        let pool = PgPoolOptions::new().max_connections(1).max_lifetime(None).idle_timeout(None).acquire_timeout(Duration::from_secs(10)).connect_lazy_with(options);
+        PgAdminFeed { pool }
+    }
+
+    async fn subscription(&self, sink: &Arc<dyn AdminSink>, shutdown: &CancellationToken) -> Ended {
+        let Ok(mut listener) = PgListener::connect_with(&self.pool).await else {
+            return Ended::Lost { was_subscribed: false };
+        };
+        listener.eager_reconnect(false);
+        if listener.listen(CHANNEL_ADMIN).await.is_err() {
+            return Ended::Lost { was_subscribed: false };
+        }
+        sink.resync();
+        loop {
+            tokio::select! {
+                () = shutdown.cancelled() => return Ended::Stopped,
+                heard = listener.try_recv() => match heard {
+                    Ok(Some(n)) => {
+                        if let Some(change) = parse_admin_payload(n.payload()) {
+                            sink.changed(change);
+                        }
+                    }
+                    Ok(None) | Err(_) => return Ended::Lost { was_subscribed: true },
+                },
+            }
+        }
+    }
+
+    /// Listen until `shutdown` is cancelled, then return `Ok`. A lost connection is retried with a growing delay and reported through [`AdminSink::lost`].
+    pub async fn run(&self, sink: Arc<dyn AdminSink>, shutdown: CancellationToken) -> Result<()> {
+        let mut delay = BACKOFF_MIN;
+        loop {
+            if shutdown.is_cancelled() {
+                break;
+            }
+            match self.subscription(&sink, &shutdown).await {
+                Ended::Stopped => break,
+                Ended::Lost { was_subscribed } => {
+                    sink.lost();
+                    if was_subscribed {
+                        delay = BACKOFF_MIN;
+                    }
+                    tokio::select! {
+                        () = shutdown.cancelled() => break,
+                        () = tokio::time::sleep(delay) => {}
+                    }
+                    delay = (delay * 2).min(BACKOFF_MAX);
+                }
+            }
+        }
+        self.pool.close().await;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_admin_payload_is_a_known_kind_and_an_optional_positive_id() {
+        assert_eq!(parse_admin_payload("storage:12"), Some(AdminChange { kind: AdminKind::Storage, domain: Some(12) }));
+        assert_eq!(parse_admin_payload("domains:"), Some(AdminChange { kind: AdminKind::Domains, domain: None }));
+        assert_eq!(parse_admin_payload("admins:"), Some(AdminChange { kind: AdminKind::Admins, domain: None }));
+        // A store without a domain (the platform store) announces its kind with no id.
+        assert_eq!(parse_admin_payload("storage:"), Some(AdminChange { kind: AdminKind::Storage, domain: None }));
+        for bad in ["", ":", "storage", "storage:0", "storage:-1", "storage:x", "storage: 1", "storage:1:2", "other:1", "Storage:1", "dns:99999999999999999999", "dns:\u{0661}"] {
+            assert_eq!(parse_admin_payload(bad), None, "{bad:?}");
+        }
+        assert_eq!(parse_admin_payload(&format!("dns:{}", "1".repeat(MAX_PAYLOAD))), None, "an over-long payload is not ours");
+    }
+
 
     #[test]
     fn a_mailbox_payload_is_two_positive_numbers() {

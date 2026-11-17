@@ -15,6 +15,8 @@
   const EVERY_MS = 15_000;
   const load = new Load<Monitor>(() => app.client.monitor());
   let refreshing = $state(false);
+  // The rows of task versions that were replaced (an update) are history: hidden unless asked for.
+  let showOld = $state(false);
 
   async function refresh(): Promise<void> {
     refreshing = true;
@@ -89,6 +91,9 @@
 
     <section aria-labelledby="mon-instances">
       <div class="section-head"><h2 id="mon-instances">{t('monitor.instances')}</h2></div>
+      <div class="list-bar">
+        <label class="check"><input type="checkbox" bind:checked={showOld} /> {t('monitor.showOld')}</label>
+      </div>
       <div class="table-wrap">
         <table use:labelled aria-label={t('monitor.instances')}>
           <thead>
@@ -99,7 +104,7 @@
           </thead>
           <tbody>
             {#each m.services as s (s.service)}
-              {#each s.instances as i (s.service + '/' + i.instance)}
+              {#each s.instances.filter((x) => showOld || !x.replaced) as i (s.service + '/' + i.instance)}
                 <tr>
                   <th scope="row"><span class="mono">{i.instance}</span></th>
                   <td>{s.service}</td>

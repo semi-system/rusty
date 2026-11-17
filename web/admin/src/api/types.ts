@@ -52,16 +52,19 @@ export interface AliasCreated {
 export interface DomainList {
   items: Domain[];
   next: number | null;
+  total: number;
 }
 
 export interface AccountList {
   items: Account[];
   next: number | null;
+  total: number;
 }
 
 export interface AliasList {
   items: Alias[];
   next: number | null;
+  total: number;
 }
 
 export interface Hint {
@@ -79,6 +82,7 @@ export interface AdminEntry {
 export interface AdminList {
   items: AdminEntry[];
   next: number | null;
+  total: number;
 }
 
 export interface Dkim {

@@ -4,6 +4,7 @@
   import type { Domain, Me } from '../api/types';
   import Badge from '../lib/Badge.svelte';
   import ErrorNote from '../lib/ErrorNote.svelte';
+  import ListBar from '../lib/ListBar.svelte';
   import Link from '../lib/Link.svelte';
   import PageHead from '../lib/PageHead.svelte';
   import { href } from '../lib/router';
@@ -15,6 +16,11 @@
   let items = $state<Domain[]>([]);
   let next = $state<number | null>(null);
   let loaded = $state(false);
+  let q = $state('');
+  let status = $state('');
+  let limit = $state(100);
+  let total = $state<number | null>(null);
+  const narrowed = $derived(q.trim() !== '' || status !== '');
   let error = $state<unknown>(null);
   let name = $state('');
   let busy = $state(false);
@@ -22,7 +28,8 @@
 
   async function load(after?: number, quiet = false): Promise<void> {
     try {
-      const page = await app.client.domains(after);
+      const page = await app.client.domains(after, { q, status, limit });
+      total = page.total;
       items = after === undefined ? page.items : [...items, ...page.items];
       next = page.next;
       error = null;
@@ -62,10 +69,14 @@
   {#if error !== null}<ErrorNote {error} />{/if}
   {#if created !== null}<p class="alert ok" role="status">{t('domains.created', { name: created })}</p>{/if}
 
+  {#if loaded}
+    <ListBar bind:q bind:status bind:limit {total} shown={items.length} label={t('list.searchDomains')} onchange={() => void load()}
+      statuses={[{ value: 'active', label: t('domain.status.active') }, { value: 'disabled', label: t('domain.status.disabled') }]} />
+  {/if}
   {#if !loaded}
     <p class="muted" role="status">{t('app.loading')}</p>
   {:else if items.length === 0 && error === null}
-    <div class="empty"><p>{t('domains.empty')}</p></div>
+    <div class="empty"><p>{narrowed ? t('list.noMatch') : t('domains.empty')}</p></div>
   {:else}
     <div class="table-wrap">
       <table use:labelled aria-label={t('domains.list')}>

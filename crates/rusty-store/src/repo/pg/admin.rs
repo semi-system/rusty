@@ -46,11 +46,12 @@ impl AdminRepo for PgRepo {
         rows.iter().map(grant).collect::<std::result::Result<Vec<_>, _>>().map_err(map_db_error)
     }
 
-    async fn list_named(&self, after: Option<AccountId>, limit: i64, domain: Option<DomainId>) -> Result<Vec<AdminEntry>> {
+    async fn list_named(&self, after: Option<AccountId>, limit: i64, domain: Option<DomainId>, text: Option<&str>) -> Result<Vec<AdminEntry>> {
         let rows = sqlx::query(r(sql::LIST_NAMED))
             .bind(after.map_or(0, |a| a.0))
             .bind(limit)
             .bind(domain.map(|d| d.0))
+            .bind(text)
             .fetch_all(self.store.pool())
             .await
             .map_err(map_db_error)?;
@@ -58,6 +59,10 @@ impl AdminRepo for PgRepo {
             .map(|x| Ok(AdminEntry { grant: grant(x)?, address: x.try_get(3)? }))
             .collect::<std::result::Result<Vec<_>, sqlx::Error>>()
             .map_err(map_db_error)
+    }
+
+    async fn count_named(&self, domain: Option<DomainId>, text: Option<&str>) -> Result<i64> {
+        sqlx::query_scalar(r(sql::COUNT_NAMED)).bind(domain.map(|d| d.0)).bind(text).fetch_one(self.store.pool()).await.map_err(map_db_error)
     }
 
     async fn revoke_keeping_one(&self, account: AccountId) -> Result<Revoked> {

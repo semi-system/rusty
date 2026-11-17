@@ -5,6 +5,7 @@
   import type { AdminEntry, Domain, Me } from '../api/types';
   import Badge from '../lib/Badge.svelte';
   import ErrorNote from '../lib/ErrorNote.svelte';
+  import ListBar from '../lib/ListBar.svelte';
   import PageHead from '../lib/PageHead.svelte';
   import { labelled } from '../lib/stack';
   import { t } from '../i18n';
@@ -17,6 +18,11 @@
   let next = $state<number | null>(null);
   let domains = $state<Domain[]>([]);
   let loaded = $state(false);
+  let q = $state('');
+  let status = $state('');
+  let limit = $state(100);
+  let total = $state<number | null>(null);
+  const narrowed = $derived(q.trim() !== '' || status !== '');
   let error = $state<unknown>(null);
   let notice = $state<string | null>(null);
   let failure = $state<string | null>(null);
@@ -26,7 +32,8 @@
 
   async function load(after?: number, quiet = false): Promise<void> {
     try {
-      const page = await app.client.admins(after);
+      const page = await app.client.admins(after, { q, limit });
+      total = page.total;
       items = after === undefined ? page.items : [...items, ...page.items];
       next = page.next;
     } catch (e) {
@@ -109,10 +116,13 @@
   {#if failure !== null}<p class="alert danger" role="alert">{failure}</p>{:else if error !== null}<ErrorNote {error} />{/if}
   {#if notice !== null}<p class="alert ok" role="status">{notice}</p>{/if}
 
+  {#if loaded}
+    <ListBar bind:q bind:status bind:limit {total} shown={items.length} label={t('list.searchAdmins')} onchange={() => void load()} />
+  {/if}
   {#if !loaded}
     <p class="muted" role="status">{t('app.loading')}</p>
   {:else if items.length === 0 && error === null}
-    <div class="empty"><p>{t('admins.empty')}</p></div>
+    <div class="empty"><p>{narrowed ? t('list.noMatch') : t('admins.empty')}</p></div>
   {:else}
     <div class="table-wrap">
       <table use:labelled aria-label={t('admins.list')}>

@@ -14,7 +14,12 @@ yanked = "deny"
 # as warnings by `cargo audit` in scripts/ci.sh. (No unmaintained crate exists today, so
 # this was verified from the source/changelog, not by an observed failure.)
 unmaintained = "workspace"
-ignore = []
+# RUSTSEC-2026-0543: chrono is unmaintained (an informational advisory, no vulnerability, "no safe upgrade is available"). rusty-imap names chrono's types because imap-types hands it dates as
+# `chrono::NaiveDate` and `chrono::DateTime` (and imap-types itself depends on chrono, so removing our direct dependency would not remove the crate). The way out is a release of imap-codec
+# that uses jiff or time; until then this is accepted. Re-check on every imap-codec upgrade, and no later than 2027-03-01.
+ignore = [
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, not vulnerable; it comes with imap-types, which the IMAP codec needs (see the comment above)" },
+]
 
 [licenses]
 version = 2

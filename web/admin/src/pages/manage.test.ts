@@ -590,3 +590,42 @@ describe('live updates', () => {
     expect(s.calls.filter((c) => c.key === 'GET /api/v1/domains/example.org/accounts')).toHaveLength(2);
   });
 });
+
+describe('search and filter of the lists', () => {
+  const list = (items: Account[], total: number): Answer => ok({ items, next: null, total });
+
+  it('asks the server for what was typed after a pause, says how many rows match, and clears the search', async () => {
+    const s = await open('/domains/example.org/accounts', PLATFORM, {
+      'GET /api/v1/domains/example.org/accounts': list([ACC, ACC2], 2),
+      'GET /api/v1/domains/example.org/accounts?q=Ali': list([ACC], 1),
+    });
+    expect(await screen.findByText(t('list.showing', { shown: 2, total: 2 }))).toBeTruthy();
+    const box = screen.getByRole('searchbox') as HTMLInputElement;
+    await fireEvent.input(box, { target: { value: 'Ali' } });
+    expect(await screen.findByText(t('list.showing', { shown: 1, total: 1 }), undefined, { timeout: 2000 })).toBeTruthy();
+    expect(s.calls.map((c) => c.key)).toContain('GET /api/v1/domains/example.org/accounts?q=Ali');
+    expect(screen.queryByText('bob@example.org')).toBeNull();
+    await fireEvent.click(screen.getByRole('button', { name: t('list.clear') }));
+    expect(await screen.findByText('bob@example.org')).toBeTruthy();
+  });
+
+  it('narrows accounts to a status and a page size, and says when nothing matches', async () => {
+    const s = await open('/domains/example.org/accounts', PLATFORM, {
+      'GET /api/v1/domains/example.org/accounts': list([ACC, ACC2], 2),
+      'GET /api/v1/domains/example.org/accounts?status=locked': list([], 0),
+      'GET /api/v1/domains/example.org/accounts?status=locked&limit=25': list([], 0),
+    });
+    await screen.findByText(t('list.showing', { shown: 2, total: 2 }));
+    await fireEvent.change(screen.getByLabelText(t('list.status')), { target: { value: 'locked' } });
+    expect(await screen.findByText(t('list.noMatch'))).toBeTruthy();
+    await fireEvent.change(screen.getByLabelText(t('list.pageSize')), { target: { value: '25' } });
+    await screen.findByText(t('list.noMatch'));
+    expect(s.calls.map((c) => c.key)).toContain('GET /api/v1/domains/example.org/accounts?status=locked&limit=25');
+  });
+
+  it('searches the domains and the administrators too, as the server says how many there are', async () => {
+    await open('/', PLATFORM, { 'GET /api/v1/domains': ok({ items: [D1, D2], next: null, total: 40 }) });
+    expect(await screen.findByText(t('list.showing', { shown: 2, total: 40 }))).toBeTruthy();
+    expect(screen.getByRole('searchbox', { name: t('list.searchDomains') })).toBeTruthy();
+  });
+});

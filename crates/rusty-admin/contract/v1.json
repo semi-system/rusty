@@ -6,7 +6,7 @@
     "errors": "{\"error\": <code>} with a fixed code: invalid 400, unauthorized 401, forbidden 403, not_found 404, exists 409, unsupported 415, throttled 429 (Retry-After), busy 503",
     "mutations": "need Origin = the public origin, Content-Type: application/json and X-CSRF-Token (from GET /session)",
     "scope": "a domain outside the administrator's scope is 404 not_found, the same answer as a domain that does not exist",
-    "pagination": "lists return {items, next}; pass ?after=<next> for the following page; next is null at the end; the page size is fixed (100)"
+    "pagination": "lists return {items, next, total}; pass ?after=<next> for the following page; next is null at the end; total is how many rows match the filter in all; the page size is ?limit= (1 to 100, default 100); ?q= narrows a list to the names that contain the text (letters, digits and ._@+-, at most 64) and ?status= to one status (domains: active, disabled; accounts: active, locked, disabled); each at most once, anything else is 400 invalid"
   },
   "types": {
     "integer": "JSON number without fraction",
@@ -25,12 +25,12 @@
     "AccountCreated": { "id": "integer", "address": "string", "status": "string", "has_password": "boolean", "aliases_created": "string[]" },
     "Alias": { "id": "integer", "alias": "string", "target": "string" },
     "AliasCreated": { "alias": "string", "target": "string" },
-    "DomainList": { "items": "Domain[]", "next": "integer|null" },
-    "AccountList": { "items": "Account[]", "next": "integer|null" },
-    "AliasList": { "items": "Alias[]", "next": "integer|null" },
+    "DomainList": { "items": "Domain[]", "next": "integer|null", "total": "integer" },
+    "AccountList": { "items": "Account[]", "next": "integer|null", "total": "integer" },
+    "AliasList": { "items": "Alias[]", "next": "integer|null", "total": "integer" },
     "Hint": { "topics": "string[]" },
     "AdminEntry": { "id": "integer", "address": "string", "scope": "string", "domain": "string|null", "created_at": "integer" },
-    "AdminList": { "items": "AdminEntry[]", "next": "integer|null" },
+    "AdminList": { "items": "AdminEntry[]", "next": "integer|null", "total": "integer" },
     "Dkim": { "selector": "string", "algorithm": "string", "record_name": "string", "record_value": "string", "sealed": "boolean" },
     "DkimList": { "items": "Dkim[]" },
     "Relay": { "host": "string", "port": "integer", "tls": "string", "username": "string|null", "spf_include": "string|null", "password_set": "boolean", "check_status": "string|null", "checked_at": "integer|null" },

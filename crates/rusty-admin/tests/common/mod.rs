@@ -30,7 +30,8 @@ pub struct Rig {
     pub addr: SocketAddr,
     pub dir: Directory,
     pub admins: AdminStore,
-    stop: CancellationToken,
+    pub stop: CancellationToken,
+    pub app: Arc<AdminApp>,
     pub now: Arc<ManualNow>,
     /// Opens what the app sealed (the outbound service's key).
     pub unsealer: rusty_seal::Unsealer,
@@ -96,6 +97,7 @@ async fn build(with_sealing: bool) -> Rig {
     let router = rusty_admin::admins::routes(app.clone(), router);
     let router = rusty_admin::live::routes(app.clone(), router);
     let router = rusty_admin::autodiscover::routes(app.clone(), router);
+    let served_app = app.clone();
     let h = HttpHandler::new(router, HttpConfig::default());
     let spec = ListenerSpec { name: "admin-test", addr: "127.0.0.1:0".parse().unwrap(), max_connections: 64, max_per_ip: 64 };
     let bound = BoundListener::bind(spec).await.unwrap();
@@ -105,7 +107,7 @@ async fn build(with_sealing: bool) -> Rig {
     tokio::spawn(async move {
         let _ = bound.serve(Arc::new(DirectTcp), Arc::new(h), Arc::new(TracingEvents), s, Duration::from_secs(5)).await;
     });
-    Rig { addr, dir, admins, stop, now, unsealer: rusty_seal::Unsealer::new(vec![unseal_key]).unwrap(), fx, store, outbound, _db: db }
+    Rig { addr, dir, admins, stop, app: served_app, now, unsealer: rusty_seal::Unsealer::new(vec![unseal_key]).unwrap(), fx, store, outbound, _db: db }
 }
 
 pub struct Reply {

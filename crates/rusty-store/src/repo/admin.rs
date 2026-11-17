@@ -43,7 +43,9 @@ pub trait AdminRepo: Send + Sync {
     /// Every grant, ordered by account id, after `after`, at most `limit`.
     async fn list(&self, after: Option<AccountId>, limit: i64) -> Result<Vec<AdminGrant>>;
     /// Grants with the address of the account, after `after`, at most `limit`; `domain` `Some` keeps only the administrators of that domain.
-    async fn list_named(&self, after: Option<AccountId>, limit: i64, domain: Option<DomainId>) -> Result<Vec<AdminEntry>>;
+    async fn list_named(&self, after: Option<AccountId>, limit: i64, domain: Option<DomainId>, text: Option<&str>) -> Result<Vec<AdminEntry>>;
+    /// How many grants `list_named` lists in all (the same `domain` and `text`).
+    async fn count_named(&self, domain: Option<DomainId>, text: Option<&str>) -> Result<i64>;
     /// Remove the grant unless it is the last platform grant (checked and removed under one lock, so two revocations cannot both pass).
     async fn revoke_keeping_one(&self, account: AccountId) -> Result<Revoked>;
     /// How many platform administrators exist (the setup page exists only while there is none).
@@ -57,6 +59,7 @@ pub(crate) mod sql {
     pub const GET: &str = "SELECT account_id, domain_id, created_at FROM admin_grants WHERE account_id = $1";
     pub const DELETE: &str = "DELETE FROM admin_grants WHERE account_id = $1";
     pub const LIST: &str = "SELECT account_id, domain_id, created_at FROM admin_grants WHERE account_id > $1 ORDER BY account_id LIMIT $2";
-    pub const LIST_NAMED: &str = "SELECT g.account_id, g.domain_id, g.created_at, a.local_part || '@' || d.name FROM admin_grants g \n        JOIN accounts a ON a.id = g.account_id JOIN domains d ON d.id = a.domain_id \n        WHERE g.account_id > $1 AND (CAST($3 AS BIGINT) IS NULL OR g.domain_id = $3) ORDER BY g.account_id LIMIT $2";
+    pub const LIST_NAMED: &str = "SELECT g.account_id, g.domain_id, g.created_at, a.local_part || '@' || d.name FROM admin_grants g \n        JOIN accounts a ON a.id = g.account_id JOIN domains d ON d.id = a.domain_id \n        WHERE g.account_id > $1 AND (CAST($3 AS BIGINT) IS NULL OR g.domain_id = $3) AND (CAST($4 AS TEXT) IS NULL OR strpos(a.local_part || '@' || d.name, CAST($4 AS TEXT)) > 0) ORDER BY g.account_id LIMIT $2";
+    pub const COUNT_NAMED: &str = "SELECT CAST(count(*) AS BIGINT) FROM admin_grants g JOIN accounts a ON a.id = g.account_id JOIN domains d ON d.id = a.domain_id WHERE (CAST($1 AS BIGINT) IS NULL OR g.domain_id = $1) AND (CAST($2 AS TEXT) IS NULL OR strpos(a.local_part || '@' || d.name, CAST($2 AS TEXT)) > 0)";
     pub const COUNT_PLATFORM: &str = "SELECT CAST(count(*) AS BIGINT) FROM admin_grants WHERE domain_id IS NULL";
 }
