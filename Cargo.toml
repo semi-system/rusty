@@ -53,7 +53,7 @@ rcgen = { version = "0.14", default-features = false, features = ["crypto", "rin
 mail-auth = { version = "=0.15.1", default-features = false, features = ["rust-crypto", "generate", "dns-hickory"] }
 # CA certificates of the host for `verified` outbound TLS when no ca_bundle is configured.
 rustls-native-certs = "0.8"
-base64 = "0.22"
+base64 = "0.23"
 # DKIM key checks on import (the same ring that signs them inside mail-auth and serves TLS in rustls).
 ring = "0.17"
 

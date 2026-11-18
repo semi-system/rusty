@@ -2103,7 +2103,7 @@ name = "rusty"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "rcgen",
  "rustix",
  "rustls",
@@ -2361,7 +2361,7 @@ name = "rusty-smtp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "hex",
  "idna",
