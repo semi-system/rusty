@@ -71,9 +71,11 @@ impl Drop for IpGuard {
 
 impl BoundListener {
     pub async fn bind(spec: ListenerSpec) -> Result<BoundListener> {
-        let listener = TcpListener::bind(spec.addr)
-            .await
-            .map_err(|e| Error::storage_with("cannot bind listener", e))?;
+        let listener = TcpListener::bind(spec.addr).await.map_err(|e| {
+            // Which listener, on which address: the first thing an operator asks when a start-up stops here.
+            tracing::error!(listener = spec.name, addr = %spec.addr, error = %e, "cannot bind listener");
+            Error::storage_with("cannot bind listener", e)
+        })?;
         Ok(BoundListener { spec, listener })
     }
 

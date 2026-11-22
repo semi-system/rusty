@@ -9,3 +9,13 @@ filter = "test(acceptance_10k_messages) or test(deliver_many_matches_loop_of_del
 test-group = "heavy-db"
 threads-required = 2
 slow-timeout = { period = "60s", terminate-after = 10 }
+
+# The tests of the all-in-one daemon that start `rusty d --dev --port-offset N` take fixed dev ports shifted by an offset taken from the process id. Run side by side the offsets of two
+# of them differ by the gap of their pids, and when that gap is the distance of two of the seven dev ports one daemon holds a port the other wants ("cannot bind listener", or a
+# connection that is reset by the other daemon). One at a time they cannot meet.
+[test-groups.dev-daemon]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = "binary(cli) and (test(rusty_d_dev_starts) or test(sigint_also_ends) or test(healthcheck_is_ok) or test(sighup_reloads))"
+test-group = "dev-daemon"
