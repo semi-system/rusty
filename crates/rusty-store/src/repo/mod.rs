@@ -33,7 +33,7 @@ mod mailbox;
 pub mod pg;
 
 pub use dns::{DkimKeyRow, DnsConfig, DnsConfigRow, DnsEventRow, DnsRepo};
-pub use gc::{GcRepo, PurgeBatch};
+pub use gc::{ClosedAccountBatch, GcRepo, PurgeBatch};
 pub use sealed::{SealedMeta, SealedRepo, SealedRow};
 pub use blob_store::{BlobStoreRepo, BlobStoreRow, StoreId, PLATFORM_STORE};
 pub use blob_pool::{BackendId, BackendRow, BackendState, BlobPoolRepo, Location, MAX_BACKENDS};

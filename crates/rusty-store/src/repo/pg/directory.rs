@@ -243,6 +243,28 @@ impl DirectoryRepo for PgRepo {
         Ok(())
     }
 
+    async fn request_account_delete(&self, account: AccountId) -> Result<bool> {
+        let n = sqlx::query(r(sql::REQUEST_DELETE)).bind(account.0).execute(self.store.pool()).await.map_err(map_db_error)?.rows_affected();
+        Ok(n == 1)
+    }
+
+    async fn delete_domain(&self, domain: DomainId) -> Result<()> {
+        tx_retry!(self, None, |c| {
+            // The same lock enqueue takes, so no job or account is added between the check and the delete.
+            let found: Option<i64> = sqlx::query_scalar(crate::repo::pg_lit("SELECT id FROM domains WHERE id = $1 FOR UPDATE")).bind(domain.0).fetch_optional(&mut *c).await?;
+            if found.is_none() {
+                return Err(TxError::Domain(Error::NotFound("domain".into())));
+            }
+            let held: i64 = sqlx::query_scalar(crate::repo::pg_lit(sql::DOMAIN_HAS)).bind(domain.0).fetch_one(&mut *c).await?;
+            if held > 0 {
+                return Err(TxError::Domain(Error::Conflict("domain is not empty".into())));
+            }
+            sqlx::query(crate::repo::pg_lit(sql::DOMAIN_DROP_FINISHED_JOBS)).bind(domain.0).execute(&mut *c).await?;
+            sqlx::query(crate::repo::pg_lit(sql::DOMAIN_DELETE)).bind(domain.0).execute(&mut *c).await?;
+            Ok(())
+        })
+    }
+
     async fn create_account(&self, new: &NewAccount) -> Result<AccountId> {
         check_text(&new.local, MAX_LOCAL_PART_BYTES)?;
         if let Some(hash) = &new.password_hash {

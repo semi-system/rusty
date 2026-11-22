@@ -16,6 +16,9 @@ pub struct GcSummary {
     pub deliveries_purged: u64,
     pub capabilities_purged: u64,
     pub blobs_deleted: u64,
+    /// Closed accounts removed with their mailboxes, and the messages of those mailboxes.
+    pub accounts_removed: u64,
+    pub account_messages_removed: u64,
     /// Steps that failed (logged); a failed step never stops the others.
     pub errors: usize,
 }
@@ -40,6 +43,14 @@ impl GcService {
         match ctx.gc.purge_capabilities_default().await {
             Ok(n) => s.capabilities_purged = n,
             Err(e) => step_failed(&mut s, "purge capabilities", &e),
+        }
+        // Closed accounts past their retention, with their mail (docs/design-delete.md); the blobs they held are collected below once nothing refers to them.
+        match ctx.gc.purge_closed_accounts_default(i64::from(ctx.cfg.closed_account_days) * 86_400).await {
+            Ok((messages, accounts)) => {
+                s.account_messages_removed = messages;
+                s.accounts_removed = accounts;
+            }
+            Err(e) => step_failed(&mut s, "purge closed accounts", &e),
         }
         let grace = Duration::from_secs(ctx.cfg.gc_grace_seconds);
         // One collection per blob store: each store's rows and objects are its own.

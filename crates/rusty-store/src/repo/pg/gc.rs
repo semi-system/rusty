@@ -7,6 +7,7 @@ use rusty_core::{BlobHash, Error, MailboxId, Result};
 use super::tx::tx_retry;
 use super::{lock_existing_blobs, PgRepo};
 use crate::map_db_error;
+use crate::repo::gc::ClosedAccountBatch;
 use crate::repo::{hash_bytes, GcRepo, MailboxRepo, PurgeBatch, StoreId};
 
 /// Mailboxes visited by one `purge_deleted_batch` call.
@@ -212,6 +213,40 @@ impl GcRepo for PgRepo {
             }
         })?;
         Ok(n)
+    }
+
+    async fn purge_closed_account_batch(&self, older_than: i64, limit: i64) -> Result<ClosedAccountBatch> {
+        let out = tx_retry!(self, None, |c| {
+            {
+                // The oldest due account that no other collector is working on.
+                let due: Option<(i64, Option<i64>)> = sqlx::query_as(crate::repo::pg_lit(
+                    "SELECT a.id, m.id FROM accounts a LEFT JOIN mailboxes m ON m.account_id = a.id 
+                      WHERE a.status = 'disabled' AND a.closed_at IS NOT NULL AND a.closed_at < $1 ORDER BY a.closed_at, a.id LIMIT 1 FOR UPDATE OF a SKIP LOCKED",
+                ))
+                .bind(older_than)
+                .fetch_optional(&mut *c)
+                .await?;
+                let Some((account, mailbox)) = due else { return Ok(ClosedAccountBatch::default()) };
+                let mut messages = 0u64;
+                if let Some(mb) = mailbox {
+                    messages = sqlx::query(crate::repo::pg_lit(
+                        "DELETE FROM messages WHERE (mailbox_id, id) IN (SELECT mailbox_id, id FROM messages WHERE mailbox_id = $1 ORDER BY id LIMIT $2)",
+                    ))
+                    .bind(mb)
+                    .bind(limit)
+                    .execute(&mut *c)
+                    .await?
+                    .rows_affected();
+                }
+                // Fewer than the limit were left: the mailbox is empty, the account can go.
+                let mut accounts = 0u64;
+                if messages < u64::try_from(limit).unwrap_or(0) {
+                    accounts = sqlx::query(crate::repo::pg_lit("DELETE FROM accounts WHERE id = $1")).bind(account).execute(&mut *c).await?.rows_affected();
+                }
+                Ok(ClosedAccountBatch { messages, accounts, worked: true })
+            }
+        })?;
+        Ok(out)
     }
 
     async fn purge_capabilities_batch(&self, older_than: i64, limit: i64) -> Result<u64> {

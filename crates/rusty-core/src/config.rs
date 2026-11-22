@@ -69,6 +69,9 @@ pub struct StartupConfig {
     pub max_message_bytes: u64,
     #[serde(default = "default_gc_grace_seconds")]
     pub gc_grace_seconds: u64,
+    /// Days a closed (disabled) account is kept before the garbage collector removes it with its mailbox (docs/design-delete.md). An administrator can delete one at once from the admin web.
+    #[serde(default = "default_closed_account_days")]
+    pub closed_account_days: u32,
     /// Fully qualified name of this server (greeting, certificate SAN, DKIM). Required unless
     /// `rusty d --dev`.
     #[serde(default)]
@@ -130,6 +133,10 @@ fn default_max_message_bytes() -> u64 {
 
 fn default_gc_grace_seconds() -> u64 {
     604_800
+}
+
+fn default_closed_account_days() -> u32 {
+    30
 }
 
 /// Read at most `max` bytes from `r`. One extra byte is requested so that input longer than
@@ -197,6 +204,9 @@ impl StartupConfig {
         }
         if !(MIN_MESSAGE_BYTES..=MAX_MESSAGE_BYTES).contains(&self.max_message_bytes) {
             return Err(Error::Invalid("max_message_bytes must be 1 KiB..=1 GiB".into()));
+        }
+        if !(1..=3650).contains(&self.closed_account_days) {
+            return Err(Error::Invalid("closed_account_days must be 1..=3650".into()));
         }
         if self.gc_grace_seconds < MIN_GC_GRACE_SECONDS {
             return Err(Error::Invalid("gc_grace_seconds must be at least 3600".into()));
@@ -365,6 +375,7 @@ impl StartupConfig {
             log_level: LogLevel::default(),
             max_message_bytes: default_max_message_bytes(),
             gc_grace_seconds: default_gc_grace_seconds(),
+            closed_account_days: default_closed_account_days(),
             hostname: Some("localhost".into()),
             log_format: LogFormat::default(),
             tls: TlsConfig { cert_file: None, key_file: None, dev_self_signed: true },

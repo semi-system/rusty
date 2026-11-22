@@ -82,7 +82,7 @@ export class ApiError extends Error {
   }
 }
 
-const KNOWN = new Set(['unauthorized', 'invalid', 'forbidden', 'not_found', 'exists', 'unsupported', 'throttled', 'busy', 'unavailable']);
+const KNOWN = new Set(['unauthorized', 'invalid', 'forbidden', 'not_found', 'exists', 'not_closed', 'not_empty', 'unsupported', 'throttled', 'busy', 'unavailable']);
 
 /** The catalogue key of an error and its parameters. The server never sends text for people; the wording is ours. */
 export function errorMessage(e: unknown): { key: MessageKey; params: Record<string, number> } {
@@ -224,6 +224,16 @@ export class Client {
 
   setAccountStatus(address: string, action: 'enable' | 'lock' | 'disable'): Promise<Account> {
     return this.call('POST', `/api/v1/accounts/${seg(address)}/${action}`);
+  }
+
+  /** Delete a closed account and its mail: the server removes it at its next collection (a closed account goes by itself after the retention). */
+  async deleteAccount(address: string): Promise<void> {
+    await this.call('DELETE', `/api/v1/accounts/${seg(address)}`);
+  }
+
+  /** Delete a domain that holds nothing (platform administrators). */
+  async deleteDomain(name: string): Promise<void> {
+    await this.call('DELETE', `/api/v1/domains/${seg(name)}`);
   }
 
   aliases(domain: string, after?: number, opts?: ListOptions): Promise<Page<Alias>> {

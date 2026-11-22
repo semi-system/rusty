@@ -28,7 +28,7 @@ async fn the_routes_of_the_service_are_exactly_the_ones_in_the_contract() {
         }
     }
     // Not in the contract: no route.
-    for (m, p) in [("GET", "/api/v1/accounts"), ("PUT", "/api/v1/domains"), ("DELETE", "/api/v1/domains/x.test"), ("GET", "/api/v1/accounts/a@x.test/password"), ("POST", "/api/v1/admin")] {
+    for (m, p) in [("GET", "/api/v1/accounts"), ("PUT", "/api/v1/domains"), ("GET", "/api/v1/accounts/a@x.test/password"), ("POST", "/api/v1/admin")] {
         let reply = send(r.addr, m, p, &[], "").await;
         assert!(reply.status == 404 || reply.status == 405, "{m} {p}: {}", reply.status);
     }

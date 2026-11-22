@@ -143,6 +143,8 @@ BEGIN
     GRANT SELECT ON domain_dns_state TO rusty_gc;   -- the periodic DNS check asks which domains are due...
     GRANT UPDATE (created_at) ON domains TO rusty_gc;   -- ...and locks the domain row it queues a check for
     GRANT SELECT, DELETE ON messages, keywords, change_log TO rusty_gc;
+    GRANT DELETE ON accounts TO rusty_gc;   -- the removal of a closed account after its retention (the rows that hang on it go by cascade); locks it first
+    GRANT UPDATE (created_at) ON accounts TO rusty_gc;   -- FOR UPDATE
     GRANT SELECT, UPDATE, DELETE ON capabilities TO rusty_gc;
     GRANT SELECT, UPDATE, DELETE ON blobs, deliveries TO rusty_gc;
     GRANT SELECT, INSERT, UPDATE, DELETE ON blob_locations, blob_store_leases, jobs TO rusty_gc;

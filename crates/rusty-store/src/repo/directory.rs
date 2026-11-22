@@ -249,6 +249,11 @@ pub trait DirectoryRepo: Send + Sync {
     ) -> Result<Vec<AliasInfo>>;
     /// `NotFound` if the domain has no such alias (an account of that name is not an alias).
     async fn remove_alias(&self, local: &str, domain: &str) -> Result<()>;
+    /// Make a CLOSED (disabled) account due for removal now instead of after the retention; the garbage collector removes it and its mailbox. `false`: the account is not closed (or does not exist).
+    async fn request_account_delete(&self, account: AccountId) -> Result<bool>;
+    /// Remove a domain that holds nothing: no account, alias or list, no queued or running job, no blob store of its own (`Conflict` otherwise, `NotFound` for an unknown domain). Its finished jobs, DNS
+    /// settings, DKIM keys and relay go with it.
+    async fn delete_domain(&self, domain: DomainId) -> Result<()>;
 
     // ------------------------------------------------------------ accounts
     /// Inserts the account, its mailbox row (counters seeded, uid_validity from the database
@@ -333,7 +338,13 @@ pub(crate) mod sql {
         VALUES ($1, $2, $3, $4, 'active', {NOW}) RETURNING id";
     pub const MAILBOX_FOR_ACCOUNT: &str = "SELECT id FROM mailboxes WHERE account_id = $1";
     pub const UPDATE_PASSWORD: &str = "UPDATE accounts SET password_hash = $1 WHERE id = $2";
-    pub const UPDATE_STATUS: &str = "UPDATE accounts SET status = $1 WHERE id = $2";
+    pub const UPDATE_STATUS: &str = "UPDATE accounts SET status = $1, 
+        closed_at = CASE WHEN $1 = 'disabled' THEN COALESCE(closed_at, rs_now()) ELSE NULL END WHERE id = $2";
+    /// An administrator's "delete now": a closed account is due for removal at once (0 is older than any retention).
+    pub const REQUEST_DELETE: &str = "UPDATE accounts SET closed_at = 0 WHERE id = $1 AND status = 'disabled'";
+    pub const DOMAIN_HAS: &str = "SELECT (SELECT count(*) FROM accounts WHERE domain_id = $1) + (SELECT count(*) FROM aliases WHERE domain_id = $1) \n        + (SELECT count(*) FROM lists WHERE domain_id = $1) + (SELECT count(*) FROM jobs WHERE domain_id = $1 AND state IN ('queued', 'running')) \n        + (SELECT count(*) FROM blob_stores WHERE domain_id = $1)";
+    pub const DOMAIN_DROP_FINISHED_JOBS: &str = "DELETE FROM jobs WHERE domain_id = $1 AND state IN ('done', 'dead')";
+    pub const DOMAIN_DELETE: &str = "DELETE FROM domains WHERE id = $1";
     /// The status is the effective one: an account of a disabled domain is disabled.
     pub const ACCOUNT_AUTH: &str = "SELECT CASE WHEN d.status <> 'active' THEN 'disabled' ELSE a.status END, \
         a.password_hash FROM accounts a JOIN domains d ON d.id = a.domain_id WHERE a.id = $1";

@@ -61,6 +61,17 @@ pub struct PurgeBatch {
     pub busy_mailboxes: Vec<MailboxId>,
 }
 
+/// Outcome of one [`GcRepo::purge_closed_account_batch`] call.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClosedAccountBatch {
+    /// Messages hard-deleted from the mailbox of the account this call worked on.
+    pub messages: u64,
+    /// Accounts removed (the last batch of an account removes it together with its mailbox).
+    pub accounts: u64,
+    /// Whether a closed account was due at all: `false` means there is nothing to do.
+    pub worked: bool,
+}
+
 #[async_trait]
 pub trait GcRepo: Send + Sync {
     /// The database clock in unix seconds (a read).
@@ -101,4 +112,7 @@ pub trait GcRepo: Send + Sync {
     async fn purge_deliveries_batch(&self, older_than: i64, limit: i64) -> Result<u64>;
     /// Delete up to `limit` capabilities that expired or were revoked before `older_than`.
     async fn purge_capabilities_batch(&self, older_than: i64, limit: i64) -> Result<u64>;
+    /// Work on ONE closed account whose `closed_at` is before `older_than`: delete up to `limit` messages of its mailbox, and when none are left delete the account (its mailbox, folders,
+    /// aliases and capabilities go with it by cascade, the blobs it held are collected by the blob pass). Messages go in small transactions so no statement runs long. `worked: false`: none is due.
+    async fn purge_closed_account_batch(&self, older_than: i64, limit: i64) -> Result<ClosedAccountBatch>;
 }

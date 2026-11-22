@@ -30,6 +30,16 @@
   let password = $state('');
   let tooShort = $state(false);
 
+  // The account whose deletion is being confirmed: the delete button asks first, because it cannot be undone.
+  let deleting = $state<string | null>(null);
+  const remove = (a: Account): Promise<void> =>
+    guarded(async () => {
+      await app.client.deleteAccount(a.address);
+      notice = t('accounts.deleteScheduled', { address: a.address });
+      deleting = null;
+      await load();
+    });
+
   let editing = $state<string | null>(null);
   let fresh = $state('');
 
@@ -172,8 +182,20 @@
                     {:else}
                       <button type="button" disabled={busy} aria-label={t('accounts.enable', { address: a.address })} onclick={() => change(a, 'enable')}>{t('accounts.enableShort')}</button>
                     {/if}
+                    {#if a.status === 'disabled'}
+                      <button type="button" disabled={busy} aria-label={t('accounts.delete', { address: a.address })} onclick={() => (deleting = deleting === a.address ? null : a.address)}>{t('accounts.deleteShort')}</button>
+                    {/if}
                     <button type="button" aria-label={t('accounts.setPassword', { address: a.address })} onclick={() => { editing = editing === a.address ? null : a.address; fresh = ''; tooShort = false; }}>{t('accounts.setPasswordShort')}</button>
                   </div>
+                  {#if deleting === a.address}
+                    <div class="row-form" role="alert">
+                      <p>{t('accounts.deleteAsk', { address: a.address })}</p>
+                      <div class="form-actions">
+                        <button type="button" class="danger" disabled={busy} onclick={() => remove(a)}>{t('accounts.deleteYes')}</button>
+                        <button type="button" class="secondary" onclick={() => (deleting = null)}>{t('accounts.cancel')}</button>
+                      </div>
+                    </div>
+                  {/if}
                   {#if editing === a.address}
                     <form class="row-form" onsubmit={(e) => changePassword(e, a.address)}>
                       <label>

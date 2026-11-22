@@ -252,6 +252,27 @@ impl Gc {
         }
     }
 
+    /// Remove the closed accounts that were closed before `older_than` (unix seconds), their messages in batches of [`PURGE_BATCH`] and then the account with its mailbox; at most `max_batches`
+    /// batches in one call, so a very large mailbox is removed over several passes of the collector. Returns the messages and the accounts removed.
+    pub async fn purge_closed_accounts(&self, older_than: i64, max_batches: u32) -> Result<(u64, u64)> {
+        let (mut messages, mut accounts) = (0u64, 0u64);
+        for _ in 0..max_batches {
+            let b = self.repo.purge_closed_account_batch(older_than, PURGE_BATCH).await?;
+            if !b.worked {
+                break;
+            }
+            messages += b.messages;
+            accounts += b.accounts;
+        }
+        Ok((messages, accounts))
+    }
+
+    /// [`purge_closed_accounts`](Self::purge_closed_accounts) for accounts closed more than `retention_secs` before the database clock.
+    pub async fn purge_closed_accounts_default(&self, retention_secs: i64) -> Result<(u64, u64)> {
+        let now = self.repo.db_now().await?;
+        self.purge_closed_accounts(now.saturating_sub(retention_secs.max(0)), 50).await
+    }
+
     /// Delete `deliveries` rows with `created_at < older_than` (unix seconds), in batches.
     /// Messages are untouched; a retry arriving after its row is gone creates a new message,
     /// so `older_than` must leave the whole retry window ([`DELIVERY_RETENTION_SECS`]) intact.
