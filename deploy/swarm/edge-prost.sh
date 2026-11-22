@@ -12,6 +12,8 @@
 #   PROST_IMAGE        the image (default: ghcr.io/semi-system/prost:latest, by the digest of images.lock when the kit has one)
 
 EDGE="${EDGE:-haproxy}"
+# 1: the edge sends the PROXY header to the admin web and the admin web reads it (real client address in the audit log and the sign-in throttle). Needs the admin image of this kit's release.
+ADMIN_PROXY="${ADMIN_PROXY:-0}"
 PROST_PILOT_OFFSET="${PROST_PILOT_OFFSET:-20000}"
 CERT_S3="${CERT_S3:-0}"
 CERT_S3_BUCKET="${CERT_S3_BUCKET:-certs}"
@@ -53,6 +55,7 @@ prost_has_certd() { [ "$EDGE" = prost ] && [ "$TLS_MODE" = acme ]; }
 check_edge_inputs() {
   case "$EDGE" in haproxy|prost|prost-pilot) ;; *) die "EDGE is haproxy (default), prost or prost-pilot" ;; esac
   case "$CERT_S3" in 0|1) ;; *) die "CERT_S3 is 0 or 1" ;; esac
+  case "$ADMIN_PROXY" in 0|1) ;; *) die "ADMIN_PROXY is 0 or 1" ;; esac
   [[ "$PROST_PILOT_OFFSET" =~ ^[0-9]{4,5}$ ]] && [ "$PROST_PILOT_OFFSET" -ge 10000 ] && [ "$PROST_PILOT_OFFSET" -le 60000 ] || die "PROST_PILOT_OFFSET is a number from 10000 to 60000 (so that every port stays below 65536)"
   [ -z "$PROST_IMAGE" ] || [[ "$PROST_IMAGE" =~ ^[a-z0-9][a-z0-9./_-]*(:[A-Za-z0-9._-]+|@sha256:[0-9a-f]{64})$ ]] || die "PROST_IMAGE is an image name with a tag or a digest"
   if [ "$EDGE" = prost-pilot ] && [ "$TLS_MODE" = acme ] && [ "$CERT_S3" != 1 ]; then
@@ -98,9 +101,10 @@ prost_setup_routes() {
 conf_prost_edge() {
   prost_cert_paths
   # A line that starts with a marker is live (the marker is taken off) or is removed, as the inventory says.
-  local certd_re='^#CERTD ' s3_re='^#S3 '
+  local certd_re='^#CERTD ' s3_re='^#S3 ' aproxy_re='^#ADMINPROXY '
   SETUP_ROUTES="$(prost_setup_routes)" awk '{ if ($0 == "@SETUP_ROUTES@") print ENVIRON["SETUP_ROUTES"]; else print }' "$HERE/../standalone/templates/prost-edge.toml.in" \
-    | sed -e "$(if prost_has_certd; then echo "s|$certd_re||"; else echo "/$certd_re/d"; fi)" \
+    | sed -e "$(if [ "$ADMIN_PROXY" = 1 ]; then echo "s|$aproxy_re||"; else echo "/$aproxy_re/d"; fi)" \
+          -e "$(if prost_has_certd; then echo "s|$certd_re||"; else echo "/$certd_re/d"; fi)" \
           -e "$(if [ "$CERT_S3" = 1 ] && prost_certs_from_s3; then echo "s|$s3_re||"; else echo "/$s3_re/d"; fi)" \
           -e "s|@MAIL_CERT@|$MAIL_CERT|g" -e "s|@MAIL_KEY@|$MAIL_KEY|g" -e "s|@ADMIN_CERT@|$ADMIN_CERT|g" -e "s|@ADMIN_KEY@|$ADMIN_KEY|g" \
           -e "s|@MAIL_HOST@|$MAIL_HOST|g" -e "s|@ADMIN_HOST@|$ADMIN_HOST|g" -e "s|@ADMIN_ALLOW_TOML@|$(prost_allow_toml)|g" \

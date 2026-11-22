@@ -177,7 +177,8 @@ grep -q '^contact = "mailto:ops@example.org"' "$pe/prost-certd.toml" || fail "pr
 grep -q '^address = "tasks.imap:1993"' "$pe/prost-edge.toml" && grep -q '^address = "tasks.submission:4465"' "$pe/prost-edge.toml" && grep -q '^address = "tasks.admin:8080"' "$pe/prost-edge.toml" || fail "prost: the edge does not name the services"
 # The edge keeps its name `edge`: the services accept the PROXY header from it by that name, and the admin web too (it reads the client's address from the header).
 grep -q '^trusted_proxy_hosts = \["tasks.edge", "edge"\]' "$pe/smtp_in.toml" || fail "prost: smtp-in does not trust the edge by name"
-grep -q '^proxy_protocol = true' "$pe/admin.toml" || fail "the admin web does not read the PROXY header"
+! grep -q '^proxy_protocol' "$pe/admin.toml" || fail "prost: the admin web reads the PROXY header although ADMIN_PROXY is off (an older admin image refuses the key)"
+! grep -q "send_proxy_v2" <(sed -n '/upstreams.web]/,/endpoints/p' "$pe/prost-edge.toml") || fail "prost: the edge sends the PROXY header to the admin web with ADMIN_PROXY off"
 prost_check prost
 
 scenario prostself "$EXT"$'\nEDGE=prost\nTLS_MODE=self\nREPLICAS_DEFAULT=1' "edge smtp-in admin" "certd db s3"
@@ -185,6 +186,12 @@ no_placeholders "$tmp/state-prostself/stack/etc/prost-edge.toml"
 grep -q 'certificate = "/run/secrets/edge_mail_crt"' "$tmp/state-prostself/stack/etc/prost-edge.toml" && grep -q 'target: edge_admin_key' "$tmp/prostself.stack.yaml" || fail "prostself: the self-signed certificates do not reach the edge as secrets"
 ! grep -q '^address = "certd:8088"' "$tmp/state-prostself/stack/etc/prost-edge.toml" || fail "prostself: an ACME route without prost-certd"
 prost_check prostself
+
+scenario adminproxy "$EXT"$'\nEDGE=prost\nTLS_MODE=self\nADMIN_PROXY=1\nREPLICAS_DEFAULT=1' "edge admin" "certd db s3"
+ap="$tmp/state-adminproxy/stack/etc"
+grep -q '^proxy_protocol = true' "$ap/admin.toml" || fail "adminproxy: the admin web does not read the PROXY header"
+grep -q '^send_proxy_v2 = true' <(sed -n '/upstreams.web]/,/endpoints/p' "$ap/prost-edge.toml") || fail "adminproxy: the edge does not send the PROXY header to the admin web"
+prost_check adminproxy
 
 scenario pilot "$EXT"$'\nEDGE=prost-pilot\nTLS_MODE=acme\nCERT_S3=1\nCERT_S3_BUCKET=certs\nREPLICAS_DEFAULT=1' "edge edge-prost smtp-in admin" "certd db s3"
 pp="$tmp/pilot.stack.yaml"; pq="$tmp/state-pilot/stack/etc"
@@ -211,7 +218,8 @@ for svc in smtp-in submission imap outbound gc admin; do
   keys_of < "$tmp/state-profiles/stack/etc/$key.toml" > "$tmp/swarm.keys"
   # what the swarm form does differently on purpose: the edge and the admin web by name, a bucket instead of a directory, a memory budget
   case "$svc" in admin) allowed_extra='^(admin.allowed_hosts)$' ;; *) allowed_extra='^(smtp.trusted_proxy_hosts|imap.trusted_proxy_hosts|blob_s3\..*|limits.inflight_message_mib)$' ;; esac
-  missing="$(comm -23 "$tmp/std.keys" "$tmp/swarm.keys" | tr '\n' ' ')"
+  # admin.proxy_protocol: the swarm form leaves it off until ADMIN_PROXY=1 (adminproxy scenario)
+  missing="$(comm -23 "$tmp/std.keys" "$tmp/swarm.keys" | { grep -vx 'admin.proxy_protocol' || true; } | tr '\n' ' ')"
   extra="$(comm -13 "$tmp/std.keys" "$tmp/swarm.keys" | grep -Ev "$allowed_extra" | tr '\n' ' ' || true)"
   [ -z "$missing" ] || { echo "swarm-stack: $svc: keys of the standalone template that the swarm form lacks: $missing" >&2; tpl_ok=0; }
   [ -z "$extra" ] || { echo "swarm-stack: $svc: keys of the swarm form that the standalone template lacks: $extra" >&2; tpl_ok=0; }
@@ -240,6 +248,7 @@ refuse "an unknown edge" 'EDGE=nginx'
 refuse "the pilot with ACME certificates and no bucket for them" $'EDGE=prost-pilot\nTLS_MODE=acme'
 refuse "a pilot offset that is out of range" $'EDGE=prost-pilot\nPROST_PILOT_OFFSET=500'
 refuse "the certificates in the bucket of the mail" $'EDGE=prost\nTLS_MODE=acme\nCERT_S3=1\nCERT_S3_BUCKET=rusty-mail'
+refuse "a bad ADMIN_PROXY" 'ADMIN_PROXY=2'
 refuse "a bad image" 'PROST_IMAGE="Prost Latest"'
 echo "  ok    bad values are refused"
 # For a look at what the tool rendered (SWARM_STACK_KEEP=DIR): the Prost edge configuration of the scenario "prost".

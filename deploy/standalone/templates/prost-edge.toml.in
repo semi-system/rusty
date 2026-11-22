@@ -137,14 +137,14 @@ address = "tasks.imap:1995"
 
 # The admin web: the edge ends TLS and sends the PROXY header ([admin] proxy_protocol), so the audit log and the sign-in throttle see the client's address.
 [upstreams.web]
-send_proxy_v2 = true
+#ADMINPROXY send_proxy_v2 = true
 connect_timeout_ms = 3000
 health_interval_ms = 5000
 [upstreams.web.dns]
 authoritative_ttl = true
 [upstreams.web.health_check]
 protocol = "connect"
-proxy_v2_command = "local"
+#ADMINPROXY proxy_v2_command = "local"
 [[upstreams.web.endpoints]]
 id = "admin"
 address = "tasks.admin:8080"

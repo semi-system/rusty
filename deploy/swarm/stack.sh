@@ -134,7 +134,10 @@ conf_imap() { head_common; printf '[imap]\nlisten_143 = "0.0.0.0:1143"\nlisten_9
 conf_outbound() { head_common; printf '[outbound]\ndkim_dir = "/var/lib/rusty/dkim"\npublic_ips = ["%s"]\n\n' "$(manager_public_ip)"; blk_unseal; blk_blob; blk_store outbound; blk_metrics; }
 conf_gc() { head_common; printf 'gc_grace_seconds = 604800\n\n[dns_check]\nenabled = true\n\n'; blk_unseal; blk_blob; blk_store gc; blk_metrics; }
 conf_admin() {
-  printf 'hostname = "%s"\n\n[admin]\nlisten = "0.0.0.0:8080"\npublic_origin = "https://%s"\npublic_ips = ["%s"]\nallowed_peers = ["127.0.0.1/32"]\nallowed_hosts = ["tasks.edge", "edge"]\nproxy_protocol = true\n' "$MAIL_HOST" "$ADMIN_HOST" "$(manager_public_ip)"; printf '\n'; blk_store admin; blk_valkey admin
+  printf 'hostname = "%s"\n\n[admin]\nlisten = "0.0.0.0:8080"\npublic_origin = "https://%s"\npublic_ips = ["%s"]\nallowed_peers = ["127.0.0.1/32"]\nallowed_hosts = ["tasks.edge", "edge"]\n' "$MAIL_HOST" "$ADMIN_HOST" "$(manager_public_ip)"
+  # shortcut: off until the admin image that knows the key is deployed (ADMIN_PROXY=1): an older admin refuses the unknown key.
+  [ "$ADMIN_PROXY" != 1 ] || printf 'proxy_protocol = true\n'
+  printf '\n'; blk_store admin; blk_valkey admin
   printf '[sealing]\npublic_key = "%s"\n\n' "$(cat "$STATE_DIR/keys/seal.pub")"
   if [ -n "${METRICS_ALLOW:-}" ]; then
     local c list=""
@@ -150,6 +153,7 @@ conf_haproxy() {
   local allow="$ADMIN_ALLOW" keep="#SELF " drop="#ACME" dir="${ACME_DIRECTORY:-https://acme-v02.api.letsencrypt.org/directory}"
   if [ "$TLS_MODE" = acme ]; then keep="#ACME"; drop="#SELF "; fi
   sed -e "/^${drop}/d" -e "s|^${keep}||" \
+      -e "$([ "$ADMIN_PROXY" = 1 ] || echo '/server-template admin/s/ send-proxy-v2//')" \
       -e 's/\(server-template [a-z-]* [0-9]-[0-9]\) \([a-z-]*\):/\1 tasks.\2:/' \
       -e "s|@MAIL_HOST@|$MAIL_HOST|g" -e "s|@ADMIN_HOST@|$ADMIN_HOST|g" -e "s|@ADMIN_ALLOW@|$allow|g" -e "s|@CONTACT@|${CONTACT:-}|g" -e "s|@ACME_DIRECTORY@|$dir|g" \
       "$HERE/../standalone/templates/haproxy.cfg.in"
