@@ -19,6 +19,14 @@ pub fn origin_ok(req: &Request, public_origin: &str) -> bool {
     req.headers.count("origin") == 1 && req.headers.get("origin") == Some(public_origin)
 }
 
+/// The origin a request is to be compared with: the one of `extra` it carries in `Origin`, else `public_origin` (so a request from anywhere else fails as before).
+pub fn pick_origin<'a>(req: &Request, public_origin: &'a str, extra: &'a [String]) -> &'a str {
+    match req.headers.get("origin") {
+        Some(o) if o != public_origin => extra.iter().map(String::as_str).find(|e| *e == o).unwrap_or(public_origin),
+        _ => public_origin,
+    }
+}
+
 /// Exactly one `Content-Type`, `application/json`, with no parameter other than `charset=utf-8`.
 pub fn is_json(req: &Request) -> bool {
     if req.headers.count("content-type") != 1 {

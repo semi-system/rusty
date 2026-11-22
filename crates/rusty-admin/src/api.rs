@@ -78,6 +78,8 @@ pub struct AdminApp {
     pub live: Arc<crate::live::Hub>,
     /// `https://host[:port]` of the admin host name, as the browser sends it in `Origin`.
     pub public_origin: String,
+    /// Other origins the admin web is reached by (`[admin] extra_origins`).
+    pub extra_origins: Vec<String>,
     pub session_cfg: SessionConfig,
     pub services: Option<Services>,
     /// Serialises the setup, so two requests cannot both make a first administrator.
@@ -86,7 +88,7 @@ pub struct AdminApp {
 
 impl AdminApp {
     pub fn new(auth: AdminAuth, directory: Directory, admins: AdminStore, setup: Option<SetupGate>, public_origin: &str, session_cfg: SessionConfig) -> AdminApp {
-        AdminApp { auth, directory, admins, setup, live: crate::live::Hub::new(), public_origin: public_origin.to_owned(), session_cfg, services: None, setup_lock: tokio::sync::Mutex::new(()) }
+        AdminApp { auth, directory, admins, setup, live: crate::live::Hub::new(), public_origin: public_origin.to_owned(), extra_origins: Vec::new(), session_cfg, services: None, setup_lock: tokio::sync::Mutex::new(()) }
     }
 
     /// Tell the streams about `topics` when `resp` says the change was made (a `2xx`).
@@ -110,6 +112,11 @@ impl AdminApp {
     }
 
     /// Give the app the stores of the outbound endpoints.
+    pub fn with_extra_origins(mut self, origins: Vec<String>) -> AdminApp {
+        self.extra_origins = origins;
+        self
+    }
+
     pub fn with_services(mut self, services: Services) -> AdminApp {
         self.services = Some(services);
         self
@@ -128,7 +135,7 @@ impl AdminApp {
             return Err(error(403, "forbidden"));
         }
         if mutating {
-            guard_mutation(req, &self.public_origin, &session.csrf).map_err(no_store)?;
+            guard_mutation(req, rusty_http::guard::pick_origin(req, &self.public_origin, &self.extra_origins), &session.csrf).map_err(no_store)?;
         }
         Ok((session, principal))
     }
@@ -204,7 +211,7 @@ fn with_cookie(r: Response, id: &str, cfg: &SessionConfig) -> Response {
 }
 
 fn pre_auth_guard(app: &AdminApp, req: &Request) -> Result<(), Response> {
-    if !origin_ok(req, &app.public_origin) {
+    if !origin_ok(req, rusty_http::guard::pick_origin(req, &app.public_origin, &app.extra_origins)) {
         return Err(error(403, "forbidden"));
     }
     if !is_json(req) {

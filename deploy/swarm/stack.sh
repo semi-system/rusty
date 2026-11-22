@@ -137,6 +137,8 @@ conf_admin() {
   printf 'hostname = "%s"\n\n[admin]\nlisten = "0.0.0.0:8080"\npublic_origin = "https://%s"\npublic_ips = ["%s"]\nallowed_peers = ["127.0.0.1/32"]\nallowed_hosts = ["tasks.edge", "edge"]\n' "$MAIL_HOST" "$ADMIN_HOST" "$(manager_public_ip)"
   # shortcut: off until the admin image that knows the key is deployed (ADMIN_PROXY=1): an older admin refuses the unknown key.
   [ "$ADMIN_PROXY" != 1 ] || printf 'proxy_protocol = true\n'
+  # The pilot is reached on its own port and the browser's Origin carries it: the admin web must know it (same release as proxy_protocol).
+  [ "$ADMIN_PROXY" != 1 ] || [ "$EDGE" != prost-pilot ] || printf 'extra_origins = ["https://%s:%s"]\n' "$ADMIN_HOST" "$(edge_port 443)"
   printf '\n'; blk_store admin; blk_valkey admin
   printf '[sealing]\npublic_key = "%s"\n\n' "$(cat "$STATE_DIR/keys/seal.pub")"
   if [ -n "${METRICS_ALLOW:-}" ]; then

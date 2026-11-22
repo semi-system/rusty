@@ -195,7 +195,8 @@ grep -q '^proxy_protocol = true' "$ap/admin.toml" || fail "adminproxy: the admin
 grep -q '^send_proxy_v2 = true' <(sed -n '/upstreams.web]/,/endpoints/p' "$ap/prost-edge.toml") || fail "adminproxy: the edge does not send the PROXY header to the admin web"
 prost_check adminproxy
 
-scenario pilot "$EXT"$'\nEDGE=prost-pilot\nTLS_MODE=acme\nCERT_S3=1\nCERT_S3_BUCKET=certs\nREPLICAS_DEFAULT=1' "edge edge-prost smtp-in admin" "certd db s3"
+scenario pilot "$EXT"$'\nEDGE=prost-pilot\nTLS_MODE=acme\nCERT_S3=1\nCERT_S3_BUCKET=certs\nADMIN_PROXY=1\nREPLICAS_DEFAULT=1' "edge edge-prost smtp-in admin" "certd db s3"
+grep -q '^extra_origins = \["https://admin.example.org:20443"\]' "$tmp/state-pilot/stack/etc/admin.toml" || fail "pilot: the admin web does not take the pilot's port as an origin (sign-in would be refused)"
 pp="$tmp/pilot.stack.yaml"; pq="$tmp/state-pilot/stack/etc"
 grep -q 'target: 10025, published: 20025, protocol: tcp, mode: host' "$pp" && grep -q 'target: 10993, published: 20993' "$pp" || fail "pilot: Prost is not on the offset ports"
 grep -q 'target: 25, published: 25, protocol: tcp, mode: host' "$pp" || fail "pilot: HAProxy lost the real ports"

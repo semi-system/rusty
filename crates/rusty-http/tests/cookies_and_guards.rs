@@ -145,3 +145,21 @@ fn the_three_guards_each_refuse_on_their_own_with_a_fixed_code() {
     let r = guard_mutation(&req(Method::Post, &without("content-type")), ORIGIN, TOKEN).unwrap_err();
     assert_eq!((r.status, r.body.as_ref()), (415, &b"{\"error\":\"unsupported\"}"[..]));
 }
+
+#[test]
+fn an_extra_origin_is_accepted_only_when_it_is_listed_and_exactly_equal() {
+    use rusty_http::guard::pick_origin;
+    let extra = vec!["https://admin.example.net:20443".to_owned()];
+    let listed = req(Method::Post, &[("origin", "https://admin.example.net:20443")]);
+    assert!(origin_ok(&listed, pick_origin(&listed, ORIGIN, &extra)));
+    assert!(guard_mutation(&listed, pick_origin(&listed, ORIGIN, &extra), TOKEN).is_err(), "the token is still needed");
+    let own = req(Method::Post, &[("origin", ORIGIN)]);
+    assert!(origin_ok(&own, pick_origin(&own, ORIGIN, &extra)));
+    for o in ["https://admin.example.net:20444", "https://evil.example:20443", "null"] {
+        let r = req(Method::Post, &[("origin", o)]);
+        assert!(!origin_ok(&r, pick_origin(&r, ORIGIN, &extra)), "{o}");
+    }
+    let none = req(Method::Post, &[]);
+    assert!(!origin_ok(&none, pick_origin(&none, ORIGIN, &extra)));
+    assert!(!origin_ok(&listed, pick_origin(&listed, ORIGIN, &[])), "without the list it is refused as before");
+}

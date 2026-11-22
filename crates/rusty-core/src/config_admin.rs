@@ -41,6 +41,9 @@ pub struct AdminConfig {
     /// The header is accepted only from `allowed_peers` and `allowed_hosts` (so one of them is needed); a connection without it is dropped. The edge ends TLS, as for the other services.
     #[serde(default)]
     pub proxy_protocol: bool,
+    /// More origins the admin web is reached by (the same page on another port, for example the Prost pilot beside HAProxy): a state-changing request may carry any of them in `Origin`. At most 4, each as `public_origin`.
+    #[serde(default)]
+    pub extra_origins: Vec<String>,
 }
 
 impl AdminConfig {
@@ -59,6 +62,9 @@ impl AdminConfig {
         }
         if self.allowed_hosts.len() > 8 || !self.allowed_hosts.iter().all(|h| crate::config_metrics::host_ok(h)) {
             return Err(Error::Invalid("admin.allowed_hosts must be at most 8 DNS names".into()));
+        }
+        if self.extra_origins.len() > 4 || !self.extra_origins.iter().all(|o| valid_origin(o)) {
+            return Err(Error::Invalid("admin.extra_origins must be at most 4 origins, each https://host or https://host:port in lower case, with no path".into()));
         }
         if self.proxy_protocol && self.allowed_peers.is_empty() && self.allowed_hosts.is_empty() {
             return Err(Error::Invalid("admin.proxy_protocol needs allowed_peers or allowed_hosts: the header is believed only from the edge".into()));
