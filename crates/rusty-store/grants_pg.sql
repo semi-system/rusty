@@ -29,7 +29,7 @@ BEGIN
     REVOKE ALL ON ALL TABLES IN SCHEMA public FROM rusty_admin;
     GRANT SELECT, INSERT, UPDATE, DELETE ON domains, accounts, aliases, lists, list_members, plans, capabilities, mailboxes,
       domain_dkim_keys, domain_dns_config, domain_dns_event, domain_dns_state, domain_relays, admin_grants, jobs TO rusty_admin;
-    GRANT SELECT ON address_owners, _sqlx_migrations TO rusty_admin;
+    GRANT SELECT ON address_owners, _sqlx_migrations, schema_compat TO rusty_admin;
     GRANT SELECT ON service_heartbeats TO rusty_admin;   -- the monitor page
     GRANT SELECT, INSERT, UPDATE ON platform_settings TO rusty_admin;   -- the protocol switches (docs/design-protocols.md)
     GRANT EXECUTE ON FUNCTION rs_heartbeat(text, text, text, bigint, text, text) TO rusty_admin;
@@ -82,7 +82,7 @@ BEGIN
       EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA public FROM %I', r);
       EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM %I', r);
       EXECUTE format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %I', r);
-      EXECUTE format('GRANT SELECT ON _sqlx_migrations TO %I', r);
+      EXECUTE format('GRANT SELECT ON _sqlx_migrations, schema_compat TO %I', r);
       EXECUTE format('GRANT SELECT ON platform_settings TO %I', r);   -- the services read the protocol switches
       EXECUTE format('GRANT EXECUTE ON FUNCTION rs_heartbeat(text, text, text, bigint, text, text) TO %I', r);   -- the heartbeat of the service (docs/design-admin-monitor.md)
     END IF;

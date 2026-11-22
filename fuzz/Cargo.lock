@@ -2016,6 +2016,7 @@ dependencies = [
  "sqlx",
  "tokio",
  "tokio-util",
+ "tracing",
 ]
 
 [[package]]
