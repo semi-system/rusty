@@ -168,7 +168,8 @@ gen_prost_services() {
   img="$(prost_image)"; svc="$(prost_service)"
   y_service_common "$svc" "$img"
   # The edge's own state is rebuilt from its seed at every start (so the configuration of the stack is what runs); the certificates live in prost-certd's volume.
-  printf '      - type: tmpfs\n        target: /var/lib/prost\n        tmpfs: { mode: 1777 }\n      - prost_run:/run/prost\n'
+  # (`docker stack deploy` drops the mode of a tmpfs mount, which leaves the directory to root: a named volume of the local driver backed by tmpfs has the owner, and is empty at every start.)
+  printf '      - prost_state:/var/lib/prost\n      - prost_run:/run/prost\n'
   if prost_has_certd; then printf '      - certificates:/certificates:ro\n'; fi
   # The image's own entrypoint starts Prost from the seed at /etc/prost/seed.toml (a first start reads it into the state under /var/lib/prost).
   printf '    user: "10001:10001"\n'
@@ -191,7 +192,7 @@ gen_prost_services() {
   fi
   printf '    configs:\n'
   y_config prost_edge /etc/prost/seed.toml
-  printf '    healthcheck:\n      test: ["CMD", "prostctl", "status"]\n      interval: 10s\n      timeout: 5s\n      retries: 3\n    networks:\n      - app\n      - backend\n'
+  printf '    healthcheck:\n      test: ["CMD", "/usr/local/bin/prostctl", "status"]\n      interval: 10s\n      timeout: 5s\n      retries: 3\n    networks:\n      - app\n      - backend\n'
   if prost_has_certd; then
     y_service_common certd "$img"
     printf '      - certd_state:/var/lib/prost-certd\n      - certificates:/certificates\n      - prost_run:/run/prost\n'
@@ -199,12 +200,12 @@ gen_prost_services() {
     y_deploy 1 "node.role == manager" stop-first certd
     printf '    configs:\n'
     y_config prost_certd /etc/prost/certd.toml
-    printf '    healthcheck:\n      test: ["CMD", "prost-certd", "check"]\n      interval: 10s\n      timeout: 5s\n      retries: 6\n    networks:\n      - backend\n'
+    printf '    healthcheck:\n      test: ["CMD", "/usr/local/bin/prost-certd", "check"]\n      interval: 10s\n      timeout: 5s\n      retries: 6\n    networks:\n      - backend\n'
   fi
 }
 
 edge_volumes() {
-  printf '  prost_run:\n'
+  printf '  prost_run:\n  prost_state:\n    driver: local\n    driver_opts: { type: tmpfs, device: tmpfs, o: "uid=10001,gid=10001,mode=0700,size=64m" }\n'
   if prost_has_certd; then printf '  certd_state:\n  certificates:\n'; fi
 }
 
@@ -261,13 +262,25 @@ cmd_certs_sync_prost() {
 # What the edge presents: the Prost status and, for prost-certd, its certificate report (expiry and the next renewal), read inside the containers.
 cmd_edge_status() {
   local c
-  c="$(sw ps -q --filter "label=com.docker.swarm.service.name=${STACK_NAME}_edge" --filter status=running | head -1)"
+  c="$(sw ps -q --filter "label=com.docker.swarm.service.name=${STACK_NAME}_$(prost_service)" --filter status=running | head -1)"
   [ -n "$c" ] || die "edge status: the edge is not running"
   echo "edge: $EDGE"
   if [ "$EDGE" = haproxy ]; then echo "(HAProxy: see 'logs edge')"; return 0; fi
-  sw exec "$c" prostctl status || true
+  sw exec "$c" /usr/local/bin/prostctl status || true
   if prost_has_certd; then
     c="$(certd_container)"
-    [ -z "$c" ] || sw exec "$c" prost-certd check --certificates || echo "edge status: prost-certd says a certificate is not ready yet" >&2
+    [ -z "$c" ] || sw exec "$c" /usr/local/bin/prost-certd check --certificates || echo "edge status: prost-certd says a certificate is not ready yet" >&2
   fi
+}
+
+# The volumes of the edge belong to the user 10001 (the image's user, which has no shell and cannot chown): a new named volume is made here and handed over by a throw-away container as root with
+# only the CHOWN capability, before the stack is deployed. Without this Prost cannot create its admin socket in /run/prost ("Permission denied").
+edge_prepare_volumes() {
+  local v
+  [ "$EDGE" != haproxy ] || return 0
+  for v in prost_run $(prost_has_certd && echo certd_state certificates); do
+    sw volume create --label "com.docker.stack.namespace=$STACK_NAME" "${STACK_NAME}_$v" >/dev/null
+    sw run --rm --user 0 --cap-drop ALL --cap-add CHOWN --entrypoint chown -v "${STACK_NAME}_$v:/v" "$(lock_ref 'curlimages/curl:8.15.0')" 10001:10001 /v \
+      || die "the volume ${STACK_NAME}_$v could not be handed to the edge's user"
+  done
 }

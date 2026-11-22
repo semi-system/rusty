@@ -596,6 +596,7 @@ cmd_migrate() {
 
 cmd_deploy() {
   gen_stack > "$STATE_DIR/stack/stack.yaml"
+  edge_prepare_volumes
   # --prune removes the services that are not in the file: the base file (the helpers only) must never prune the mail services of a system that is already running.
   local prune=(--prune); [ -z "$STACK_ONLY" ] || prune=()
   sw stack deploy --with-registry-auth "${prune[@]}" -c - "$STACK_NAME" < "$STATE_DIR/stack/stack.yaml"
