@@ -291,6 +291,12 @@ export interface DomainAliasName {
   name: string;
 }
 
+export interface PlatformSettings {
+  quota_bytes: number | null;
+  max_message_bytes: number | null;
+  messages_per_hour: number | null;
+}
+
 export interface DomainSettings {
   default_plan: string | null;
   max_accounts: number | null;

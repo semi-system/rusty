@@ -1,7 +1,7 @@
 // The API client: the contract's endpoints as typed calls. It knows the three rules of a state-changing request (design section 5): the JSON content type,
 // the CSRF token of the session (the browser adds `Origin` itself) and that a failure is a fixed code, never text to show.
 
-import type { Account, Audit, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, DomainSettings, ImportResult, MailList, Member, Members, Monitor, Plan, PlanList, QueueList, Routing, Trace, Protocols, Queue, Relay, SetupState, Storage } from './types';
+import type { Account, PlatformSettings, Audit, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, DomainSettings, ImportResult, MailList, Member, Members, Monitor, Plan, PlanList, QueueList, Routing, Trace, Protocols, Queue, Relay, SetupState, Storage } from './types';
 import type { MessageKey } from '../i18n';
 
 /** A page of a list, the cursor of the next one and how many rows match in all. */
@@ -234,6 +234,14 @@ export class Client {
   /** The defaults, limits and password rules of a domain. */
   domainSettings(domain: string): Promise<DomainSettings> {
     return this.call('GET', `/api/v1/domains/${seg(domain)}/settings`);
+  }
+
+  platformSettings(): Promise<PlatformSettings> {
+    return this.call('GET', '/api/v1/settings');
+  }
+
+  setPlatformSettings(settings: PlatformSettings): Promise<PlatformSettings> {
+    return this.call('PUT', '/api/v1/settings', settings);
   }
 
   setDomainSettings(domain: string, settings: DomainSettings): Promise<DomainSettings> {

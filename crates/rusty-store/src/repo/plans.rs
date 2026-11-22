@@ -42,6 +42,10 @@ pub trait PlanRepo: Send + Sync {
     async fn must_change_password(&self, account: i64) -> Result<bool>;
     /// Set or clear that flag (the admin web sets it together with the password).
     async fn set_must_change_password(&self, account: i64, on: bool) -> Result<()>;
+    /// The platform-wide configuration object (the last layer of every account) as JSON text; `{}` while none was ever set.
+    async fn global_config(&self) -> Result<String>;
+    /// Change keys of the platform-wide configuration: remove the keys in `remove`, then add the members of the JSON object `set` (the row is made when it is missing).
+    async fn set_global_keys(&self, remove: &[String], set: &str) -> Result<()>;
     /// The configuration object of a domain as JSON text (`{}` for none; `NotFound` for an unknown domain).
     async fn domain_config(&self, domain: i64) -> Result<String>;
     /// Change keys of a domain's configuration in one statement: remove the keys in `remove`, then add the members of the JSON object `set`.
@@ -54,6 +58,9 @@ pub(crate) mod sql {
         WHERE id = $1 AND (CAST($2 AS TEXT) IS NULL OR EXISTS (SELECT 1 FROM plans WHERE name = CAST($2 AS TEXT) AND name <> $3))";
     pub const MUST_CHANGE: &str = "SELECT must_change_password FROM accounts WHERE id = $1";
     pub const SET_MUST_CHANGE: &str = "UPDATE accounts SET must_change_password = $2 WHERE id = $1";
+    pub const GLOBAL_CONFIG: &str = "SELECT CAST(config AS TEXT) FROM plans WHERE name = $1";
+    pub const SET_GLOBAL_KEYS: &str = "INSERT INTO plans (name, config) VALUES ($1, CAST($3 AS jsonb)) \
+        ON CONFLICT (name) DO UPDATE SET config = (plans.config - $2::text[]) || excluded.config";
     pub const DOMAIN_CONFIG: &str = "SELECT CAST(config AS TEXT) FROM domains WHERE id = $1";
     pub const SET_DOMAIN_KEYS: &str = "UPDATE domains SET config = (config - $2::text[]) || CAST($3 AS jsonb) WHERE id = $1";
     pub const MAILBOX_USED: &str = "SELECT used_bytes FROM mailboxes WHERE id = $1";

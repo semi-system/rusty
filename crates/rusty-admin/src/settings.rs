@@ -164,8 +164,84 @@ async fn put(app: &AdminApp, req: Request) -> Response {
     Response::json(200, &json!(new)).with_header("cache-control", "no-store")
 }
 
+/// The platform-wide limits: the last layer under the plan, the domain and the account, so a change reaches the next delivery without a restart. A missing one is `null`
+/// (the server's own default applies).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PlatformSettings {
+    pub quota_bytes: Option<u64>,
+    pub max_message_bytes: Option<u64>,
+    pub messages_per_hour: Option<u64>,
+}
+
+impl PlatformSettings {
+    fn from_config(config: &str) -> PlatformSettings {
+        let v: Value = serde_json::from_str(config).unwrap_or(Value::Null);
+        let n = |k: &str| v.get(k).and_then(Value::as_u64);
+        PlatformSettings { quota_bytes: n("quota_bytes"), max_message_bytes: n("max_message_bytes"), messages_per_hour: n("messages_per_hour") }
+    }
+
+    fn invalid(&self) -> bool {
+        self.quota_bytes.is_some_and(|n| n == 0 || n > MAX_BYTES) || self.max_message_bytes.is_some_and(|n| n == 0 || n > MAX_BYTES) || self.messages_per_hour.is_some_and(|n| n == 0 || n > 1_000_000)
+    }
+}
+
+async fn get_platform(app: &AdminApp, req: Request) -> Response {
+    let (_, p) = match app.require(&req, false).await {
+        Ok(x) => x,
+        Err(r) => return r,
+    };
+    if !p.scope.is_platform() {
+        return err(403, "forbidden");
+    }
+    let Some(s) = app.services.as_ref() else { return err(503, "unavailable") };
+    match s.plans.global_config().await {
+        Ok(c) => Response::json(200, &PlatformSettings::from_config(&c)).with_header("cache-control", "no-store"),
+        Err(e) => fail(&e),
+    }
+}
+
+async fn put_platform(app: &AdminApp, req: Request) -> Response {
+    let (_, p) = match app.require(&req, true).await {
+        Ok(x) => x,
+        Err(r) => return r,
+    };
+    if !p.scope.is_platform() {
+        return err(403, "forbidden");
+    }
+    let Ok(new) = serde_json::from_slice::<PlatformSettings>(&req.body) else { return err(400, "invalid") };
+    if new.invalid() {
+        return err(400, "invalid");
+    }
+    let Some(s) = app.services.as_ref() else { return err(503, "unavailable") };
+    let mut set = Map::new();
+    let mut remove: Vec<String> = Vec::new();
+    for (key, value) in [("quota_bytes", new.quota_bytes), ("max_message_bytes", new.max_message_bytes), ("messages_per_hour", new.messages_per_hour)] {
+        match value {
+            Some(v) => {
+                set.insert(key.to_owned(), Value::from(v));
+            }
+            None => remove.push(key.to_owned()),
+        }
+    }
+    if let Err(e) = s.plans.set_global_keys(&remove, &Value::Object(set).to_string()).await {
+        return fail(&e);
+    }
+    Response::json(200, &json!(new)).with_header("cache-control", "no-store")
+}
+
 /// The routes of this part of the API.
 pub fn routes(app: Arc<AdminApp>, router: Router) -> Router {
+    let a = app.clone();
+    let router = router.route(Method::Get, "/api/v1/settings", handler(move |r: Request| {
+        let a = a.clone();
+        async move { get_platform(&a, r).await }
+    }));
+    let a = app.clone();
+    let router = router.route(Method::Put, "/api/v1/settings", handler(move |r: Request| {
+        let a = a.clone();
+        async move { put_platform(&a, r).await }
+    }));
     let a = app.clone();
     let router = router.route(Method::Get, "/api/v1/domains/{d}/settings", handler(move |r: Request| {
         let a = a.clone();

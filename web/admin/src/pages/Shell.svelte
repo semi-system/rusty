@@ -16,6 +16,7 @@
   import MonitorPage from './Monitor.svelte';
   import ProtocolsPage from './Protocols.svelte';
   import AuditPage from './Audit.svelte';
+  import PlatformSettingsPage from './PlatformSettings.svelte';
   import PlansPage from './Plans.svelte';
   import RoutingPage from './Routing.svelte';
   import QueuePage from './Queue.svelte';
@@ -27,13 +28,14 @@
   let { app, me }: { app: App; me: Me } = $props();
 
   // A route never ends in a domain name: the server answers a path that looks like a file with 404 (see docs/admin-web-frontend.md).
-  type Page = 'audit' | 'domains' | 'overview' | 'accounts' | 'aliases' | 'dkim' | 'dns' | 'relay' | 'storage' | 'routing' | 'queue' | 'settings' | 'monitor' | 'protocols' | 'plans' | 'administrators';
+  type Page = 'platform' | 'audit' | 'domains' | 'overview' | 'accounts' | 'aliases' | 'dkim' | 'dns' | 'relay' | 'storage' | 'routing' | 'queue' | 'settings' | 'monitor' | 'protocols' | 'plans' | 'administrators';
   const routes: Route<Page>[] = [
     { pattern: '/', value: 'domains' },
     { pattern: '/monitor', value: 'monitor' },
     { pattern: '/protocols', value: 'protocols' },
     { pattern: '/plans', value: 'plans' },
     { pattern: '/audit', value: 'audit' },
+    { pattern: '/platform', value: 'platform' },
     { pattern: '/administrators', value: 'administrators' },
     { pattern: '/domains/{name}/overview', value: 'overview' },
     { pattern: '/domains/{name}/accounts', value: 'accounts' },
@@ -70,6 +72,7 @@
     if (match.value === 'protocols') return [{ label: t('nav.protocols') }];
     if (match.value === 'plans') return [{ label: t('nav.plans') }];
     if (match.value === 'audit') return [{ label: t('nav.audit') }];
+    if (match.value === 'platform') return [{ label: t('nav.platform') }];
     if (match.value === 'administrators') return [{ label: t('nav.administrators') }];
     const key = pageLabel[match.value];
     return [{ label: t('nav.domains'), to: '/' }, { label: name, to: href('/domains/{name}/overview', { name }) }, { label: key ? t(key) : '' }];
@@ -113,6 +116,7 @@
           <h2>{t('nav.monitoring')}</h2>
           <Link class="nav-link" href="/monitor" current={nav.path === '/monitor'}>{t('nav.monitor')}</Link>
           <Link class="nav-link" href="/protocols" current={nav.path === '/protocols'}>{t('nav.protocols')}</Link>
+          <Link class="nav-link" href="/platform" current={nav.path === '/platform'}>{t('nav.platform')}</Link>
         </div>
       {/if}
     </nav>
@@ -155,6 +159,8 @@
     {:else if match.value === 'monitor'}
       <!-- Only for platform administrators: for anyone else the page does not exist (the API says 403 as well). -->
       {#if me.scope === 'platform'}<MonitorPage {app} />{:else}<NotFound />{/if}
+    {:else if match.value === 'platform'}
+      {#if me.scope === 'platform'}<PlatformSettingsPage {app} />{:else}<NotFound />{/if}
     {:else if match.value === 'audit'}
       <AuditPage {app} />
     {:else if match.value === 'plans'}
