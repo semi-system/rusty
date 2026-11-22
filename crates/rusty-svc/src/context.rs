@@ -36,6 +36,8 @@ pub struct Context {
     pub protocols: ProtocolSwitches,
     /// The outbound queue as the admin web manages it and the delivery log the outbound worker writes.
     pub queue: Arc<dyn rusty_store::QueueRepo>,
+    /// The audit log: written by the admin web, purged by the garbage collector.
+    pub audit: Arc<dyn rusty_store::AuditRepo>,
     /// Plans and what a mailbox holds (the IMAP `QUOTA` answer).
     pub plans: Arc<dyn rusty_store::PlanRepo>,
 }
@@ -84,6 +86,7 @@ impl Context {
             quota: Arc::new(SizeCap { max_message_bytes: cfg.max_message_bytes }),
             protocols: ProtocolSwitches::new(repos.settings.clone()),
             queue: repos.queue.clone(),
+            audit: repos.audit.clone(),
             plans: repos.plans.clone(),
             cfg,
         })

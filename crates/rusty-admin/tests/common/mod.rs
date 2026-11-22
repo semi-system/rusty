@@ -92,6 +92,7 @@ async fn build(with_sealing: bool) -> Rig {
         plans: repos.plans.clone(),
         routing: repos.routing.clone(),
         queue: repos.queue.clone(),
+        audit: repos.audit.clone(),
         sealing: with_sealing.then_some(seal_key),
         mail: Some(MailSettings { host: "mail.example.org".into(), public_ips: vec!["203.0.114.5".parse().unwrap()], spf_include: None }),
     };
@@ -107,6 +108,8 @@ async fn build(with_sealing: bool) -> Rig {
     let router = rusty_admin::import::routes(app.clone(), router);
     let router = rusty_admin::settings::routes(app.clone(), router);
     let router = rusty_admin::autodiscover::routes(app.clone(), router);
+    let router = rusty_admin::audit::routes(app.clone(), router);
+    let router = rusty_admin::audit::record_changes(app.clone(), router);
     let served_app = app.clone();
     let h = HttpHandler::new(router, HttpConfig::default());
     let spec = ListenerSpec { name: "admin-test", addr: "127.0.0.1:0".parse().unwrap(), max_connections: 64, max_per_ip: 64 };

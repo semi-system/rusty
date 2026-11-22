@@ -58,6 +58,8 @@ pub struct Services {
     pub routing: Arc<dyn rusty_store::RoutingRepo>,
     /// The outbound queue and the delivery log (docs/design-queue.md).
     pub queue: Arc<dyn rusty_store::QueueRepo>,
+    /// The audit log (docs/design-audit.md).
+    pub audit: Arc<dyn rusty_store::AuditRepo>,
     /// `[sealing] public_key`: what secrets are sealed to. `None`: nothing can be sealed, the endpoints that need it answer `503 unavailable`.
     pub sealing: Option<rusty_seal::SealingKey>,
     /// `None` (no host name configured): the DNS page answers `503 unavailable`.

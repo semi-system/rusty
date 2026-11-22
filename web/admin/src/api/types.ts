@@ -348,3 +348,20 @@ export interface Trace {
   items: LogLine[];
   next: number | null;
 }
+
+export interface AuditEntry {
+  id: number;
+  at: number;
+  actor: string;
+  domain_id: number | null;
+  ip: string;
+  method: string;
+  route: string;
+  path: string;
+  status: number;
+}
+
+export interface Audit {
+  items: AuditEntry[];
+  next: number | null;
+}

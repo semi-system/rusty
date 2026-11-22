@@ -27,6 +27,7 @@ pub(crate) mod settings;
 pub(crate) mod plans;
 pub(crate) mod routing;
 pub(crate) mod queue;
+pub(crate) mod audit;
 pub(crate) mod admin;
 mod dns;
 pub(crate) mod jobs;
@@ -45,6 +46,7 @@ pub use settings::{SettingsRepo, PROTOCOLS};
 pub use plans::{AccountUsage, PlanRepo, PlanRow};
 pub use routing::{ListInfo, MemberInfo, RoutingRepo};
 pub use queue::{InboundRow, LogRow, NewLogRow, QueueJob, QueueRepo, HELD_UNTIL};
+pub use audit::{AuditRepo, AuditRow, NewAuditRow};
 pub use admin::{AdminEntry, AdminGrant, AdminRepo, Revoked};
 pub use jobs::{BatchJob, BatchRequest, ClaimRequest, JobRepo, NewJob, OwnerLimits};
 pub use directory::{

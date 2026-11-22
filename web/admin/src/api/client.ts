@@ -1,7 +1,7 @@
 // The API client: the contract's endpoints as typed calls. It knows the three rules of a state-changing request (design section 5): the JSON content type,
 // the CSRF token of the session (the browser adds `Origin` itself) and that a failure is a fixed code, never text to show.
 
-import type { Account, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, DomainSettings, ImportResult, MailList, Member, Members, Monitor, Plan, PlanList, QueueList, Routing, Trace, Protocols, Queue, Relay, SetupState, Storage } from './types';
+import type { Account, Audit, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, DomainSettings, ImportResult, MailList, Member, Members, Monitor, Plan, PlanList, QueueList, Routing, Trace, Protocols, Queue, Relay, SetupState, Storage } from './types';
 import type { MessageKey } from '../i18n';
 
 /** A page of a list, the cursor of the next one and how many rows match in all. */
@@ -253,6 +253,14 @@ export class Client {
     const path = `/api/v1/domains/${seg(domain)}/queue/${id}`;
     if (action === 'delete') await this.call('DELETE', path);
     else await this.call('POST', `${path}/${action}`);
+  }
+
+  /** The audit log: the changes administrators made, newest first. */
+  audit(opts: { domain?: string; before?: number } = {}): Promise<Audit> {
+    const parts: string[] = [];
+    if (opts.domain !== undefined && opts.domain.trim() !== '') parts.push(`domain=${encodeURIComponent(opts.domain.trim())}`);
+    if (opts.before !== undefined) parts.push(`before=${opts.before}`);
+    return this.call('GET', `/api/v1/audit${parts.length > 0 ? '?' + parts.join('&') : ''}`);
   }
 
   /** The delivery log of a domain's outgoing mail, newest first. */
