@@ -166,6 +166,8 @@ grep -q 'image: ghcr.io/semi-system/prost@sha256:' "$ps" || fail "prost: the edg
 [ ! -e "$pe/haproxy.cfg" ] || fail "prost: HAProxy's configuration was made although Prost is the edge"
 no_placeholders "$pe/prost-edge.toml"; no_placeholders "$pe/prost-certd.toml"
 for p in 25:10025 587:10587 143:10143 110:10110 465:10465 993:10993 995:10995 443:10443 80:10080; do grep -q "target: ${p#*:}, published: ${p%%:*}, protocol: tcp, mode: host" "$ps" || fail "prost: the edge does not publish ${p%%:*}"; done
+grep -q '^  prost_state:' "$ps" && grep -q 'uid=10001,gid=10001' "$ps" && grep -q 'prost_state:/var/lib/prost' "$ps" || fail "prost: the edge's state directory is not a volume owned by its user"
+grep -q '"/usr/local/bin/prostctl", "status"' "$ps" || fail "prost: the health check does not name the binary by its path (the image has no PATH entry for it)"
 grep -q '^  certd_state:' "$ps" && grep -q '^  certificates:' "$ps" && grep -q '^  prost_run:' "$ps" || fail "prost: the volumes of the edge and prost-certd are missing"
 ! grep -q '^  edgedata:' "$ps" || fail "prost: HAProxy's volume is in the stack"
 grep -q 'certificate = "/certificates/edge/current/fullchain.pem"' "$pe/prost-edge.toml" || fail "prost: the edge does not read prost-certd's certificate"
