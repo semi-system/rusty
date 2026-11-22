@@ -14,6 +14,7 @@ pub mod autoconfig;
 pub mod autodiscover;
 pub mod dns;
 pub mod health;
+pub mod import;
 pub mod live;
 pub mod manage;
 pub mod monitor;

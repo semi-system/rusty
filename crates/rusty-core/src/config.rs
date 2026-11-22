@@ -388,9 +388,9 @@ impl StartupConfig {
             imap: ImapConfig {
                 listen_143: Listen::loopback(1143),
                 listen_993: Listen::loopback(9993),
-                listen_110: Listen::loopback(1110),
-                // Not near 9993: the dev daemons of the tests are started with port offsets of a few units, and 9995 + n would be 9993 + n + 2.
-                listen_995: Listen::loopback(9895),
+                listen_110: Listen::loopback(3110),
+                // Not near the other dev ports: concurrent test daemons are started with port offsets that differ by the gap of their process ids (tens to hundreds), and two dev ports that far apart collide (1143 and 1110 are 33 apart).
+                listen_995: Listen::loopback(8895),
                 ..ImapConfig::default()
             },
             outbound: OutboundConfig::default(),

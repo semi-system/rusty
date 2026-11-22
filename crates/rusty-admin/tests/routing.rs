@@ -90,3 +90,34 @@ async fn a_domain_alias_delivers_as_the_domain_it_stands_for_and_only_platform_a
     assert_eq!(t.post("/api/v1/domains/one.test/lists", json!({ "local": "staff" })).await.status, 201, "a domain administrator manages its own lists");
     assert_eq!(t.get("/api/v1/domains/home.test/routing").await.status, 404, "and cannot see another domain");
 }
+
+#[tokio::test]
+async fn accounts_are_imported_from_csv_line_by_line_with_a_dry_run_that_changes_nothing() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    let c = Client::sign_in(r.addr, "root@home.test").await;
+    assert_eq!(c.post("/api/v1/domains", json!({ "name": "imp.test" })).await.status, 201);
+    assert_eq!(c.mutate("PUT", "/api/v1/plans", Some(json!({ "name": "small", "quota_bytes": 1000000 }))).await.status, 201);
+    let csv = "address,password,plan\nalice,alice-password-1,small\nbob@imp.test,\"bob,password-2\"\ncarol@elsewhere.test,carol-password-3\ndave,short\nerin,erin-password-5,nosuchplan\nalice,again-password-1\nfrank\n\n";
+    let dry = c.post("/api/v1/domains/imp.test/accounts/import", json!({ "csv": csv, "dry_run": true })).await;
+    assert_eq!(dry.status, 200, "{}", dry.body);
+    conforms(&dry.json(), "ImportResult");
+    assert_eq!((dry.json()["created"].clone(), dry.json()["invalid"].clone(), dry.json()["dry_run"].clone()), (json!(3), json!(4), json!(true)));
+    assert!(r.dir.find_account("alice@imp.test").await.unwrap().is_none(), "a dry run makes nothing");
+    let done = c.post("/api/v1/domains/imp.test/accounts/import", json!({ "csv": csv })).await;
+    assert_eq!((done.json()["created"].clone(), done.json()["exists"].clone(), done.json()["invalid"].clone()), (json!(3), json!(0), json!(4)));
+    let reasons: Vec<String> = done.json()["rows"].as_array().unwrap().iter().filter_map(|x| x["reason"].as_str().map(str::to_owned)).collect();
+    assert!(reasons.contains(&"the address is not in this domain".to_owned()) && reasons.contains(&"the password is too short".to_owned()) && reasons.contains(&"no such plan".to_owned()) && reasons.contains(&"the address is listed twice".to_owned()), "{reasons:?}");
+    // The accounts exist, the first has the role addresses, the plan was applied, and a second import finds them there.
+    let accounts = c.get("/api/v1/domains/imp.test/accounts").await.json();
+    let alice = accounts["items"].as_array().unwrap().iter().find(|a| a["address"] == "alice@imp.test").unwrap().clone();
+    assert_eq!(alice["plan"], "small");
+    assert!(r.dir.find_account("bob@imp.test").await.unwrap().is_some() && r.dir.find_account("frank@imp.test").await.unwrap().is_some());
+    assert!(matches!(r.dir.resolve("postmaster@imp.test").await.unwrap(), rusty_directory::Resolved::Account(_)));
+    let again = c.post("/api/v1/domains/imp.test/accounts/import", json!({ "csv": "alice,another-password-1\ngina,gina-password-7" })).await;
+    assert_eq!((again.json()["created"].clone(), again.json()["exists"].clone()), (json!(1), json!(1)));
+    // Too many lines for one request, and unknown fields, are refused.
+    let big: String = (0..501).map(|i| format!("u{i}\n")).collect();
+    assert_eq!(c.post("/api/v1/domains/imp.test/accounts/import", json!({ "csv": big })).await.status, 400);
+    assert_eq!(c.post("/api/v1/domains/imp.test/accounts/import", json!({ "csv": "x", "extra": 1 })).await.status, 400);
+}

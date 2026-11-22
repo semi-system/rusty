@@ -104,6 +104,7 @@ async fn build(with_sealing: bool) -> Rig {
     let router = rusty_admin::plans::routes(app.clone(), router);
     let router = rusty_admin::routing::routes(app.clone(), router);
     let router = rusty_admin::queue::routes(app.clone(), router);
+    let router = rusty_admin::import::routes(app.clone(), router);
     let router = rusty_admin::autodiscover::routes(app.clone(), router);
     let served_app = app.clone();
     let h = HttpHandler::new(router, HttpConfig::default());

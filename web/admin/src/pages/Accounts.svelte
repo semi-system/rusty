@@ -2,7 +2,7 @@
   import Badge from '../lib/Badge.svelte';
   import { onMount } from 'svelte';
   import type { App } from '../lib/app.svelte';
-  import type { Account, Plan } from '../api/types';
+  import type { Account, ImportResult, Plan } from '../api/types';
   import { bytes } from '../lib/bytes';
   import DomainShell from '../lib/DomainShell.svelte';
   import ErrorNote from '../lib/ErrorNote.svelte';
@@ -38,6 +38,32 @@
       notice = t('accounts.deleteScheduled', { address: a.address });
       deleting = null;
       await load();
+    });
+
+  // Making many accounts from a CSV (a file or pasted text): one line per account, sent in requests of at most 400 lines; the dry run only reports.
+  const CHUNK = 400;
+  let csv = $state('');
+  let report = $state<ImportResult | null>(null);
+
+  async function readFile(e: Event): Promise<void> {
+    const file = (e.currentTarget as HTMLInputElement).files?.[0];
+    if (file !== undefined) csv = await file.text();
+  }
+
+  const runImport = (dry: boolean): Promise<void> =>
+    guarded(async () => {
+      const lines = csv.split(/\r?\n/);
+      const total: ImportResult = { dry_run: dry, created: 0, exists: 0, invalid: 0, rows: [] };
+      for (let i = 0; i < lines.length; i += CHUNK) {
+        const part = await app.client.importAccounts(name, lines.slice(i, i + CHUNK).join('\n'), dry);
+        total.created += part.created;
+        total.exists += part.exists;
+        total.invalid += part.invalid;
+        // A line number is the number within its request: shift it to the one in the file.
+        total.rows.push(...part.rows.filter((r) => r.result === 'invalid').map((r) => ({ ...r, line: r.line + i })));
+      }
+      report = total;
+      if (!dry) await load();
     });
 
   let editing = $state<string | null>(null);
@@ -213,6 +239,25 @@
       </div>
       {#if next !== null}<p class="form-actions"><button type="button" class="secondary" onclick={() => load(next ?? undefined)}>{t('common.loadMore')}</button></p>{/if}
     {/if}
+
+    <section class="panel" aria-labelledby="import-accounts">
+      <h2 id="import-accounts">{t('import.title')}</h2>
+      <p class="hint">{t('import.lede')}</p>
+      <label>{t('import.file')}<input type="file" accept=".csv,text/csv,text/plain" onchange={readFile} /></label>
+      <label>{t('import.text')}<textarea bind:value={csv} name="csv" rows="6" spellcheck="false"></textarea></label>
+      <div class="form-actions">
+        <button type="button" class="secondary" disabled={busy || csv.trim() === ''} onclick={() => runImport(true)}>{t('import.check')}</button>
+        <button type="button" class="primary" disabled={busy || csv.trim() === ''} onclick={() => runImport(false)}>{t('import.run')}</button>
+      </div>
+      {#if report !== null}
+        <p class="alert ok" role="status">{report.dry_run ? t('import.checked', { n: report.created, exists: report.exists, bad: report.invalid }) : t('import.done', { n: report.created, exists: report.exists, bad: report.invalid })}</p>
+        {#if report.rows.length > 0}
+          <ul class="members">
+            {#each report.rows as r (r.line)}<li>{t('import.line', { line: r.line, address: r.address, reason: r.reason ?? '' })}</li>{/each}
+          </ul>
+        {/if}
+      {/if}
+    </section>
 
     <section class="panel" aria-labelledby="new-account">
       <h2 id="new-account">{t('accounts.new')}</h2>
