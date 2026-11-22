@@ -42,11 +42,67 @@ fn html_escape(s: &str) -> String {
 }
 
 /// The message with the footer added, or `None` when the message is not of a shape the footer can be added to (the caller then sends it as it is). The message has CRLF line ends.
+///
+/// A single `text/plain` or `text/html` body gets it at its end. A `multipart/alternative` gets it in each of its text parts; any other multipart (a message with attachments) gets it in its
+/// **first** part when that is text or an alternative, so the text the person wrote carries it and the attachments are not touched.
 pub fn append_footer(message: &[u8], footer: &str) -> Option<Vec<u8>> {
     let footer = footer.trim();
     if footer.is_empty() || footer.len() > MAX_FOOTER || footer.contains('\0') {
         return None;
     }
+    append_in(message, footer, 0)
+}
+
+/// The value of the `boundary` parameter of a Content-Type header value.
+fn boundary_of(content_type: &str) -> Option<String> {
+    let lower = content_type.to_ascii_lowercase();
+    let at = lower.find("boundary=")? + "boundary=".len();
+    let rest = content_type.get(at..)?;
+    let value = match rest.strip_prefix('"') {
+        Some(quoted) => quoted.split('"').next()?,
+        None => rest.split([';', ' ']).next()?,
+    };
+    (!value.is_empty() && value.len() <= 200).then(|| value.to_owned())
+}
+
+/// The footer in a multipart body: `parts` of the body are the lines between the delimiter lines.
+fn append_multipart(head: &[u8], body: &[u8], content_type: &str, footer: &str, depth: u8) -> Option<Vec<u8>> {
+    if depth >= 3 {
+        return None;
+    }
+    let boundary = boundary_of(content_type)?;
+    let (open, close) = (format!("--{boundary}"), format!("--{boundary}--"));
+    let text = std::str::from_utf8(body).ok()?;
+    let lines: Vec<&str> = text.split("\r\n").collect();
+    let delims: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| **l == open || **l == close).map(|(i, _)| i).collect();
+    if delims.len() < 2 {
+        return None;
+    }
+    let alternative = content_type.to_ascii_lowercase().contains("multipart/alternative");
+    let windows: Vec<(usize, usize)> = delims.windows(2).filter_map(|p| match p { [a, b] if lines.get(*a).is_some_and(|l| *l != close) => Some((a + 1, *b)), _ => None }).collect();
+    // An alternative gets it in every text part; a message with attachments in its first part only.
+    let chosen: Vec<(usize, usize)> = if alternative { windows } else { windows.into_iter().take(1).collect() };
+    let mut out_lines: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
+    let mut changed = false;
+    // From the last part to the first: a part that grows moves only the lines after it.
+    for (start, end) in chosen.iter().rev() {
+        let part = lines.get(*start..*end)?.join("\r\n");
+        if let Some(with) = append_in(part.as_bytes(), footer, depth + 1) {
+            let new_lines: Vec<String> = String::from_utf8(with).ok()?.split("\r\n").map(str::to_owned).collect();
+            out_lines.splice(*start..*end, new_lines);
+            changed = true;
+        }
+    }
+    if !changed {
+        return None;
+    }
+    let mut out = head.to_vec();
+    out.extend_from_slice(b"\r\n");
+    out.extend_from_slice(out_lines.join("\r\n").as_bytes());
+    Some(out)
+}
+
+fn append_in(message: &[u8], footer: &str, depth: u8) -> Option<Vec<u8>> {
     let split = message.windows(4).position(|w| w == b"\r\n\r\n")?;
     let (head, body) = (message.get(..split + 2)?, message.get(split + 4..)?);
     let head_text = std::str::from_utf8(head).ok()?;
@@ -56,6 +112,9 @@ pub fn append_footer(message: &[u8], footer: &str) -> Option<Vec<u8>> {
         return None;
     }
     let media = content_type.split(';').next().unwrap_or_default().trim().to_owned();
+    if media.starts_with("multipart/") {
+        return append_multipart(head, body, &content_type, footer, depth);
+    }
     // A charset the footer's own characters may not fit in is not guessed at: only ASCII text or UTF-8.
     let charset_ok = !content_type.contains("charset")
         || content_type.contains("charset=utf-8")
@@ -134,6 +193,27 @@ mod tests {
         let m = b"Content-Type: text/html; charset=UTF-8\r\n\r\n<html><body><p>Hi</p></body></html>\r\n";
         let out = text(append_footer(m, "A & B <c>"));
         assert!(out.contains("<p>Hi</p><hr><p>A &amp; B &lt;c&gt;</p>\r\n</body>"), "{out}");
+    }
+
+    #[test]
+    fn an_alternative_gets_the_footer_in_each_text_part_and_a_message_with_attachments_in_its_first() {
+        let alt = "Content-Type: multipart/alternative; boundary=\"b1\"\r\n\r\n--b1\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nHello\r\n--b1\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<html><body><p>Hello</p></body></html>\r\n--b1--\r\n";
+        let out = text(append_footer(alt.as_bytes(), "Confidential"));
+        assert!(out.contains("Hello\r\n\r\n-- \r\nConfidential\r\n"), "{out}");
+        assert!(out.contains("<hr><p>Confidential</p>\r\n</body>"), "{out}");
+        assert_eq!(out.matches("--b1\r\n").count(), 2, "the structure is kept: {out}");
+        assert!(out.ends_with("--b1--\r\n"), "{out}");
+        let mixed = "Content-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\nContent-Type: text/plain\r\n\r\nSee attached\r\n--m\r\nContent-Type: application/pdf\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERi0x\r\n--m--\r\n";
+        let out = text(append_footer(mixed.as_bytes(), "F"));
+        assert!(out.contains("See attached\r\n\r\n-- \r\nF\r\n"), "{out}");
+        assert!(out.contains("JVBERi0x\r\n--m--"), "the attachment is untouched: {out}");
+        assert_eq!(out.matches("-- \r\nF").count(), 1, "only the first part");
+        // A mixed message whose first part is an attachment is left alone.
+        let first_pdf = "Content-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\nContent-Type: application/pdf\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERi0x\r\n--m--\r\n";
+        assert!(append_footer(first_pdf.as_bytes(), "F").is_none());
+        // A nested alternative inside a mixed message is reached through its first part.
+        let nested = "Content-Type: multipart/mixed; boundary=o\r\n\r\n--o\r\nContent-Type: multipart/alternative; boundary=i\r\n\r\n--i\r\nContent-Type: text/plain\r\n\r\nHi\r\n--i--\r\n--o--\r\n";
+        assert!(text(append_footer(nested.as_bytes(), "F")).contains("Hi\r\n\r\n-- \r\nF"));
     }
 
     #[test]

@@ -1058,3 +1058,24 @@ async fn mail_filed_as_spam_is_logged_as_held_with_its_score() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn an_attachment_of_a_blocked_type_is_refused_at_the_end_of_data_and_other_mail_is_not() {
+    for_each_backend(|b| async move {
+        let (alice, _) = b.seed().await;
+        let mut o = Opts::default();
+        o.options.filters = vec![Arc::new(rusty_smtp::policy::AttachmentPolicy(b.dir.clone()))];
+        let s = start(&b, o).await;
+        s.ctx.directory.set_account_config(alice, serde_json::json!({ "blocked_extensions": ["exe"] })).await.unwrap();
+        let with_exe = b"From: a@remote.example\r\nTo: alice@example.net\r\nSubject: file\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nhi\r\n--b\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"setup.EXE\"\r\n\r\nTVqQAAMA\r\n--b--\r\n";
+        let mut c = Client::hello(s.addr).await;
+        let r = c.mail("sender@remote.example", &["alice@example.net"], with_exe).await;
+        assert!(r.starts_with("554 5.7.1 Attachments of type .exe are not accepted"), "{r}");
+        assert!(b.inbox(alice, &s.blobs).await.is_empty(), "nothing was stored");
+        let mut c = Client::hello(s.addr).await;
+        assert!(c.mail("sender@remote.example", &["alice@example.net"], MSG).await.starts_with("250"));
+        assert_eq!(b.inbox(alice, &s.blobs).await.len(), 1);
+        s.stop().await;
+    })
+    .await;
+}

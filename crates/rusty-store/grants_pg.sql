@@ -27,7 +27,7 @@ BEGIN
   END IF;
   IF to_regrole('rusty_admin') IS NOT NULL THEN
     REVOKE ALL ON ALL TABLES IN SCHEMA public FROM rusty_admin;
-    GRANT SELECT ON mail_log TO rusty_admin;   -- the message trace
+    GRANT SELECT ON mail_log, message_stats TO rusty_admin;   -- the message trace
     GRANT SELECT, INSERT ON audit_log TO rusty_admin;   -- the audit log of the admin web (docs/design-audit.md)
     GRANT SELECT, INSERT, UPDATE, DELETE ON domains, accounts, aliases, domain_aliases, lists, list_members, plans, capabilities, mailboxes,
       domain_dkim_keys, domain_dns_config, domain_dns_event, domain_dns_state, domain_relays, admin_grants, jobs TO rusty_admin;
@@ -156,7 +156,8 @@ BEGIN
     GRANT SELECT, UPDATE, DELETE ON blobs, deliveries TO rusty_gc;
     GRANT SELECT, INSERT, UPDATE, DELETE ON blob_locations, blob_store_leases, jobs TO rusty_gc;
     GRANT SELECT, INSERT, UPDATE ON job_turns TO rusty_gc;
-    GRANT SELECT, DELETE ON mail_log TO rusty_gc;   -- the log is kept 30 days
+    GRANT SELECT, DELETE ON mail_log TO rusty_gc;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON message_stats TO rusty_gc;   -- the roll-up of the delivery log into days (docs/design-queue.md)   -- the log is kept 30 days
     GRANT SELECT, DELETE ON audit_log TO rusty_gc;
     GRANT SELECT, DELETE ON vacation_replies TO rusty_gc;   -- the vacation book-keeping is kept 60 days (docs/design-mail-rules.md)   -- the audit log is kept 365 days
     GRANT SELECT, INSERT, UPDATE ON blob_stores, blob_backends TO rusty_gc;

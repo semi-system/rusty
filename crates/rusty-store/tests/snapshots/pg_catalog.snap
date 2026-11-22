@@ -196,6 +196,11 @@ COLUMN mailboxes.uid_validity bigint nullable=NO identity=NO/ collation= default
 COLUMN mailboxes.next_folder_id bigint nullable=NO identity=NO/ collation= default=1
 COLUMN mailboxes.used_bytes bigint nullable=NO identity=NO/ collation= default=0
 COLUMN mailboxes.last_delivery_at bigint nullable=YES identity=NO/ collation= default=
+COLUMN message_stats.domain_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN message_stats.day bigint nullable=NO identity=NO/ collation= default=
+COLUMN message_stats.direction text nullable=NO identity=NO/ collation=C default=
+COLUMN message_stats.event text nullable=NO identity=NO/ collation=C default=
+COLUMN message_stats.count bigint nullable=NO identity=NO/ collation= default=
 COLUMN messages.mailbox_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN messages.id bigint nullable=NO identity=NO/ collation= default=
 COLUMN messages.folder_id bigint nullable=NO identity=NO/ collation= default=
@@ -572,6 +577,17 @@ CONSTRAINT mailboxes.mailboxes_uid_validity_not_null NOT NULL uid_validity
 CONSTRAINT mailboxes.mailboxes_uid_validity_valid CHECK (uid_validity > 0)
 CONSTRAINT mailboxes.mailboxes_used_bytes_not_null NOT NULL used_bytes
 CONSTRAINT mailboxes.mailboxes_used_bytes_valid CHECK (used_bytes >= 0)
+CONSTRAINT message_stats.message_stats_count_not_null NOT NULL count
+CONSTRAINT message_stats.message_stats_count_valid CHECK (count >= 0)
+CONSTRAINT message_stats.message_stats_day_not_null NOT NULL day
+CONSTRAINT message_stats.message_stats_day_valid CHECK (day >= 0)
+CONSTRAINT message_stats.message_stats_direction_not_null NOT NULL direction
+CONSTRAINT message_stats.message_stats_direction_valid CHECK (direction = ANY (ARRAY['out'::text, 'in'::text]))
+CONSTRAINT message_stats.message_stats_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+CONSTRAINT message_stats.message_stats_domain_id_not_null NOT NULL domain_id
+CONSTRAINT message_stats.message_stats_event_not_null NOT NULL event
+CONSTRAINT message_stats.message_stats_event_valid CHECK (length(event) >= 1 AND length(event) <= 32)
+CONSTRAINT message_stats.message_stats_pkey PRIMARY KEY (domain_id, day, direction, event)
 CONSTRAINT messages.messages_blob_fkey FOREIGN KEY (blob_store_id, blob_hash) REFERENCES blobs(store_id, hash) ON DELETE RESTRICT
 CONSTRAINT messages.messages_blob_hash_not_null NOT NULL blob_hash
 CONSTRAINT messages.messages_blob_store_id_not_null NOT NULL blob_store_id
@@ -702,6 +718,8 @@ INDEX mail_log.mail_log_domain CREATE INDEX mail_log_domain ON public.mail_log U
 INDEX mail_log.mail_log_pkey CREATE UNIQUE INDEX mail_log_pkey ON public.mail_log USING btree (id)
 INDEX mailboxes.mailboxes_account_id_key CREATE UNIQUE INDEX mailboxes_account_id_key ON public.mailboxes USING btree (account_id)
 INDEX mailboxes.mailboxes_pkey CREATE UNIQUE INDEX mailboxes_pkey ON public.mailboxes USING btree (id)
+INDEX message_stats.message_stats_day CREATE INDEX message_stats_day ON public.message_stats USING btree (day)
+INDEX message_stats.message_stats_pkey CREATE UNIQUE INDEX message_stats_pkey ON public.message_stats USING btree (domain_id, day, direction, event)
 INDEX messages.messages_blob CREATE INDEX messages_blob ON public.messages USING btree (blob_store_id, blob_hash)
 INDEX messages.messages_deleted_at CREATE INDEX messages_deleted_at ON public.messages USING btree (deleted_at) WHERE (deleted_at IS NOT NULL)
 INDEX messages.messages_mailbox_id_folder_id_uid_key CREATE UNIQUE INDEX messages_mailbox_id_folder_id_uid_key ON public.messages USING btree (mailbox_id, folder_id, uid)

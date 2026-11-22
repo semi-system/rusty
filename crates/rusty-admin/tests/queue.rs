@@ -103,3 +103,33 @@ async fn the_statistics_count_the_log_per_day_and_kind_for_the_domain_only() {
     let t = Client::sign_in(r.addr, "tenant@two.test").await;
     assert_eq!(t.get("/api/v1/domains/one.test/stats").await.status, 404);
 }
+
+#[tokio::test]
+async fn the_days_of_the_log_are_rolled_up_and_the_statistics_read_older_days_from_the_roll_up() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    let c = Client::sign_in(r.addr, "root@home.test").await;
+    assert_eq!(c.post("/api/v1/domains", json!({ "name": "one.test" })).await.status, 201);
+    let dom = r.dir.find_domain("one.test").await.unwrap().unwrap().id;
+    let row = |event: &'static str| NewLogRow { domain: dom, job_id: None, sender: "a@one.test".into(), recipient: "b@far.example".into(), event, remote: None, status: None, detail: None };
+    let queue = r.outbound.repos().queue.clone();
+    queue.log(&[row("delivered"), row("delivered"), row("bounced")]).await.unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    // Two days later the day of the lines is complete and old enough to be rolled up; the log may be gone by then, the counts are not.
+    let later = now + 2 * 86_400;
+    assert!(queue.roll_up_stats(later).await.unwrap() >= 2, "a row per kind of line");
+    assert_eq!(queue.roll_up_stats(later).await.unwrap(), queue.roll_up_stats(later).await.unwrap(), "repeating changes nothing");
+    let far = now + 40 * 86_400;
+    let rows = queue.stats(dom, 0, far).await.unwrap();
+    let sent: i64 = rows.iter().filter(|x| x.direction == "out" && x.event == "delivered").map(|x| x.count).sum();
+    let failed: i64 = rows.iter().filter(|x| x.event == "bounced").map(|x| x.count).sum();
+    assert_eq!((sent, failed), (2, 1), "read from the roll-up: {rows:?}");
+    // Nothing is counted twice while the log still holds the day.
+    let live = queue.stats(dom, 0, now).await.unwrap();
+    assert_eq!(live.iter().filter(|x| x.event == "delivered").map(|x| x.count).sum::<i64>(), 2);
+    // The endpoint takes a range of days and refuses nonsense.
+    assert_eq!(c.get("/api/v1/domains/one.test/stats?days=90").await.status, 200);
+    assert_eq!(c.get("/api/v1/domains/one.test/stats?days=0").await.status, 400);
+    assert_eq!(c.get("/api/v1/domains/one.test/stats?days=366").await.status, 400);
+    assert!(queue.purge_stats(now.div_euclid(86_400) + 100, 100).await.unwrap() >= 2, "rows past their retention are removed");
+}

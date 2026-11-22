@@ -29,6 +29,9 @@ pub struct GcSummary {
     pub audit_purged: u64,
     /// Rows of the vacation book-keeping older than 60 days.
     pub vacation_purged: u64,
+    /// Rows of the per-day statistics written and removed.
+    pub stats_rolled: u64,
+    pub stats_purged: u64,
     /// Messages people deleted that were kept for recovery and are now removed for good (their bodies are freed by the blob collection below).
     pub deleted_purged: u64,
     /// Steps that failed (logged); a failed step never stops the others.
@@ -70,6 +73,20 @@ impl GcService {
                 Ok(n) => s.deleted_purged = n,
                 Err(e) => step_failed(&mut s, "purge deleted messages", &e),
             },
+            Err(e) => step_failed(&mut s, "read the clock", &e),
+        }
+        // The days the log holds are counted into the statistics before the log is cut, and the statistics are kept 400 days.
+        match ctx.jobs.now().await {
+            Ok(now) => {
+                match ctx.queue.roll_up_stats(now).await {
+                    Ok(n) => s.stats_rolled = n,
+                    Err(e) => step_failed(&mut s, "roll up the statistics", &e),
+                }
+                match ctx.queue.purge_stats(now.div_euclid(86_400) - 400, 5000).await {
+                    Ok(n) => s.stats_purged = n,
+                    Err(e) => step_failed(&mut s, "purge the statistics", &e),
+                }
+            }
             Err(e) => step_failed(&mut s, "read the clock", &e),
         }
         // The delivery log is kept for 30 days (docs/design-queue.md).

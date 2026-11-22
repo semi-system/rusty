@@ -357,3 +357,28 @@ fn the_score_lines_are_judged_in_order() {
     assert_eq!(judge(50.0, None, None), None);
     assert_eq!(judge(50.0, None, Some(10.0)), Some(true));
 }
+
+// ------------------------------------------------------------------------------------------------ the action on a virus
+
+struct Action(rusty_smtp::scan::VirusAction);
+
+#[async_trait::async_trait]
+impl rusty_smtp::scan::VirusPolicy for Action {
+    async fn action(&self, _: &[rusty_core::AccountId]) -> rusty_smtp::scan::VirusAction {
+        self.0
+    }
+}
+
+#[tokio::test]
+async fn a_virus_is_refused_or_filed_in_the_spam_folder_as_the_recipients_policy_says() {
+    use rusty_smtp::scan::VirusAction;
+    let (addr, _) = clamd(Clam::Found).await;
+    let quarantine = ClamdFilter::new(&addr, Duration::from_millis(600), 1024 * 1024, OnError::Tempfail).with_policy(Arc::new(Action(VirusAction::Quarantine)));
+    match quarantine.check(&ctx(MSG, &rcpt())).await {
+        FilterVerdict::QuarantineTagged(QuarantineFolder::Spam, tags) => assert!(tags.iter().any(|(k, v)| k == "X-Virus-Scan" && v == "FOUND"), "{tags:?}"),
+        other => panic!("{other:?}"),
+    }
+    let (addr, _) = clamd(Clam::Found).await;
+    let reject = ClamdFilter::new(&addr, Duration::from_millis(600), 1024 * 1024, OnError::Tempfail).with_policy(Arc::new(Action(VirusAction::Reject)));
+    assert!(matches!(reject.check(&ctx(MSG, &rcpt())).await, FilterVerdict::Reject { code: 550, .. }));
+}

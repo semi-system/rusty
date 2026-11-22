@@ -17,8 +17,8 @@ describe('platform settings', () => {
   it('shows the limits and saves the changed ones, sizes in megabytes', async () => {
     const s = fakeServer(
       signedIn(PLATFORM, {
-        'GET /api/v1/settings': () => ok({ quota_bytes: 1_073_741_824, max_message_bytes: null, messages_per_hour: null }),
-        'PUT /api/v1/settings': () => ok({ quota_bytes: 2_097_152, max_message_bytes: 26_214_400, messages_per_hour: 50 }),
+        'GET /api/v1/settings': () => ok({ quota_bytes: 1_073_741_824, max_message_bytes: null, messages_per_hour: null, virus_action: null, blocked_extensions: [] }),
+        'PUT /api/v1/settings': () => ok({ quota_bytes: 2_097_152, max_message_bytes: 26_214_400, messages_per_hour: 50, virus_action: 'quarantine' }),
       }),
     );
     render(App, { app: new State(s.client) });
@@ -27,9 +27,11 @@ describe('platform settings', () => {
     await fireEvent.input(quota, { target: { value: '2' } });
     await fireEvent.input(screen.getByLabelText(t('platform.maxMessageMb')), { target: { value: '25' } });
     await fireEvent.input(screen.getByLabelText(t('platform.perHour')), { target: { value: '50' } });
+    await fireEvent.change(screen.getByLabelText(t('platform.virus')), { target: { value: 'quarantine' } });
+    await fireEvent.input(screen.getByLabelText(t('platform.blocked')), { target: { value: 'exe, SCR  js' } });
     await fireEvent.click(screen.getByRole('button', { name: t('common.save') }));
     expect(await screen.findByText(t('platform.saved'))).toBeTruthy();
-    expect(s.last('PUT /api/v1/settings')?.body).toEqual({ quota_bytes: 2_097_152, max_message_bytes: 26_214_400, messages_per_hour: 50 });
+    expect(s.last('PUT /api/v1/settings')?.body).toEqual({ quota_bytes: 2_097_152, max_message_bytes: 26_214_400, messages_per_hour: 50, virus_action: 'quarantine', blocked_extensions: ['exe', 'SCR', 'js'] });
   });
 
   it('is for platform administrators: a domain administrator gets no such page', async () => {

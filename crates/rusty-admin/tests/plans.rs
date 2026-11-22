@@ -122,7 +122,7 @@ async fn the_platform_limits_are_the_last_layer_and_only_platform_administrators
     let root = Client::sign_in(r.addr, "root@home.test").await;
     let none = root.get("/api/v1/settings").await;
     conforms(&none.json(), "PlatformSettings");
-    assert_eq!(none.json(), json!({ "quota_bytes": null, "max_message_bytes": null, "messages_per_hour": null }));
+    assert_eq!(none.json(), json!({ "quota_bytes": null, "max_message_bytes": null, "messages_per_hour": null, "virus_action": null, "blocked_extensions": [] }));
     assert_eq!(root.post("/api/v1/domains/one.test/accounts", json!({ "local": "alice", "password": "alice-password-1" })).await.status, 201);
     let put = root.mutate("PUT", "/api/v1/settings", Some(json!({ "quota_bytes": 5_000_000, "max_message_bytes": null, "messages_per_hour": 40 }))).await;
     assert_eq!((put.status, put.json()["messages_per_hour"].clone()), (200, json!(40)), "{}", put.body);
@@ -175,4 +175,22 @@ async fn a_plan_carries_its_spam_lines_and_they_must_be_in_range_and_in_order() 
     // Clearing both leaves the plan without lines.
     let cleared = c.mutate("PUT", "/api/v1/plans", Some(json!({ "name": "strict", "quota_bytes": 1_000_000 }))).await;
     assert_eq!(cleared.json()["spam_junk_score"], json!(null));
+}
+
+#[tokio::test]
+async fn the_action_on_a_virus_is_a_platform_setting_that_is_reject_or_quarantine() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    let c = Client::sign_in(r.addr, "root@home.test").await;
+    let put = c.mutate("PUT", "/api/v1/settings", Some(json!({ "quota_bytes": null, "max_message_bytes": null, "messages_per_hour": null, "virus_action": "quarantine" }))).await;
+    assert_eq!(put.status, 200, "{}", put.body);
+    conforms(&put.json(), "PlatformSettings");
+    assert_eq!(c.get("/api/v1/settings").await.json()["virus_action"], json!("quarantine"));
+    let bad = c.mutate("PUT", "/api/v1/settings", Some(json!({ "virus_action": "explode" }))).await;
+    assert_eq!(bad.status, 400);
+    // The directory layers give it to the scanner: the account resolves the platform's value.
+    let root = r.dir.find_account("root@home.test").await.unwrap().unwrap().id;
+    assert_eq!(r.dir.effective_config(root, "virus_action").await.unwrap(), Some(json!("quarantine")));
+    assert_eq!(c.mutate("PUT", "/api/v1/settings", Some(json!({ "virus_action": null }))).await.status, 200);
+    assert_eq!(r.dir.effective_config(root, "virus_action").await.unwrap(), None);
 }

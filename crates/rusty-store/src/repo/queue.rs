@@ -73,8 +73,13 @@ pub struct StatRow {
 
 #[async_trait]
 pub trait QueueRepo: Send + Sync {
-    /// The log lines of a domain since `since` (unix seconds), counted per day, direction and event, oldest day first (the statistics page).
-    async fn stats(&self, domain: DomainId, since: i64) -> Result<Vec<StatRow>>;
+    /// The log lines of a domain since `since` (unix seconds), counted per day, direction and event, oldest day first (the statistics page): the days the log still holds are counted from the log,
+    /// the older ones come from the roll-up (`message_stats`), which keeps 400 days.
+    async fn stats(&self, domain: DomainId, since: i64, now: i64) -> Result<Vec<StatRow>>;
+    /// Count the completed days of the last 28 (before the day of `now`) from the log into `message_stats`; safe to repeat. How many rows were written.
+    async fn roll_up_stats(&self, now: i64) -> Result<u64>;
+    /// Remove roll-up rows of days before `older_than_day` (days since the epoch); how many, at most `limit`.
+    async fn purge_stats(&self, older_than_day: i64, limit: i64) -> Result<u64>;
     /// The outbound jobs of a domain, newest first, from just below `before` (a job id; `None`: the newest). `state` is one of the job states; `held` selects queued jobs that are held, and
     /// `waiting` the other queued ones. `needle` (lower case) must occur in the payload: a recipient, the sender or the destination.
     async fn jobs(&self, domain: DomainId, state: Option<&str>, needle: Option<&str>, before: Option<i64>, limit: i64) -> Result<Vec<QueueJob>>;
@@ -120,6 +125,14 @@ pub(crate) mod sql {
     pub const LOG_INBOUND: &str = "INSERT INTO mail_log (at, domain_id, direction, sender, recipient, event, remote, status, detail) \
         SELECT rs_now(), d.id, 'in', x.s, x.r, x.e, x.m, x.t, x.n FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[]) AS x(s, r, e, m, t, n) \
         JOIN domains d ON d.name = lower(split_part(x.r, '@', 2))";
-    pub const STATS: &str = "SELECT at / 86400, direction, event, count(*) FROM mail_log WHERE domain_id = $1 AND at >= $2 GROUP BY 1, 2, 3 ORDER BY 1, 2, 3";
+    /// `$3` is the first day (since the epoch) the log is trusted for: the days before it are read from the roll-up.
+    pub const STATS: &str = "SELECT day, direction, event, cnt FROM ( \
+        SELECT at / 86400 AS day, direction, event, count(*) AS cnt FROM mail_log WHERE domain_id = $1 AND at >= $2 AND at >= $3 * 86400 GROUP BY 1, 2, 3 \
+        UNION ALL \
+        SELECT day, direction, event, count FROM message_stats WHERE domain_id = $1 AND day >= $2 / 86400 AND day < $3) x ORDER BY 1, 2, 3";
+    pub const ROLL_UP: &str = "INSERT INTO message_stats (domain_id, day, direction, event, count) \
+        SELECT domain_id, at / 86400, direction, event, count(*) FROM mail_log WHERE at >= ($1 - 28) * 86400 AND at < $1 * 86400 GROUP BY 1, 2, 3, 4 \
+        ON CONFLICT (domain_id, day, direction, event) DO UPDATE SET count = excluded.count";
+    pub const PURGE_STATS: &str = "DELETE FROM message_stats WHERE (domain_id, day, direction, event) IN (SELECT domain_id, day, direction, event FROM message_stats WHERE day < $1 LIMIT $2)";
     pub const PURGE_LOG: &str = "DELETE FROM mail_log WHERE id IN (SELECT id FROM mail_log WHERE at < $1 ORDER BY id LIMIT $2)";
 }

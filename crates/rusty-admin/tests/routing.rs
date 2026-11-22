@@ -222,3 +222,25 @@ async fn the_forwarding_and_the_automatic_reply_of_an_account_are_kept_checked_a
     assert_eq!(c.mutate("PUT", "/api/v1/accounts/alice@rules.test/mail-rules", Some(json!({}))).await.status, 200);
     assert_eq!(c.get("/api/v1/accounts/alice@rules.test/mail-rules").await.json(), json!({ "forward": null, "vacation": null }));
 }
+
+#[tokio::test]
+async fn the_blocked_attachment_types_are_kept_clean_and_the_platform_and_a_domain_each_have_theirs() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    make_admin(&r, "tenant@block.test", true).await;
+    let c = Client::sign_in(r.addr, "root@home.test").await;
+    let t = Client::sign_in(r.addr, "tenant@block.test").await;
+    let put = t.mutate("PUT", "/api/v1/domains/block.test/settings", Some(json!({ "blocked_extensions": [" .EXE ", "scr", "exe"] }))).await;
+    assert_eq!(put.status, 200, "{}", put.body);
+    conforms(&put.json(), "DomainSettings");
+    assert_eq!(put.json()["blocked_extensions"], json!(["exe", "scr"]), "lower case, no dot, sorted, once");
+    for bad in [json!(["a b"]), json!(["exe/"]), json!(["averyverylongextension"]), json!([""])] {
+        assert_eq!(t.mutate("PUT", "/api/v1/domains/block.test/settings", Some(json!({ "blocked_extensions": bad }))).await.status, 400);
+    }
+    let platform = c.mutate("PUT", "/api/v1/settings", Some(json!({ "blocked_extensions": ["js", "JS"] }))).await;
+    assert_eq!(platform.status, 200, "{}", platform.body);
+    assert_eq!(platform.json()["blocked_extensions"], json!(["js"]));
+    // The account sees the domain's list (the nearest layer that has one).
+    let acc = r.dir.find_account("tenant@block.test").await.unwrap().unwrap().id;
+    assert_eq!(r.dir.effective_config(acc, "blocked_extensions").await.unwrap(), Some(json!(["exe", "scr"])));
+}

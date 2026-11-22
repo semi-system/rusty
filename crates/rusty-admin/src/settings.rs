@@ -47,6 +47,26 @@ pub struct DomainSettings {
     /// A text added to the end of every plain-text or HTML message the domain sends (a disclaimer); `null`: none.
     #[serde(default)]
     pub footer_text: Option<String>,
+    /// File extensions (without a dot) of attachments that are refused when the domain's accounts receive them.
+    #[serde(default)]
+    pub blocked_extensions: Vec<String>,
+}
+
+/// A blocked extension in its stored form: lower case, letters and digits, 1 to 10 of them.
+fn extension_entry(e: &str) -> Option<String> {
+    let e = e.trim().trim_start_matches('.').to_ascii_lowercase();
+    ((1..=10).contains(&e.len()) && e.bytes().all(|b| b.is_ascii_alphanumeric())).then_some(e)
+}
+
+/// The list in its stored form (sorted, without repeats), or `None` when an entry is not an extension or there are more than 50.
+fn clean_extensions(list: &[String]) -> Option<Vec<String>> {
+    if list.len() > 50 {
+        return None;
+    }
+    let mut out: Vec<String> = list.iter().map(|e| extension_entry(e)).collect::<Option<_>>()?;
+    out.sort();
+    out.dedup();
+    Some(out)
 }
 
 /// Most entries in one list.
@@ -92,6 +112,7 @@ impl DomainSettings {
             sender_allow: text_list(&v, "sender_allow"),
             sender_block: text_list(&v, "sender_block"),
             footer_text: v.get("footer_text").and_then(Value::as_str).map(str::to_owned),
+            blocked_extensions: text_list(&v, "blocked_extensions"),
         }
     }
 
@@ -104,6 +125,7 @@ impl DomainSettings {
             || self.password_classes.is_some_and(|n| n > 4)
             || self.default_plan.as_deref().is_some_and(|p| p.is_empty() || p.len() > 64)
             || self.footer_text.as_deref().is_some_and(|f| f.trim().is_empty() || f.len() > rusty_smtp::footer::MAX_FOOTER || f.contains('\0'))
+            || clean_extensions(&self.blocked_extensions).is_none()
             || clean_list(&self.sender_allow).is_none()
             || clean_list(&self.sender_block).is_none()
     }
@@ -169,6 +191,7 @@ async fn put(app: &AdminApp, req: Request) -> Response {
     // Stored (and answered) in one form: trimmed, lower case, sorted, without repeats.
     new.sender_allow = clean_list(&new.sender_allow).unwrap_or_default();
     new.sender_block = clean_list(&new.sender_block).unwrap_or_default();
+    new.blocked_extensions = clean_extensions(&new.blocked_extensions).unwrap_or_default();
     let Some(s) = app.services.as_ref() else { return err(503, "unavailable") };
     let old = match of(app, dom.id).await {
         Ok(o) => o,
@@ -182,6 +205,7 @@ async fn put(app: &AdminApp, req: Request) -> Response {
             sender_allow: old.sender_allow.clone(),
             sender_block: old.sender_block.clone(),
             footer_text: old.footer_text.clone(),
+            blocked_extensions: old.blocked_extensions.clone(),
             ..new.clone()
         } == old;
         if !same {
@@ -205,6 +229,7 @@ async fn put(app: &AdminApp, req: Request) -> Response {
         ("password_min_length", new.password_min_length.map(Value::from)),
         ("password_classes", new.password_classes.map(Value::from)),
         ("footer_text", new.footer_text.clone().map(Value::from)),
+        ("blocked_extensions", (!new.blocked_extensions.is_empty()).then(|| Value::from(new.blocked_extensions.clone()))),
         ("sender_allow", (!new.sender_allow.is_empty()).then(|| Value::from(new.sender_allow.clone()))),
         ("sender_block", (!new.sender_block.is_empty()).then(|| Value::from(new.sender_block.clone()))),
     ] {
@@ -229,17 +254,26 @@ pub struct PlatformSettings {
     pub quota_bytes: Option<u64>,
     pub max_message_bytes: Option<u64>,
     pub messages_per_hour: Option<u64>,
+    /// What happens to a message the virus scanner found a virus in: `reject` (refused at DATA) or `quarantine` (filed in the Spam folder, tagged); `null`: reject.
+    pub virus_action: Option<String>,
+    /// File extensions (without a dot) of attachments refused everywhere (a domain may add its own).
+    #[serde(default)]
+    pub blocked_extensions: Vec<String>,
 }
 
 impl PlatformSettings {
     fn from_config(config: &str) -> PlatformSettings {
         let v: Value = serde_json::from_str(config).unwrap_or(Value::Null);
         let n = |k: &str| v.get(k).and_then(Value::as_u64);
-        PlatformSettings { quota_bytes: n("quota_bytes"), max_message_bytes: n("max_message_bytes"), messages_per_hour: n("messages_per_hour") }
+        PlatformSettings { quota_bytes: n("quota_bytes"), max_message_bytes: n("max_message_bytes"), messages_per_hour: n("messages_per_hour"), virus_action: v.get("virus_action").and_then(Value::as_str).map(str::to_owned), blocked_extensions: text_list(&v, "blocked_extensions") }
     }
 
     fn invalid(&self) -> bool {
-        self.quota_bytes.is_some_and(|n| n == 0 || n > MAX_BYTES) || self.max_message_bytes.is_some_and(|n| n == 0 || n > MAX_BYTES) || self.messages_per_hour.is_some_and(|n| n == 0 || n > 1_000_000)
+        self.quota_bytes.is_some_and(|n| n == 0 || n > MAX_BYTES)
+            || self.max_message_bytes.is_some_and(|n| n == 0 || n > MAX_BYTES)
+            || self.messages_per_hour.is_some_and(|n| n == 0 || n > 1_000_000)
+            || self.virus_action.as_deref().is_some_and(|a| a != "reject" && a != "quarantine")
+            || clean_extensions(&self.blocked_extensions).is_none()
     }
 }
 
@@ -266,10 +300,11 @@ async fn put_platform(app: &AdminApp, req: Request) -> Response {
     if !p.scope.is_platform() {
         return err(403, "forbidden");
     }
-    let Ok(new) = serde_json::from_slice::<PlatformSettings>(&req.body) else { return err(400, "invalid") };
+    let Ok(mut new) = serde_json::from_slice::<PlatformSettings>(&req.body) else { return err(400, "invalid") };
     if new.invalid() {
         return err(400, "invalid");
     }
+    new.blocked_extensions = clean_extensions(&new.blocked_extensions).unwrap_or_default();
     let Some(s) = app.services.as_ref() else { return err(503, "unavailable") };
     let mut set = Map::new();
     let mut remove: Vec<String> = Vec::new();
@@ -280,6 +315,17 @@ async fn put_platform(app: &AdminApp, req: Request) -> Response {
             }
             None => remove.push(key.to_owned()),
         }
+    }
+    if new.blocked_extensions.is_empty() {
+        remove.push("blocked_extensions".to_owned());
+    } else {
+        set.insert("blocked_extensions".to_owned(), Value::from(new.blocked_extensions.clone()));
+    }
+    match &new.virus_action {
+        Some(a) => {
+            set.insert("virus_action".to_owned(), Value::from(a.clone()));
+        }
+        None => remove.push("virus_action".to_owned()),
     }
     if let Err(e) = s.plans.set_global_keys(&remove, &Value::Object(set).to_string()).await {
         return fail(&e);

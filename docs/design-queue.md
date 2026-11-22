@@ -24,3 +24,7 @@ Built 2026-11-22 (P1 item 7 of `design-admin-parity.md`), first slice.
 ## Statistics
 
 `GET /api/v1/domains/{d}/stats` counts the delivery log of the domain per UTC day for the last 30 days (the log's retention), newest day first: `received` (incoming mail accepted into a mailbox), `rejected` (refused after DATA), `sent` (delivered to the remote server), `deferred` (attempts that will be tried again) and `failed` (bounced or given up). It is one grouped read of `mail_log`, so there is no second table to keep in step; a longer history would need a daily roll-up table, which is not made until someone asks for it. The page is the Statistics tab of a domain.
+
+### History beyond the log
+
+The delivery log is cut at 30 days, but the counts are worth more than the lines: migration 0044 adds `message_stats` (domain, UTC day, direction, event, count). Every garbage-collection pass rolls the completed days of the last 28 up from the log (an idempotent upsert) and removes rows older than 400 days. `GET .../stats?days=N` (1 to 365) reads the last 28 days from the log and older days from the roll-up, so the Statistics tab can show a year.

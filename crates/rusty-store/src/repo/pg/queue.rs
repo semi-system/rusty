@@ -123,8 +123,18 @@ impl QueueRepo for PgRepo {
         Ok(())
     }
 
-    async fn stats(&self, domain: DomainId, since: i64) -> Result<Vec<StatRow>> {
-        let rows = sqlx::query(r(sql::STATS)).bind(domain.0).bind(since).fetch_all(self.store.pool()).await.map_err(map_db_error)?;
+    async fn roll_up_stats(&self, now: i64) -> Result<u64> {
+        Ok(sqlx::query(r(sql::ROLL_UP)).bind(now.div_euclid(86_400)).execute(self.store.pool()).await.map_err(map_db_error)?.rows_affected())
+    }
+
+    async fn purge_stats(&self, older_than_day: i64, limit: i64) -> Result<u64> {
+        Ok(sqlx::query(r(sql::PURGE_STATS)).bind(older_than_day).bind(limit).execute(self.store.pool()).await.map_err(map_db_error)?.rows_affected())
+    }
+
+    async fn stats(&self, domain: DomainId, since: i64, now: i64) -> Result<Vec<StatRow>> {
+        // The log is trusted for the days of the last 28 (the roll-up window); the days before come from the roll-up.
+        let trusted_from = now.div_euclid(86_400) - 28;
+        let rows = sqlx::query(r(sql::STATS)).bind(domain.0).bind(since).bind(trusted_from).fetch_all(self.store.pool()).await.map_err(map_db_error)?;
         rows.iter()
             .map(|x| Ok(StatRow { day: x.try_get(0)?, direction: x.try_get(1)?, event: x.try_get(2)?, count: x.try_get(3)? }))
             .collect::<std::result::Result<Vec<_>, sqlx::Error>>()

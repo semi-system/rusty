@@ -286,8 +286,8 @@ export class Client {
   }
 
   /** Mail counted per day for the last 30 days. */
-  stats(domain: string): Promise<Stats> {
-    return this.call('GET', `/api/v1/domains/${seg(domain)}/stats`);
+  stats(domain: string, days = 30): Promise<Stats> {
+    return this.call('GET', `/api/v1/domains/${seg(domain)}/stats${days === 30 ? '' : `?days=${days}`}`);
   }
 
   /** The delivery log of a domain's outgoing mail, newest first. */

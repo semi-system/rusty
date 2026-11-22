@@ -26,6 +26,7 @@
   let classes = $state('');
   // One entry a line: an address or a domain.
   let footer = $state('');
+  let blockedText = $state('');
   let allowText = $state('');
   let blockText = $state('');
   const lines = (text: string): string[] => text.split('\n').map((l) => l.trim()).filter((l) => l !== '');
@@ -44,6 +45,7 @@
       minLength = whole(s.password_min_length);
       classes = whole(s.password_classes);
       footer = s.footer_text ?? '';
+      blockedText = s.blocked_extensions.join(' ');
       allowText = s.sender_allow.join('\n');
       blockText = s.sender_block.join('\n');
       loaded = true;
@@ -78,6 +80,7 @@
       password_min_length: length ?? null,
       password_classes: kinds ?? null,
       footer_text: footer.trim() === '' ? null : footer.trim(),
+      blocked_extensions: blockedText.split(/[\s,]+/).filter((x) => x !== ''),
       sender_allow: lines(allowText),
       sender_block: lines(blockText),
     };
@@ -138,6 +141,11 @@
           <h2 id="set-footer">{t('settings.footer')}</h2>
           <p class="hint">{t('settings.footerLede')}</p>
           <label>{t('settings.footerText')}<textarea bind:value={footer} name="footer" rows="4" maxlength="2000"></textarea></label>
+        </section>
+        <section class="panel" aria-labelledby="set-attachments">
+          <h2 id="set-attachments">{t('settings.attachments')}</h2>
+          <p class="hint">{t('settings.attachmentsLede')}</p>
+          <label>{t('settings.blocked')}<input bind:value={blockedText} name="blocked" type="text" autocapitalize="none" spellcheck="false" /></label>
         </section>
         <section class="panel" aria-labelledby="set-senders">
           <h2 id="set-senders">{t('settings.senders')}</h2>

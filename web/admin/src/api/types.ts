@@ -308,9 +308,12 @@ export interface PlatformSettings {
   quota_bytes: number | null;
   max_message_bytes: number | null;
   messages_per_hour: number | null;
+  virus_action: string | null;
+  blocked_extensions: string[];
 }
 
 export interface DomainSettings {
+  blocked_extensions: string[];
   footer_text: string | null;
   sender_allow: string[];
   sender_block: string[];

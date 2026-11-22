@@ -196,10 +196,13 @@ async fn build(
     let mut inbound_filters: Vec<Arc<dyn rusty_smtp::filter::InboundFilter>> = Vec::new();
     // The sender allow and block lists of the recipients come first: an allowed sender skips the scanners, a blocked one is refused.
     inbound_filters.push(Arc::new(rusty_smtp::policy::SenderPolicy::new(ctx.directory.clone())));
+    // Then the attachment types the platform or the domain blocks, before any scanner is asked.
+    inbound_filters.push(Arc::new(rusty_smtp::policy::AttachmentPolicy(ctx.directory.clone())));
     if let Some(f) = &cfg.filter {
         let max = f.max_scan_bytes;
         if let Some(addr) = &f.clamd_addr {
-            let clamd = rusty_smtp::scan::ClamdFilter::new(addr, Duration::from_secs(f.clamd_timeout_secs), max, f.clamd_on_error);
+            let clamd = rusty_smtp::scan::ClamdFilter::new(addr, Duration::from_secs(f.clamd_timeout_secs), max, f.clamd_on_error)
+                .with_policy(Arc::new(rusty_smtp::scan::DirectoryVirusPolicy(ctx.directory.clone())));
             inbound_filters.push(Arc::new(match &scan_observer {
                 Some(o) => clamd.with_observer(o.clone()),
                 None => clamd,
