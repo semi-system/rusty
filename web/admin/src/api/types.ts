@@ -258,6 +258,8 @@ export interface Plan {
   max_message_bytes: number | null;
   messages_per_hour: number | null;
   protocols: string[] | null;
+  spam_junk_score: number | null;
+  spam_reject_score: number | null;
 }
 
 export interface PlanList {
@@ -367,6 +369,24 @@ export interface LogLine {
 export interface Trace {
   items: LogLine[];
   next: number | null;
+}
+
+export interface MailForward {
+  to: string[];
+  keep: boolean;
+}
+
+export interface MailVacation {
+  enabled: boolean;
+  subject: string;
+  body: string;
+  from: number | null;
+  until: number | null;
+}
+
+export interface MailRules {
+  forward: MailForward | null;
+  vacation: MailVacation | null;
 }
 
 export interface Certificate {

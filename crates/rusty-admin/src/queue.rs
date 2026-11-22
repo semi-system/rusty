@@ -105,6 +105,8 @@ fn params(req: &Request) -> Result<Filters, Response> {
             "state" if STATES.contains(&v.as_str()) => state = Some(v),
             "q" if !v.is_empty() && v.len() <= 200 => q = Some(v.to_lowercase()),
             "before" => before = Some(v.parse::<i64>().map_err(|_| err(400, "invalid"))?),
+            // Read by `trace`, which looks at the query string again; accepted here so that the strict check of the other parameters stays.
+            "held" if v == "1" => {}
             _ => return Err(err(400, "invalid")),
         }
     }
@@ -188,7 +190,8 @@ async fn trace(app: &AdminApp, req: Request) -> Response {
         Ok(x) => x,
         Err(r) => return r,
     };
-    let rows = match s.queue.trace(dom.id, q.as_deref(), before, PAGE as i64).await {
+    let held = req.query.as_deref().unwrap_or_default().split('&').any(|p| p == "held=1");
+    let rows = match s.queue.trace_held(dom.id, q.as_deref(), before, PAGE as i64, held).await {
         Ok(r) => r,
         Err(e) => return fail(&e),
     };

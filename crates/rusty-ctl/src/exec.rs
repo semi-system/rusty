@@ -86,6 +86,17 @@ pub struct CtlEnv<'a> {
     pub gc: Option<&'a rusty_store::Gc>,
     /// Every blob store of the deployment (`blobs verify` checks each one); none: the platform store only.
     pub stores: Option<&'a dyn rusty_store::BlobRouter>,
+    /// What the `mailbox` commands read and write mail with; the composition root opens the blob stores only for those.
+    pub mail: Option<MailEnv>,
+}
+
+/// The mailbox repository and the blob stores behind it, for the `mailbox` commands.
+#[derive(Clone)]
+pub struct MailEnv {
+    pub repo: std::sync::Arc<dyn rusty_store::repo::MailboxRepo>,
+    pub stores: std::sync::Arc<dyn rusty_store::BlobRouter>,
+    /// The largest message the mailbox takes (`max_message_bytes` of the configuration).
+    pub max_message_bytes: usize,
 }
 
 /// The parts of `[outbound]` the DNS records depend on.
@@ -484,6 +495,161 @@ async fn domain_relay_remove(env: &mut CtlEnv<'_>, name: &str) -> Result<Outcome
     ))
 }
 
+async fn mailbox_of(env: &CtlEnv<'_>, addr: &str) -> Result<(rusty_store::Mailbox, MailEnv), CtlError> {
+    let Some(mail) = env.mail.clone() else { return Err(CtlError::runtime("the mailbox commands need the blob store, which is not available here")) };
+    let account = account_named(env.directory, addr).await?;
+    let mb = rusty_store::Mailbox::open_with(mail.repo.clone(), mail.stores.clone(), account.id).await.map_err(|e| map_error(&e, "mailbox"))?;
+    // An administrator's import or recovery is not held to the account's quota (the quota is for what its owner adds).
+    let mb = mb.with_limits(rusty_store::MailboxLimits { max_message_bytes: mail.max_message_bytes, quota_bytes: None });
+    Ok((mb, mail))
+}
+
+fn when_text(unix: i64) -> String {
+    crate::mbox::asctime(unix)
+}
+
+/// `mailbox deleted`: the deleted messages that are still kept, with the id `mailbox recover` takes.
+async fn mailbox_deleted(env: &mut CtlEnv<'_>, addr: &str) -> Result<Outcome, CtlError> {
+    let (mb, _) = mailbox_of(env, addr).await?;
+    let folders = mb.list_folders().await.map_err(|e| map_error(&e, "mailbox"))?;
+    let name_of = |id: rusty_core::FolderId| folders.iter().find(|f| f.id == id).map_or_else(|| id.0.to_string(), |f| f.name.clone());
+    let (mut lines, mut items, mut after) = (Vec::new(), Vec::new(), 0i64);
+    loop {
+        let page = mb.list_deleted(after, 500).await.map_err(|e| map_error(&e, "mailbox"))?;
+        let Some(last) = page.last() else { break };
+        after = last.id.0;
+        for m in &page {
+            lines.push(format!("{}  deleted {}  from {}  in {}  {} bytes  {}", m.id.0, when_text(m.deleted_at), m.from, name_of(m.folder), m.size, m.subject));
+            items.push(json!({ "id": m.id.0, "deleted_at": m.deleted_at, "folder": name_of(m.folder), "size": m.size, "from": m.from, "subject": m.subject }));
+        }
+    }
+    if lines.is_empty() {
+        return Ok(Outcome::new("no deleted messages are kept", json!({ "messages": [] })));
+    }
+    Ok(Outcome::new(lines.join("\n"), json!({ "messages": items })))
+}
+
+/// The folder named `name` (its name or its role, case does not matter), or the Inbox.
+fn find_folder(folders: &[rusty_store::FolderInfo], name: Option<&str>) -> Option<rusty_core::FolderId> {
+    let wanted = name.unwrap_or("inbox");
+    folders.iter().find(|f| f.name.eq_ignore_ascii_case(wanted) || f.role.eq_ignore_ascii_case(wanted)).map(|f| f.id)
+}
+
+/// `mailbox recover`: a deleted message comes back as a new message in the folder.
+async fn mailbox_recover(env: &mut CtlEnv<'_>, addr: &str, id: i64, folder: Option<&str>) -> Result<Outcome, CtlError> {
+    let (mb, _) = mailbox_of(env, addr).await?;
+    let folders = mb.list_folders().await.map_err(|e| map_error(&e, "mailbox"))?;
+    let target = find_folder(&folders, folder).ok_or_else(|| CtlError::runtime("folder: not found"))?;
+    let made = mb.recover(rusty_core::MessageId(id), target).await.map_err(|e| map_error(&e, "message"))?;
+    Ok(Outcome::new(format!("recovered message {id} as a new message (uid {}) in {}", made.uid, folder.unwrap_or("inbox")), json!({ "recovered": id, "uid": made.uid })))
+}
+
+/// A folder name as a file name: its path separators and anything odd become `_`.
+fn file_name_of(name: &str) -> String {
+    let s: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == ' ' { c } else { '_' }).collect();
+    let s = s.trim_matches(|c| c == '.' || c == ' ').to_owned();
+    if s.is_empty() { "folder".to_owned() } else { s }
+}
+
+/// `mailbox export`: one mbox file per folder, in a directory that does not exist yet (nothing is overwritten).
+async fn mailbox_export(env: &mut CtlEnv<'_>, addr: &str, dir: &std::path::Path, maildir: bool) -> Result<Outcome, CtlError> {
+    let (mb, _) = mailbox_of(env, addr).await?;
+    if dir.exists() {
+        return Err(CtlError::runtime("the directory already exists; export into a new one"));
+    }
+    std::fs::create_dir_all(dir).map_err(|e| CtlError::runtime(format!("cannot create the directory: {e}")))?;
+    let folders = mb.list_folders().await.map_err(|e| map_error(&e, "mailbox"))?;
+    let (mut total, mut report, mut used) = (0u64, Vec::new(), std::collections::HashSet::new());
+    for f in &folders {
+        let mut file = file_name_of(&f.name);
+        while !used.insert(file.to_ascii_lowercase()) {
+            file.push('_');
+        }
+        let mut out: Vec<u8> = Vec::new();
+        let (mut count, mut after) = (0u64, 0u32);
+        // A Maildir is a directory of three: `tmp`, `new` and `cur` (everything exported is `cur`, with its flags in the name).
+        let maildir_root = dir.join(&file);
+        if maildir {
+            for sub in ["tmp", "new", "cur"] {
+                std::fs::create_dir_all(maildir_root.join(sub)).map_err(|e| CtlError::runtime(format!("cannot create the directory: {e}")))?;
+            }
+        }
+        loop {
+            let page = mb.list_folder(f.id, after, 500).await.map_err(|e| map_error(&e, "mailbox"))?;
+            let Some(last) = page.last() else { break };
+            after = last.uid;
+            for m in &page {
+                let raw = mb.get_raw(m.id).await.map_err(|e| map_error(&e, "message"))?;
+                if maildir {
+                    std::fs::write(maildir_root.join("cur").join(crate::mbox::maildir_name(m.internal_date, m.id.0, m.flags)), &raw[..]).map_err(|e| CtlError::runtime(format!("cannot write the file: {e}")))?;
+                } else {
+                    crate::mbox::write_message(&mut out, m.internal_date, m.flags, &raw);
+                }
+                count += 1;
+            }
+        }
+        let written = if maildir {
+            file.clone()
+        } else {
+            std::fs::write(dir.join(format!("{file}.mbox")), &out).map_err(|e| CtlError::runtime(format!("cannot write the file: {e}")))?;
+            format!("{file}.mbox")
+        };
+        total += count;
+        report.push(json!({ "folder": f.name, "file": written, "messages": count }));
+    }
+    let text = report.iter().map(|r| format!("{}: {} messages -> {}", r["folder"].as_str().unwrap_or(""), r["messages"], r["file"].as_str().unwrap_or(""))).collect::<Vec<_>>().join("\n");
+    Ok(Outcome::new(format!("{text}\n{total} messages exported to {}", dir.display()), json!({ "messages": total, "folders": report })))
+}
+
+/// The most an mbox file may hold for an import (it is read whole).
+const MAX_IMPORT_BYTES: u64 = 1 << 30;
+
+/// `mailbox import`: the messages of an mbox file are added to a folder (made when it is missing). A message that cannot be stored (too large, not a message) is counted and skipped.
+async fn mailbox_import(env: &mut CtlEnv<'_>, addr: &str, file: &std::path::Path, folder: Option<&str>) -> Result<Outcome, CtlError> {
+    let (mb, _) = mailbox_of(env, addr).await?;
+    let meta = std::fs::metadata(file).map_err(|e| CtlError::runtime(format!("cannot read the file: {e}")))?;
+    // A directory is a Maildir (its `cur` and `new`); a file is an mbox.
+    let parsed: Vec<crate::mbox::Parsed> = if meta.is_dir() {
+        let mut found = Vec::new();
+        for sub in ["cur", "new"] {
+            let Ok(entries) = std::fs::read_dir(file.join(sub)) else { continue };
+            let mut names: Vec<_> = entries.filter_map(Result::ok).filter(|e| e.file_type().is_ok_and(|t| t.is_file())).collect();
+            names.sort_by_key(std::fs::DirEntry::file_name);
+            for e in names {
+                if e.metadata().map_or(true, |m| m.len() > MAX_IMPORT_BYTES) {
+                    continue;
+                }
+                if let Ok(bytes) = std::fs::read(e.path()) {
+                    found.push(crate::mbox::maildir_message(&e.file_name().to_string_lossy(), &bytes));
+                }
+            }
+        }
+        found
+    } else {
+        if meta.len() > MAX_IMPORT_BYTES {
+            return Err(CtlError::runtime("the file is larger than 1 GiB; split it"));
+        }
+        let bytes = std::fs::read(file).map_err(|e| CtlError::runtime(format!("cannot read the file: {e}")))?;
+        crate::mbox::split(&bytes)
+    };
+    let folders = mb.list_folders().await.map_err(|e| map_error(&e, "mailbox"))?;
+    let target = match find_folder(&folders, folder) {
+        Some(f) => f,
+        None => mb.create_folder(None, folder.unwrap_or("inbox")).await.map_err(|e| map_error(&e, "folder"))?,
+    };
+    let (mut stored, mut skipped) = (0u64, 0u64);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+    for m in parsed {
+        // The date the file gave it, else the time of the import; the flags it had.
+        let date = m.internal_date.filter(|d| (0..=4_102_444_800).contains(d)).unwrap_or(now);
+        match mb.append_dated(target, bytes::Bytes::from(m.raw), m.flags, date).await {
+            Ok(_) => stored += 1,
+            Err(_) => skipped += 1,
+        }
+    }
+    Ok(Outcome::new(format!("{stored} messages imported, {skipped} skipped"), json!({ "imported": stored, "skipped": skipped })).failing(false))
+}
+
 /// `blobs verify`: every blob the database still references must have its file. A read only. Exit status 1 when one is missing or a shard could not be read.
 async fn blobs_verify(env: &mut CtlEnv<'_>) -> Result<Outcome, CtlError> {
     let (Some(blobs), Some(gc)) = (env.blobs, env.gc) else {
@@ -837,6 +1003,14 @@ pub async fn execute(command: &Command, env: &mut CtlEnv<'_>) -> Result<Outcome,
         Command::StorageBackendRemove { name, backend } => storage_backend_remove(env, name, backend).await,
 
         Command::BlobsVerify => blobs_verify(env).await,
+
+        Command::MailboxDeleted { addr } => mailbox_deleted(env, addr).await,
+
+        Command::MailboxRecover { addr, id, folder } => mailbox_recover(env, addr, *id, folder.as_deref()).await,
+
+        Command::MailboxExport { addr, dir, maildir } => mailbox_export(env, addr, dir, *maildir).await,
+
+        Command::MailboxImport { addr, file, folder } => mailbox_import(env, addr, file, folder.as_deref()).await,
 
         Command::AdminGrant { addr, domain } => admin_grant(env, addr, domain.as_deref()).await,
 

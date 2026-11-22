@@ -22,6 +22,8 @@
   let quota = $state('');
   let maxMessage = $state('');
   let perHour = $state('');
+  let junkScore = $state('');
+  let rejectScore = $state('');
   // The protocols the plan allows; all three checked means the plan does not limit them.
   let protoImap = $state(true);
   let protoPop3 = $state(true);
@@ -34,6 +36,8 @@
     quota = p.quota_bytes === null ? '' : String(p.quota_bytes / 1_048_576);
     maxMessage = p.max_message_bytes === null ? '' : String(p.max_message_bytes / 1_048_576);
     perHour = p.messages_per_hour === null ? '' : String(p.messages_per_hour);
+    junkScore = p.spam_junk_score === null ? '' : String(p.spam_junk_score);
+    rejectScore = p.spam_reject_score === null ? '' : String(p.spam_reject_score);
     protoImap = p.protocols === null || p.protocols.includes('imap');
     protoPop3 = p.protocols === null || p.protocols.includes('pop3');
     protoSubmission = p.protocols === null || p.protocols.includes('submission');
@@ -46,7 +50,10 @@
     const q = megabytes(quota);
     const m = megabytes(maxMessage);
     const hours = perHour.trim() === '' ? null : Number(perHour);
-    invalid = Number.isNaN(q) || Number.isNaN(m) || (hours !== null && (!Number.isInteger(hours) || hours < 1));
+    const junk = junkScore.trim() === '' ? null : Number(junkScore);
+    const reject = rejectScore.trim() === '' ? null : Number(rejectScore);
+    const badScore = (x: number | null): boolean => x !== null && (!Number.isFinite(x) || x < 0 || x > 100);
+    invalid = Number.isNaN(q) || Number.isNaN(m) || (hours !== null && (!Number.isInteger(hours) || hours < 1)) || badScore(junk) || badScore(reject) || (junk !== null && reject !== null && junk >= reject);
     if (invalid) return;
     const allowed = [protoImap ? 'imap' : '', protoPop3 ? 'pop3' : '', protoSubmission ? 'submission' : ''].filter((x) => x !== '');
     const protocols = allowed.length === 3 ? null : allowed;
@@ -54,12 +61,14 @@
     error = null;
     notice = null;
     try {
-      const saved = await app.client.putPlan(name.trim(), q, m, hours, protocols);
+      const saved = await app.client.putPlan(name.trim(), q, m, hours, protocols, junk, reject);
       notice = t('plans.saved', { name: saved.name });
       name = '';
       quota = '';
       maxMessage = '';
       perHour = '';
+      junkScore = '';
+      rejectScore = '';
       protoImap = protoPop3 = protoSubmission = true;
       await load.run();
     } catch (err) {
@@ -112,6 +121,8 @@
           <label>{t('plans.quotaMb')}<input bind:value={quota} name="quota" type="text" inputmode="decimal" /></label>
           <label>{t('plans.maxMessageMb')}<input bind:value={maxMessage} name="max" type="text" inputmode="decimal" /></label>
           <label>{t('plans.perHour')}<input bind:value={perHour} name="perhour" type="text" inputmode="numeric" /></label>
+          <label>{t('plans.junkScore')}<input bind:value={junkScore} name="junk" type="text" inputmode="decimal" /></label>
+          <label>{t('plans.rejectScore')}<input bind:value={rejectScore} name="reject" type="text" inputmode="decimal" /></label>
           <button type="submit" class="primary" disabled={busy}>{busy ? t('common.saving') : t('common.save')}</button>
         </div>
         <fieldset class="checks">

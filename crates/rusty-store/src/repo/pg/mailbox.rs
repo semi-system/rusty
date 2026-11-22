@@ -17,6 +17,7 @@ use sqlx::PgConnection;
 
 use super::tx::{tx_retry, TxResult};
 use super::{lock_blobs, lock_existing_blobs, PgRepo};
+use crate::repo::DeletedMessage;
 use crate::mailbox::{
     to_uid, BatchOutcome, ChangeItem, ChangeOp, ChangePage, CopyBatch, DeliverOutcome, MessageRef,
     MessageSummary, MoveBatch, MAX_FOLDER_DEPTH, MAX_KEYWORDS_PER_MESSAGE,
@@ -335,6 +336,28 @@ async fn insert_messages(
 }
 
 type DetailRow = (i64, i64, i64, i64, String, String, i64, i64, i64, Vec<u8>, Option<i64>);
+
+type DeletedRow = (i64, i64, i64, i64, i64, String, String, Vec<u8>, i64, i64);
+
+const DELETED_SELECT_LIST: &str = "SELECT id, folder_id, size, deleted_at, internal_date, from_addr, subject, blob_hash, blob_store_id, flags FROM messages \
+     WHERE mailbox_id = $1 AND deleted_at IS NOT NULL AND id > $2 ORDER BY id LIMIT $3";
+const DELETED_SELECT_ONE: &str = "SELECT id, folder_id, size, deleted_at, internal_date, from_addr, subject, blob_hash, blob_store_id, flags FROM messages \
+     WHERE mailbox_id = $1 AND id = $2 AND deleted_at IS NOT NULL";
+
+fn deleted_from_row(r: DeletedRow) -> Result<DeletedMessage> {
+    let (id, folder, size, deleted_at, internal_date, from, subject, hash, store, flags) = r;
+    Ok(DeletedMessage {
+        id: MessageId(id),
+        folder: FolderId(folder),
+        size,
+        deleted_at,
+        internal_date,
+        from,
+        subject,
+        flags: u8::try_from(flags).ok().and_then(Flags::from_bits).unwrap_or_default(),
+        raw: RawRef { blob: BlobHash::parse(&hex::encode(hash))?, size, store: crate::repo::StoreId(store) },
+    })
+}
 
 #[async_trait]
 impl MailboxRepo for PgRepo {
@@ -1230,6 +1253,28 @@ impl MailboxRepo for PgRepo {
             blob: BlobHash::parse(&hex::encode(hash))?,
             deleted: deleted.is_some(),
         })
+    }
+
+    async fn list_deleted(&self, mb: MailboxId, after: i64, limit: i64) -> Result<Vec<DeletedMessage>> {
+        let rows: Vec<DeletedRow> = sqlx::query_as(crate::repo::pg_lit(DELETED_SELECT_LIST))
+            .bind(mb.0)
+            .bind(after)
+            .bind(limit)
+            .fetch_all(self.store.pool())
+            .await
+            .map_err(map_db_error)?;
+        rows.into_iter().map(deleted_from_row).collect()
+    }
+
+    async fn get_deleted(&self, mb: MailboxId, id: MessageId) -> Result<DeletedMessage> {
+        let row: DeletedRow = sqlx::query_as(crate::repo::pg_lit(DELETED_SELECT_ONE))
+            .bind(mb.0)
+            .bind(id.0)
+            .fetch_optional(self.store.pool())
+            .await
+            .map_err(map_db_error)?
+            .ok_or_else(not_found_message)?;
+        deleted_from_row(row)
     }
 
     async fn get_raw_ref(&self, mb: MailboxId, id: MessageId) -> Result<RawRef> {

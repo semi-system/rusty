@@ -24,6 +24,8 @@
   let lines = $state<LogLine[]>([]);
   let linesNext = $state<number | null>(null);
   let traceQuery = $state('');
+  // Only the mail that was filed in the Spam folder.
+  let heldOnly = $state(false);
   let traced = $state(false);
 
   async function loadJobs(before?: number): Promise<void> {
@@ -39,7 +41,7 @@
 
   async function loadTrace(before?: number): Promise<void> {
     try {
-      const page = await app.client.trace(name, { q: traceQuery, before });
+      const page = await app.client.trace(name, { q: traceQuery, before, held: heldOnly });
       lines = before === undefined ? page.items : [...lines, ...page.items];
       linesNext = page.next;
     } catch (e) {
@@ -153,6 +155,7 @@
       <p class="hint">{t('queue.traceLede')}</p>
       <form class="field-row" onsubmit={(e) => { e.preventDefault(); void loadTrace(); }}>
         <label>{t('queue.traceSearch')}<input bind:value={traceQuery} name="trace" type="search" autocapitalize="none" spellcheck="false" /></label>
+        <label class="check"><input type="checkbox" bind:checked={heldOnly} name="held" onchange={() => void loadTrace()} /> {t('queue.heldOnly')}</label>
         <button type="submit" class="secondary">{t('queue.find')}</button>
       </form>
       {#if traced && lines.length === 0}

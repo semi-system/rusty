@@ -9,3 +9,8 @@ Anti-spam in Rusty is rspamd and ClamAV (docs/design-filters-and-resolver.md). T
 * **A database that cannot answer** leaves the sender unknown: the scanners still run.
 
 Not done: score thresholds per plan (they are rspamd's own actions today) and a quarantine page for the administrator.
+
+## Spam score lines per plan, and the quarantine view
+
+* **Lines.** The configuration keys `spam_junk_score` and `spam_reject_score` (numbers, 0 to 100, junk below reject) in any layer, set per plan on the Plans page. When the first recipient's layers give either, rspamd's score is judged by them: from `spam_junk_score` the message is filed in the Spam folder and marked, from `spam_reject_score` it is refused (`550 5.7.1`), below both it is delivered as clean. A temporary refusal of rspamd (greylisting, soft reject) stays one. Without lines, rspamd's own actions decide as before. After DATA one message has one fate for all its recipients, so the first recipient's account decides.
+* **Quarantine view.** Mail filed in the Spam folder is delivered, and the delivery log now says so: its detail is `quarantined (spam score N)`. The Outgoing mail page's trace has a switch "Only mail filed as spam" (`GET .../trace?held=1`). The release is the person's own: moving the message from Spam to the Inbox in the mail client (the administrator cannot read mail by design).

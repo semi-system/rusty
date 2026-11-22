@@ -155,3 +155,24 @@ async fn the_certificates_page_is_for_platform_administrators_and_a_failed_probe
     let tenant = Client::sign_in(r.addr, "tenant@one.test").await;
     assert_eq!(tenant.get("/api/v1/certificates").await.status, 403);
 }
+
+#[tokio::test]
+async fn a_plan_carries_its_spam_lines_and_they_must_be_in_range_and_in_order() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    let c = Client::sign_in(r.addr, "root@home.test").await;
+    let made = c.mutate("PUT", "/api/v1/plans", Some(json!({ "name": "strict", "quota_bytes": 1_000_000, "spam_junk_score": 4.5, "spam_reject_score": 12 }))).await;
+    assert_eq!(made.status, 201, "{}", made.body);
+    conforms(&made.json(), "Plan");
+    assert_eq!((made.json()["spam_junk_score"].clone(), made.json()["spam_reject_score"].clone()), (json!(4.5), json!(12.0)));
+    let items = c.get("/api/v1/plans").await.json()["items"].clone();
+    assert_eq!(items[0]["spam_junk_score"], json!(4.5));
+    for bad in [json!({ "spam_junk_score": -1 }), json!({ "spam_reject_score": 101 }), json!({ "spam_junk_score": 10, "spam_reject_score": 10 }), json!({ "spam_junk_score": 12, "spam_reject_score": 5 })] {
+        let mut body = json!({ "name": "strict" });
+        body.as_object_mut().unwrap().extend(bad.as_object().unwrap().clone());
+        assert_eq!(c.mutate("PUT", "/api/v1/plans", Some(body.clone())).await.status, 400, "{body}");
+    }
+    // Clearing both leaves the plan without lines.
+    let cleared = c.mutate("PUT", "/api/v1/plans", Some(json!({ "name": "strict", "quota_bytes": 1_000_000 }))).await;
+    assert_eq!(cleared.json()["spam_junk_score"], json!(null));
+}

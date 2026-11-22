@@ -20,6 +20,39 @@ use crate::filter::{FilterContext, FilterVerdict, InboundFilter, QuarantineFolde
 /// Told what every scan came to: (scanner, result), both from fixed sets (`clean`, `spam`, `virus`, `deferred`, `skipped`, `unknown`, `error`). The daemon counts them for the metrics page.
 pub type Observer = std::sync::Arc<dyn Fn(&'static str, &'static str) + Send + Sync>;
 
+/// The spam score lines of the recipients of a message (docs/design-sender-policy.md): at or above `junk` the message goes to the Spam folder, at or above `reject` it is refused. They are
+/// the keys `spam_junk_score` and `spam_reject_score` of the configuration layers, so a plan (or a domain, or an account) has its own.
+#[async_trait]
+pub trait ThresholdSource: Send + Sync {
+    /// `(junk, reject)` for the message's recipients; `(None, None)` leaves the decision to rspamd's own actions.
+    async fn thresholds(&self, accounts: &[rusty_core::AccountId]) -> (Option<f64>, Option<f64>);
+}
+
+/// The thresholds the directory's layers give. The first recipient's account decides: after DATA one message has one fate for all of its recipients.
+pub struct DirectoryThresholds(pub rusty_directory::Directory);
+
+#[async_trait]
+impl ThresholdSource for DirectoryThresholds {
+    async fn thresholds(&self, accounts: &[rusty_core::AccountId]) -> (Option<f64>, Option<f64>) {
+        let Some(first) = accounts.first() else { return (None, None) };
+        match self.0.effective_configs(*first, &["spam_junk_score", "spam_reject_score"]).await {
+            Ok(v) => (v.first().and_then(|x| x.as_ref()).and_then(serde_json::Value::as_f64), v.get(1).and_then(|x| x.as_ref()).and_then(serde_json::Value::as_f64)),
+            Err(_) => (None, None),
+        }
+    }
+}
+
+/// What the score says under thresholds: `Some(true)` refuse, `Some(false)` junk, `None` neither line is reached.
+pub fn judge(score: f64, junk: Option<f64>, reject: Option<f64>) -> Option<bool> {
+    if reject.is_some_and(|r| score >= r) {
+        Some(true)
+    } else if junk.is_some_and(|j| score >= j) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 /// The longest reply read from a scanner.
 const MAX_REPLY: usize = 1024 * 1024;
 /// clamd's `INSTREAM` chunk size.
@@ -144,6 +177,7 @@ pub struct RspamdFilter {
     max_bytes: u64,
     on_error: OnError,
     observer: Option<Observer>,
+    thresholds: Option<std::sync::Arc<dyn ThresholdSource>>,
 }
 
 /// An rspamd verdict, reduced to what the SMTP session needs.
@@ -170,7 +204,13 @@ fn clean(v: &str) -> String {
 impl RspamdFilter {
     pub fn new(url: &str, timeout: Duration, max_bytes: u64, on_error: OnError) -> RspamdFilter {
         let addr = url.trim_start_matches("http://").trim_end_matches('/').to_owned();
-        RspamdFilter { addr, timeout, max_bytes, on_error, observer: None }
+        RspamdFilter { addr, timeout, max_bytes, on_error, observer: None, thresholds: None }
+    }
+
+    /// Judge the score by the recipients' own thresholds instead of rspamd's actions (when they have any).
+    pub fn with_thresholds(mut self, source: std::sync::Arc<dyn ThresholdSource>) -> RspamdFilter {
+        self.thresholds = Some(source);
+        self
     }
 
     pub fn with_observer(mut self, observer: Observer) -> RspamdFilter {
@@ -252,6 +292,24 @@ impl InboundFilter for RspamdFilter {
                 ("X-Spam-Score".to_owned(), format!("{:.2}", r.score)),
             ])
         };
+        // The recipients' own lines (their plan, domain or account): when they have any, the score is judged by them; rspamd's reject, add header and no action are then only the score.
+        if let Some(source) = &self.thresholds {
+            let accounts: Vec<rusty_core::AccountId> = ctx.recipients.iter().flat_map(|x| x.accounts.iter().copied()).collect();
+            let (junk, reject) = source.thresholds(&accounts).await;
+            if junk.is_some() || reject.is_some() {
+                if matches!(r.action.as_str(), "soft reject" | "greylist") {
+                    return FilterVerdict::Reject { code: 451, enhanced: "4.7.1", text: "Temporarily refused, please try again later".to_owned() };
+                }
+                return match judge(r.score, junk, reject) {
+                    Some(true) => FilterVerdict::Reject { code: 550, enhanced: "5.7.1", text: "Message refused as spam".to_owned() },
+                    Some(false) => {
+                        let FilterVerdict::Tag(tags) = status("Yes") else { return FilterVerdict::Quarantine(QuarantineFolder::Spam) };
+                        FilterVerdict::QuarantineTagged(QuarantineFolder::Spam, tags)
+                    }
+                    None => status("No"),
+                };
+            }
+        }
         match r.action.as_str() {
             "reject" => FilterVerdict::Reject { code: 550, enhanced: "5.7.1", text: "Message refused as spam".to_owned() },
             // The sender is asked to come back (greylisting, or a score near the line): a real server retries, a spam run usually does not.

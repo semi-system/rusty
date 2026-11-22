@@ -50,8 +50,8 @@ impl QueueRepo for PgRepo {
         Ok(n == 1)
     }
 
-    async fn trace(&self, domain: DomainId, needle: Option<&str>, before: Option<i64>, limit: i64) -> Result<Vec<LogRow>> {
-        let rows = sqlx::query(r(sql::TRACE)).bind(domain.0).bind(needle).bind(before).bind(limit).fetch_all(self.store.pool()).await.map_err(map_db_error)?;
+    async fn trace_held(&self, domain: DomainId, needle: Option<&str>, before: Option<i64>, limit: i64, held_only: bool) -> Result<Vec<LogRow>> {
+        let rows = sqlx::query(r(sql::TRACE)).bind(domain.0).bind(needle).bind(before).bind(limit).bind(held_only).fetch_all(self.store.pool()).await.map_err(map_db_error)?;
         rows.iter()
             .map(|x| {
                 Ok(LogRow {

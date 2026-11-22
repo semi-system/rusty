@@ -18,6 +18,7 @@ pub mod dns;
 pub mod health;
 pub mod import;
 pub mod live;
+pub mod mailrules;
 pub mod manage;
 pub mod monitor;
 pub mod outbound;

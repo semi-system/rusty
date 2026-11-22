@@ -29,6 +29,7 @@ pub mod outbound_queue;
 pub mod reply;
 pub mod resolve;
 pub mod policy;
+pub mod rules;
 pub mod scan;
 pub mod session;
 pub mod stack;

@@ -141,6 +141,9 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
     shape!("copy_many (100)", true, r.copy_many(id, &ids[300..400], f));
     shape!("set_subscribed", true, r.set_subscribed(id, f, false));
     shape!("expunge", true, r.expunge(id, rusty_core::MessageId(ids[2])));
+    // The message just expunged is the deleted one the reads look at (the purges below remove it).
+    shape!("list_deleted", false, r.list_deleted(id, 0, 10));
+    shape!("get_deleted", false, r.get_deleted(id, rusty_core::MessageId(ids[2])));
     shape!("expunge_many (10)", true, r.expunge_many(id, &ids[210..220], Some(100)));
     shape!("purge_deleted (11 rows)", true, r.purge_deleted(id, i64::MAX, 1000));
     shape!("expunge_many (100)", true, r.expunge_many(id, &ids[220..320], Some(100)));

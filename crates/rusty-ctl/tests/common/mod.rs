@@ -5,7 +5,7 @@
 
 use std::future::Future;
 
-use rusty_ctl::{check_domain, execute, Command, CtlEnv, CtlError, OutboundFacts, Outcome, PasswordReader, PasswordSource, Secret};
+use rusty_ctl::{check_domain, execute, Command, CtlEnv, CtlError, MailEnv, OutboundFacts, Outcome, PasswordReader, PasswordSource, Secret};
 use rusty_core::dns_check::DnsSource;
 use rusty_directory::Directory;
 use rusty_store::fixtures::Fixtures;
@@ -26,6 +26,8 @@ pub struct Backend {
     pub admins: rusty_store::AdminStore,
     pub fx: Fixtures,
     pub tmp: tempfile::TempDir,
+    /// The mailbox repository and a blob directory of its own, for the `mailbox` commands.
+    pub mail: Option<MailEnv>,
     _db: Option<pg::PgTestDb>,
 }
 
@@ -64,41 +66,41 @@ impl Backend {
         hostname: Option<&str>,
     ) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(passwords);
-        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname, config_note: "test", dkim_dir: None, dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing: None, sealed: Some(&self.sealed), relays: Some(&self.relays), blob_stores: Some(&self.blob_stores), pools: Some(&self.pools), jobs: Some(&self.jobs), admins: Some(&self.admins), blobs: None, gc: None, stores: None };
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname, config_note: "test", dkim_dir: None, dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing: None, sealed: Some(&self.sealed), relays: Some(&self.relays), blob_stores: Some(&self.blob_stores), pools: Some(&self.pools), jobs: Some(&self.jobs), admins: Some(&self.admins), blobs: None, gc: None, stores: None, mail: self.mail.clone() };
         execute(&cmd, &mut env).await
     }
 
     pub async fn run_with_dkim(&self, cmd: Command, dkim_dir: &std::path::Path) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(&[]);
-        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: Some(dkim_dir), dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing: None, sealed: Some(&self.sealed), relays: Some(&self.relays), blob_stores: Some(&self.blob_stores), pools: Some(&self.pools), jobs: Some(&self.jobs), admins: Some(&self.admins), blobs: None, gc: None, stores: None };
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: Some(dkim_dir), dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing: None, sealed: Some(&self.sealed), relays: Some(&self.relays), blob_stores: Some(&self.blob_stores), pools: Some(&self.pools), jobs: Some(&self.jobs), admins: Some(&self.admins), blobs: None, gc: None, stores: None, mail: self.mail.clone() };
         execute(&cmd, &mut env).await
     }
 
     /// `domain dns` with the outbound facts of a configuration.
     pub async fn run_dns(&self, cmd: Command, outbound: OutboundFacts<'_>) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(&[]);
-        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound, live_dns: None, sealing: None, sealed: Some(&self.sealed), relays: Some(&self.relays), blob_stores: Some(&self.blob_stores), pools: Some(&self.pools), jobs: Some(&self.jobs), admins: Some(&self.admins), blobs: None, gc: None, stores: None };
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound, live_dns: None, sealing: None, sealed: Some(&self.sealed), relays: Some(&self.relays), blob_stores: Some(&self.blob_stores), pools: Some(&self.pools), jobs: Some(&self.jobs), admins: Some(&self.admins), blobs: None, gc: None, stores: None, mail: self.mail.clone() };
         execute(&cmd, &mut env).await
     }
 
     /// `domain check` against `src` (a zone in memory) with the outbound facts of a configuration.
     pub async fn check_with<S: DnsSource>(&self, src: &S, outbound: OutboundFacts<'_>, domain: &str) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(&[]);
-        let env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound, live_dns: None, sealing: None, sealed: Some(&self.sealed), relays: Some(&self.relays), blob_stores: Some(&self.blob_stores), pools: Some(&self.pools), jobs: Some(&self.jobs), admins: Some(&self.admins), blobs: None, gc: None, stores: None };
+        let env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound, live_dns: None, sealing: None, sealed: Some(&self.sealed), relays: Some(&self.relays), blob_stores: Some(&self.blob_stores), pools: Some(&self.pools), jobs: Some(&self.jobs), admins: Some(&self.admins), blobs: None, gc: None, stores: None, mail: self.mail.clone() };
         check_domain(&env, src, domain).await
     }
 
     /// A command with the sealing key of a configuration (`[sealing] public_key`) and no key directory: sealed mode needs no files.
     pub async fn run_sealed(&self, cmd: Command, sealing: Option<&rusty_seal::SealingKey>) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(&[]);
-        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing, sealed: Some(&self.sealed), relays: Some(&self.relays), blob_stores: Some(&self.blob_stores), pools: Some(&self.pools), jobs: Some(&self.jobs), admins: Some(&self.admins), blobs: None, gc: None, stores: None };
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing, sealed: Some(&self.sealed), relays: Some(&self.relays), blob_stores: Some(&self.blob_stores), pools: Some(&self.pools), jobs: Some(&self.jobs), admins: Some(&self.admins), blobs: None, gc: None, stores: None, mail: self.mail.clone() };
         execute(&cmd, &mut env).await
     }
 
     /// A relay command with the passwords it reads and the sealing key of the configuration.
     pub async fn run_relay(&self, cmd: Command, passwords: &[&str], sealing: Option<&rusty_seal::SealingKey>) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(passwords);
-        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing, sealed: Some(&self.sealed), relays: Some(&self.relays), blob_stores: Some(&self.blob_stores), pools: Some(&self.pools), jobs: Some(&self.jobs), admins: Some(&self.admins), blobs: None, gc: None, stores: None };
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing, sealed: Some(&self.sealed), relays: Some(&self.relays), blob_stores: Some(&self.blob_stores), pools: Some(&self.pools), jobs: Some(&self.jobs), admins: Some(&self.admins), blobs: None, gc: None, stores: None, mail: self.mail.clone() };
         execute(&cmd, &mut env).await
     }
 
@@ -106,7 +108,7 @@ impl Backend {
     pub async fn run_blobs_verify(&self, blobs: &rusty_store::FsBlobStore) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(&[]);
         let gc = rusty_store::Gc::new(self.store.repos().gc.clone());
-        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing: None, sealed: Some(&self.sealed), relays: Some(&self.relays), blob_stores: Some(&self.blob_stores), pools: Some(&self.pools), jobs: Some(&self.jobs), admins: Some(&self.admins), blobs: Some(blobs), gc: Some(&gc), stores: None };
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing: None, sealed: Some(&self.sealed), relays: Some(&self.relays), blob_stores: Some(&self.blob_stores), pools: Some(&self.pools), jobs: Some(&self.jobs), admins: Some(&self.admins), blobs: Some(blobs), gc: Some(&gc), stores: None, mail: None };
         execute(&Command::BlobsVerify, &mut env).await
     }
 
@@ -114,7 +116,7 @@ impl Backend {
     pub async fn run_blobs_verify_all(&self, blobs: &rusty_store::FsBlobStore, router: &dyn rusty_store::BlobRouter) -> Result<Outcome, CtlError> {
         let mut pw = FakePasswords::new(&[]);
         let gc = rusty_store::Gc::new(self.store.repos().gc.clone());
-        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing: None, sealed: Some(&self.sealed), relays: Some(&self.relays), blob_stores: Some(&self.blob_stores), pools: Some(&self.pools), jobs: Some(&self.jobs), admins: Some(&self.admins), blobs: Some(blobs), gc: Some(&gc), stores: Some(router) };
+        let mut env = CtlEnv { directory: &self.dir, passwords: &mut pw, hostname: Some("mail.example.net"), config_note: "test", dkim_dir: None, dns: &self.dns, outbound: OutboundFacts::default(), live_dns: None, sealing: None, sealed: Some(&self.sealed), relays: Some(&self.relays), blob_stores: Some(&self.blob_stores), pools: Some(&self.pools), jobs: Some(&self.jobs), admins: Some(&self.admins), blobs: Some(blobs), gc: Some(&gc), stores: Some(router), mail: None };
         execute(&Command::BlobsVerify, &mut env).await
     }
 
@@ -128,6 +130,11 @@ pub async fn pg_backend() -> Option<Backend> {
     let url = pg::pg_admin_url()?;
     let db = pg::PgTestDb::create(&url).await;
     let store = Store::open(StoreConfig::postgres(db.url())).await.unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let blobs_root = tmp.path().join("blobs");
+    rusty_store::FsBlobStore::init(&blobs_root).await.unwrap();
+    let blobs: std::sync::Arc<dyn rusty_store::BlobStore> = std::sync::Arc::new(rusty_store::FsBlobStore::open(&blobs_root).await.unwrap());
+    let mail = MailEnv { repo: store.repos().mailbox.clone(), stores: rusty_store::IntoRouter::into_router(blobs), max_message_bytes: 10 * 1024 * 1024 };
     Some(Backend {
         name: "postgres",
         dir: Directory::with_repo(store.repos().directory.clone()),
@@ -140,7 +147,8 @@ pub async fn pg_backend() -> Option<Backend> {
         jobs: rusty_store::JobQueue::with_repo(store.repos().jobs.clone()),
         admins: rusty_store::AdminStore::with_repo(store.repos().admin.clone()),
         store,
-        tmp: tempfile::tempdir().unwrap(),
+        tmp,
+        mail: Some(mail),
         _db: Some(db),
     })
 }

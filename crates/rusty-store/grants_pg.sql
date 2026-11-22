@@ -96,6 +96,7 @@ BEGIN
     GRANT SELECT ON domains, aliases, domain_aliases, lists, list_members, plans, address_owners, mailboxes, folders, deliveries, blob_stores, blob_backends, sealed_secrets TO rusty_smtp_in;
     GRANT SELECT, INSERT, UPDATE ON messages, blobs, blob_locations TO rusty_smtp_in;
     GRANT INSERT ON keywords, change_log, deliveries, jobs TO rusty_smtp_in;
+    GRANT SELECT, INSERT, UPDATE ON vacation_replies TO rusty_smtp_in;   -- one automatic reply per sender and week (docs/design-mail-rules.md)
     GRANT INSERT ON mail_log TO rusty_smtp_in;   -- the trace of incoming mail (docs/design-queue.md)
     GRANT UPDATE ON mailboxes, folders TO rusty_smtp_in;
   END IF;
@@ -156,7 +157,8 @@ BEGIN
     GRANT SELECT, INSERT, UPDATE, DELETE ON blob_locations, blob_store_leases, jobs TO rusty_gc;
     GRANT SELECT, INSERT, UPDATE ON job_turns TO rusty_gc;
     GRANT SELECT, DELETE ON mail_log TO rusty_gc;   -- the log is kept 30 days
-    GRANT SELECT, DELETE ON audit_log TO rusty_gc;   -- the audit log is kept 365 days
+    GRANT SELECT, DELETE ON audit_log TO rusty_gc;
+    GRANT SELECT, DELETE ON vacation_replies TO rusty_gc;   -- the vacation book-keeping is kept 60 days (docs/design-mail-rules.md)   -- the audit log is kept 365 days
     GRANT SELECT, INSERT, UPDATE ON blob_stores, blob_backends TO rusty_gc;
     GRANT SELECT, DELETE ON service_heartbeats TO rusty_gc;   -- the cleanup of heartbeats nobody renews
   END IF;

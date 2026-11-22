@@ -75,6 +75,14 @@ pub enum Command {
     StorageCheck { name: String },
     /// `domain relay check`: ask the outbound service to test the relay (a `relay.check` job); the result shows in `domain relay show`.
     DomainRelayCheck { name: String },
+    /// `mailbox deleted`: the messages the person deleted that can still be recovered.
+    MailboxDeleted { addr: String },
+    /// `mailbox recover`: bring a deleted message back as a new message in a folder (default: the Inbox).
+    MailboxRecover { addr: String, id: i64, folder: Option<String> },
+    /// `mailbox export`: write every folder of the mailbox into a new directory, as an mbox file each or (with `maildir`) as a Maildir each.
+    MailboxExport { addr: String, dir: PathBuf, maildir: bool },
+    /// `mailbox import`: add the messages of an mbox file, or of a Maildir when the path is a directory, to a folder (default: the Inbox; created when it does not exist).
+    MailboxImport { addr: String, file: PathBuf, folder: Option<String> },
     /// `blobs init`: make the blob directory of the configuration (mode 0700, with its marker) once, before the first start, or, with `[blob_s3]`, the bucket; it needs no database. Safe to repeat.
     BlobsInit,
     /// `blobs verify`: check that every blob the database references exists in the blob store (after a restore); exit 1 when one is missing.
@@ -133,6 +141,10 @@ pub const USAGE: &str = "usage: rustyctl [--config FILE | --dev [--data-dir DIR]
   account list [domain]\n\
   account set-password <addr> (--password-stdin | --prompt)\n\
   account lock <addr> | disable <addr> | enable <addr>\n\
+  mailbox deleted <addr>                     the messages the person deleted that can still be recovered\n\
+  mailbox recover <addr> <id> [folder]       bring one back as a new message (default folder: inbox)\n\
+  mailbox export <addr> <dir>                write every folder as an mbox file into the new directory <dir>\n\
+  mailbox import <addr> <file> [folder]      add the messages of an mbox file to a folder (default: inbox; made if missing)\n\
   alias add <alias-addr> <account-addr> | list [domain] | remove <alias-addr>\n\
   dkim generate <domain> [--selector S] [--sealed]\n\
                                              create an ed25519 DKIM key and print its DNS record: the private key is a\n\
@@ -526,6 +538,31 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             plain()?;
             done(Command::AdminRevoke { addr: (*addr).to_owned() })
         }
+        ["mailbox", "deleted", addr] => {
+            plain()?;
+            done(Command::MailboxDeleted { addr: (*addr).to_owned() })
+        }
+        ["mailbox", "recover", addr, id] | ["mailbox", "recover", addr, id, _] => {
+            plain()?;
+            let id: i64 = id.parse().map_err(|_| err("the message id must be a number"))?;
+            let folder = match words.as_slice() {
+                [_, _, _, _, f] => Some((*f).to_owned()),
+                _ => None,
+            };
+            done(Command::MailboxRecover { addr: (*addr).to_owned(), id, folder })
+        }
+        ["mailbox", "export", addr, dir] | ["mailbox", "export", addr, dir, "maildir"] => {
+            plain()?;
+            done(Command::MailboxExport { addr: (*addr).to_owned(), dir: PathBuf::from(dir), maildir: words.len() == 5 })
+        }
+        ["mailbox", "import", addr, file] | ["mailbox", "import", addr, file, _] => {
+            plain()?;
+            let folder = match words.as_slice() {
+                [_, _, _, _, f] => Some((*f).to_owned()),
+                _ => None,
+            };
+            done(Command::MailboxImport { addr: (*addr).to_owned(), file: PathBuf::from(file), folder })
+        }
         ["blobs", "init"] => {
             plain()?;
             done(Command::BlobsInit)
@@ -566,8 +603,8 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             done(Command::Check)
         }
         [] => Err(err("a command is required")),
-        ["domain" | "account" | "alias" | "dkim" | "db" | "relay" | "seal" | "admin" | "blobs"] => Err(err("a subcommand is required")),
-        ["domain" | "account" | "alias" | "dkim" | "db" | "relay" | "seal" | "admin" | "blobs", _, ..] | ["check", ..] => {
+        ["domain" | "account" | "alias" | "dkim" | "db" | "relay" | "seal" | "admin" | "blobs" | "mailbox"] => Err(err("a subcommand is required")),
+        ["domain" | "account" | "alias" | "dkim" | "db" | "relay" | "seal" | "admin" | "blobs" | "mailbox", _, ..] | ["check", ..] => {
             Err(err("unknown subcommand or wrong number of arguments"))
         }
         _ => Err(err("unknown command")),

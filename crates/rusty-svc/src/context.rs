@@ -38,6 +38,8 @@ pub struct Context {
     pub queue: Arc<dyn rusty_store::QueueRepo>,
     /// The audit log: written by the admin web, purged by the garbage collector.
     pub audit: Arc<dyn rusty_store::AuditRepo>,
+    /// The book-keeping of automatic replies (vacation).
+    pub rules: Arc<dyn rusty_store::RulesRepo>,
     /// Plans and what a mailbox holds (the IMAP `QUOTA` answer).
     pub plans: Arc<dyn rusty_store::PlanRepo>,
 }
@@ -87,6 +89,7 @@ impl Context {
             protocols: ProtocolSwitches::new(repos.settings.clone()),
             queue: repos.queue.clone(),
             audit: repos.audit.clone(),
+            rules: repos.rules.clone(),
             plans: repos.plans.clone(),
             cfg,
         })

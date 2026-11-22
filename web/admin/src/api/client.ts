@@ -1,7 +1,7 @@
 // The API client: the contract's endpoints as typed calls. It knows the three rules of a state-changing request (design section 5): the JSON content type,
 // the CSRF token of the session (the browser adds `Origin` itself) and that a failure is a fixed code, never text to show.
 
-import type { Account, CertificateList, Stats, PlatformSettings, Audit, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, DomainSettings, ImportResult, MailList, Member, Members, Monitor, Plan, PlanList, QueueList, Routing, Trace, Protocols, Queue, Relay, SetupState, Storage } from './types';
+import type { Account, MailRules, CertificateList, Stats, PlatformSettings, Audit, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, DomainSettings, ImportResult, MailList, Member, Members, Monitor, Plan, PlanList, QueueList, Routing, Trace, Protocols, Queue, Relay, SetupState, Storage } from './types';
 import type { MessageKey } from '../i18n';
 
 /** A page of a list, the cursor of the next one and how many rows match in all. */
@@ -271,6 +271,15 @@ export class Client {
     return this.call('GET', `/api/v1/audit${parts.length > 0 ? '?' + parts.join('&') : ''}`);
   }
 
+  /** Forwarding and the automatic reply of an account. */
+  mailRules(address: string): Promise<MailRules> {
+    return this.call('GET', `/api/v1/accounts/${seg(address)}/mail-rules`);
+  }
+
+  setMailRules(address: string, rules: Partial<MailRules>): Promise<MailRules> {
+    return this.call('PUT', `/api/v1/accounts/${seg(address)}/mail-rules`, rules);
+  }
+
   /** What the public names of this server present as their certificates. */
   certificates(): Promise<CertificateList> {
     return this.call('GET', '/api/v1/certificates');
@@ -282,8 +291,9 @@ export class Client {
   }
 
   /** The delivery log of a domain's outgoing mail, newest first. */
-  trace(domain: string, opts: { q?: string; before?: number } = {}): Promise<Trace> {
+  trace(domain: string, opts: { q?: string; before?: number; held?: boolean } = {}): Promise<Trace> {
     const parts: string[] = [];
+    if (opts.held === true) parts.push('held=1');
     if (opts.q !== undefined && opts.q.trim() !== '') parts.push(`q=${encodeURIComponent(opts.q.trim())}`);
     if (opts.before !== undefined) parts.push(`before=${opts.before}`);
     return this.call('GET', `/api/v1/domains/${seg(domain)}/trace${parts.length > 0 ? '?' + parts.join('&') : ''}`);
@@ -456,8 +466,8 @@ export class Client {
   }
 
   /** Create a plan or change its limits (platform administrators): a null limit removes it. */
-  putPlan(name: string, quotaBytes: number | null, maxMessageBytes: number | null, messagesPerHour: number | null = null, protocols: string[] | null = null): Promise<Plan> {
-    return this.call('PUT', '/api/v1/plans', { name, quota_bytes: quotaBytes, max_message_bytes: maxMessageBytes, messages_per_hour: messagesPerHour, protocols });
+  putPlan(name: string, quotaBytes: number | null, maxMessageBytes: number | null, messagesPerHour: number | null = null, protocols: string[] | null = null, spamJunk: number | null = null, spamReject: number | null = null): Promise<Plan> {
+    return this.call('PUT', '/api/v1/plans', { name, quota_bytes: quotaBytes, max_message_bytes: maxMessageBytes, messages_per_hour: messagesPerHour, protocols, spam_junk_score: spamJunk, spam_reject_score: spamReject });
   }
 
   /** Put an account on a plan, or on none. */

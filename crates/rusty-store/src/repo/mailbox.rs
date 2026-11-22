@@ -165,6 +165,22 @@ pub struct MessageDetail {
     pub deleted: bool,
 }
 
+/// A message its owner deleted and that is still kept for recovery (`deleted_retention_days`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeletedMessage {
+    pub id: MessageId,
+    /// The folder it was in.
+    pub folder: FolderId,
+    pub size: i64,
+    pub deleted_at: i64,
+    pub internal_date: i64,
+    pub from: String,
+    pub subject: String,
+    /// The flags it had (a recovered message keeps them).
+    pub flags: Flags,
+    pub raw: RawRef,
+}
+
 /// Where the raw bytes of a message live.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawRef {
@@ -320,6 +336,10 @@ pub trait MailboxRepo: Send + Sync {
     ) -> Result<Committed<u64>>;
 
     // ---- reads
+    /// The deleted messages still kept, by id, those with `id > after`, at most `limit`.
+    async fn list_deleted(&self, mb: MailboxId, after: i64, limit: i64) -> Result<Vec<DeletedMessage>>;
+    /// One deleted message still kept (`NotFound` for a live one, a purged one or another mailbox's).
+    async fn get_deleted(&self, mb: MailboxId, id: MessageId) -> Result<DeletedMessage>;
     async fn get_message(&self, mb: MailboxId, id: MessageId) -> Result<MessageDetail>;
     /// Blob hash and size of a live message.
     async fn get_raw_ref(&self, mb: MailboxId, id: MessageId) -> Result<RawRef>;

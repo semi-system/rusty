@@ -193,3 +193,32 @@ async fn the_mail_footer_of_a_domain_is_kept_and_a_blank_or_oversized_one_is_ref
     assert_eq!(t.mutate("PUT", "/api/v1/domains/foot.test/settings", Some(json!({ "footer_text": null }))).await.status, 200);
     assert_eq!(t.get("/api/v1/domains/foot.test/settings").await.json()["footer_text"], json!(null));
 }
+
+#[tokio::test]
+async fn the_forwarding_and_the_automatic_reply_of_an_account_are_kept_checked_and_scoped() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    make_admin(&r, "tenant@rules.test", true).await;
+    let c = Client::sign_in(r.addr, "root@home.test").await;
+    assert_eq!(c.post("/api/v1/domains/rules.test/accounts", json!({ "local": "alice", "password": "alice-password-1" })).await.status, 201);
+    let none = c.get("/api/v1/accounts/alice@rules.test/mail-rules").await;
+    conforms(&none.json(), "MailRules");
+    assert_eq!(none.json(), json!({ "forward": null, "vacation": null }));
+    let put = c.mutate("PUT", "/api/v1/accounts/alice@rules.test/mail-rules", Some(json!({ "forward": { "to": [" Me@Other.example "], "keep": true }, "vacation": { "enabled": true, "subject": "Away", "body": "Back on Monday.", "from": null, "until": 2_000_000_000 } }))).await;
+    assert_eq!(put.status, 200, "{}", put.body);
+    conforms(&put.json(), "MailRules");
+    assert_eq!(put.json()["forward"]["to"], json!(["me@other.example"]));
+    assert_eq!(c.get("/api/v1/accounts/alice@rules.test/mail-rules").await.json()["vacation"]["subject"], json!("Away"));
+    // The other settings of the account are left alone.
+    assert_eq!(c.mutate("PUT", "/api/v1/accounts/alice@rules.test/plan", Some(json!({ "plan": null }))).await.status, 200);
+    for bad in [json!({ "forward": { "to": [] } }), json!({ "forward": { "to": ["not an address"] } }), json!({ "vacation": { "enabled": true, "body": "" } }), json!({ "unknown": 1 })] {
+        assert_eq!(c.mutate("PUT", "/api/v1/accounts/alice@rules.test/mail-rules", Some(bad.clone())).await.status, 400, "{bad}");
+    }
+    // A domain administrator keeps to its own domain.
+    let t = Client::sign_in(r.addr, "tenant@rules.test").await;
+    assert_eq!(t.get("/api/v1/accounts/alice@rules.test/mail-rules").await.status, 200);
+    assert_eq!(t.get("/api/v1/accounts/root@home.test/mail-rules").await.status, 404);
+    // An empty object removes the rules.
+    assert_eq!(c.mutate("PUT", "/api/v1/accounts/alice@rules.test/mail-rules", Some(json!({}))).await.status, 200);
+    assert_eq!(c.get("/api/v1/accounts/alice@rules.test/mail-rules").await.json(), json!({ "forward": null, "vacation": null }));
+}

@@ -234,6 +234,9 @@ COLUMN service_heartbeats.started_at bigint nullable=NO identity=NO/ collation= 
 COLUMN service_heartbeats.last_seen bigint nullable=NO identity=NO/ collation= default=
 COLUMN service_heartbeats.status text nullable=NO identity=NO/ collation=C default=
 COLUMN service_heartbeats.detail text nullable=NO identity=NO/ collation=C default='{}'::text
+COLUMN vacation_replies.account_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN vacation_replies.sender text nullable=NO identity=NO/ collation=C default=
+COLUMN vacation_replies.at bigint nullable=NO identity=NO/ collation= default=
 CONSTRAINT accounts.accounts_closed_at_valid CHECK (closed_at IS NULL OR closed_at >= 0)
 CONSTRAINT accounts.accounts_config_not_null NOT NULL config
 CONSTRAINT accounts.accounts_created_at_not_null NOT NULL created_at
@@ -632,6 +635,13 @@ CONSTRAINT service_heartbeats.service_heartbeats_status_not_null NOT NULL status
 CONSTRAINT service_heartbeats.service_heartbeats_status_valid CHECK (status = ANY (ARRAY['ok'::text, 'degraded'::text]))
 CONSTRAINT service_heartbeats.service_heartbeats_version_not_null NOT NULL version
 CONSTRAINT service_heartbeats.service_heartbeats_version_valid CHECK (length(version) >= 1 AND length(version) <= 64)
+CONSTRAINT vacation_replies.vacation_replies_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+CONSTRAINT vacation_replies.vacation_replies_account_id_not_null NOT NULL account_id
+CONSTRAINT vacation_replies.vacation_replies_at_not_null NOT NULL at
+CONSTRAINT vacation_replies.vacation_replies_at_valid CHECK (at >= 0)
+CONSTRAINT vacation_replies.vacation_replies_pkey PRIMARY KEY (account_id, sender)
+CONSTRAINT vacation_replies.vacation_replies_sender_not_null NOT NULL sender
+CONSTRAINT vacation_replies.vacation_replies_sender_valid CHECK (length(sender) >= 1 AND length(sender) <= 320)
 INDEX accounts.accounts_id_domain CREATE UNIQUE INDEX accounts_id_domain ON public.accounts USING btree (id, domain_id)
 INDEX accounts.accounts_local_part_domain_id_key CREATE UNIQUE INDEX accounts_local_part_domain_id_key ON public.accounts USING btree (local_part, domain_id)
 INDEX accounts.accounts_pkey CREATE UNIQUE INDEX accounts_pkey ON public.accounts USING btree (id)
@@ -705,6 +715,8 @@ INDEX schema_compat.schema_compat_pkey CREATE UNIQUE INDEX schema_compat_pkey ON
 INDEX sealed_secrets.sealed_secrets_pkey CREATE UNIQUE INDEX sealed_secrets_pkey ON public.sealed_secrets USING btree (owner_kind, owner_id, purpose)
 INDEX service_heartbeats.service_heartbeats_pkey CREATE UNIQUE INDEX service_heartbeats_pkey ON public.service_heartbeats USING btree (service, instance)
 INDEX service_heartbeats.service_heartbeats_seen CREATE INDEX service_heartbeats_seen ON public.service_heartbeats USING btree (last_seen)
+INDEX vacation_replies.vacation_replies_at CREATE INDEX vacation_replies_at ON public.vacation_replies USING btree (at)
+INDEX vacation_replies.vacation_replies_pkey CREATE UNIQUE INDEX vacation_replies_pkey ON public.vacation_replies USING btree (account_id, sender)
 TRIGGER accounts.accounts_addr_truncate CREATE TRIGGER accounts_addr_truncate AFTER TRUNCATE ON accounts FOR EACH STATEMENT EXECUTE FUNCTION rs_address_truncate()
 TRIGGER accounts.accounts_addr_unique_del CREATE TRIGGER accounts_addr_unique_del BEFORE DELETE ON accounts FOR EACH ROW EXECUTE FUNCTION rs_address_unique()
 TRIGGER accounts.accounts_addr_unique_ins CREATE TRIGGER accounts_addr_unique_ins BEFORE INSERT ON accounts FOR EACH ROW EXECUTE FUNCTION rs_address_unique()

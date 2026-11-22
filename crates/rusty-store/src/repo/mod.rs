@@ -27,6 +27,7 @@ pub(crate) mod settings;
 pub(crate) mod plans;
 pub(crate) mod routing;
 pub(crate) mod queue;
+pub(crate) mod rules;
 pub(crate) mod audit;
 pub(crate) mod admin;
 mod dns;
@@ -45,6 +46,7 @@ pub use relay::{RelayRepo, RelayRow};
 pub use settings::{SettingsRepo, PROTOCOLS};
 pub use plans::{AccountUsage, PlanRepo, PlanRow};
 pub use routing::{ListInfo, MemberInfo, RoutingRepo};
+pub use rules::RulesRepo;
 pub use queue::{StatRow, InboundRow, LogRow, NewLogRow, QueueJob, QueueRepo, HELD_UNTIL};
 pub use audit::{AuditRepo, AuditRow, NewAuditRow};
 pub use admin::{AdminEntry, AdminGrant, AdminRepo, Revoked};
@@ -55,7 +57,7 @@ pub use directory::{
     MAX_LIST_PAGE, MAX_STATUS_IDS,
 };
 pub use mailbox::{
-    sql_text, Committed, DeliverEntry, Delivery, FlagUpdate, FolderCounts, FolderInfo, JobFence, MailboxRepo, MessageDetail,
+    sql_text, Committed, DeliverEntry, Delivery, FlagUpdate, FolderCounts, FolderInfo, DeletedMessage, JobFence, MailboxRepo, MessageDetail,
     NewMessage, RawRef,
 };
 pub(crate) use mailbox::{

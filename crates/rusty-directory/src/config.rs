@@ -30,6 +30,12 @@ impl Directory {
         self.update_config(ConfigTarget::Domain(domain), config).await
     }
 
+    /// The account's own configuration object (not the layers above it); `{}` when it has none.
+    pub async fn account_config(&self, account: AccountId) -> Result<Value> {
+        let layers = self.repo().config_layers(account).await?;
+        Ok(serde_json::from_str(&layers.account).ok().filter(Value::is_object).unwrap_or_else(|| serde_json::json!({})))
+    }
+
     pub async fn set_account_config(&self, account: AccountId, config: Value) -> Result<()> {
         self.update_config(ConfigTarget::Account(account), config).await
     }
