@@ -9,6 +9,15 @@
 
   let { app }: { app: App } = $props();
 
+  const fields = (detail: string | null): [string, string][] => {
+    if (detail === null) return [];
+    try {
+      return Object.entries(JSON.parse(detail) as Record<string, string>);
+    } catch {
+      return [];
+    }
+  };
+
   const when = (s: number): string => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' }).format(new Date(s * 1000));
 
   let items = $state<AuditEntry[]>([]);
@@ -59,7 +68,16 @@
             <tr>
               <td>{when(a.at)}</td>
               <th scope="row">{a.actor}</th>
-              <td>{a.method} {a.path}</td>
+              <td>
+                {a.method} {a.path}
+                {#if fields(a.detail).length > 0}
+                  <dl class="changes">
+                    {#each fields(a.detail) as [name, value] (name)}
+                      <div><dt>{name}</dt><dd>{value === '(hidden)' ? t('audit.hidden') : value}</dd></div>
+                    {/each}
+                  </dl>
+                {/if}
+              </td>
               <td>{a.ip}</td>
             </tr>
           {/each}

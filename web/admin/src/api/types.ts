@@ -450,6 +450,7 @@ export interface AuditEntry {
   route: string;
   path: string;
   status: number;
+  detail: string | null;
 }
 
 export interface Audit {

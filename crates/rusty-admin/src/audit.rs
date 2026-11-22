@@ -1,7 +1,7 @@
 //! The audit log of the admin web (docs/design-audit.md): every change an administrator makes (a request that is not a read and was not refused) is written with who, when, from which address
 //! and what, kept for 365 days, and shown on the Audit page. A platform administrator sees every change; a domain administrator sees those of its own domain.
 //!
-//! The recording is one wrapper over the route table (`record_changes`), so a new route is audited without its author remembering to do it. A request body is never kept.
+//! The recording is one wrapper over the route table (`record_changes`), so a new route is audited without its author remembering to do it. The body is kept only as a summary of its fields with every secret hidden (`audit_detail`).
 
 use std::sync::Arc;
 
@@ -35,6 +35,7 @@ pub fn record_changes(app: Arc<AdminApp>, router: Router) -> Router {
                     (Some(id), Some(_)) => app.auth.principal(id).await.ok().flatten(),
                     _ => None,
                 };
+                let detail = crate::audit_detail::summarize(&req.body);
                 let (method, path, ip) = (req.method, req.path.clone(), req.peer.addr.ip().to_string());
                 let domain_name = req.param("d").map(str::to_owned).or_else(|| req.param("a").and_then(|a| a.rsplit_once('@').map(|(_, d)| d.to_owned())));
                 let resp = inner.call(req).await;
@@ -47,7 +48,7 @@ pub fn record_changes(app: Arc<AdminApp>, router: Router) -> Router {
                                 Scope::Platform => None,
                             },
                         };
-                        let row = NewAuditRow { actor_id: Some(session.account), actor: session.address.clone(), domain_id, ip, method: method.as_str().to_owned(), route: pattern, path, status: i32::from(resp.status) };
+                        let row = NewAuditRow { actor_id: Some(session.account), actor: session.address.clone(), domain_id, ip, method: method.as_str().to_owned(), route: pattern, path, status: i32::from(resp.status), detail };
                         if let Err(e) = services.audit.record(&row).await {
                             tracing::warn!(error = %e, "the audit log could not be written");
                         }
@@ -70,6 +71,8 @@ struct EntryJson {
     route: String,
     path: String,
     status: i32,
+    /// The fields that were set, as a JSON object of text values (secrets hidden), or `null`.
+    detail: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -80,7 +83,7 @@ struct AuditJson {
 }
 
 fn entry(r: AuditRow) -> EntryJson {
-    EntryJson { id: r.id, at: r.at, actor: r.actor, domain_id: r.domain_id, ip: r.ip, method: r.method, route: r.route, path: r.path, status: r.status }
+    EntryJson { id: r.id, at: r.at, actor: r.actor, domain_id: r.domain_id, ip: r.ip, method: r.method, route: r.route, path: r.path, status: r.status, detail: r.detail }
 }
 
 /// `GET /api/v1/audit?before=<id>&domain=<name>`: the newest changes first. A domain administrator always gets its own domain (`domain` must be absent or its own).

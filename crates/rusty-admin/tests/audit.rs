@@ -1,4 +1,4 @@
-//! The audit log (docs/design-audit.md): a change is written with who and what, a read and a refusal are not, no body is kept, and a domain administrator sees only its own domain.
+//! The audit log (docs/design-audit.md): a change is written with who and what, a read and a refusal are not, what was set is kept as a summary with the secrets hidden, and a domain administrator sees only its own domain.
 
 mod common;
 
@@ -25,7 +25,10 @@ async fn changes_are_recorded_with_their_actor_and_a_domain_administrator_sees_i
     assert_eq!(paths, ["/api/v1/domains/two.test/accounts", "/api/v1/domains/one.test/accounts", "/api/v1/domains"], "newest first, only the changes that happened");
     assert_eq!(items[0]["actor"], json!("root@home.test"));
     assert_eq!(items[0]["route"], json!("/api/v1/domains/{d}/accounts"));
-    assert!(!all.body.contains("secret-password"), "no body is kept");
+    assert!(!all.body.contains("secret-password"), "a password is never kept");
+    let detail: serde_json::Value = serde_json::from_str(items[0]["detail"].as_str().unwrap()).unwrap();
+    assert_eq!(detail, json!({ "local": "bob", "password": "(hidden)" }), "the fields are there, the secret is not");
+    assert!(items[2]["detail"].as_str().unwrap().contains("two.test"), "a domain was created with this name");
 
     let tenant = Client::sign_in(r.addr, "tenant@one.test").await;
     let own = tenant.get("/api/v1/audit").await;
