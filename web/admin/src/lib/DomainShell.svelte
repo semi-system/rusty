@@ -11,6 +11,8 @@
     { page: 'overview', label: 'domain.overview' },
     { page: 'accounts', label: 'domain.accounts' },
     { page: 'aliases', label: 'domain.aliases' },
+    { page: 'routing', label: 'domain.routing' },
+    { page: 'queue', label: 'domain.queue' },
     { page: 'dkim', label: 'domain.dkim' },
     { page: 'dns', label: 'domain.dns' },
     { page: 'relay', label: 'domain.relay' },

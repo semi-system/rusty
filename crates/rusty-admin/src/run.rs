@@ -110,6 +110,8 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
         monitor: repos.heartbeat.clone(),
         settings: repos.settings.clone(),
         plans: repos.plans.clone(),
+        routing: repos.routing.clone(),
+        queue: repos.queue.clone(),
         sealing,
         mail: cfg.hostname.clone().map(|host| MailSettings { host, public_ips: admin.public_ips.clone(), spf_include: admin.spf_include.clone() }),
     };
@@ -131,6 +133,8 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     let router = crate::live::routes(app.clone(), router);
     let router = crate::protocols::routes(app.clone(), router);
     let router = crate::plans::routes(app.clone(), router);
+    let router = crate::routing::routes(app.clone(), router);
+    let router = crate::queue::routes(app.clone(), router);
     let router = crate::autoconfig::routes(app.clone(), router);
     let router = crate::autodiscover::routes(app.clone(), router);
     let router = crate::monitor::routes(app.clone(), router);

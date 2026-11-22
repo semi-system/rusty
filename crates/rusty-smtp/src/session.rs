@@ -97,6 +97,9 @@ pub enum RcptVerdict {
     Accept(Recipient),
     /// Submission only: a recipient outside this server, to be queued for delivery.
     AcceptRemote(String),
+    /// A distribution list with members outside this server: the local members receive as with `Accept`, and each outside address is a remote recipient of the message (the driver
+    /// forwards it through the outbound queue; docs/design-routing.md). The recipient's `address` is the list address.
+    AcceptWithForward(Recipient, Vec<String>),
     Reject(Reply),
 }
 
@@ -120,8 +123,10 @@ pub struct Transaction {
     /// Empty for the null sender.
     pub mail_from: String,
     pub recipients: Vec<Recipient>,
-    /// Submission only: recipients outside this server.
+    /// Recipients outside this server: on submission the ones the user named, and on both ports the outside members of the lists in `forward_lists`.
     pub remote_recipients: Vec<String>,
+    /// The addresses of the distribution lists of this message that have members outside this server.
+    pub forward_lists: Vec<String>,
     /// The authenticated user (submission), `None` on port 25.
     pub identity: Option<Identity>,
     pub data: Vec<u8>,
@@ -185,6 +190,8 @@ struct Txn {
     params: MailParams,
     recipients: Vec<Recipient>,
     remote: Vec<String>,
+    /// The addresses of the lists in this transaction that have outside members.
+    forward_lists: Vec<String>,
     rcpt_attempts: u32,
 }
 
@@ -279,7 +286,13 @@ impl Session {
         match (waiting, answer) {
             (1, Answer::Rcpt(verdict)) => {
                 self.state = State::Command;
+                // A list with outside members is an ordinary accepted recipient plus the addresses to forward to.
+                let (verdict, forward) = match verdict {
+                    RcptVerdict::AcceptWithForward(r, f) => (RcptVerdict::Accept(r), f),
+                    v => (v, Vec::new()),
+                };
                 match verdict {
+                    RcptVerdict::AcceptWithForward(..) => {}
                     RcptVerdict::Accept(r) => {
                         let max = self.cfg.max_accounts;
                         let mut over = false;
@@ -291,6 +304,10 @@ impl Session {
                             if seen.len() > max {
                                 over = true;
                             } else {
+                                if !forward.is_empty() {
+                                    t.forward_lists.push(r.address.clone());
+                                    t.remote.extend(forward.iter().cloned());
+                                }
                                 t.recipients.push(r);
                             }
                         }
@@ -332,7 +349,7 @@ impl Session {
                 match (verdict, pending) {
                     (Ok(()), Some((mail_from, params))) => {
                         self.transactions += 1;
-                        self.txn = Some(Txn { mail_from, params, recipients: Vec::new(), remote: Vec::new(), rcpt_attempts: 0 });
+                        self.txn = Some(Txn { mail_from, params, recipients: Vec::new(), remote: Vec::new(), forward_lists: Vec::new(), rcpt_attempts: 0 });
                         actions.push(Action::Reply(Reply::new(250, "2.1.0", "Sender ok")));
                     }
                     (Err(reply), _) => self.error_reply(&mut actions, reply),
@@ -484,6 +501,7 @@ impl Session {
                     mail_from: txn.mail_from,
                     recipients: txn.recipients,
                     remote_recipients: txn.remote,
+                    forward_lists: txn.forward_lists,
                     identity: self.identity.clone(),
                     data,
                     declared_size: txn.params.size,
@@ -611,7 +629,7 @@ impl Session {
             return;
         }
         self.transactions += 1;
-        self.txn = Some(Txn { mail_from: path, params, recipients: Vec::new(), remote: Vec::new(), rcpt_attempts: 0 });
+        self.txn = Some(Txn { mail_from: path, params, recipients: Vec::new(), remote: Vec::new(), forward_lists: Vec::new(), rcpt_attempts: 0 });
         actions.push(Action::Reply(Reply::new(250, "2.1.0", "Sender ok")));
     }
 

@@ -305,6 +305,8 @@ async fn a_temporary_and_a_permanent_recipient_bounce_one_now_and_retry_the_othe
         assert_eq!(all.iter().filter(|a| a.starts_with("bob@")).count(), 1, "bob is not sent to twice: {all:?}");
         assert_eq!(all.iter().filter(|a| a.starts_with("slow@")).count(), 1, "{all:?}");
         assert_eq!(r.inbox().await.len(), 1, "exactly one bounce, for nobody@");
+        // The delivery log has what happened to each recipient: bob delivered, nobody bounced, slow deferred and then delivered.
+        assert_eq!(r.b.count("mail_log").await, 4, "four outcomes are logged");
         r.stop().await;
     })
     .await;

@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 use crate::filter::{run_filters, FilterContext, InboundFilter, QuarantineFolder};
 use crate::limits::{MemoryBudget, SubmissionLimiter};
 use crate::message::{
-    delivery_id_for, from_addresses, generated_message_id, has_header, prepare_message_with, rfc5322_date, FromError, Trace,
+    delivery_id_for, from_addresses, generated_message_id, has_header, header_count, header_values, prepare_message_with, rfc5322_date, FromError, Trace,
 };
 use crate::reply::{delivery_reply, map_error, ErrorContext, Reply};
 use crate::session::{
@@ -35,6 +35,12 @@ use crate::session::{
 
 /// Most accounts one recipient (a list) may expand to; more is `452 4.5.3`.
 const MAX_ACCOUNTS_PER_RECIPIENT: usize = 1000;
+/// Most members outside this server one list may have for its mail to be forwarded (each is a recipient of the outbound job).
+const MAX_FORWARD_MEMBERS: usize = 100;
+/// More `Received` fields than this on a message for a list with outside members is a mail loop (RFC 5321 6.3 suggests a limit of this size).
+const MAX_HOPS: usize = 25;
+/// The header that marks a message as already forwarded by a list of this server, with the list address as its value.
+const LIST_HEADER: &str = "X-Rusty-List";
 /// Memory is reserved while a message is received in steps of this many bytes.
 const RESERVE_STEP: u64 = 256 * 1024;
 /// A message in flight exists about four times (received, normalised, prepared, handed to the store); the
@@ -119,6 +125,8 @@ pub struct InboundHandler {
     events: Arc<dyn ServiceEvents>,
     blobs: Arc<dyn BlobStore>,
     submission: Option<SubmissionDeps>,
+    /// Where mail for the outside members of a distribution list goes when it arrives on port 25 (submission uses its own queue); `None`: such a list is refused.
+    forwarder: Option<Arc<dyn OutboundEnqueue>>,
     directory: Directory,
     hub: MailboxHub,
     quota: Arc<dyn QuotaPolicy>,
@@ -148,6 +156,12 @@ impl InboundHandler {
         Self::build(ctx, options, None)
     }
 
+    /// Let a list with members outside this server be written to on this listener (port 25): the message is forwarded through `queue` (docs/design-routing.md).
+    pub fn with_forwarder(mut self, queue: Arc<dyn OutboundEnqueue>) -> InboundHandler {
+        self.forwarder = Some(queue);
+        self
+    }
+
     /// The submission service (587 with STARTTLS, 465 with implicit TLS): AUTH over TLS only.
     pub fn submission(ctx: &Context, options: InboundOptions, deps: SubmissionDeps) -> InboundHandler {
         Self::build(ctx, options, Some(deps))
@@ -173,6 +187,7 @@ impl InboundHandler {
             events: ctx.events.clone(),
             blobs: ctx.blobs.clone(),
             submission,
+            forwarder: None,
             directory: ctx.directory.clone(),
             hub: ctx.hub.clone(),
             quota: ctx.quota.clone(),
@@ -241,14 +256,29 @@ impl InboundHandler {
             return RcptVerdict::Reject(map_error(&Error::Invalid(String::new()), ErrorContext::Rcpt));
         };
         let normal = format!("{local}@{domain}");
+        // The outside members of the list this address names, when it is one that is forwarded.
+        let mut forward: Vec<String> = Vec::new();
         let ids: Vec<AccountId> = match self.directory.resolve(&normal).await {
             Ok(Resolved::Account(id)) => vec![id],
             Ok(Resolved::List(members)) => {
-                if self.submission.is_some() && members.iter().any(|m| matches!(m, Resolved::External(_))) {
-                    // Dropping the external members silently would answer 250 for mail that never leaves.
-                    return reject(550, "5.7.2", "This distribution list has external members; sending to it is not supported");
+                let outside: Vec<String> = members.iter().filter_map(|m| if let Resolved::External(e) = m { Some(e.clone()) } else { None }).collect();
+                if !outside.is_empty() {
+                    match (&self.submission, &self.forwarder) {
+                        // A user sending while the outbound worker does not run: the same answer as for any remote recipient.
+                        (Some(d), _) if !d.remote_enabled => {
+                            return reject(451, "4.3.2", "Delivery to other domains is not enabled on this server; try again later");
+                        }
+                        // The mail is forwarded to the outside members through the outbound queue.
+                        (Some(_), _) | (None, Some(_)) => {
+                            if outside.len() > MAX_FORWARD_MEMBERS {
+                                return reject(452, "4.5.3", "This distribution list is too large to forward");
+                            }
+                            forward = outside;
+                        }
+                        // No queue on this listener (the outbound service is not enabled): only the local members receive, as before.
+                        (None, None) => {}
+                    }
                 }
-                // External members need the outbound queue (not built yet); only local ones receive.
                 members.into_iter().filter_map(|m| if let Resolved::Account(id) = m { Some(id) } else { None }).collect()
             }
             Ok(Resolved::External(_)) => Vec::new(),
@@ -290,6 +320,9 @@ impl InboundHandler {
                 _ => inactive += 1,
             }
         }
+        if !forward.is_empty() {
+            return RcptVerdict::AcceptWithForward(Recipient { address: normal, accounts: active }, forward);
+        }
         match (active.is_empty(), inactive) {
             (false, _) => RcptVerdict::Accept(Recipient { address: normal, accounts: active }),
             (true, _) if local == "postmaster" => match self.postmaster_fallback(&domain).await {
@@ -325,11 +358,100 @@ impl InboundHandler {
         }
     }
 
+    /// The checks of a message for a list with members outside this server (docs/design-routing.md): a message that has been through too many hops, or that this server's list already
+    /// forwarded, is a loop and is refused for good; on port 25 only a member of the list may write to it (an outside sender could otherwise use the list to send mail to its members).
+    async fn list_guard(&self, t: &Transaction) -> Option<Reply> {
+        if t.forward_lists.is_empty() {
+            return None;
+        }
+        if header_count(&t.data, "received") > MAX_HOPS {
+            return Some(Reply::new(554, "5.4.6", "Too many hops: this message is looping"));
+        }
+        let marked = header_values(&t.data, LIST_HEADER);
+        if t.forward_lists.iter().any(|l| marked.iter().any(|m| m.eq_ignore_ascii_case(l))) {
+            return Some(Reply::new(554, "5.4.6", "This message has already been through this list"));
+        }
+        if t.identity.is_none() && !self.may_post(t).await {
+            return Some(Reply::new(550, "5.7.1", "Only members may write to this list"));
+        }
+        None
+    }
+
+    /// Is the envelope sender a member of every list of this message with outside members: an outside member by address, or an account of this server by its address.
+    async fn may_post(&self, t: &Transaction) -> bool {
+        let from = t.mail_from.to_ascii_lowercase();
+        if from.is_empty() {
+            return false;
+        }
+        let sender = match self.directory.find_account(&from).await {
+            Ok(Some(a)) => Some(a.id),
+            _ => None,
+        };
+        for list in &t.forward_lists {
+            match self.directory.resolve(list).await {
+                Ok(Resolved::List(members)) => {
+                    let member = members.iter().any(|m| match m {
+                        Resolved::External(e) => e.eq_ignore_ascii_case(&from),
+                        Resolved::Account(id) => Some(*id) == sender,
+                        Resolved::List(_) => false,
+                    });
+                    if !member {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// The marker headers a message for these lists carries from here on.
+    fn list_tags(lists: &[String]) -> Vec<(String, String)> {
+        lists.iter().map(|l| (LIST_HEADER.to_owned(), l.clone())).collect()
+    }
+
+    /// Port 25: the outside members of the lists of a message go to the outbound queue, from the bounce address of the first list (a sender that is the list's own, so that what comes back
+    /// is not mistaken for the original sender's mail), counted to the list's domain.
+    async fn forward(&self, t: &Transaction, queue: &Arc<dyn OutboundEnqueue>, stored: Bytes) -> Result<(), Error> {
+        let Some(list) = t.forward_lists.first() else { return Ok(()) };
+        let (local, domain) = list.rsplit_once('@').ok_or_else(|| Error::Invalid("list address".into()))?;
+        let mut recipients = t.remote_recipients.clone();
+        recipients.sort();
+        recipients.dedup();
+        let key = {
+            let mut h = Sha256::new();
+            h.update(list.as_bytes());
+            h.update(b"\0");
+            h.update(t.mail_from.as_bytes());
+            h.update(b"\0");
+            h.update(recipients.join(",").as_bytes());
+            h.update(b"\0");
+            h.update(BlobHash::of(&t.data).as_str().as_bytes());
+            hex::encode(h.finalize())
+        };
+        let blob = self.blobs.put(stored).await?;
+        queue
+            .enqueue(OutboundMessage {
+                blob,
+                envelope_from: format!("{local}-bounces@{domain}"),
+                recipients,
+                sender_domain: domain.to_owned(),
+                account: 0,
+                submission_key: key,
+                bytes: t.data.len() as u64,
+            })
+            .await
+    }
+
     /// End of DATA: filters, then one idempotent delivery per distinct account.
     async fn deliver(&self, t: &Transaction) -> Reply {
         let Some(_copies) = self.options.budget.try_reserve(EXTRA_COPIES * t.data.len() as u64) else {
             return Reply::new(451, "4.3.1", "Insufficient system resources, try again later");
         };
+        if let Some(reply) = self.list_guard(t).await {
+            tracing::info!(peer = %t.peer.ip, status = reply.code, "message for a list refused");
+            return reply;
+        }
         let outcome = run_filters(
             &self.options.filters,
             &FilterContext {
@@ -377,13 +499,22 @@ impl InboundHandler {
             authenticated: false,
             auth_results: auth.as_ref().map(|a| a.header_value.as_str()),
         };
-        let stored = Bytes::from(prepare_message_with(&t.data, &trace, &outcome.tags));
+        let mut tags = outcome.tags.clone();
+        tags.extend(Self::list_tags(&t.forward_lists));
+        let stored = Bytes::from(prepare_message_with(&t.data, &trace, &tags));
         let mut seen = HashSet::new();
         let accounts: Vec<AccountId> =
             t.recipients.iter().flat_map(|r| r.accounts.iter().copied()).filter(|a| seen.insert(*a)).collect();
         let mut results = Vec::with_capacity(accounts.len());
         for a in &accounts {
             results.push(self.deliver_one(*a, &t.mail_from, &t.data, stored.clone(), folder).await);
+        }
+        // The outside members of a list (port 25 has no queue of its own for them): after every local copy is stored.
+        if results.iter().all(Result::is_ok) && !t.remote_recipients.is_empty() {
+            results.push(match &self.forwarder {
+                Some(queue) => self.forward(t, queue, stored.clone()).await,
+                None => Err(Error::Busy("forwarding is not available".into())),
+            });
         }
         let reply = delivery_reply(results);
         tracing::info!(
@@ -468,6 +599,9 @@ impl InboundHandler {
         let Some(identity) = &t.identity else {
             return Reply::new(530, "5.7.0", "Authentication required");
         };
+        if let Some(reply) = self.list_guard(t).await {
+            return reply;
+        }
         let not_yours = || Reply::new(550, "5.7.1", "The From header is not an address of the authenticated user");
         match from_addresses(&t.data) {
             Ok(list) => {
@@ -496,7 +630,7 @@ impl InboundHandler {
             authenticated: true,
             auth_results: None,
         };
-        let mut extra = Vec::new();
+        let mut extra = Self::list_tags(&t.forward_lists);
         if !has_header(&t.data, "message-id") {
             extra.push(("Message-ID".to_owned(), generated_message_id(&t.data, &self.hostname)));
         }

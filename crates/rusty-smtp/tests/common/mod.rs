@@ -126,11 +126,13 @@ pub struct Opts {
     pub auth_failures_max: u32,
     pub remote_enabled: bool,
     pub submit_limits: Option<rusty_smtp::outbound_queue::SubmitLimits>,
+    /// Port 25 only: give the listener a queue for the outside members of distribution lists.
+    pub forward: bool,
 }
 
 impl Default for Opts {
     fn default() -> Opts {
-        Opts { options: InboundOptions::default(), max_message_bytes: 1 << 20, max_recipients: 100, tls: false, submission: false, implicit_tls: false, per_hour: 200, auth_failures_max: 10, remote_enabled: true, submit_limits: None }
+        Opts { options: InboundOptions::default(), max_message_bytes: 1 << 20, max_recipients: 100, tls: false, submission: false, implicit_tls: false, per_hour: 200, auth_failures_max: 10, remote_enabled: true, submit_limits: None, forward: false }
     }
 }
 
@@ -178,7 +180,8 @@ pub async fn start(b: &Backend, opts: Opts) -> Server {
         };
         Arc::new(InboundHandler::submission(&ctx, opts.options, deps))
     } else {
-        Arc::new(InboundHandler::new(&ctx, opts.options))
+        let handler = InboundHandler::new(&ctx, opts.options);
+        Arc::new(if opts.forward { handler.with_forwarder(Arc::new(JobOutbound::new(ctx.jobs.clone(), ctx.directory.clone()))) } else { handler })
     };
     let accept: Arc<dyn Accept> = if opts.implicit_tls { Arc::new(DirectTls::new(ctx.tls.clone())) } else { Arc::new(DirectTcp) };
     let listener = BoundListener::bind(ListenerSpec {

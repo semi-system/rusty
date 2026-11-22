@@ -187,6 +187,54 @@ async fn list_members_each_get_one_copy_and_external_members_are_skipped() {
 }
 
 #[tokio::test]
+async fn mail_to_a_list_with_outside_members_is_forwarded_only_for_a_member_and_a_loop_is_refused() {
+    for_each_backend(|b| async move {
+        let (alice, bob) = b.seed().await;
+        let dom = b.dir.find_domain("example.net").await.unwrap().unwrap().id;
+        let list = b.seed.create_list("team", dom).await.unwrap();
+        b.seed.add_list_member(list, Some(alice), None).await.unwrap();
+        b.seed.add_list_member(list, Some(bob), None).await.unwrap();
+        b.seed.add_list_member(list, None, Some("far@away.example")).await.unwrap();
+        let mut o = Opts::default();
+        o.forward = true;
+        let s = start(&b, o).await;
+        // An outside member writes: every local member gets a copy and the outside member's own copy is not sent back to them... (it is queued like any other outside member).
+        let mut c = Client::hello(s.addr).await;
+        let r = c.mail("far@away.example", &["team@example.net"], MSG).await;
+        assert!(r.starts_with("250"), "{r}");
+        assert_eq!(b.inbox(alice, &s.blobs).await.len(), 1);
+        assert_eq!(b.inbox(bob, &s.blobs).await.len(), 1);
+        assert_eq!(b.count("jobs").await, 1, "one job for the outside member");
+        let kept = b.inbox(alice, &s.blobs).await;
+        assert!(String::from_utf8_lossy(&kept[0]).contains("X-Rusty-List: team@example.net"));
+        // A local member writes: allowed.
+        let mut c = Client::hello(s.addr).await;
+        assert!(c.mail("alice@example.net", &["team@example.net"], MSG).await.starts_with("250"));
+        // A stranger may not use the list.
+        let mut c = Client::hello(s.addr).await;
+        assert!(c.cmd("MAIL FROM:<stranger@remote.example>").await.starts_with("250"));
+        assert!(c.cmd("RCPT TO:<team@example.net>").await.starts_with("250"));
+        assert!(c.cmd("DATA").await.starts_with("354"));
+        c.send(MSG).await;
+        c.send(b".\r\n").await;
+        let r = c.reply().await;
+        assert!(r.starts_with("550 5.7.1"), "{r}");
+        // The null sender (a bounce) may not either, and a message already marked by this list is a loop.
+        let mut c = Client::hello(s.addr).await;
+        assert!(c.cmd("MAIL FROM:<far@away.example>").await.starts_with("250"));
+        assert!(c.cmd("RCPT TO:<team@example.net>").await.starts_with("250"));
+        assert!(c.cmd("DATA").await.starts_with("354"));
+        c.send(b"From: far@away.example\r\nX-Rusty-List: team@example.net\r\nSubject: loop\r\n\r\nx\r\n").await;
+        c.send(b".\r\n").await;
+        let r = c.reply().await;
+        assert!(r.starts_with("554 5.4.6"), "{r}");
+        assert_eq!(b.count("jobs").await, 2, "the refused messages queued nothing");
+        s.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn the_recipient_cap_gives_452() {
     for_each_backend(|b| async move {
         b.seed().await;

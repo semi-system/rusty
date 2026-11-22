@@ -143,7 +143,9 @@ impl OutboundEnqueue for JobOutbound {
             max_units: l.max_recipients,
             max_bytes: l.max_bytes,
         };
-        match self.jobs.enqueue_batch(Some((msg.account, owner)), &specs).await {
+        // Account 0 is mail the server forwards for a list, with no user behind it: the domain's own caps count it, no account's.
+        let owner = (msg.account != 0).then_some((msg.account, owner));
+        match self.jobs.enqueue_batch(owner, &specs).await {
             Ok(_) => {
                 if let Some(w) = &self.wake {
                     w.0.notify_one();

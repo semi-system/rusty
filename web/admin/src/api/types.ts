@@ -254,3 +254,66 @@ export interface AccountPlan {
 export interface Deletion {
   deletion: string;
 }
+
+export interface MailList {
+  local: string;
+  address: string;
+  members: number;
+}
+
+export interface Routing {
+  lists: MailList[];
+  catch_all: string | null;
+  domain_aliases: string[];
+}
+
+export interface Member {
+  seq: number;
+  address: string;
+  external: boolean;
+}
+
+export interface Members {
+  items: Member[];
+}
+
+export interface CatchAll {
+  catch_all: string | null;
+}
+
+export interface DomainAliasName {
+  name: string;
+}
+
+export interface QueueJob {
+  id: number;
+  state: string;
+  sender: string;
+  recipients: string[];
+  destination: string;
+  attempts: number;
+  created_at: number;
+  next_attempt_at: number | null;
+  last_error: string | null;
+}
+
+export interface QueueList {
+  items: QueueJob[];
+  next: number | null;
+}
+
+export interface LogLine {
+  id: number;
+  at: number;
+  sender: string;
+  recipient: string;
+  event: string;
+  remote: string | null;
+  status: string | null;
+  detail: string | null;
+}
+
+export interface Trace {
+  items: LogLine[];
+  next: number | null;
+}

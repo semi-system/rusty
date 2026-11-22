@@ -485,7 +485,7 @@ async fn remote_recipients_are_refused_while_the_worker_is_disabled() {
 }
 
 #[tokio::test]
-async fn a_hosted_but_disabled_domain_is_not_queued_as_remote_and_lists_with_external_members_are_refused() {
+async fn a_hosted_but_disabled_domain_is_not_queued_as_remote_and_a_list_with_outside_members_is_forwarded() {
     for_each_backend(|b| async move {
         let (_alice, _bob, _eve) = world(&b).await;
         let other = b.dir.find_domain("other.test").await.unwrap().unwrap().id;
@@ -495,15 +495,33 @@ async fn a_hosted_but_disabled_domain_is_not_queued_as_remote_and_lists_with_ext
         assert!(c.cmd("MAIL FROM:<alice@example.net>").await.starts_with("250"));
         let r = c.cmd("RCPT TO:<eve@other.test>").await;
         assert!(r.starts_with("550 5.1.2"), "a disabled hosted domain is not remote: {r}");
-        // A list with an external member: refused, not silently reduced to its local members.
+        // A list with an outside member: the local member gets a copy and the outside one is queued, from the sender the user wrote (docs/design-routing.md).
         let (alice, _) = (b.dir.find_account("alice@example.net").await.unwrap().unwrap().id, ());
         let dom = b.dir.find_domain("example.net").await.unwrap().unwrap().id;
         let list = b.seed.create_list("team", dom).await.unwrap();
         b.seed.add_list_member(list, Some(alice), None).await.unwrap();
         b.seed.add_list_member(list, None, Some("far@away.example")).await.unwrap();
         let r = c.cmd("RCPT TO:<team@example.net>").await;
-        assert!(r.starts_with("550 5.7.2"), "{r}");
-        assert_eq!(b.count("jobs").await, 0);
+        assert!(r.starts_with("250"), "{r}");
+        assert!(c.cmd("DATA").await.starts_with("354"));
+        c.send(MSG.strip_suffix(b"\r\n").unwrap()).await;
+        c.send(b"\r\n.\r\n").await;
+        let r = c.reply().await;
+        assert!(r.starts_with("250"), "{r}");
+        assert_eq!(b.count("jobs").await, 1, "one outbound job for the outside member");
+        let kept = b.inbox(alice, &s.blobs).await;
+        assert_eq!(kept.len(), 1);
+        assert!(String::from_utf8_lossy(&kept[0]).contains("X-Rusty-List: team@example.net"), "the copy carries the list marker");
+        // A message that already went through this list is a loop, for good.
+        let mut c = authed(s.addr, &s.cert_der).await;
+        assert!(c.cmd("MAIL FROM:<alice@example.net>").await.starts_with("250"));
+        assert!(c.cmd("RCPT TO:<team@example.net>").await.starts_with("250"));
+        assert!(c.cmd("DATA").await.starts_with("354"));
+        c.send(b"From: Alice <alice@example.net>\r\nX-Rusty-List: team@example.net\r\nSubject: again\r\n\r\nx").await;
+        c.send(b"\r\n.\r\n").await;
+        let r = c.reply().await;
+        assert!(r.starts_with("554 5.4.6"), "{r}");
+        assert_eq!(b.count("jobs").await, 1, "the looping message queued nothing");
         s.stop().await;
     })
     .await;

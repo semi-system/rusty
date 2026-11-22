@@ -10,6 +10,9 @@ use tokio_util::sync::CancellationToken;
 use crate::context::Context;
 use crate::service::Service;
 
+/// How long a row of the delivery log is kept.
+const LOG_RETENTION_SECS: i64 = 30 * 86_400;
+
 /// What one pass did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GcSummary {
@@ -19,6 +22,8 @@ pub struct GcSummary {
     /// Closed accounts removed with their mailboxes, and the messages of those mailboxes.
     pub accounts_removed: u64,
     pub account_messages_removed: u64,
+    /// Rows of the delivery log past their retention.
+    pub log_purged: u64,
     /// Steps that failed (logged); a failed step never stops the others.
     pub errors: usize,
 }
@@ -51,6 +56,14 @@ impl GcService {
                 s.accounts_removed = accounts;
             }
             Err(e) => step_failed(&mut s, "purge closed accounts", &e),
+        }
+        // The delivery log is kept for 30 days (docs/design-queue.md).
+        match ctx.jobs.now().await {
+            Ok(now) => match ctx.queue.purge_log(now.saturating_sub(LOG_RETENTION_SECS), 5000).await {
+                Ok(n) => s.log_purged = n,
+                Err(e) => step_failed(&mut s, "purge the delivery log", &e),
+            },
+            Err(e) => step_failed(&mut s, "read the clock", &e),
         }
         let grace = Duration::from_secs(ctx.cfg.gc_grace_seconds);
         // One collection per blob store: each store's rows and objects are its own.

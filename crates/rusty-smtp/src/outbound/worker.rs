@@ -197,6 +197,19 @@ impl Service for OutboundWorker {
     }
 }
 
+/// What the other side said about a recipient, for the delivery log.
+struct Said<'a> {
+    remote: Option<&'a str>,
+    status: Option<&'a str>,
+    detail: &'a str,
+}
+
+impl<'a> Said<'a> {
+    fn new(remote: Option<&'a str>, status: Option<&'a str>, detail: &'a str) -> Said<'a> {
+        Said { remote, status, detail }
+    }
+}
+
 /// Stops the task when dropped: the heartbeat must die with the delivery that it keeps alive, also when
 /// that delivery is cancelled or aborted (a lease that outlives a dead worker would hide the job).
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
@@ -276,6 +289,28 @@ impl Inner {
         }
     }
 
+    /// Write what happened to these recipients in the delivery log (the message trace of the admin web). Best effort: the log never decides the delivery.
+    async fn record(&self, ctx: &Context, job: &ClaimedJob, payload: &OutboundPayload, event: &'static str, recipients: &[String], said: Said<'_>) {
+        let Some(domain) = job.domain else { return };
+        let Said { remote, status, detail } = said;
+        let rows: Vec<rusty_store::NewLogRow> = recipients
+            .iter()
+            .map(|r| rusty_store::NewLogRow {
+                domain,
+                job_id: Some(job.id.0),
+                sender: payload.envelope_from.clone(),
+                recipient: r.clone(),
+                event,
+                remote: remote.map(str::to_owned),
+                status: status.map(str::to_owned),
+                detail: (!detail.is_empty()).then(|| detail.to_owned()),
+            })
+            .collect();
+        if let Err(e) = ctx.queue.log(&rows).await {
+            tracing::warn!(job = job.id.0, error = %e, "the delivery log could not be written");
+        }
+    }
+
     async fn deliver_job(&self, ctx: &Context, job: &ClaimedJob, fence: JobFence, mut payload: OutboundPayload, token: &CancellationToken) -> Result<()> {
         let settle = Settle { ctx, job, fence };
         let cfg = &self.opts.cfg;
@@ -285,6 +320,7 @@ impl Inner {
             Err(Error::NotFound(_)) => {
                 tracing::error!(job = job.id.0, "the message body is gone from the blob store");
                 let failures = self.failures_for(&payload, "the message body is no longer available", "5.3.0", None, &payload.recipients);
+                self.record(ctx, job, &payload, "bounced", &payload.recipients, Said::new(None, Some("5.3.0"), "the message body is no longer available")).await;
                 return self.bounce_and_finish(&settle, &payload, &Bytes::new(), failures, now).await;
             }
             Err(e) => return Err(e),
@@ -292,6 +328,7 @@ impl Inner {
 
         if expired(cfg, job.created_at, now) {
             let failures = self.failures_for(&payload, "delivery attempts for this message continued for too long and were abandoned", "4.4.7", None, &payload.recipients);
+            self.record(ctx, job, &payload, "expired", &payload.recipients, Said::new(None, Some("4.4.7"), "delivery attempts continued for too long and were abandoned")).await;
             return self.bounce_and_finish(&settle, &payload, &original, failures, now).await;
         }
         let Some(_domain_slot) = self.domains.try_acquire(&payload.destination) else {
@@ -326,12 +363,15 @@ impl Inner {
                     match r.outcome {
                         Outcome::Delivered => {
                             tracing::info!(job = job.id.0, remote = %delivery.remote, tls = ?delivery.tls.as_ref().map(|t| (t.verified, t.protocol.clone())), "recipient accepted");
+                            self.record(ctx, job, &payload, "delivered", std::slice::from_ref(&r.recipient), Said::new(Some(&delivery.remote), Some("2.0.0"), "")).await;
                         }
                         Outcome::Temporary { diagnostic } => {
+                            self.record(ctx, job, &payload, "deferred", std::slice::from_ref(&r.recipient), Said::new(Some(&delivery.remote), None, &diagnostic)).await;
                             last_temp = diagnostic;
                             pending.push(r.recipient);
                         }
                         Outcome::Permanent { diagnostic, status } => {
+                            self.record(ctx, job, &payload, "bounced", std::slice::from_ref(&r.recipient), Said::new(Some(&delivery.remote), Some(&status), &diagnostic)).await;
                             failures.push(Failure { recipient: r.recipient, status, diagnostic, remote_mta: Some(delivery.remote.clone()) });
                         }
                     }
@@ -340,11 +380,13 @@ impl Inner {
                 self.settle(&settle, &mut payload, &original, failures, last_temp, now).await
             }
             Attempt::Failed { permanent: true, diagnostic, status, remote } => {
+                self.record(ctx, job, &payload, "bounced", &payload.recipients, Said::new(remote.as_deref(), Some(&status), &diagnostic)).await;
                 let failures = self.failures_for(&payload, &diagnostic, &status, remote, &payload.recipients);
                 payload.recipients.clear();
                 self.settle(&settle, &mut payload, &original, failures, String::new(), now).await
             }
             Attempt::Failed { permanent: false, diagnostic, .. } => {
+                self.record(ctx, job, &payload, "deferred", &payload.recipients, Said::new(None, None, &diagnostic)).await;
                 self.settle(&settle, &mut payload, &original, Vec::new(), diagnostic, now).await
             }
         }
@@ -514,6 +556,7 @@ impl Inner {
         match next_step(cfg, s.job.created_at, now, payload.tries.saturating_sub(1)) {
             Next::GiveUp => {
                 let why = if last_temp.is_empty() { "delivery attempts continued for too long".to_owned() } else { last_temp };
+                self.record(s.ctx, s.job, payload, "expired", &payload.recipients, Said::new(None, Some("4.4.7"), &why)).await;
                 failures.extend(self.failures_for(payload, &why, "4.4.7", None, &payload.recipients));
                 payload.recipients.clear();
                 self.bounce_and_finish(s, payload, original, failures, now).await
