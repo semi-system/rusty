@@ -27,7 +27,7 @@ BEGIN
   END IF;
   IF to_regrole('rusty_admin') IS NOT NULL THEN
     REVOKE ALL ON ALL TABLES IN SCHEMA public FROM rusty_admin;
-    GRANT SELECT, INSERT, UPDATE, DELETE ON domains, accounts, aliases, lists, list_members, plans, capabilities, mailboxes,
+    GRANT SELECT, INSERT, UPDATE, DELETE ON domains, accounts, aliases, domain_aliases, lists, list_members, plans, capabilities, mailboxes,
       domain_dkim_keys, domain_dns_config, domain_dns_event, domain_dns_state, domain_relays, admin_grants, jobs TO rusty_admin;
     GRANT SELECT ON address_owners, _sqlx_migrations, schema_compat TO rusty_admin;
     GRANT SELECT ON service_heartbeats TO rusty_admin;   -- the monitor page
@@ -91,7 +91,7 @@ BEGIN
   -- rusty_smtp_in: inbound delivery. Reads the directory (no password hashes), writes messages and their blobs, never deletes.
   IF to_regrole('rusty_smtp_in') IS NOT NULL THEN
     EXECUTE format('GRANT SELECT (%s) ON accounts TO rusty_smtp_in', cols);
-    GRANT SELECT ON domains, aliases, lists, list_members, plans, address_owners, mailboxes, folders, deliveries, blob_stores, blob_backends, sealed_secrets TO rusty_smtp_in;
+    GRANT SELECT ON domains, aliases, domain_aliases, lists, list_members, plans, address_owners, mailboxes, folders, deliveries, blob_stores, blob_backends, sealed_secrets TO rusty_smtp_in;
     GRANT SELECT, INSERT, UPDATE ON messages, blobs, blob_locations TO rusty_smtp_in;
     GRANT INSERT ON keywords, change_log, deliveries, jobs TO rusty_smtp_in;
     GRANT UPDATE ON mailboxes, folders TO rusty_smtp_in;
@@ -99,7 +99,7 @@ BEGIN
 
   -- rusty_submission: authenticated submission. Checks a password, stores the copy and queues the outbound job.
   IF to_regrole('rusty_submission') IS NOT NULL THEN
-    GRANT SELECT ON accounts, domains, aliases, lists, list_members, plans, address_owners, mailboxes, folders, deliveries, blob_stores, blob_backends, sealed_secrets TO rusty_submission;
+    GRANT SELECT ON accounts, domains, aliases, domain_aliases, lists, list_members, plans, address_owners, mailboxes, folders, deliveries, blob_stores, blob_backends, sealed_secrets TO rusty_submission;
     GRANT SELECT, INSERT, UPDATE ON messages, blobs, blob_locations, jobs TO rusty_submission;
     GRANT INSERT ON keywords, change_log, deliveries TO rusty_submission;
     GRANT UPDATE ON mailboxes, folders TO rusty_submission;
@@ -109,7 +109,7 @@ BEGIN
 
   -- rusty_imap: mailbox access. Checks a password, reads and changes the messages of a mailbox.
   IF to_regrole('rusty_imap') IS NOT NULL THEN
-    GRANT SELECT ON accounts, domains, aliases, lists, list_members, plans, address_owners, mailboxes, folders, deliveries, blob_stores, blob_backends, sealed_secrets TO rusty_imap;
+    GRANT SELECT ON accounts, domains, aliases, domain_aliases, lists, list_members, plans, address_owners, mailboxes, folders, deliveries, blob_stores, blob_backends, sealed_secrets TO rusty_imap;
     GRANT UPDATE (last_login_at) ON accounts TO rusty_imap;   -- the time of the last sign-in (DirectoryRepo::record_login)
     GRANT SELECT, INSERT, UPDATE, DELETE ON messages TO rusty_imap;
     GRANT SELECT, INSERT, UPDATE ON blobs, blob_locations TO rusty_imap;
@@ -123,7 +123,7 @@ BEGIN
   -- rusty_outbound: the delivery worker. Claims and finishes jobs, reads the message and the DKIM and relay settings, writes the DNS check state.
   IF to_regrole('rusty_outbound') IS NOT NULL THEN
     EXECUTE format('GRANT SELECT (%s) ON accounts TO rusty_outbound', cols);
-    GRANT SELECT ON domains, aliases, lists, list_members, mailboxes, folders, messages, deliveries, blobs, blob_locations, blob_stores, blob_backends, sealed_secrets,
+    GRANT SELECT ON domains, aliases, domain_aliases, lists, list_members, mailboxes, folders, messages, deliveries, blobs, blob_locations, blob_stores, blob_backends, sealed_secrets,
       domain_dkim_keys, domain_relays, domain_dns_config TO rusty_outbound;
     GRANT SELECT, INSERT, UPDATE, DELETE ON jobs, domain_dns_state, domain_dns_event TO rusty_outbound;
     GRANT SELECT, INSERT, UPDATE ON job_turns TO rusty_outbound;   -- the turn order of the tenants (docs/design-fair-claim.md)

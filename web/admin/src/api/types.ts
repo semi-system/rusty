@@ -254,3 +254,33 @@ export interface AccountPlan {
 export interface Deletion {
   deletion: string;
 }
+
+export interface MailList {
+  local: string;
+  address: string;
+  members: number;
+}
+
+export interface Routing {
+  lists: MailList[];
+  catch_all: string | null;
+  domain_aliases: string[];
+}
+
+export interface Member {
+  seq: number;
+  address: string;
+  external: boolean;
+}
+
+export interface Members {
+  items: Member[];
+}
+
+export interface CatchAll {
+  catch_all: string | null;
+}
+
+export interface DomainAliasName {
+  name: string;
+}

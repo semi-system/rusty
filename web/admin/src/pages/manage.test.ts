@@ -89,7 +89,7 @@ describe('overview', () => {
     expect(screen.getByText(t('domain.queueDead', { n: 2 }))).toBeTruthy();
     const tabs = screen.getByRole('navigation', { name: t('domain.tabs', { name: 'example.org' }) });
     expect(within(tabs).getAllByRole('link').map((a) => a.getAttribute('href'))).toEqual(
-      ['overview', 'accounts', 'aliases', 'dkim', 'dns', 'relay', 'storage'].map((p) => `/domains/example.org/${p}`),
+      ['overview', 'accounts', 'aliases', 'routing', 'dkim', 'dns', 'relay', 'storage'].map((p) => `/domains/example.org/${p}`),
     );
     expect(within(tabs).getByRole('link', { name: t('domain.overview') }).getAttribute('aria-current')).toBe('page');
   });

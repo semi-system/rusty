@@ -1,7 +1,7 @@
 // The API client: the contract's endpoints as typed calls. It knows the three rules of a state-changing request (design section 5): the JSON content type,
 // the CSRF token of the session (the browser adds `Origin` itself) and that a failure is a fixed code, never text to show.
 
-import type { Account, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, Monitor, Plan, PlanList, Protocols, Queue, Relay, SetupState, Storage } from './types';
+import type { Account, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, MailList, Member, Members, Monitor, Plan, PlanList, Routing, Protocols, Queue, Relay, SetupState, Storage } from './types';
 import type { MessageKey } from '../i18n';
 
 /** A page of a list, the cursor of the next one and how many rows match in all. */
@@ -224,6 +224,43 @@ export class Client {
 
   setAccountStatus(address: string, action: 'enable' | 'lock' | 'disable'): Promise<Account> {
     return this.call('POST', `/api/v1/accounts/${seg(address)}/${action}`);
+  }
+
+  /** Lists, the catch-all and the alias domains of a domain. */
+  routing(domain: string): Promise<Routing> {
+    return this.call('GET', `/api/v1/domains/${seg(domain)}/routing`);
+  }
+
+  createList(domain: string, local: string): Promise<MailList> {
+    return this.call('POST', `/api/v1/domains/${seg(domain)}/lists`, { local });
+  }
+
+  async deleteList(domain: string, local: string): Promise<void> {
+    await this.call('DELETE', `/api/v1/domains/${seg(domain)}/lists/${seg(local)}`);
+  }
+
+  async listMembers(domain: string, local: string): Promise<Member[]> {
+    return (await this.call<Members>('GET', `/api/v1/domains/${seg(domain)}/lists/${seg(local)}/members`)).items;
+  }
+
+  async addListMember(domain: string, local: string, address: string): Promise<Member[]> {
+    return (await this.call<Members>('POST', `/api/v1/domains/${seg(domain)}/lists/${seg(local)}/members`, { address })).items;
+  }
+
+  async removeListMember(domain: string, local: string, seq: number): Promise<void> {
+    await this.call('DELETE', `/api/v1/domains/${seg(domain)}/lists/${seg(local)}/members/${seq}`);
+  }
+
+  async setCatchAll(domain: string, local: string | null): Promise<void> {
+    await this.call('PUT', `/api/v1/domains/${seg(domain)}/catch-all`, { local });
+  }
+
+  async addDomainAlias(domain: string, name: string): Promise<void> {
+    await this.call('POST', `/api/v1/domains/${seg(domain)}/domain-aliases`, { name });
+  }
+
+  async removeDomainAlias(domain: string, name: string): Promise<void> {
+    await this.call('DELETE', `/api/v1/domains/${seg(domain)}/domain-aliases/${seg(name)}`);
   }
 
   /** Delete a closed account and its mail: the server removes it at its next collection (a closed account goes by itself after the retention). */

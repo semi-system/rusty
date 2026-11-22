@@ -16,6 +16,7 @@
   import MonitorPage from './Monitor.svelte';
   import ProtocolsPage from './Protocols.svelte';
   import PlansPage from './Plans.svelte';
+  import RoutingPage from './Routing.svelte';
   import Administrators from './Administrators.svelte';
   import NotFound from './NotFound.svelte';
   import Link from '../lib/Link.svelte';
@@ -23,7 +24,7 @@
   let { app, me }: { app: App; me: Me } = $props();
 
   // A route never ends in a domain name: the server answers a path that looks like a file with 404 (see docs/admin-web-frontend.md).
-  type Page = 'domains' | 'overview' | 'accounts' | 'aliases' | 'dkim' | 'dns' | 'relay' | 'storage' | 'monitor' | 'protocols' | 'plans' | 'administrators';
+  type Page = 'domains' | 'overview' | 'accounts' | 'aliases' | 'dkim' | 'dns' | 'relay' | 'storage' | 'routing' | 'monitor' | 'protocols' | 'plans' | 'administrators';
   const routes: Route<Page>[] = [
     { pattern: '/', value: 'domains' },
     { pattern: '/monitor', value: 'monitor' },
@@ -36,6 +37,7 @@
     { pattern: '/domains/{name}/dkim', value: 'dkim' },
     { pattern: '/domains/{name}/dns', value: 'dns' },
     { pattern: '/domains/{name}/relay', value: 'relay' },
+    { pattern: '/domains/{name}/routing', value: 'routing' },
     { pattern: '/domains/{name}/storage', value: 'storage' },
   ];
   const match = $derived(matchRoute(routes, nav.path));
@@ -49,6 +51,7 @@
     dkim: 'domain.dkim',
     dns: 'domain.dns',
     relay: 'domain.relay',
+    routing: 'domain.routing',
     storage: 'domain.storage',
   };
   type Crumb = { label: string; to?: string };
@@ -161,6 +164,8 @@
           <Dns {app} {name} />
         {:else if match.value === 'relay'}
           <Relay {app} {name} />
+        {:else if match.value === 'routing'}
+          <RoutingPage {app} {me} {name} />
         {:else}
           <Storage {app} {me} {name} />
         {/if}

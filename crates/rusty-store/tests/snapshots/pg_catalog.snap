@@ -68,6 +68,8 @@ COLUMN deliveries.delivery_id bytea nullable=NO identity=NO/ collation= default=
 COLUMN deliveries.message_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN deliveries.blob_hash bytea nullable=NO identity=NO/ collation= default=
 COLUMN deliveries.created_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN domain_aliases.name text nullable=NO identity=NO/ collation=C default=
+COLUMN domain_aliases.domain_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN domain_dkim_keys.domain_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN domain_dkim_keys.selector text nullable=NO identity=NO/ collation=C default=
 COLUMN domain_dkim_keys.algorithm text nullable=NO identity=NO/ collation=C default=
@@ -325,6 +327,11 @@ CONSTRAINT deliveries.deliveries_mailbox_id_message_id_fkey FOREIGN KEY (mailbox
 CONSTRAINT deliveries.deliveries_mailbox_id_not_null NOT NULL mailbox_id
 CONSTRAINT deliveries.deliveries_message_id_not_null NOT NULL message_id
 CONSTRAINT deliveries.deliveries_pkey PRIMARY KEY (mailbox_id, delivery_id)
+CONSTRAINT domain_aliases.domain_aliases_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+CONSTRAINT domain_aliases.domain_aliases_domain_id_not_null NOT NULL domain_id
+CONSTRAINT domain_aliases.domain_aliases_name_not_null NOT NULL name
+CONSTRAINT domain_aliases.domain_aliases_name_valid CHECK (length(name) >= 1 AND length(name) <= 253 AND name = lower(name))
+CONSTRAINT domain_aliases.domain_aliases_pkey PRIMARY KEY (name)
 CONSTRAINT domain_dkim_keys.domain_dkim_keys_algorithm_not_null NOT NULL algorithm
 CONSTRAINT domain_dkim_keys.domain_dkim_keys_algorithm_valid CHECK (algorithm = ANY (ARRAY['rsa'::text, 'ed25519'::text]))
 CONSTRAINT domain_dkim_keys.domain_dkim_keys_created_at_not_null NOT NULL created_at
@@ -582,6 +589,8 @@ INDEX change_log.change_log_pkey CREATE UNIQUE INDEX change_log_pkey ON public.c
 INDEX deliveries.deliveries_created CREATE INDEX deliveries_created ON public.deliveries USING btree (created_at)
 INDEX deliveries.deliveries_message CREATE INDEX deliveries_message ON public.deliveries USING btree (mailbox_id, message_id)
 INDEX deliveries.deliveries_pkey CREATE UNIQUE INDEX deliveries_pkey ON public.deliveries USING btree (mailbox_id, delivery_id)
+INDEX domain_aliases.domain_aliases_domain CREATE INDEX domain_aliases_domain ON public.domain_aliases USING btree (domain_id)
+INDEX domain_aliases.domain_aliases_pkey CREATE UNIQUE INDEX domain_aliases_pkey ON public.domain_aliases USING btree (name)
 INDEX domain_dkim_keys.domain_dkim_keys_pkey CREATE UNIQUE INDEX domain_dkim_keys_pkey ON public.domain_dkim_keys USING btree (domain_id, selector)
 INDEX domain_dns_config.domain_dns_config_pkey CREATE UNIQUE INDEX domain_dns_config_pkey ON public.domain_dns_config USING btree (domain_id)
 INDEX domain_dns_event.domain_dns_event_by_domain CREATE INDEX domain_dns_event_by_domain ON public.domain_dns_event USING btree (domain_id, id)

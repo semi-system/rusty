@@ -429,26 +429,24 @@ impl DirectoryRepo for PgRepo {
     ) -> Result<Option<Resolution>> {
         check_text(local, MAX_LOCAL_PART_BYTES)?;
         check_text(domain, MAX_DOMAIN_BYTES)?;
-        let pool = self.store.pool();
-        let Some((kind, id)): Option<(i64, i64)> = sqlx::query_as(r(sql::RESOLVE_KIND))
-            .bind(domain)
-            .bind(local)
-            .fetch_optional(pool)
-            .await
-            .map_err(map_db_error)?
-        else {
-            return Ok(None);
-        };
-        if kind != 3 {
-            return Ok(Some(Resolution::Account(AccountId(id))));
+        if let Some(found) = self.resolve_in(local, domain, max_members).await? {
+            return Ok(Some(found));
         }
-        let rows: Vec<(Option<i64>, Option<String>)> = sqlx::query_as(r(sql::LIST_MEMBERS))
-            .bind(id)
-            .bind(max_members as i64 + 1)
-            .fetch_all(pool)
-            .await
-            .map_err(map_db_error)?;
-        list_resolution(rows, max_members).map(Some)
+        // Nothing matched (the rare case, so these two reads cost the normal delivery nothing): a domain alias stands for a hosted domain, and the catch-all of that domain takes what is left
+        // (docs/design-routing.md). One hop each: the catch-all is a local part of the same domain, and an alias of an alias is not followed.
+        // One statement gives both: the hosted domain the name stands for (itself when it is not an alias) and its catch-all. No row: not an active domain of ours.
+        let pool = self.store.pool();
+        let row: Option<(String, Option<String>)> = sqlx::query_as(r(sql::DOMAIN_FALLBACK)).bind(domain).fetch_optional(pool).await.map_err(map_db_error)?;
+        let Some((effective, catch_all)) = row else { return Ok(None) };
+        if effective != domain {
+            if let Some(found) = self.resolve_in(local, &effective, max_members).await? {
+                return Ok(Some(found));
+            }
+        }
+        match catch_all {
+            Some(local_part) => self.resolve_in(&local_part, &effective, max_members).await,
+            None => Ok(None),
+        }
     }
 
     async fn set_config(&self, target: ConfigTarget, config: &str) -> Result<()> {
@@ -587,5 +585,20 @@ impl DirectoryRepo for PgRepo {
             lock_account(&mut *c, account).await?;
             revoke_all_in(&mut *c, account, now).await
         })
+    }
+}
+
+impl PgRepo {
+    /// The address as the account, alias or list it names in this very domain.
+    async fn resolve_in(&self, local: &str, domain: &str, max_members: usize) -> Result<Option<Resolution>> {
+        let pool = self.store.pool();
+        let Some((kind, id)): Option<(i64, i64)> = sqlx::query_as(r(sql::RESOLVE_KIND)).bind(domain).bind(local).fetch_optional(pool).await.map_err(map_db_error)? else {
+            return Ok(None);
+        };
+        if kind != 3 {
+            return Ok(Some(Resolution::Account(AccountId(id))));
+        }
+        let rows: Vec<(Option<i64>, Option<String>)> = sqlx::query_as(r(sql::LIST_MEMBERS)).bind(id).bind(max_members as i64 + 1).fetch_all(pool).await.map_err(map_db_error)?;
+        list_resolution(rows, max_members).map(Some)
     }
 }

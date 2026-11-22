@@ -369,6 +369,10 @@ pub(crate) mod sql {
           SELECT 3, l.id FROM domains d JOIN lists l \
             ON l.domain_id = d.id WHERE d.name = $1 AND d.status = 'active' AND l.local_part = $2 \
         ) AS u ORDER BY kind LIMIT 1";
+    /// For an address nothing matched (docs/design-routing.md): the active hosted domain the name stands for (the name itself unless it is a domain alias) and the catch-all local part of
+    /// that domain. No row: the name is neither an active domain nor an alias of one.
+    pub const DOMAIN_FALLBACK: &str = "SELECT d.name, d.config->>'catch_all' FROM domains d \
+        WHERE d.status = 'active' AND d.name = COALESCE((SELECT dd.name FROM domain_aliases a JOIN domains dd ON dd.id = a.domain_id WHERE a.name = $1), $1)";
     pub const LIST_DOMAINS: &str = "SELECT id, name, status, created_at FROM domains \
         WHERE id > COALESCE(CAST($1 AS BIGINT), 0) ORDER BY id LIMIT $2";
     pub const FIND_DOMAIN: &str = "SELECT id, name, status, created_at FROM domains WHERE name = $1";

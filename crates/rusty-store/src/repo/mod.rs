@@ -25,6 +25,7 @@ pub(crate) mod heartbeat;
 pub(crate) mod relay;
 pub(crate) mod settings;
 pub(crate) mod plans;
+pub(crate) mod routing;
 pub(crate) mod admin;
 mod dns;
 pub(crate) mod jobs;
@@ -41,6 +42,7 @@ pub use heartbeat::{HeartbeatRepo, HeartbeatRow};
 pub use relay::{RelayRepo, RelayRow};
 pub use settings::{SettingsRepo, PROTOCOLS};
 pub use plans::{AccountUsage, PlanRepo, PlanRow};
+pub use routing::{ListInfo, MemberInfo, RoutingRepo};
 pub use admin::{AdminEntry, AdminGrant, AdminRepo, Revoked};
 pub use jobs::{BatchJob, BatchRequest, ClaimRequest, JobRepo, NewJob, OwnerLimits};
 pub use directory::{

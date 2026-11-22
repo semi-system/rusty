@@ -54,7 +54,13 @@
     "Plan": { "name": "string", "quota_bytes": "integer|null", "max_message_bytes": "integer|null" },
     "PlanList": { "items": "Plan[]" },
     "AccountPlan": { "plan": "string|null" },
-    "Deletion": { "deletion": "string" }
+    "Deletion": { "deletion": "string" },
+    "MailList": { "local": "string", "address": "string", "members": "integer" },
+    "Routing": { "lists": "MailList[]", "catch_all": "string|null", "domain_aliases": "string[]" },
+    "Member": { "seq": "integer", "address": "string", "external": "boolean" },
+    "Members": { "items": "Member[]" },
+    "CatchAll": { "catch_all": "string|null" },
+    "DomainAliasName": { "name": "string" }
   },
   "endpoints": [
     { "method": "GET", "path": "/mail/config-v1.1.xml", "auth": "none", "request": { "emailaddress": "string (query, optional)" }, "response": null, "status": 200, "note": "Mozilla autoconfig XML for mail clients (the platform's IMAP and submission servers), whatever the domain; served on port 80 for hosts autoconfig.*; 404 when no mail host is configured" },
@@ -102,6 +108,15 @@
     { "method": "PUT", "path": "/api/v1/protocols", "auth": "platform", "request": { "protocol": "string", "enabled": "boolean" }, "response": "Protocols", "status": 200, "note": "switch a protocol on or off for every replica of the mail services (they read the setting within a few seconds); 400 invalid for an unknown protocol" },
     { "method": "DELETE", "path": "/api/v1/accounts/{a}", "auth": "admin", "request": null, "response": "Deletion", "status": 200, "note": "a closed (disabled) account is removed with its mailbox by the garbage collector at its next pass; 409 not_closed for an account that is not closed; 400 for the account you are signed in with" },
     { "method": "DELETE", "path": "/api/v1/domains/{d}", "auth": "platform", "request": null, "response": "Empty", "status": 200, "note": "409 not_empty while the domain has accounts, aliases, lists, pending jobs or storage of its own" },
+    { "method": "GET", "path": "/api/v1/domains/{d}/routing", "auth": "admin", "request": null, "response": "Routing", "status": 200, "note": "the distribution lists, the catch-all local part and the alias domains of a domain" },
+    { "method": "POST", "path": "/api/v1/domains/{d}/lists", "auth": "admin", "request": { "local": "string" }, "response": "MailList", "status": 201 },
+    { "method": "DELETE", "path": "/api/v1/domains/{d}/lists/{l}", "auth": "admin", "request": null, "response": "Empty", "status": 200 },
+    { "method": "GET", "path": "/api/v1/domains/{d}/lists/{l}/members", "auth": "admin", "request": null, "response": "Members", "status": 200 },
+    { "method": "POST", "path": "/api/v1/domains/{d}/lists/{l}/members", "auth": "admin", "request": { "address": "string" }, "response": "Members", "status": 201, "note": "a local account of any hosted domain; 400 invalid for an address outside this server (forwarding is not built yet)" },
+    { "method": "DELETE", "path": "/api/v1/domains/{d}/lists/{l}/members/{n}", "auth": "admin", "request": null, "response": "Empty", "status": 200 },
+    { "method": "PUT", "path": "/api/v1/domains/{d}/catch-all", "auth": "admin", "request": { "local": "string|null" }, "response": "CatchAll", "status": 200, "note": "the account, alias or list of this domain that takes mail for addresses that do not exist; null clears it; 400 invalid when it names nothing" },
+    { "method": "POST", "path": "/api/v1/domains/{d}/domain-aliases", "auth": "platform", "request": { "name": "string" }, "response": "DomainAliasName", "status": 201, "note": "409 exists when the name is a hosted domain or an alias already" },
+    { "method": "DELETE", "path": "/api/v1/domains/{d}/domain-aliases/{n}", "auth": "platform", "request": null, "response": "Empty", "status": 200 },
     { "method": "GET", "path": "/api/v1/plans", "auth": "admin", "request": null, "response": "PlanList", "status": 200 },
     { "method": "PUT", "path": "/api/v1/plans", "auth": "platform", "request": { "name": "string", "quota_bytes": "integer|null", "max_message_bytes": "integer|null" }, "response": "Plan", "status": 200, "note": "creates the plan (201) or changes its limits; a null limit removes it; the services read the limits when they open a mailbox" },
     { "method": "PUT", "path": "/api/v1/accounts/{a}/plan", "auth": "admin", "request": { "plan": "string|null" }, "response": "AccountPlan", "status": 200, "note": "put the account on the plan, or on none with null" }

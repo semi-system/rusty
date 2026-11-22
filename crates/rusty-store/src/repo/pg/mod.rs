@@ -13,6 +13,7 @@ mod heartbeat;
 mod relay;
 mod settings;
 mod plans;
+mod routing;
 mod admin;
 pub mod tx;
 
