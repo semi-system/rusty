@@ -305,3 +305,10 @@ fieldset.panel legend { padding: 0 0.5rem; font-weight: 600; }
   .list-search { flex-basis: 100%; max-width: none; }
   .list-count { margin-left: 0; flex-basis: 100%; }
 }
+
+/* What a change set (the Audit page): the field and its new value, one per line under the request. */
+dl.changes { margin: 0.25rem 0 0; font-size: 0.85em; }
+dl.changes > div { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+dl.changes dt { color: var(--muted, #8b98a5); }
+dl.changes dt::after { content: ':'; }
+dl.changes dd { margin: 0; overflow-wrap: anywhere; }

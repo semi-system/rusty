@@ -241,6 +241,7 @@ async fn download(app: &AdminApp, req: Request) -> Response {
         route: "/api/v1/transfers/{t}/download".to_owned(),
         path: format!("/api/v1/transfers/{id}/download"),
         status: 200,
+        detail: None,
     };
     if let Err(e) = s.audit.record(&row).await {
         // Mail is not handed over without the record of who took it.

@@ -131,6 +131,7 @@ export const en = {
   'audit.col.who': 'Who',
   'audit.col.what': 'What',
   'audit.col.from': 'From address',
+  'audit.hidden': '(hidden)',
   'plans.title': 'Plans',
   'plans.lede': 'A plan sets how much mail an account may keep and how large one message may be. Put accounts on a plan in the list of accounts of a domain.',
   'plans.empty': 'No plan yet. Make one below.',

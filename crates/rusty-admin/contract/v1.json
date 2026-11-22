@@ -79,7 +79,7 @@
     "CertificateList": { "items": "Certificate[]" },
     "DayStats": { "day": "integer", "received": "integer", "rejected": "integer", "sent": "integer", "deferred": "integer", "failed": "integer" },
     "Stats": { "days": "DayStats[]" },
-    "AuditEntry": { "id": "integer", "at": "integer", "actor": "string", "domain_id": "integer|null", "ip": "string", "method": "string", "route": "string", "path": "string", "status": "integer" },
+    "AuditEntry": { "id": "integer", "at": "integer", "actor": "string", "domain_id": "integer|null", "ip": "string", "method": "string", "route": "string", "path": "string", "status": "integer", "detail": "string|null" },
     "Audit": { "items": "AuditEntry[]", "next": "integer|null" }
   },
   "endpoints": [

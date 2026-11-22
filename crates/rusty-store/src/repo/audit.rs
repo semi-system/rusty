@@ -14,6 +14,8 @@ pub struct NewAuditRow {
     pub route: String,
     pub path: String,
     pub status: i32,
+    /// The changed fields as a JSON object of text values, secrets hidden (`rusty-admin`'s `audit_detail`); `None` without a body.
+    pub detail: Option<String>,
 }
 
 /// One change as read back.
@@ -28,6 +30,8 @@ pub struct AuditRow {
     pub route: String,
     pub path: String,
     pub status: i32,
+    /// The changed fields as a JSON object of text values, secrets hidden (`rusty-admin`'s `audit_detail`); `None` without a body.
+    pub detail: Option<String>,
 }
 
 #[async_trait]
@@ -41,8 +45,8 @@ pub trait AuditRepo: Send + Sync {
 }
 
 pub(crate) mod sql {
-    pub const RECORD: &str = "INSERT INTO audit_log (at, actor_id, actor, domain_id, ip, method, route, path, status) VALUES (rs_now(), $1, $2, $3, $4, $5, $6, $7, $8)";
-    pub const LIST: &str = "SELECT id, at, actor, domain_id, ip, method, route, path, status FROM audit_log \
+    pub const RECORD: &str = "INSERT INTO audit_log (at, actor_id, actor, domain_id, ip, method, route, path, status, detail) VALUES (rs_now(), $1, $2, $3, $4, $5, $6, $7, $8, $9)";
+    pub const LIST: &str = "SELECT id, at, actor, domain_id, ip, method, route, path, status, detail FROM audit_log \
         WHERE (CAST($1 AS BIGINT) IS NULL OR domain_id = $1) AND id < COALESCE($2, CAST(9223372036854775807 AS BIGINT)) ORDER BY id DESC LIMIT $3";
     pub const PURGE: &str = "DELETE FROM audit_log WHERE id IN (SELECT id FROM audit_log WHERE at < $1 ORDER BY id LIMIT $2)";
 }

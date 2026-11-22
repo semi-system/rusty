@@ -34,6 +34,7 @@ COLUMN audit_log.method text nullable=NO identity=NO/ collation=C default=
 COLUMN audit_log.route text nullable=NO identity=NO/ collation=C default=
 COLUMN audit_log.path text nullable=NO identity=NO/ collation=C default=
 COLUMN audit_log.status integer nullable=NO identity=NO/ collation= default=
+COLUMN audit_log.detail text nullable=YES identity=NO/ collation=C default=
 COLUMN blob_backends.id bigint nullable=NO identity=YES/ALWAYS collation= default=
 COLUMN blob_backends.store_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN blob_backends.name text nullable=NO identity=NO/ collation=C default=
@@ -305,6 +306,7 @@ CONSTRAINT audit_log.audit_log_actor_not_null NOT NULL actor
 CONSTRAINT audit_log.audit_log_actor_valid CHECK (length(actor) <= 320)
 CONSTRAINT audit_log.audit_log_at_not_null NOT NULL at
 CONSTRAINT audit_log.audit_log_at_valid CHECK (at >= 0)
+CONSTRAINT audit_log.audit_log_detail_valid CHECK (detail IS NULL OR length(detail) <= 4096)
 CONSTRAINT audit_log.audit_log_id_not_null NOT NULL id
 CONSTRAINT audit_log.audit_log_ip_not_null NOT NULL ip
 CONSTRAINT audit_log.audit_log_ip_valid CHECK (length(ip) <= 64)

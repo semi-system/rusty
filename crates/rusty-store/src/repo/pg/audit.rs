@@ -22,6 +22,7 @@ impl AuditRepo for PgRepo {
             .bind(cut(&row.route, 200))
             .bind(cut(&row.path, 512))
             .bind(row.status)
+            .bind(row.detail.as_deref().map(|d| cut(d, 4096)))
             .execute(self.store.pool())
             .await
             .map_err(map_db_error)?;
@@ -32,7 +33,7 @@ impl AuditRepo for PgRepo {
         let rows = sqlx::query(r(sql::LIST)).bind(domain).bind(before).bind(limit).fetch_all(self.store.pool()).await.map_err(map_db_error)?;
         rows.iter()
             .map(|x| {
-                Ok(AuditRow { id: x.try_get(0)?, at: x.try_get(1)?, actor: x.try_get(2)?, domain_id: x.try_get(3)?, ip: x.try_get(4)?, method: x.try_get(5)?, route: x.try_get(6)?, path: x.try_get(7)?, status: x.try_get(8)? })
+                Ok(AuditRow { id: x.try_get(0)?, at: x.try_get(1)?, actor: x.try_get(2)?, domain_id: x.try_get(3)?, ip: x.try_get(4)?, method: x.try_get(5)?, route: x.try_get(6)?, path: x.try_get(7)?, status: x.try_get(8)?, detail: x.try_get(9)? })
             })
             .collect::<std::result::Result<Vec<_>, sqlx::Error>>()
             .map_err(map_db_error)

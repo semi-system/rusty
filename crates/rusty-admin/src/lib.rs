@@ -10,6 +10,7 @@
 pub mod admins;
 pub mod api;
 pub mod audit;
+pub mod audit_detail;
 pub mod auth;
 pub mod autoconfig;
 pub mod autodiscover;
