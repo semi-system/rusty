@@ -139,6 +139,68 @@ for s in external defaults; do
 done
 echo "  ok    pop3 is always open at the edge and in the IMAP service; the edge config keeps its shape"
 
+# ---- Prost as the edge (docs/design-prost-edge.md): EDGE=prost, the pilot beside HAProxy, and the three ways the certificates reach it ----------------------------------------------------------------------
+# The rendered edge.toml is valid for the real Prost when its image is here (the check needs the files the paths name, so they are made).
+prost_check() { # NAME  (the edge.toml of that scenario)
+  local name="$1" img="ghcr.io/semi-system/prost:latest" cfg n d
+  d="$tmp/prostchk-$name"
+  cfg="$tmp/state-$name/stack/etc/prost-edge.toml"
+  [ -n "$REAL_DOCKER" ] && "$REAL_DOCKER" image inspect "$img" >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1 || return 0
+  mkdir -p "$d/certs/edge/current" "$d/secrets"
+  # The state directory is private (0700) and the container runs as another user: the check reads a copy.
+  cp "$cfg" "$d/edge.toml"; cfg="$d/edge.toml"
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 30 -subj "/CN=mail.example.org" -keyout "$d/certs/edge/current/privkey.pem" -out "$d/certs/edge/current/fullchain.pem" 2>/dev/null
+  for n in edge_mail_crt edge_admin_crt; do cp "$d/certs/edge/current/fullchain.pem" "$d/secrets/$n"; done
+  for n in edge_mail_key edge_admin_key; do cp "$d/certs/edge/current/privkey.pem" "$d/secrets/$n"; done
+  chmod -R a+rX "$d"
+  # S3 paths cannot be read without a bucket: that scenario is checked by its text only.
+  ! grep -q '"s3://' "$cfg" || return 0
+  "$REAL_DOCKER" run --rm -v "$cfg:/etc/prost/edge.toml:ro" -v "$d/certs:/certificates:ro" -v "$d/secrets:/run/secrets:ro" --entrypoint /usr/local/bin/prost "$img" check --config /etc/prost/edge.toml >"$tmp/prostchk-$name.out" 2>&1 \
+    || { cat "$tmp/prostchk-$name.out" >&2; fail "$name: Prost does not accept the rendered edge configuration"; }
+}
+no_placeholders() { ! grep -n '@[A-Z_0-9]*@' "$1" >&2 || fail "a placeholder is left in $1"; }
+
+scenario prost "$EXT"$'\nEDGE=prost\nTLS_MODE=acme\nREPLICAS_DEFAULT=1' "edge certd smtp-in submission imap outbound gc admin" "db s3"
+ps="$tmp/prost.stack.yaml"; pe="$tmp/state-prost/stack/etc"
+grep -q 'image: ghcr.io/semi-system/prost@sha256:' "$ps" || fail "prost: the edge does not use the pinned Prost image"
+[ ! -e "$pe/haproxy.cfg" ] || fail "prost: HAProxy's configuration was made although Prost is the edge"
+no_placeholders "$pe/prost-edge.toml"; no_placeholders "$pe/prost-certd.toml"
+for p in 25:10025 587:10587 143:10143 110:10110 465:10465 993:10993 995:10995 443:10443 80:10080; do grep -q "target: ${p#*:}, published: ${p%%:*}, protocol: tcp, mode: host" "$ps" || fail "prost: the edge does not publish ${p%%:*}"; done
+grep -q '^  certd_state:' "$ps" && grep -q '^  certificates:' "$ps" && grep -q '^  prost_run:' "$ps" || fail "prost: the volumes of the edge and prost-certd are missing"
+! grep -q '^  edgedata:' "$ps" || fail "prost: HAProxy's volume is in the stack"
+grep -q 'certificate = "/certificates/edge/current/fullchain.pem"' "$pe/prost-edge.toml" || fail "prost: the edge does not read prost-certd's certificate"
+grep -q '^address = "certd:8088"' "$pe/prost-edge.toml" || fail "prost: the edge does not route the ACME challenge to prost-certd"
+grep -q 'path_prefix = "/.well-known/acme-challenge/"' "$pe/prost-edge.toml" || fail "prost: no route for the ACME challenge"
+grep -q 'config = {require_allowlist=true, allow=\["203.0.113.5/32", "198.51.100.0/24"\]}' "$pe/prost-edge.toml" || fail "prost: the admin allow-list is not the inventory's"
+grep -q '^domains = \["mail.example.org", "admin.example.org"\]' "$pe/prost-certd.toml" || fail "prost: prost-certd does not name both hosts"
+grep -q '^contact = "mailto:ops@example.org"' "$pe/prost-certd.toml" || fail "prost: the ACME contact is not CONTACT"
+grep -q '^address = "tasks.imap:1993"' "$pe/prost-edge.toml" && grep -q '^address = "tasks.submission:4465"' "$pe/prost-edge.toml" && grep -q '^address = "tasks.admin:8080"' "$pe/prost-edge.toml" || fail "prost: the edge does not name the services"
+# The edge keeps its name `edge`: the services accept the PROXY header from it by that name, and the admin web too (it reads the client's address from the header).
+grep -q '^trusted_proxy_hosts = \["tasks.edge", "edge"\]' "$pe/smtp_in.toml" || fail "prost: smtp-in does not trust the edge by name"
+grep -q '^proxy_protocol = true' "$pe/admin.toml" || fail "the admin web does not read the PROXY header"
+prost_check prost
+
+scenario prostself "$EXT"$'\nEDGE=prost\nTLS_MODE=self\nREPLICAS_DEFAULT=1' "edge smtp-in admin" "certd db s3"
+no_placeholders "$tmp/state-prostself/stack/etc/prost-edge.toml"
+grep -q 'certificate = "/run/secrets/edge_mail_crt"' "$tmp/state-prostself/stack/etc/prost-edge.toml" && grep -q 'target: edge_admin_key' "$tmp/prostself.stack.yaml" || fail "prostself: the self-signed certificates do not reach the edge as secrets"
+! grep -q '^address = "certd:8088"' "$tmp/state-prostself/stack/etc/prost-edge.toml" || fail "prostself: an ACME route without prost-certd"
+prost_check prostself
+
+scenario pilot "$EXT"$'\nEDGE=prost-pilot\nTLS_MODE=acme\nCERT_S3=1\nCERT_S3_BUCKET=certs\nREPLICAS_DEFAULT=1' "edge edge-prost smtp-in admin" "certd db s3"
+pp="$tmp/pilot.stack.yaml"; pq="$tmp/state-pilot/stack/etc"
+grep -q 'target: 10025, published: 20025, protocol: tcp, mode: host' "$pp" && grep -q 'target: 10993, published: 20993' "$pp" || fail "pilot: Prost is not on the offset ports"
+grep -q 'target: 25, published: 25, protocol: tcp, mode: host' "$pp" || fail "pilot: HAProxy lost the real ports"
+[ -s "$pq/haproxy.cfg" ] && [ -s "$pq/prost-edge.toml" ] || fail "pilot: both edge configurations are expected"
+no_placeholders "$pq/prost-edge.toml"
+grep -q 'certificate = "s3://certs/mail/fullchain.pem"' "$pq/prost-edge.toml" && grep -q 'private_key = "s3://certs/admin/privkey.pem"' "$pq/prost-edge.toml" || fail "pilot: the edge does not read the certificates from the bucket"
+grep -q '^\[runtime.s3\]' "$pq/prost-edge.toml" && grep -q '^endpoint = "https://s3.example.org"' "$pq/prost-edge.toml" && grep -q '^force_path_style = true' "$pq/prost-edge.toml" || fail "pilot: [runtime.s3] is not the stack's S3"
+! grep -q '^address = "certd:8088"' "$pq/prost-edge.toml" || fail "pilot: Prost must not answer ACME challenges beside HAProxy"
+grep -q 'AWS_SHARED_CREDENTIALS_FILE: /run/secrets/edge_s3_credentials' "$pp" || fail "pilot: the S3 credentials are not given to the edge"
+grep -q '^trusted_proxy_hosts = \["tasks.edge", "edge", "tasks.edge-prost", "edge-prost"\]' "$pq/smtp_in.toml" || fail "pilot: the services do not trust the Prost pilot by name"
+grep -q '^allowed_hosts = \["tasks.edge", "edge", "tasks.edge-prost", "edge-prost"\]' "$pq/admin.toml" || fail "pilot: the admin web does not allow the Prost pilot"
+! grep -q 'aws_access_key_id' "$pp" || fail "pilot: a key is in the stack file"
+echo "  ok    Prost as the edge, as a pilot beside HAProxy, and its certificates (files, S3, secrets)"
+
 # ---- the configuration keys match those of the standalone templates ----------------------------------------------------------------------------------------------------------------------------
 # section.key of a TOML text; a template's profile markers are switched on, its other comments dropped
 keys_of() { sed -e 's/^#\(FILTER\|VALKEY\|METRICS\) //' -e '/^#/d' | awk '/^\[\[?[a-z0-9_.]+\]\]?$/ { s = $0; gsub(/[][]/, "", s); next } /^[a-z_]+ *=/ { k = $1; print s "." k }' | sort -u; }
@@ -174,5 +236,12 @@ refuse "a bad port" 'DB_PORT=99999'
 refuse "a bad database name" 'DB_NAME=Rusty-DB'
 refuse "two admin tasks without the shared session store" 'REPLICAS_ADMIN=2'
 refuse "no tasks" 'REPLICAS_DEFAULT=0'
+refuse "an unknown edge" 'EDGE=nginx'
+refuse "the pilot with ACME certificates and no bucket for them" $'EDGE=prost-pilot\nTLS_MODE=acme'
+refuse "a pilot offset that is out of range" $'EDGE=prost-pilot\nPROST_PILOT_OFFSET=500'
+refuse "the certificates in the bucket of the mail" $'EDGE=prost\nTLS_MODE=acme\nCERT_S3=1\nCERT_S3_BUCKET=rusty-mail'
+refuse "a bad image" 'PROST_IMAGE="Prost Latest"'
 echo "  ok    bad values are refused"
+# For a look at what the tool rendered (SWARM_STACK_KEEP=DIR): the Prost edge configuration of the scenario "prost".
+[ -z "${SWARM_STACK_KEEP:-}" ] || cp "$tmp/state-prost/stack/etc/prost-edge.toml" "$tmp/state-prost/stack/etc/prost-certd.toml" "$SWARM_STACK_KEEP/"
 echo "swarm-stack OK"

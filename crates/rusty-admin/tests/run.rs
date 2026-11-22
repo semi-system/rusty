@@ -246,6 +246,9 @@ async fn behind_an_edge_that_sends_the_proxy_header_the_connection_needs_it_and_
     let r = start(&cfg, &store, stop.clone()).await.unwrap();
     // Without the header the connection is dropped: nothing answers.
     assert_eq!(get(r.addr, "/api/v1/setup").await.0, 0);
+    // The container's own health probe sends the `LOCAL` header, as the edge's checks do.
+    assert!(rusty_admin::health::healthy(r.addr, Duration::from_secs(5), true).await, "the probe with the LOCAL header is healthy");
+    assert!(!rusty_admin::health::healthy(r.addr, Duration::from_secs(2), false).await, "a probe without it is dropped like any other connection");
     // With it, from the allowed peer, the service answers as it does behind any edge.
     let mut s = TcpStream::connect(r.addr).await.unwrap();
     let header = rusty_svc::proxy::encode("203.0.113.9:51000".parse().unwrap(), "192.0.2.1:443".parse().unwrap(), true);

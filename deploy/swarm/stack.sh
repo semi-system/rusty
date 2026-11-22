@@ -23,6 +23,8 @@ declare -A SECRET_NAME=() CONFIG_NAME=()
 . "$HERE/validate.sh"
 # shellcheck source=profiles.sh
 . "$HERE/profiles.sh"
+# shellcheck source=edge-prost.sh
+. "$HERE/edge-prost.sh"
 
 sw() { dk "$(manager_name)" "$@"; }
 sha16() { if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -c1-16; else shasum -a 256 | cut -c1-16; fi; }
@@ -132,7 +134,7 @@ conf_imap() { head_common; printf '[imap]\nlisten_143 = "0.0.0.0:1143"\nlisten_9
 conf_outbound() { head_common; printf '[outbound]\ndkim_dir = "/var/lib/rusty/dkim"\npublic_ips = ["%s"]\n\n' "$(manager_public_ip)"; blk_unseal; blk_blob; blk_store outbound; blk_metrics; }
 conf_gc() { head_common; printf 'gc_grace_seconds = 604800\n\n[dns_check]\nenabled = true\n\n'; blk_unseal; blk_blob; blk_store gc; blk_metrics; }
 conf_admin() {
-  printf 'hostname = "%s"\n\n[admin]\nlisten = "0.0.0.0:8080"\npublic_origin = "https://%s"\npublic_ips = ["%s"]\nallowed_peers = ["127.0.0.1/32"]\nallowed_hosts = ["tasks.edge", "edge"]\n' "$MAIL_HOST" "$ADMIN_HOST" "$(manager_public_ip)"; printf '\n'; blk_store admin; blk_valkey admin
+  printf 'hostname = "%s"\n\n[admin]\nlisten = "0.0.0.0:8080"\npublic_origin = "https://%s"\npublic_ips = ["%s"]\nallowed_peers = ["127.0.0.1/32"]\nallowed_hosts = ["tasks.edge", "edge"]\nproxy_protocol = true\n' "$MAIL_HOST" "$ADMIN_HOST" "$(manager_public_ip)"; printf '\n'; blk_store admin; blk_valkey admin
   printf '[sealing]\npublic_key = "%s"\n\n' "$(cat "$STATE_DIR/keys/seal.pub")"
   if [ -n "${METRICS_ALLOW:-}" ]; then
     local c list=""
@@ -260,7 +262,7 @@ cap_limits() { # NODES-TEXT
   : > "$out"
   while read -r name mem cpus; do
     case "$name" in
-      edge) pin="manager" ;;
+      edge|edge-prost|certd) pin="manager" ;;
       outbound) pin='"outbound":"true"' ;;
       clamd|freshclam) pin='"av":"true"' ;;
       db) pin='"db":"true"' ;;
@@ -298,6 +300,7 @@ require_stack_inputs() {
     *) die "TLS_MODE is self (self-signed certificates) or acme (certificates from Let's Encrypt)" ;;
   esac
   check_inputs
+  check_edge_inputs
   make_passwords
 }
 
@@ -316,10 +319,11 @@ cmd_prepare_secrets() {
   ensure_secret unseal_key "$STATE_DIR/keys/unseal.key"
   ensure_secret tls_cert "$STATE_DIR/tls/mail.crt"
   ensure_secret tls_key "$STATE_DIR/tls/mail.key"
-  if [ "$TLS_MODE" = self ]; then
+  if [ "$TLS_MODE" = self ] && haproxy_is_edge; then
     ensure_secret edge_mail_pem "$STATE_DIR/tls/mail.pem"
     ensure_secret edge_admin_pem "$STATE_DIR/tls/admin.pem"
   fi
+  edge_prepare_secrets "$d"
   if [ "$DB_IN_STACK" = 1 ]; then
     make_db_tls
     ensure_secret pg_postgres "$DB_ADMIN_PASSWORD_FILE"
@@ -339,11 +343,10 @@ cmd_prepare_configs() {
   mkdir -p "$d"; chmod 0700 "$STATE_DIR/stack" "$d"
   gen_limits
   for s in smtp_in submission imap outbound gc admin migrate; do
-    ( umask 077; "conf_$s" > "$d/$s.toml" )
+    ( umask 077; "conf_$s" | edge_hosts_filter > "$d/$s.toml" )
     ensure_config "$s" "$d/$s.toml"
   done
-  ( umask 077; conf_haproxy > "$d/haproxy.cfg" )
-  ensure_config haproxy "$d/haproxy.cfg"
+  edge_prepare_configs "$d"
   if [ "$DB_IN_STACK" = 1 ]; then make_db_tls; ( umask 077; conf_pg_hba > "$d/pg_hba.conf" ); ensure_config pg_hba "$d/pg_hba.conf"; fi
   if [ -n "$DB_CA" ]; then ensure_config db_ca "$DB_CA"; fi
   profile_configs
@@ -378,13 +381,14 @@ load_names() {
   local base need_s need_c
   read_names || die "nothing was prepared yet: run 'prepare secrets' and 'prepare configs'"
   need_s="${SERVICE_ROLES[*]/#/pg_} s3_access s3_secret unseal_key tls_cert tls_key"
-  [ "$TLS_MODE" != self ] || need_s="$need_s edge_mail_pem edge_admin_pem"
+  { [ "$TLS_MODE" != self ] || ! haproxy_is_edge; } || need_s="$need_s edge_mail_pem edge_admin_pem"
   [ "$DB_IN_STACK" != 1 ] || need_s="$need_s pg_postgres db_server_crt db_server_key"
-  need_c="smtp_in submission imap outbound gc admin migrate haproxy"
+  need_c="smtp_in submission imap outbound gc admin migrate"
+  ! haproxy_is_edge || need_c="$need_c haproxy"
+  local t k
   [ "$DB_IN_STACK" != 1 ] || need_c="$need_c pg_hba"
   [ -z "$DB_CA" ] || need_c="$need_c db_ca"
-  local t k
-  while read -r t k; do case "$t" in S) need_s="$need_s $k" ;; C) need_c="$need_c $k" ;; esac; done < <(profile_names_needed)
+  while read -r t k; do case "$t" in S) need_s="$need_s $k" ;; C) need_c="$need_c $k" ;; esac; done < <(profile_names_needed; edge_names_needed)
   for base in $need_s; do
     [ -n "${SECRET_NAME[$base]:-}" ] && sw secret inspect "${SECRET_NAME[$base]}" >/dev/null 2>&1 || die "the secret $base is missing on the Manager: run 'prepare secrets'"
   done
@@ -393,7 +397,8 @@ load_names() {
   done
   # A name of a thing this inventory does not use must not reach the stack file.
   [ -n "$DB_CA" ] || unset 'CONFIG_NAME[db_ca]'
-  if [ "$TLS_MODE" != self ]; then unset 'SECRET_NAME[edge_mail_pem]' 'SECRET_NAME[edge_admin_pem]'; fi
+  if [ "$TLS_MODE" != self ] || ! haproxy_is_edge; then unset 'SECRET_NAME[edge_mail_pem]' 'SECRET_NAME[edge_admin_pem]'; fi
+  haproxy_is_edge || unset 'CONFIG_NAME[haproxy]'
   if [ "$DB_IN_STACK" != 1 ]; then unset 'SECRET_NAME[pg_postgres]' 'SECRET_NAME[db_server_crt]' 'SECRET_NAME[db_server_key]' 'CONFIG_NAME[pg_hba]'; fi
 }
 
@@ -450,6 +455,9 @@ gen_stack() {
     [ "$S3_IN_STACK" = 0 ] || gen_s3_service
     [ "$FILTER" = 0 ] || gen_resolver_service
     if [ -z "$STACK_ONLY" ]; then
+      # EDGE=prost: Prost is the edge (and prost-certd gets the certificates); EDGE=prost-pilot adds it beside HAProxy on other ports.
+      [ "$EDGE" = haproxy ] || gen_prost_services
+      if haproxy_is_edge; then
       # The edge: the one public entrance, on the Manager, its ports on the host (no routing mesh: the clients' addresses are kept).
       y_service_common edge "$(lock_ref 'haproxy:3.4.7-alpine3.24')"
       if [ "$TLS_MODE" = acme ]; then
@@ -469,6 +477,7 @@ gen_stack() {
       printf '    configs:\n'
       y_config haproxy /usr/local/etc/haproxy/haproxy.cfg
       printf '    networks:\n      - app\n      - backend\n'
+      fi
       gen_rusty_service smtp-in smtp_in "app backend metrics" 1 1
       gen_rusty_service submission submission "app backend metrics" 1 1
       gen_rusty_service imap imap "app backend metrics" 1 1
@@ -481,11 +490,12 @@ gen_stack() {
     printf 'networks:\n  app: { driver: overlay, internal: true }\n  backend: { driver: overlay, attachable: true }\n  metrics: { driver: overlay, internal: true }\n'
     [ "$FILTER" = 0 ] || printf '  filter: { driver: overlay, internal: true }\n'
     [ "$VALKEY" = 0 ] || printf '  kv: { driver: overlay, internal: true }\n'
-    if [ "$DB_IN_STACK" = 1 ] || [ "$S3_IN_STACK" = 1 ] || [ "$TLS_MODE" = acme ] || [ "$FILTER" = 1 ]; then
+    if [ "$DB_IN_STACK" = 1 ] || [ "$S3_IN_STACK" = 1 ] || [ "$TLS_MODE" = acme ] || [ "$FILTER" = 1 ] || [ "$EDGE" != haproxy ]; then
       printf 'volumes:\n'
       [ "$DB_IN_STACK" = 0 ] || printf '  pgdata:\n'
       [ "$S3_IN_STACK" = 0 ] || printf '  s3data:\n'
-      [ "$TLS_MODE" != acme ] || printf '  edgedata:\n'
+      { [ "$TLS_MODE" != acme ] || ! haproxy_is_edge; } || printf '  edgedata:\n'
+      [ "$EDGE" = haproxy ] || edge_volumes
       [ "$FILTER" = 0 ] || printf '  clamdb:\n'
     fi
     gen_externals
@@ -619,10 +629,15 @@ banner() { # PORT -> the first line the port sends (empty when none)
 }
 
 cmd_verify_stack() {
-  local bad=0 b
-  b="$(banner 25)"; case "$b" in "220 "*) echo "  ok    25: $b" ;; *) echo "  FAIL  25: no SMTP greeting through the edge ('$b')"; bad=1 ;; esac
-  b="$(banner 587)"; case "$b" in "220 "*) echo "  ok    587: $b" ;; *) echo "  FAIL  587: no SMTP greeting through the edge ('$b')"; bad=1 ;; esac
-  b="$(banner 143)"; case "$b" in "* OK"*) echo "  ok    143: $b" ;; *) echo "  FAIL  143: no IMAP greeting through the edge ('$b')"; bad=1 ;; esac
+  local bad=0 b p
+  # The ports of the edge: the standard ones (HAProxy, or Prost when it is the edge) and, with the pilot, the ones of Prost beside it.
+  for p in "" pilot; do
+    [ "$p" = "" ] || [ "$EDGE" = prost-pilot ] || continue
+    local o=0; [ "$p" = "" ] || o="$PROST_PILOT_OFFSET"
+    b="$(banner $((25 + o)))"; case "$b" in "220 "*) echo "  ok    $((25 + o)): $b" ;; *) echo "  FAIL  $((25 + o)): no SMTP greeting through the edge ('$b')"; bad=1 ;; esac
+    b="$(banner $((587 + o)))"; case "$b" in "220 "*) echo "  ok    $((587 + o)): $b" ;; *) echo "  FAIL  $((587 + o)): no SMTP greeting through the edge ('$b')"; bad=1 ;; esac
+    b="$(banner $((143 + o)))"; case "$b" in "* OK"*) echo "  ok    $((143 + o)): $b" ;; *) echo "  FAIL  $((143 + o)): no IMAP greeting through the edge ('$b')"; bad=1 ;; esac
+  done
   [ "$bad" = 0 ] || die "verify: a port does not answer as it should (./rusty-swarm logs edge, logs smtp-in ...)"
   echo "verify: the edge reaches the services and they accept it"
 }
@@ -676,7 +691,9 @@ edge_container() { sw ps -q --filter "label=com.docker.swarm.service.name=${STAC
 
 cmd_certs_sync() {
   if [ "$TLS_MODE" != acme ]; then echo "certs sync: TLS_MODE is $TLS_MODE: nothing to do"; return 0; fi
-  local c name host pem changed=0 dir="$STATE_DIR/tls"
+  # Prost is the edge: its certificate comes from prost-certd, not from HAProxy's runtime socket.
+  if [ "$EDGE" = prost ]; then cmd_certs_sync_prost; return; fi
+  local c name host pem changed=0 dir="$STATE_DIR/tls" s3_changed=0
   read_names || true
   c="$(edge_container)"
   [ -n "$c" ] || { echo "certs sync: the edge is not running yet" >&2; return 1; }
@@ -692,6 +709,10 @@ cmd_certs_sync() {
     printf '%s\n' "$pem" | awk '/^-----BEGIN / { d = ($0 ~ /PRIVATE KEY/) ? "k" : "c" } d == "c" { print } /^-----END / { d = "" }' > "$dir/$name.acme.crt.new"
     cat "$dir/$name.acme.key.new" "$dir/$name.acme.crt.new" > "$dir/$name.acme.pem.new"
     sw exec -i -u 99 "$c" sh -c "umask 077; mkdir -p /var/lib/haproxy/certs && cat > /var/lib/haproxy/certs/$name.pem.new && mv /var/lib/haproxy/certs/$name.pem.new /var/lib/haproxy/certs/$name.pem" < "$dir/$name.acme.pem.new" || echo "certs sync: the edge could not keep the $name certificate" >&2
+    # The certificates also go to the S3 of administration (CERT_S3=1), where the Prost pilot reads them; Prost loads a new one at its next start.
+    if [ "$CERT_S3" = 1 ] && ! cmp -s "$dir/$name.acme.crt.new" "$dir/$name.s3.crt"; then
+      if cert_s3_put "$name" "$dir/$name.acme.crt.new" "$dir/$name.acme.key.new"; then ( umask 077; cp "$dir/$name.acme.crt.new" "$dir/$name.s3.crt" ); s3_changed=1; fi
+    fi
     if [ "$name" = mail ] && ! cmp -s "$dir/mail.acme.crt.new" "$dir/mail.crt"; then
       ( umask 077; cp "$dir/mail.acme.key.new" "$dir/mail.key"; cp "$dir/mail.acme.crt.new" "$dir/mail.crt" )
       ensure_secret tls_cert "$dir/mail.crt"
@@ -701,6 +722,7 @@ cmd_certs_sync() {
     fi
     rm -f "$dir/$name.acme.key.new" "$dir/$name.acme.crt.new" "$dir/$name.acme.pem.new"
   done
+  if [ "$s3_changed" = 1 ] && [ "$EDGE" = prost-pilot ]; then sw service update --force --detach=false "${STACK_NAME}_edge-prost" >/dev/null 2>&1 || echo "certs sync: the Prost pilot could not be restarted onto the new certificate" >&2; fi
   if [ "$changed" = 1 ]; then echo "certs sync: a new certificate for $MAIL_HOST; the mail services move onto it"; cmd_deploy; else echo "certs sync: the certificates are current"; fi
 }
 
