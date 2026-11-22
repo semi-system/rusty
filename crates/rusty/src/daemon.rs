@@ -291,6 +291,10 @@ async fn build(
         let changes = ChangeFanout::new(ctx.hub.clone()).with_jobs(wake.0.clone());
         services.push(Box::new(ChangeFeedService::new(store.change_feed(), Arc::new(changes))));
     }
+    // The exports and imports of mailboxes asked for in the admin web are done where the mailboxes are.
+    if runs(Role::Imap) {
+        services.push(Box::new(rusty_svc::TransferService::new()));
+    }
     let outbound_dns = if runs(Role::Outbound) { dns } else { None };
     if let Some(dns) = outbound_dns {
         let deps = WorkerDeps {

@@ -37,6 +37,10 @@ pub struct AdminConfig {
     /// DNS names whose addresses may connect as well (the edge, found by its service name: `edge` in compose, `tasks.edge` in a swarm), resolved again every few seconds. At most 8.
     #[serde(default)]
     pub allowed_hosts: Vec<String>,
+    /// The edge sends the PROXY protocol (version 2) before each connection: the client address of a request (the audit log, the sign-in throttle) is the one in the header, not the edge's.
+    /// The header is accepted only from `allowed_peers` and `allowed_hosts` (so one of them is needed); a connection without it is dropped. The edge ends TLS, as for the other services.
+    #[serde(default)]
+    pub proxy_protocol: bool,
 }
 
 impl AdminConfig {
@@ -55,6 +59,9 @@ impl AdminConfig {
         }
         if self.allowed_hosts.len() > 8 || !self.allowed_hosts.iter().all(|h| crate::config_metrics::host_ok(h)) {
             return Err(Error::Invalid("admin.allowed_hosts must be at most 8 DNS names".into()));
+        }
+        if self.proxy_protocol && self.allowed_peers.is_empty() && self.allowed_hosts.is_empty() {
+            return Err(Error::Invalid("admin.proxy_protocol needs allowed_peers or allowed_hosts: the header is believed only from the edge".into()));
         }
         Ok(())
     }

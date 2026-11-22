@@ -5,6 +5,7 @@ pub mod config;
 pub mod dns;
 pub mod dns_check;
 pub mod dns_state;
+pub mod mbox;
 pub mod relay_policy;
 pub mod storage_policy;
 mod config_role;

@@ -237,3 +237,25 @@ async fn with_scrape_targets_the_admin_web_is_the_one_endpoint_for_every_service
         .await
         .is_ok());
 }
+
+#[tokio::test]
+async fn behind_an_edge_that_sends_the_proxy_header_the_connection_needs_it_and_comes_only_from_an_allowed_peer() {
+    let (store, _db) = store().await;
+    let cfg = config("[admin]\nlisten = \"127.0.0.1:0\"\npublic_origin = \"https://admin.example.org\"\nallowed_peers = [\"127.0.0.1/32\"]\nproxy_protocol = true\n");
+    let stop = CancellationToken::new();
+    let r = start(&cfg, &store, stop.clone()).await.unwrap();
+    // Without the header the connection is dropped: nothing answers.
+    assert_eq!(get(r.addr, "/api/v1/setup").await.0, 0);
+    // With it, from the allowed peer, the service answers as it does behind any edge.
+    let mut s = TcpStream::connect(r.addr).await.unwrap();
+    let header = rusty_svc::proxy::encode("203.0.113.9:51000".parse().unwrap(), "192.0.2.1:443".parse().unwrap(), true);
+    s.write_all(&header).await.unwrap();
+    s.write_all(b"GET /api/v1/setup HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n").await.unwrap();
+    let mut out = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut out)).await;
+    assert!(String::from_utf8_lossy(&out).starts_with("HTTP/1.1 200"), "{}", String::from_utf8_lossy(&out));
+    stop.cancel();
+    assert!(tokio::time::timeout(Duration::from_secs(10), r.task).await.is_ok());
+    // The setting is refused without the peers that may send the header.
+    assert!(StartupConfig::from_toml_str_for(Role::Admin, &format!("{BASE}[admin]\nlisten = \"127.0.0.1:0\"\npublic_origin = \"https://admin.example.org\"\nproxy_protocol = true\n")).is_err());
+}

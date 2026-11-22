@@ -1,7 +1,7 @@
 // The API client: the contract's endpoints as typed calls. It knows the three rules of a state-changing request (design section 5): the JSON content type,
 // the CSRF token of the session (the browser adds `Origin` itself) and that a failure is a fixed code, never text to show.
 
-import type { Account, MailRules, CertificateList, Stats, PlatformSettings, Audit, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, DomainSettings, ImportResult, MailList, Member, Members, Monitor, Plan, PlanList, QueueList, Routing, Trace, Protocols, Queue, Relay, SetupState, Storage } from './types';
+import type { Account, Transfer, TransferList, MailRules, CertificateList, Stats, PlatformSettings, Audit, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, DomainSettings, ImportResult, MailList, Member, Members, Monitor, Plan, PlanList, QueueList, Routing, Trace, Protocols, Queue, Relay, SetupState, Storage } from './types';
 import type { MessageKey } from '../i18n';
 
 /** A page of a list, the cursor of the next one and how many rows match in all. */
@@ -113,7 +113,7 @@ export class Client {
     return this.csrf;
   }
 
-  private async call<T>(method: string, path: string, body?: unknown): Promise<T> {
+  private async call<T>(method: string, path: string, body?: unknown, raw?: Uint8Array): Promise<T> {
     const headers: Record<string, string> = { Accept: 'application/json' };
     const mutating = method !== 'GET';
     if (mutating) {
@@ -129,7 +129,8 @@ export class Client {
         headers,
         credentials: 'same-origin',
         cache: 'no-store',
-        body: body === undefined ? (mutating ? '{}' : undefined) : JSON.stringify(body),
+        // The pieces of an upload are bytes as they are; the type stays `application/json` because the server asks that of every change (its guard against forged requests).
+        body: raw !== undefined ? (raw as BodyInit) : body === undefined ? (mutating ? '{}' : undefined) : JSON.stringify(body),
       });
     } catch {
       throw new TypeError('network');
@@ -269,6 +270,27 @@ export class Client {
     if (opts.domain !== undefined && opts.domain.trim() !== '') parts.push(`domain=${encodeURIComponent(opts.domain.trim())}`);
     if (opts.before !== undefined) parts.push(`before=${opts.before}`);
     return this.call('GET', `/api/v1/audit${parts.length > 0 ? '?' + parts.join('&') : ''}`);
+  }
+
+  /** The exports and imports of an account's mailbox (platform administrators). */
+  transfers(address: string): Promise<TransferList> {
+    return this.call('GET', `/api/v1/accounts/${seg(address)}/transfers`);
+  }
+
+  startExport(address: string): Promise<Transfer> {
+    return this.call('POST', `/api/v1/accounts/${seg(address)}/exports`);
+  }
+
+  startImport(address: string, folder: string | null): Promise<Transfer> {
+    return this.call('POST', `/api/v1/accounts/${seg(address)}/imports`, folder === null ? {} : { folder });
+  }
+
+  async putPiece(id: number, n: number, bytes: Uint8Array): Promise<void> {
+    await this.call('PUT', `/api/v1/transfers/${id}/chunks/${n}`, undefined, bytes);
+  }
+
+  startTransfer(id: number, pieces: number): Promise<Transfer> {
+    return this.call('POST', `/api/v1/transfers/${id}/start`, { pieces });
   }
 
   /** Forwarding and the automatic reply of an account. */

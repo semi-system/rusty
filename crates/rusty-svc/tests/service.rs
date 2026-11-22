@@ -11,6 +11,7 @@ use rusty_core::{Error, MailboxId};
 use rusty_directory::Directory;
 use rusty_store::Repos;
 use rusty_svc::{
+    TransferService,
     run_services, Context, GcService, QuotaPolicy, RateLimiter, Service, ServiceEvent, ServiceEvents, TlsProvider,
     Verdict,
 };
@@ -249,4 +250,67 @@ async fn the_gc_pass_removes_deleted_messages_after_their_retention_and_keeps_yo
     assert_eq!(report.deleted_purged, 1, "{report:?}");
     let kept = mb.list_deleted(0, 10).await.unwrap();
     assert_eq!(kept.iter().map(|m| m.id).collect::<Vec<_>>(), vec![young.id], "the younger one is still recoverable");
+}
+
+#[tokio::test]
+async fn a_mailbox_is_exported_in_pieces_and_the_file_imports_into_another_mailbox_with_its_folders_dates_and_flags() {
+    use rusty_core::Flags;
+    use rusty_store::Mailbox;
+    let p = parts().await;
+    let c = ctx(&p).await;
+    let dir = Directory::with_repo(p.seed_store.repos().directory.clone());
+    let d = dir.create_domain("move.test").await.unwrap();
+    let alice = dir.create_account("alice", d, None, None).await.unwrap();
+    let bob = dir.create_account("bob", d, None, None).await.unwrap();
+    let mb = Mailbox::open_with(p.seed_store.repos().mailbox.clone(), c.stores.clone(), alice).await.unwrap();
+    let archive = mb.create_folder(None, "Archive 2025").await.unwrap();
+    let seen = Flags::from_bits(Flags::SEEN.bits() | Flags::FLAGGED.bits()).unwrap();
+    mb.append_dated(rusty_core::FolderId(1), bytes::Bytes::from_static(b"Subject: one\r\nMessage-ID: <1@x>\r\n\r\nFrom the top\r\n"), seen, 1_700_000_000).await.unwrap();
+    mb.append_dated(archive, bytes::Bytes::from_static(b"Subject: two\r\nMessage-ID: <2@x>\r\n\r\nbody two\r\n"), Flags::empty(), 1_600_000_000).await.unwrap();
+
+    let repo = p.seed_store.repos().transfers.clone();
+    let export = repo.create("export", alice.0, "root@home.test", None).await.unwrap();
+    assert!(TransferService::run_once(&c).await.unwrap(), "the export was waiting");
+    let done = repo.get(export).await.unwrap().unwrap();
+    assert_eq!((done.state.as_str(), done.messages), ("done", 2), "{done:?}");
+    let mut file = Vec::new();
+    let mut seq = 0;
+    while let Some(piece) = repo.chunk(export, seq).await.unwrap() {
+        file.extend_from_slice(&piece);
+        seq += 1;
+    }
+    assert_eq!(i64::try_from(file.len()).unwrap(), done.size);
+    let text = String::from_utf8_lossy(&file);
+    assert!(text.contains("X-Rusty-Folder: Archive 2025") && text.contains("Status: RO") && text.contains("X-Status: F"), "{text}");
+    assert!(text.contains(">From the top"), "a body line that starts with From is quoted: {text}");
+    assert!(!TransferService::run_once(&c).await.unwrap(), "nothing else waits");
+
+    // The same file imported into bob: folders are made when missing, dates and flags are kept.
+    let import = repo.create("import", bob.0, "root@home.test", Some("Fallback")).await.unwrap();
+    for (i, piece) in file.chunks(40).enumerate() {
+        assert!(repo.add_chunk(import, i32::try_from(i).unwrap(), piece, 1 << 20).await.unwrap());
+    }
+    assert!(repo.queue_import(import).await.unwrap());
+    assert!(TransferService::run_once(&c).await.unwrap());
+    let imported = repo.get(import).await.unwrap().unwrap();
+    assert_eq!((imported.state.as_str(), imported.messages, imported.skipped), ("done", 2, 0), "{imported:?}");
+    let bmb = Mailbox::open_with(p.seed_store.repos().mailbox.clone(), c.stores.clone(), bob).await.unwrap();
+    let folders = bmb.list_folders().await.unwrap();
+    let arch = folders.iter().find(|f| f.name == "Archive 2025").expect("the folder of the file was made");
+    let inbox = folders.iter().find(|f| f.role == "inbox").unwrap();
+    let in_arch = bmb.list_folder(arch.id, 0, 10).await.unwrap();
+    assert_eq!((in_arch.len(), in_arch[0].subject.as_str(), in_arch[0].internal_date), (1, "two", 1_600_000_000));
+    let in_inbox = bmb.list_folder(inbox.id, 0, 10).await.unwrap();
+    assert_eq!((in_inbox[0].subject.as_str(), in_inbox[0].flags), ("one", seen));
+    assert_eq!(&bmb.get_raw(in_inbox[0].id).await.unwrap()[..], b"Subject: one\r\nMessage-ID: <1@x>\r\n\r\nFrom the top\r\n", "the message is what it was");
+
+    // Not a mailbox file: it fails with a fixed word and imports nothing; an unknown account fails as well.
+    let junk = repo.create("import", bob.0, "root@home.test", None).await.unwrap();
+    repo.add_chunk(junk, 0, b"hello, not an mbox\n", 1 << 20).await.unwrap();
+    repo.queue_import(junk).await.unwrap();
+    TransferService::run_once(&c).await.unwrap();
+    let bad = repo.get(junk).await.unwrap().unwrap();
+    assert_eq!((bad.state.as_str(), bad.error.as_deref()), ("failed", Some("unreadable")));
+    // The pieces and the rows go away when they expire (the test moves the clock by asking for expiry in the future through a direct purge of nothing yet).
+    assert_eq!(repo.purge_expired(100).await.unwrap(), 0, "a day has not passed");
 }

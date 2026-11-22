@@ -2,10 +2,11 @@
   import Badge from '../lib/Badge.svelte';
   import { onMount } from 'svelte';
   import type { App } from '../lib/app.svelte';
-  import type { Account, ImportResult, Plan } from '../api/types';
+  import type { Account, ImportResult, Me, Plan } from '../api/types';
   import { bytes } from '../lib/bytes';
   import DomainShell from '../lib/DomainShell.svelte';
   import MailRulesForm from '../lib/MailRules.svelte';
+  import MailboxTransfers from '../lib/MailboxTransfers.svelte';
   import ErrorNote from '../lib/ErrorNote.svelte';
   import { labelled } from '../lib/stack';
   import ListBar from '../lib/ListBar.svelte';
@@ -13,7 +14,7 @@
 
   const MIN = 8;
   const when = (s: number): string => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(s * 1000));
-  let { app, name }: { app: App; name: string } = $props();
+  let { app, me, name }: { app: App; me: Me; name: string } = $props();
 
   let items = $state<Account[]>([]);
   let next = $state<number | null>(null);
@@ -72,6 +73,8 @@
   let temporary = $state(false);
   // The account whose forwarding and automatic reply are open.
   let rulesFor = $state<string | null>(null);
+  // The account whose mailbox is being exported or imported (platform administrators).
+  let transfersFor = $state<string | null>(null);
 
   async function load(after?: number, quiet = false): Promise<void> {
     try {
@@ -218,9 +221,15 @@
                     {#if a.status === 'disabled'}
                       <button type="button" disabled={busy} aria-label={t('accounts.delete', { address: a.address })} onclick={() => (deleting = deleting === a.address ? null : a.address)}>{t('accounts.deleteShort')}</button>
                     {/if}
+                    {#if me.scope === 'platform'}
+                      <button type="button" aria-label={t('transfers.open', { address: a.address })} onclick={() => (transfersFor = transfersFor === a.address ? null : a.address)}>{t('transfers.openShort')}</button>
+                    {/if}
                     <button type="button" aria-label={t('rules.open', { address: a.address })} onclick={() => (rulesFor = rulesFor === a.address ? null : a.address)}>{t('rules.openShort')}</button>
                     <button type="button" aria-label={t('accounts.setPassword', { address: a.address })} onclick={() => { editing = editing === a.address ? null : a.address; fresh = ''; tooShort = false; }}>{t('accounts.setPasswordShort')}</button>
                   </div>
+                  {#if transfersFor === a.address}
+                    <MailboxTransfers {app} address={a.address} onclose={() => (transfersFor = null)} />
+                  {/if}
                   {#if rulesFor === a.address}
                     <MailRulesForm {app} address={a.address} onclose={() => (rulesFor = null)} />
                   {/if}

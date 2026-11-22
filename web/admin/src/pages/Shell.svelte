@@ -182,7 +182,7 @@
         {#if match.value === 'overview'}
           <Overview {app} {me} {name} />
         {:else if match.value === 'accounts'}
-          <Accounts {app} {name} />
+          <Accounts {app} {me} {name} />
         {:else if match.value === 'aliases'}
           <Aliases {app} {name} />
         {:else if match.value === 'dkim'}

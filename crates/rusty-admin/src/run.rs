@@ -113,6 +113,7 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
         routing: repos.routing.clone(),
         queue: repos.queue.clone(),
         audit: repos.audit.clone(),
+        transfers: repos.transfers.clone(),
         sealing,
         mail: cfg.hostname.clone().map(|host| MailSettings { host, public_ips: admin.public_ips.clone(), spf_include: admin.spf_include.clone() }),
     };
@@ -163,6 +164,7 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     let router = crate::audit::routes(app.clone(), router);
     let router = crate::certs::routes(app.clone(), router);
     let router = crate::mailrules::routes(app.clone(), router);
+    let router = crate::transfers::routes(app.clone(), router);
     let router = crate::audit::record_changes(app.clone(), router);
     // The front end embedded at build time answers every other path (and the single-page routes); without one this is an API server only.
     let router = match crate::web::handler() {
@@ -184,6 +186,10 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     // Behind the edge only: another container on the network must not reach the service directly and skip the edge's address allow-list.
     let accept: Arc<dyn Accept> = if admin.allowed_peers.is_empty() && admin.allowed_hosts.is_empty() {
         accept
+    } else if admin.proxy_protocol {
+        // The edge says who the client is: the header is read from the allowed peers only, and the address that follows is the client's (docs/design-prost-edge.md).
+        let named = rusty_svc::NamedPeers::start(admin.allowed_hosts.clone(), rusty_svc::NAMED_PEERS_REFRESH, shutdown.clone()).await;
+        Arc::new(rusty_svc::proxy::EdgeAccept::new(admin.allowed_peers.clone(), true).with_named(named))
     } else {
         let named = rusty_svc::NamedPeers::start(admin.allowed_hosts.clone(), rusty_svc::NAMED_PEERS_REFRESH, shutdown.clone()).await;
         Arc::new(PeerAllow::new(accept, admin.allowed_peers.clone()).with_named(named))

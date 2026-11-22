@@ -40,6 +40,8 @@ pub struct Context {
     pub audit: Arc<dyn rusty_store::AuditRepo>,
     /// The book-keeping of automatic replies (vacation).
     pub rules: Arc<dyn rusty_store::RulesRepo>,
+    /// The exports and imports of mailboxes asked for in the admin web.
+    pub transfers: Arc<dyn rusty_store::TransferRepo>,
     /// Plans and what a mailbox holds (the IMAP `QUOTA` answer).
     pub plans: Arc<dyn rusty_store::PlanRepo>,
 }
@@ -90,6 +92,7 @@ impl Context {
             queue: repos.queue.clone(),
             audit: repos.audit.clone(),
             rules: repos.rules.clone(),
+            transfers: repos.transfers.clone(),
             plans: repos.plans.clone(),
             cfg,
         })

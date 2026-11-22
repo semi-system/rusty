@@ -30,6 +30,7 @@ mod redact;
 mod secret;
 mod service;
 mod throttle;
+mod transfer;
 mod valkey_throttle;
 mod tls;
 
@@ -41,6 +42,7 @@ pub use events::{RejectReason, ServiceEvent, ServiceEvents, TracingEvents};
 pub use gc::{GcService, GcSummary};
 pub use heartbeat::{instance_name, HeartbeatService, BEAT_EVERY};
 pub use maintain::MaintainService;
+pub use transfer::{TransferService, MAX_IMPORT_BYTES};
 pub use hub::MailboxHub;
 pub use named_peers::{NamedPeers, REFRESH as NAMED_PEERS_REFRESH};
 pub use listener::{BoundListener, ListenerSpec, SessionHandler};

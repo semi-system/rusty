@@ -374,6 +374,25 @@ export interface Trace {
   next: number | null;
 }
 
+export interface Transfer {
+  id: number;
+  kind: string;
+  requested_by: string;
+  state: string;
+  folder: string | null;
+  size: number;
+  messages: number;
+  skipped: number;
+  error: string | null;
+  created_at: number;
+  finished_at: number | null;
+  expires_at: number;
+}
+
+export interface TransferList {
+  items: Transfer[];
+}
+
 export interface MailForward {
   to: string[];
   keep: boolean;

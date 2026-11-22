@@ -29,6 +29,8 @@ pub struct GcSummary {
     pub audit_purged: u64,
     /// Rows of the vacation book-keeping older than 60 days.
     pub vacation_purged: u64,
+    /// Exports and imports of mailboxes older than a day, removed with their pieces.
+    pub transfers_purged: u64,
     /// Rows of the per-day statistics written and removed.
     pub stats_rolled: u64,
     pub stats_purged: u64,
@@ -111,6 +113,10 @@ impl GcService {
                 Err(e) => step_failed(&mut s, "purge the vacation replies", &e),
             },
             Err(e) => step_failed(&mut s, "read the clock", &e),
+        }
+        match ctx.transfers.purge_expired(1000).await {
+            Ok(n) => s.transfers_purged = n,
+            Err(e) => step_failed(&mut s, "purge the mailbox transfers", &e),
         }
         let grace = Duration::from_secs(ctx.cfg.gc_grace_seconds);
         // One collection per blob store: each store's rows and objects are its own.
