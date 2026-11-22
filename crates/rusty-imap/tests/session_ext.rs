@@ -19,7 +19,7 @@ async fn capabilities_advertise_the_extras() {
     for_each_backend(|b| async move {
         let mut c = Conn::open(handler(b.ctx().await), true);
         let g = c.line().await;
-        for cap in ["UIDPLUS", "NAMESPACE", "ID", "ENABLE", "LITERAL+", "SPECIAL-USE", "LIST-EXTENDED", "IDLE", "MOVE", "UNSELECT", "SASL-IR"] {
+        for cap in ["QUOTA", "UIDPLUS", "NAMESPACE", "ID", "ENABLE", "LITERAL+", "SPECIAL-USE", "LIST-EXTENDED", "IDLE", "MOVE", "UNSELECT", "SASL-IR"] {
             assert!(g.split([' ', ']']).any(|w| w == cap), "{cap} missing in {g}");
         }
         assert!(!g.contains("CONDSTORE") && !g.contains("QRESYNC"));
@@ -127,6 +127,33 @@ async fn append_honours_the_clients_internal_date() {
         c.send(&format!("a2 APPEND INBOX \"01-Jan-2200 00:00:00 +0000\" {{{}+}}\r\n{msg2}\r\n", msg2.len())).await;
         assert!(c.line().await.starts_with("a2 NO"));
         assert_eq!(c.ok("SEARCH ALL").await, ["* SEARCH 1"]);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn quota_is_reported_in_kibibytes_and_a_mailbox_without_a_limit_has_no_quota_root() {
+    for_each_backend(|b| async move {
+        let acc = b.account("alice@a.test", "pw").await;
+        // No limit: the mailbox has no quota root, and GETQUOTA says so.
+        let ctx = b.ctx().await;
+        let mut c = Conn::open(handler(ctx.clone()), true);
+        c.line().await;
+        c.login("alice@a.test", "pw").await;
+        assert_eq!(c.ok("GETQUOTAROOT INBOX").await, ["* QUOTAROOT INBOX"]);
+        assert!(c.status("GETQUOTA \"\"").await.contains("NO [NONEXISTENT]"));
+        assert!(c.status("GETQUOTAROOT Nowhere").await.contains("NO [NONEXISTENT]"));
+        assert!(c.status("GETQUOTA").await.contains("BAD"));
+        // A limit of 100 KiB on the account, and 3 KiB and a bit held: the answer is in KiB, rounded up.
+        ctx.directory.set_account_config(acc, serde_json::json!({ "quota_bytes": 102_400 })).await.unwrap();
+        let mb = b.mailbox(&ctx, acc).await;
+        deliver(&mb, 1, "big", &"x".repeat(3000)).await;
+        let mut c = Conn::open(handler(ctx.clone()), true);
+        c.line().await;
+        c.login("alice@a.test", "pw").await;
+        assert_eq!(c.ok("GETQUOTAROOT INBOX").await, ["* QUOTAROOT INBOX \"\"", "* QUOTA \"\" (STORAGE 4 100)"]);
+        assert_eq!(c.ok("GETQUOTA \"\"").await, ["* QUOTA \"\" (STORAGE 4 100)"]);
+        assert!(c.status("GETQUOTA other").await.contains("NO [NONEXISTENT]"), "the only root is the empty name");
     })
     .await;
 }

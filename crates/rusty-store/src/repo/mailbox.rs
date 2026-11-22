@@ -401,7 +401,8 @@ pub mod sql_text {
     /// The bytes the mailbox holds (migration 0032); read after `TAKE_MSG_IDS_AND_SEQS` has locked the row.
     pub const USED_BYTES: &str = "SELECT used_bytes FROM mailboxes WHERE id = $1";
     pub const TAKE_MSG_IDS_AND_SEQS: &str = "UPDATE mailboxes \
-        SET next_msg_id = next_msg_id + $2, next_change_seq = next_change_seq + $2 \
+        SET next_msg_id = next_msg_id + $2, next_change_seq = next_change_seq + $2, \
+        last_delivery_at = CASE WHEN $3 THEN rs_now() ELSE last_delivery_at END \
         WHERE id = $1 RETURNING next_msg_id - $2, next_change_seq - $2";
     /// Allocate `$2` change seqs; returns the first.
     pub const TAKE_SEQS: &str = "UPDATE mailboxes SET next_change_seq = next_change_seq + $2 \

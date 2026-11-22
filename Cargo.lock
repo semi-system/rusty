@@ -2254,6 +2254,7 @@ dependencies = [
  "rusty-smtp",
  "rusty-store",
  "rusty-svc",
+ "serde_json",
  "tempfile",
  "tokio",
  "tokio-rustls",

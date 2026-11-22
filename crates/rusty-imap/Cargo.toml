@@ -26,6 +26,7 @@ rusty-directory = { path = "../rusty-directory" }
 rusty-smtp = { path = "../rusty-smtp" }
 # The dev certificate for the STARTTLS tests.
 rusty-svc = { path = "../rusty-svc" }
+serde_json.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }

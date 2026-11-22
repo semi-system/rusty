@@ -24,12 +24,27 @@ pub struct QueueJob {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogRow {
     pub id: i64,
+    /// `out` (the outbound worker) or `in` (port 25).
+    pub direction: String,
     pub at: i64,
     pub job_id: Option<i64>,
     pub sender: String,
     pub recipient: String,
     pub event: String,
     pub remote: Option<String>,
+    pub status: Option<String>,
+    pub detail: Option<String>,
+}
+
+/// A line about incoming mail: accepted for a mailbox of ours, or refused after DATA. The domain is the recipient's, found by the statement that writes it (a recipient of a domain we do not
+/// host has no row).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboundRow {
+    pub sender: String,
+    pub recipient: String,
+    pub event: &'static str,
+    /// The address of the sending server.
+    pub remote: String,
     pub status: Option<String>,
     pub detail: Option<String>,
 }
@@ -64,6 +79,8 @@ pub trait QueueRepo: Send + Sync {
     async fn trace(&self, domain: DomainId, needle: Option<&str>, before: Option<i64>, limit: i64) -> Result<Vec<LogRow>>;
     /// Write rows of the log (the worker's; a failure of the log never fails a delivery, so the caller only logs it).
     async fn log(&self, rows: &[NewLogRow]) -> Result<()>;
+    /// Write the lines about incoming mail (best effort, like [`log`](Self::log)).
+    async fn log_inbound(&self, rows: &[InboundRow]) -> Result<()>;
     /// Remove log rows older than `older_than` (unix seconds), at most `limit`; how many.
     async fn purge_log(&self, older_than: i64, limit: i64) -> Result<u64>;
 }
@@ -79,10 +96,13 @@ pub(crate) mod sql {
     pub const REQUEUE: &str = "UPDATE jobs SET state = 'queued', attempts = 0, run_after = rs_now(), lease_owner = NULL, lease_expires_at = NULL, epoch = epoch + 1, updated_at = rs_now() \
         WHERE id = $1 AND domain_id = $2 AND kind = 'outbound' AND state IN ('dead', 'failed')";
     pub const DELETE: &str = "DELETE FROM jobs WHERE id = $1 AND domain_id = $2 AND kind = 'outbound' AND state IN ('queued', 'dead', 'failed')";
-    pub const TRACE: &str = "SELECT id, at, job_id, sender, recipient, event, remote, status, detail FROM mail_log \
+    pub const TRACE: &str = "SELECT id, direction, at, job_id, sender, recipient, event, remote, status, detail FROM mail_log \
         WHERE domain_id = $1 AND id < COALESCE($3, CAST(9223372036854775807 AS BIGINT)) \
         AND (CAST($2 AS TEXT) IS NULL OR strpos(lower(recipient), CAST($2 AS TEXT)) > 0 OR strpos(lower(sender), CAST($2 AS TEXT)) > 0) ORDER BY id DESC LIMIT $4";
     pub const LOG: &str = "INSERT INTO mail_log (at, domain_id, job_id, sender, recipient, event, remote, status, detail) \
         SELECT rs_now(), x.d, x.j, x.s, x.r, x.e, x.m, x.t, x.n FROM unnest($1::bigint[], $2::bigint[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[]) AS x(d, j, s, r, e, m, t, n)";
+    pub const LOG_INBOUND: &str = "INSERT INTO mail_log (at, domain_id, direction, sender, recipient, event, remote, status, detail) \
+        SELECT rs_now(), d.id, 'in', x.s, x.r, x.e, x.m, x.t, x.n FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[]) AS x(s, r, e, m, t, n) \
+        JOIN domains d ON d.name = lower(split_part(x.r, '@', 2))";
     pub const PURGE_LOG: &str = "DELETE FROM mail_log WHERE id IN (SELECT id FROM mail_log WHERE at < $1 ORDER BY id LIMIT $2)";
 }

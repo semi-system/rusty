@@ -194,9 +194,11 @@ async fn insert_messages(
     lock_blobs(c, store, msgs, knobs).await?;
     let n = msgs.len() as i64;
 
+    // A delivery (it carries delivery ids) stamps the mailbox with the time of its last arrival; an append does not.
     let (first_id, first_seq): (i64, i64) = sqlx::query_as(r(q::TAKE_MSG_IDS_AND_SEQS))
         .bind(mb)
         .bind(n)
+        .bind(!delivery_ids.is_empty())
         .fetch_optional(&mut *c)
         .await?
         .ok_or_else(not_found_mailbox)?;
@@ -1048,6 +1050,7 @@ impl MailboxRepo for PgRepo {
                 let (first_id, first_seq): (i64, i64) = sqlx::query_as(r(q::TAKE_MSG_IDS_AND_SEQS))
                     .bind(mb.0)
                     .bind(n)
+                    .bind(false)
                     .fetch_optional(&mut *c)
                     .await?
                     .ok_or_else(not_found_mailbox)?;

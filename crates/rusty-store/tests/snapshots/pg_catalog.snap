@@ -170,6 +170,7 @@ COLUMN mail_log.event text nullable=NO identity=NO/ collation=C default=
 COLUMN mail_log.remote text nullable=YES identity=NO/ collation=C default=
 COLUMN mail_log.status text nullable=YES identity=NO/ collation=C default=
 COLUMN mail_log.detail text nullable=YES identity=NO/ collation=C default=
+COLUMN mail_log.direction text nullable=NO identity=NO/ collation=C default='out'::text
 COLUMN mailboxes.id bigint nullable=NO identity=YES/ALWAYS collation= default=
 COLUMN mailboxes.account_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN mailboxes.next_msg_id bigint nullable=NO identity=NO/ collation= default=1
@@ -177,6 +178,7 @@ COLUMN mailboxes.next_change_seq bigint nullable=NO identity=NO/ collation= defa
 COLUMN mailboxes.uid_validity bigint nullable=NO identity=NO/ collation= default=
 COLUMN mailboxes.next_folder_id bigint nullable=NO identity=NO/ collation= default=1
 COLUMN mailboxes.used_bytes bigint nullable=NO identity=NO/ collation= default=0
+COLUMN mailboxes.last_delivery_at bigint nullable=YES identity=NO/ collation= default=
 COLUMN messages.mailbox_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN messages.id bigint nullable=NO identity=NO/ collation= default=
 COLUMN messages.folder_id bigint nullable=NO identity=NO/ collation= default=
@@ -499,6 +501,8 @@ CONSTRAINT lists.lists_pkey PRIMARY KEY (id)
 CONSTRAINT mail_log.mail_log_at_not_null NOT NULL at
 CONSTRAINT mail_log.mail_log_at_valid CHECK (at >= 0)
 CONSTRAINT mail_log.mail_log_detail_valid CHECK (detail IS NULL OR length(detail) <= 512)
+CONSTRAINT mail_log.mail_log_direction_not_null NOT NULL direction
+CONSTRAINT mail_log.mail_log_direction_valid CHECK (direction = ANY (ARRAY['out'::text, 'in'::text]))
 CONSTRAINT mail_log.mail_log_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
 CONSTRAINT mail_log.mail_log_domain_id_not_null NOT NULL domain_id
 CONSTRAINT mail_log.mail_log_event_not_null NOT NULL event
@@ -515,6 +519,7 @@ CONSTRAINT mailboxes.mailboxes_account_id_fkey FOREIGN KEY (account_id) REFERENC
 CONSTRAINT mailboxes.mailboxes_account_id_key UNIQUE (account_id)
 CONSTRAINT mailboxes.mailboxes_account_id_not_null NOT NULL account_id
 CONSTRAINT mailboxes.mailboxes_id_not_null NOT NULL id
+CONSTRAINT mailboxes.mailboxes_last_delivery_valid CHECK (last_delivery_at IS NULL OR last_delivery_at >= 0)
 CONSTRAINT mailboxes.mailboxes_next_change_seq_not_null NOT NULL next_change_seq
 CONSTRAINT mailboxes.mailboxes_next_change_seq_valid CHECK (next_change_seq >= 1)
 CONSTRAINT mailboxes.mailboxes_next_folder_id_not_null NOT NULL next_folder_id

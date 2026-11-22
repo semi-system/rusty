@@ -6,7 +6,7 @@ use sqlx::Row;
 
 use super::PgRepo;
 use crate::map_db_error;
-use crate::repo::queue::{sql, LogRow, NewLogRow, QueueJob, QueueRepo, HELD_UNTIL};
+use crate::repo::queue::{sql, InboundRow, LogRow, NewLogRow, QueueJob, QueueRepo, HELD_UNTIL};
 use crate::repo::render_pg as r;
 
 #[async_trait]
@@ -56,14 +56,15 @@ impl QueueRepo for PgRepo {
             .map(|x| {
                 Ok(LogRow {
                     id: x.try_get(0)?,
-                    at: x.try_get(1)?,
-                    job_id: x.try_get(2)?,
-                    sender: x.try_get(3)?,
-                    recipient: x.try_get(4)?,
-                    event: x.try_get(5)?,
-                    remote: x.try_get(6)?,
-                    status: x.try_get(7)?,
-                    detail: x.try_get(8)?,
+                    direction: x.try_get(1)?,
+                    at: x.try_get(2)?,
+                    job_id: x.try_get(3)?,
+                    sender: x.try_get(4)?,
+                    recipient: x.try_get(5)?,
+                    event: x.try_get(6)?,
+                    remote: x.try_get(7)?,
+                    status: x.try_get(8)?,
+                    detail: x.try_get(9)?,
                 })
             })
             .collect::<std::result::Result<Vec<_>, sqlx::Error>>()
@@ -86,6 +87,30 @@ impl QueueRepo for PgRepo {
         sqlx::query(r(sql::LOG))
             .bind(&domains)
             .bind(&jobs)
+            .bind(&senders)
+            .bind(&recipients)
+            .bind(&events)
+            .bind(&remotes)
+            .bind(&statuses)
+            .bind(&details)
+            .execute(self.store.pool())
+            .await
+            .map_err(map_db_error)?;
+        Ok(())
+    }
+
+    async fn log_inbound(&self, rows: &[InboundRow]) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let cut = |s: &str, n: usize| -> String { s.chars().take(n).collect() };
+        let senders: Vec<String> = rows.iter().map(|x| cut(&x.sender, 320)).collect();
+        let recipients: Vec<String> = rows.iter().map(|x| cut(&x.recipient, 320)).collect();
+        let events: Vec<&str> = rows.iter().map(|x| x.event).collect();
+        let remotes: Vec<String> = rows.iter().map(|x| cut(&x.remote, 255)).collect();
+        let statuses: Vec<Option<String>> = rows.iter().map(|x| x.status.as_deref().map(|s| cut(s, 16))).collect();
+        let details: Vec<Option<String>> = rows.iter().map(|x| x.detail.as_deref().map(|s| cut(s, 512))).collect();
+        sqlx::query(r(sql::LOG_INBOUND))
             .bind(&senders)
             .bind(&recipients)
             .bind(&events)

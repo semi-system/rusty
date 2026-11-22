@@ -117,6 +117,19 @@ fn seqset(text: &[u8]) -> Option<SeqSet> {
     (!ranges.is_empty()).then_some(SeqSet(ranges))
 }
 
+/// The one argument of GETQUOTA and GETQUOTAROOT: an astring (atom, quoted string or literal), then the end of the line.
+fn quota_arg(lx: &mut Lex<'_>) -> Result<Vec<u8>, ParseError> {
+    if !lx.sp() {
+        return Err(ParseError::Syntax);
+    }
+    let raw = lx.string().ok_or(ParseError::Syntax)?;
+    if lx.end() {
+        Ok(raw)
+    } else {
+        Err(ParseError::Syntax)
+    }
+}
+
 fn name(raw: &[u8]) -> Result<String, ParseError> {
     utf7::decode(std::str::from_utf8(raw).map_err(|_| ParseError::BadName)?).ok_or(ParseError::BadName)
 }
@@ -137,6 +150,8 @@ pub fn parse(frame: &[u8]) -> Option<Result<Command, ParseError>> {
     let done = |r: Result<Body, ParseError>| Some(r.map(|body| Command { tag: tag.clone(), body }));
     match verb.as_slice() {
         b"NAMESPACE" => done(if lx.end() { Ok(Body::Namespace) } else { Err(ParseError::Syntax) }),
+        b"GETQUOTA" => done(quota_arg(&mut lx).map(|raw| Body::GetQuota { root: text(&raw) })),
+        b"GETQUOTAROOT" => done(quota_arg(&mut lx).and_then(|raw| name(&raw)).map(|name| Body::GetQuotaRoot { name })),
         b"ID" => done(id(&mut lx)),
         b"UID" => {
             lx.sp();
@@ -288,6 +303,17 @@ mod tests {
 
     fn ok(s: &str) -> Body {
         parse(s.as_bytes()).unwrap().unwrap().body
+    }
+
+    #[test]
+    fn getquota_and_getquotaroot() {
+        assert_eq!(ok("a GETQUOTA \"\"\r\n"), Body::GetQuota { root: String::new() });
+        assert_eq!(ok("a getquota root\r\n"), Body::GetQuota { root: "root".into() });
+        assert_eq!(ok("a GETQUOTAROOT INBOX\r\n"), Body::GetQuotaRoot { name: "INBOX".into() });
+        assert_eq!(ok("a GETQUOTAROOT \"Sent\"\r\n"), Body::GetQuotaRoot { name: "Sent".into() });
+        for bad in ["a GETQUOTA\r\n", "a GETQUOTAROOT\r\n", "a GETQUOTA a b\r\n", "a GETQUOTAROOT INBOX extra\r\n"] {
+            assert_eq!(parse(bad.as_bytes()).unwrap().err(), Some(ParseError::Syntax), "{bad:?}");
+        }
     }
 
     #[test]

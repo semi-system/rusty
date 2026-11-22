@@ -213,6 +213,8 @@ fn verb(body: &Body) -> &'static str {
         Body::Namespace => "NAMESPACE",
         Body::UidExpunge { .. } => "UID EXPUNGE",
         Body::ListExt { .. } => "LIST",
+        Body::GetQuota { .. } => "GETQUOTA",
+        Body::GetQuotaRoot { .. } => "GETQUOTAROOT",
     }
 }
 
@@ -288,7 +290,7 @@ impl Session {
     pub(crate) fn capabilities(&self) -> String {
         let mut caps = vec![
             "IMAP4rev1", "SASL-IR", "UNSELECT", "CHILDREN", "MOVE", "UIDPLUS", "NAMESPACE", "ID", "ENABLE", "LITERAL+", "SPECIAL-USE",
-            "LIST-EXTENDED", "IDLE",
+            "LIST-EXTENDED", "IDLE", "QUOTA",
         ];
         if self.user.is_none() {
             if self.tls {
@@ -460,6 +462,8 @@ impl Session {
                 out.untagged("NAMESPACE ((\"\" \"/\")) NIL NIL");
                 Ok(Done::ok("NAMESPACE completed"))
             }
+            C::GetQuota { root } => self.cmd_getquota(&root, out).await,
+            C::GetQuotaRoot { name } => self.cmd_getquotaroot(&name, out).await,
             C::ListExt { reference, patterns, subscribed_only, return_subscribed } => {
                 self.cmd_list_ext(&reference, &patterns, subscribed_only, return_subscribed, out).await
             }

@@ -12,7 +12,7 @@ use bytes::Bytes;
 use rusty_core::{AccountId, BlobHash, Error, FolderId, Flags};
 use rusty_directory::{parse_address, AccountStatus, Authenticator, Directory, DomainStatus, Resolved};
 use rusty_store::repo::SYSTEM_FOLDER_TABLE;
-use rusty_store::BlobStore;
+use rusty_store::{BlobStore, DeliverOutcome};
 use rusty_svc::{
     BoxedStream, Context, MailboxHub, OutboundEnqueue, OutboundMessage, PeerInfo, QuotaPolicy, RateLimiter,
     ServiceEvent, ServiceEvents, SessionHandler, TlsProvider, Verdict,
@@ -130,6 +130,9 @@ pub struct InboundHandler {
     directory: Directory,
     hub: MailboxHub,
     quota: Arc<dyn QuotaPolicy>,
+    plans: Arc<dyn rusty_store::PlanRepo>,
+    /// The delivery log the trace of the admin web reads (docs/design-queue.md).
+    queue: Arc<dyn rusty_store::QueueRepo>,
     tls: TlsProvider,
     hostname: String,
     session: SessionConfig,
@@ -191,6 +194,8 @@ impl InboundHandler {
             directory: ctx.directory.clone(),
             hub: ctx.hub.clone(),
             quota: ctx.quota.clone(),
+            plans: ctx.plans.clone(),
+            queue: ctx.queue.clone(),
             tls: ctx.tls.clone(),
             hostname,
             session,
@@ -345,8 +350,13 @@ impl InboundHandler {
         self.quota.check_append(account, stored.len() as u64)?;
         let mailbox = self.hub.open_for(account).await?;
         let id = delivery_id_for(mail_from, account.0, original);
+        let size = stored.len() as u64;
         match mailbox.deliver(folder, stored, Flags::default(), id).await {
-            Ok(_) => Ok(()),
+            Ok(DeliverOutcome::Created(_)) => {
+                self.warn_when_nearly_full(&mailbox, account, size).await;
+                Ok(())
+            }
+            Ok(DeliverOutcome::Duplicate(_)) => Ok(()),
             // The id is derived from the ORIGINAL data, the stored bytes carry the arrival time. A retry that
             // crosses a second therefore stores different bytes under an id the store already knows and is
             // answered Conflict: the message is already delivered, which is what the retry wants to know.
@@ -355,6 +365,55 @@ impl InboundHandler {
                 Ok(())
             }
             Err(e) => Err(e),
+        }
+    }
+
+    /// Write what became of a message on port 25 in the delivery log: stored for each recipient, or refused with the reply that was sent. Best effort, and only for recipients of a domain
+    /// this server hosts (the statement that writes the rows drops the others). At most 200 recipients are logged for one message.
+    async fn trace_inbound(&self, t: &Transaction, event: &'static str, reply: Option<&Reply>) {
+        let rows: Vec<rusty_store::InboundRow> = t
+            .recipients
+            .iter()
+            .take(200)
+            .map(|r| rusty_store::InboundRow {
+                sender: t.mail_from.clone(),
+                recipient: r.address.clone(),
+                event,
+                remote: t.peer.ip.to_string(),
+                status: reply.map(|x| x.enhanced.to_owned()).filter(|s| !s.is_empty()),
+                detail: reply.map(|x| x.lines.join(" ")),
+            })
+            .collect();
+        if let Err(e) = self.queue.log_inbound(&rows).await {
+            tracing::debug!(error = %e, "the delivery log could not be written");
+        }
+    }
+
+    /// When this delivery took the mailbox past 90 % of its quota, a message from the server in its Inbox says so (docs/design-plans-quota.md). Once per limit and per retention of
+    /// delivery ids (the warning is an idempotent delivery, so a retry or a second crossing a day later adds none). Best effort: a failure here never fails the delivery.
+    async fn warn_when_nearly_full(&self, mailbox: &rusty_store::Mailbox, account: AccountId, size: u64) {
+        let Some(limit) = mailbox.limits().quota_bytes else { return };
+        let Ok(used) = self.plans.mailbox_used(mailbox.id().0).await else { return };
+        let used = u64::try_from(used).unwrap_or(0);
+        let before = used.saturating_sub(size);
+        // 90 % without a floating point: used * 10 >= limit * 9.
+        if used.saturating_mul(10) < limit.saturating_mul(9) || before.saturating_mul(10) >= limit.saturating_mul(9) {
+            return;
+        }
+        let percent = used.saturating_mul(100) / limit.max(1);
+        let body = format!(
+            "From: Mail system <postmaster@{host}>\r\nTo: you\r\nSubject: Your mailbox is {percent}% full\r\nDate: {date}\r\nMessage-ID: <quota-{acct}-{limit}@{host}>\r\nAuto-Submitted: auto-generated\r\n\r\nYour mailbox holds {used_mb} MB of the {limit_mb} MB it may hold. When it is full, new mail is refused and the sender is told.\r\nDelete mail you no longer need (and empty the Trash), or ask your administrator for a larger mailbox.\r\n",
+            host = self.hostname,
+            date = rfc5322_date(self.options.clock.now_unix()),
+            acct = account.0,
+            used_mb = used / (1024 * 1024),
+            limit_mb = limit / (1024 * 1024),
+        );
+        let id = delivery_id_for("quota-warning", account.0, format!("limit:{limit}").as_bytes());
+        // The warning is the server's own message: it is stored even though the mailbox is nearly full, so it must not be held to the quota it reports.
+        let unlimited = mailbox.clone().with_limits(rusty_store::MailboxLimits { quota_bytes: None, ..mailbox.limits() });
+        if let Err(e) = unlimited.deliver(system_folder("inbox"), Bytes::from(body), Flags::default(), id).await {
+            tracing::debug!(error = %e, "quota warning not stored");
         }
     }
 
@@ -450,6 +509,7 @@ impl InboundHandler {
         };
         if let Some(reply) = self.list_guard(t).await {
             tracing::info!(peer = %t.peer.ip, status = reply.code, "message for a list refused");
+            self.trace_inbound(t, "bounced", Some(&reply)).await;
             return reply;
         }
         let outcome = run_filters(
@@ -466,6 +526,7 @@ impl InboundHandler {
         .await;
         if let Some(reply) = outcome.reject {
             tracing::info!(peer = %t.peer.ip, "message refused by an inbound filter");
+            self.trace_inbound(t, "bounced", Some(&reply)).await;
             return reply;
         }
         let folder = match outcome.quarantine {
@@ -517,6 +578,11 @@ impl InboundHandler {
             });
         }
         let reply = delivery_reply(results);
+        if reply.code < 300 {
+            self.trace_inbound(t, "delivered", None).await;
+        } else if reply.code >= 500 {
+            self.trace_inbound(t, "bounced", Some(&reply)).await;
+        }
         tracing::info!(
             peer = %t.peer.ip,
             queue_id = %queue_id,

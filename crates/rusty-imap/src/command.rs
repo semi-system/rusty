@@ -158,6 +158,10 @@ pub enum Body {
     UidExpunge { set: SeqSet },
     /// Extended LIST (RFC 5258); special-use and children attributes are always returned.
     ListExt { reference: String, patterns: Vec<String>, subscribed_only: bool, return_subscribed: bool },
+    /// QUOTA (RFC 9208): the usage and limit of a quota root (the only root is the empty name).
+    GetQuota { root: String },
+    /// QUOTA: the quota root of a mailbox and its usage.
+    GetQuotaRoot { name: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
