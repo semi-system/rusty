@@ -285,6 +285,21 @@ export interface DomainAliasName {
   name: string;
 }
 
+export interface ImportRow {
+  line: number;
+  address: string;
+  result: string;
+  reason: string | null;
+}
+
+export interface ImportResult {
+  dry_run: boolean;
+  created: number;
+  exists: number;
+  invalid: number;
+  rows: ImportRow[];
+}
+
 export interface QueueJob {
   id: number;
   state: string;

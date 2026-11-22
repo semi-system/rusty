@@ -1,7 +1,7 @@
 // The API client: the contract's endpoints as typed calls. It knows the three rules of a state-changing request (design section 5): the JSON content type,
 // the CSRF token of the session (the browser adds `Origin` itself) and that a failure is a fixed code, never text to show.
 
-import type { Account, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, MailList, Member, Members, Monitor, Plan, PlanList, QueueList, Routing, Trace, Protocols, Queue, Relay, SetupState, Storage } from './types';
+import type { Account, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, ImportResult, MailList, Member, Members, Monitor, Plan, PlanList, QueueList, Routing, Trace, Protocols, Queue, Relay, SetupState, Storage } from './types';
 import type { MessageKey } from '../i18n';
 
 /** A page of a list, the cursor of the next one and how many rows match in all. */
@@ -224,6 +224,11 @@ export class Client {
 
   setAccountStatus(address: string, action: 'enable' | 'lock' | 'disable'): Promise<Account> {
     return this.call('POST', `/api/v1/accounts/${seg(address)}/${action}`);
+  }
+
+  /** Make accounts from CSV text (at most 500 lines a request); with `dryRun` nothing is changed and the answer says what would happen. */
+  importAccounts(domain: string, csv: string, dryRun: boolean): Promise<ImportResult> {
+    return this.call('POST', `/api/v1/domains/${seg(domain)}/accounts/import`, { csv, dry_run: dryRun });
   }
 
   /** The outbound queue of a domain, newest first. */
