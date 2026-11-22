@@ -30,7 +30,7 @@ BEGIN
     GRANT SELECT ON mail_log, message_stats TO rusty_admin;   -- the message trace
     GRANT SELECT, INSERT ON audit_log TO rusty_admin;   -- the audit log of the admin web (docs/design-audit.md)
     GRANT SELECT, INSERT, UPDATE, DELETE ON domains, accounts, aliases, domain_aliases, lists, list_members, plans, capabilities, mailboxes,
-      domain_dkim_keys, domain_dns_config, domain_dns_event, domain_dns_state, domain_relays, admin_grants, jobs TO rusty_admin;
+      domain_dkim_keys, dkim_retirements, domain_dns_config, domain_dns_event, domain_dns_state, domain_relays, admin_grants, jobs TO rusty_admin;
     GRANT SELECT ON address_owners, _sqlx_migrations, schema_compat TO rusty_admin;
     GRANT SELECT ON service_heartbeats TO rusty_admin;   -- the monitor page
     GRANT SELECT, INSERT, UPDATE ON platform_settings TO rusty_admin;   -- the protocol switches (docs/design-protocols.md)

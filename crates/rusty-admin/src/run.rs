@@ -125,6 +125,25 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     let app = Arc::new(AdminApp::new(auth, directory, admins, gate, &admin.public_origin, SessionConfig::default()).with_services(services));
     // What other processes write (the outbound service's checks, another replica, rustyctl) reaches the open pages through the database's announcements.
     crate::live::spawn_feed(app.clone(), store.admin_feed(), shutdown.clone());
+    // The older DKIM keys of a rotation end by themselves after their time (docs/design-dkim-rotation.md).
+    {
+        let (app, jobs, stop) = (app.clone(), rusty_store::JobQueue::with_repo(repos.jobs.clone()), shutdown.clone());
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    () = stop.cancelled() => break,
+                    () = tokio::time::sleep(Duration::from_secs(600)) => {}
+                }
+                if let (Some(s), Ok(now)) = (app.services.as_ref(), jobs.now().await) {
+                    match crate::outbound::retire_due_dkim_keys(s, now).await {
+                        Ok(n) if n > 0 => tracing::info!(retired = n, "old DKIM keys were retired"),
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!(error = %e, "the scheduled retirement of DKIM keys failed"),
+                    }
+                }
+            }
+        });
+    }
     let router = routes(app.clone(), Router::new());
     let router = crate::manage::routes(app.clone(), router);
     let router = crate::storage::routes(app.clone(), router);

@@ -78,7 +78,7 @@ export const en = {
   'dkim.retireYes': 'Retire the key',
   'dkim.retired': 'The key {selector} is retired.',
   'dkim.rotate': 'Rotate the key',
-  'dkim.rotateHelp': 'Rotating makes a new key under a selector named after today. Both keys sign until you retire the old one, after the new record has been published for a few days.',
+  'dkim.rotateHelp': 'Rotating makes a new key under a selector named after today. Both keys sign; the old one is retired by itself 7 days later (or sooner, by hand).',
   'admins.helpdesk': 'Helpdesk only: may list accounts, set passwords, lock and unlock (needs a domain)',
   'admins.roleHelpdesk': 'Helpdesk',
   'nav.platform': 'Platform settings',

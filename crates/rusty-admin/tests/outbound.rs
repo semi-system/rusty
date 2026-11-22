@@ -333,3 +333,33 @@ async fn an_old_dkim_key_is_retired_after_a_rotation_and_the_last_key_stays() {
     let purposes: Vec<String> = r.outbound.repos().sealed.meta("domain", id).await.unwrap().into_iter().map(|m| m.purpose).collect();
     assert!(!purposes.contains(&sealed_purpose(&old)), "{purposes:?}");
 }
+
+#[tokio::test]
+async fn the_older_keys_of_a_rotation_end_by_themselves_after_their_time_and_the_last_key_stays() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    let c = Client::sign_in(r.addr, "root@home.test").await;
+    c.post("/api/v1/domains", json!({ "name": "one.test" })).await;
+    let id = domain_id(&r, "one.test").await;
+    let old = c.post("/api/v1/domains/one.test/dkim", json!({})).await.json()["selector"].as_str().unwrap().to_owned();
+    let new = c.post("/api/v1/domains/one.test/dkim", json!({ "selector": "r1" })).await.json()["selector"].as_str().unwrap().to_owned();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let s = r.app.services.as_ref().expect("services");
+    // Not yet: the new record needs its days to reach the receivers.
+    assert_eq!(rusty_admin::outbound::retire_due_dkim_keys(s, now).await.unwrap(), 0);
+    assert_eq!(c.get("/api/v1/domains/one.test/dkim").await.json()["items"].as_array().unwrap().len(), 2);
+    // After the delay the old key is retired, its sealed half with it; the new one stays and nothing is left to do.
+    let later = now + rusty_admin::outbound::DKIM_RETIRE_AFTER_SECS + 60;
+    assert_eq!(rusty_admin::outbound::retire_due_dkim_keys(s, later).await.unwrap(), 1);
+    let left = c.get("/api/v1/domains/one.test/dkim").await.json()["items"].as_array().unwrap().clone();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0]["selector"], json!(new));
+    let purposes: Vec<String> = r.outbound.repos().sealed.meta("domain", id).await.unwrap().into_iter().map(|m| m.purpose).collect();
+    assert!(!purposes.contains(&sealed_purpose(&old)), "{purposes:?}");
+    assert_eq!(rusty_admin::outbound::retire_due_dkim_keys(s, later).await.unwrap(), 0);
+    // A key retired by hand loses its entry: a rotation that is then undone by making yet another key does not retire the wrong one twice.
+    let third = c.post("/api/v1/domains/one.test/dkim", json!({ "selector": "r2" })).await.json()["selector"].as_str().unwrap().to_owned();
+    assert_eq!(c.mutate("DELETE", &format!("/api/v1/domains/one.test/dkim/{new}"), None).await.status, 200);
+    assert_eq!(rusty_admin::outbound::retire_due_dkim_keys(s, later + 8 * 86_400).await.unwrap(), 0, "the only key left stays");
+    assert_eq!(c.get("/api/v1/domains/one.test/dkim").await.json()["items"][0]["selector"], json!(third));
+}
