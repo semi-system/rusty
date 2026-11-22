@@ -231,7 +231,12 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
             None
         };
         // The blob store is opened only for the command that reads it (the other commands need no blob directory).
-        let blob_store = if parsed.command == rusty_ctl::Command::BlobsVerify {
+        let needs_blobs = parsed.command == rusty_ctl::Command::BlobsVerify
+            || matches!(
+                parsed.command,
+                rusty_ctl::Command::MailboxDeleted { .. } | rusty_ctl::Command::MailboxRecover { .. } | rusty_ctl::Command::MailboxExport { .. } | rusty_ctl::Command::MailboxImport { .. }
+            );
+        let blob_store = if needs_blobs {
             match crate::daemon::platform_blobs(&cfg).await {
                 Ok(b) => Some(b),
                 Err(e) => {
@@ -254,8 +259,17 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
                     std::sync::Arc::new(rusty_store::KindOpener::new())
                 }
             };
-            rusty_store::BlobStores::new(platform, store.repos().blob_stores.clone(), opener)
+            std::sync::Arc::new(rusty_store::BlobStores::new(platform, store.repos().blob_stores.clone(), opener))
         });
+        // The `mailbox` commands read and write mail through the same stores the services use.
+        let mail_env = match (&router, &parsed.command) {
+            (Some(r), rusty_ctl::Command::MailboxDeleted { .. } | rusty_ctl::Command::MailboxRecover { .. } | rusty_ctl::Command::MailboxExport { .. } | rusty_ctl::Command::MailboxImport { .. }) => Some(rusty_ctl::MailEnv {
+                repo: store.repos().mailbox.clone(),
+                stores: r.clone(),
+                max_message_bytes: usize::try_from(cfg.max_message_bytes).unwrap_or(usize::MAX),
+            }),
+            _ => None,
+        };
         let gc = rusty_store::Gc::new(store.repos().gc.clone());
         let relay = cfg.outbound.relay.as_ref();
         // The configuration was validated, so a present `[sealing]` holds a well-formed key.
@@ -286,9 +300,10 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
             pools: Some(&pools),
             blobs: blob_store.as_ref().map(|b| &**b as &dyn rusty_store::BlobStore),
             gc: Some(&gc),
-            stores: router.as_ref().map(|r| r as &dyn rusty_store::BlobRouter),
+            stores: router.as_ref().map(|r| &**r as &dyn rusty_store::BlobRouter),
             jobs: Some(&jobs),
             admins: Some(&admins),
+            mail: mail_env,
         };
         let code = match execute(&parsed.command, &mut env).await {
             Ok(outcome) => {

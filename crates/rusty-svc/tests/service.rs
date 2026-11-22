@@ -227,3 +227,26 @@ async fn the_upkeep_pass_makes_the_missing_copy_of_a_pool_and_skips_a_store_that
     assert_eq!(repos.blob_pool.locations(store, &blob).await.unwrap().len(), 2);
     assert_eq!(rusty_svc::MaintainService::run_once(&c).await.unwrap(), 0, "nothing left to do");
 }
+
+#[tokio::test]
+async fn the_gc_pass_removes_deleted_messages_after_their_retention_and_keeps_younger_ones() {
+    use rusty_store::Mailbox;
+    let p = parts().await;
+    let c = ctx(&p).await;
+    let dir = Directory::with_repo(p.seed_store.repos().directory.clone());
+    let d = dir.create_domain("keep.test").await.unwrap();
+    let acc = dir.create_account("alice", d, None, None).await.unwrap();
+    let mb = Mailbox::open_with(p.seed_store.repos().mailbox.clone(), c.stores.clone(), acc).await.unwrap();
+    let new = |n: u8| bytes::Bytes::from(format!("Subject: m{n}\r\nMessage-ID: <{n}@x>\r\n\r\nbody {n}\r\n").into_bytes());
+    let old = mb.append(rusty_core::FolderId(1), new(1), Default::default()).await.unwrap();
+    let young = mb.append(rusty_core::FolderId(1), new(2), Default::default()).await.unwrap();
+    let now = c.jobs.now().await.unwrap();
+    // One was deleted 20 days ago, one a day ago; the retention is 14 days.
+    mb.expunge_many_at(&[old.id], now - 20 * 86_400).await.unwrap();
+    mb.expunge_many_at(&[young.id], now - 86_400).await.unwrap();
+    assert_eq!(mb.list_deleted(0, 10).await.unwrap().len(), 2);
+    let report = GcService::run_once(&c).await.unwrap();
+    assert_eq!(report.deleted_purged, 1, "{report:?}");
+    let kept = mb.list_deleted(0, 10).await.unwrap();
+    assert_eq!(kept.iter().map(|m| m.id).collect::<Vec<_>>(), vec![young.id], "the younger one is still recoverable");
+}

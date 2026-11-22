@@ -57,7 +57,7 @@ pub use directory::{
     MAX_LIST_PAGE, MAX_STATUS_IDS,
 };
 pub use mailbox::{
-    sql_text, Committed, DeliverEntry, Delivery, FlagUpdate, FolderCounts, FolderInfo, JobFence, MailboxRepo, MessageDetail,
+    sql_text, Committed, DeliverEntry, Delivery, FlagUpdate, FolderCounts, FolderInfo, DeletedMessage, JobFence, MailboxRepo, MessageDetail,
     NewMessage, RawRef,
 };
 pub(crate) use mailbox::{

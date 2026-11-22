@@ -38,7 +38,7 @@ use rusty_mime::Envelope;
 
 use crate::gc::PURGE_BATCH;
 use crate::repo::{
-    DeliverEntry, Delivery, FlagUpdate, FolderCounts, FolderInfo, JobFence, MailboxRepo, MessageDetail, NewMessage, RawRef,
+    DeliverEntry, Delivery, FlagUpdate, FolderCounts, FolderInfo, DeletedMessage, JobFence, MailboxRepo, MessageDetail, NewMessage, RawRef,
 };
 use crate::{BlobRouter, IntoRouter};
 
@@ -818,6 +818,22 @@ impl Mailbox {
                 return Ok(total);
             }
         }
+    }
+
+    // ----- deleted messages (docs/design-mailbox-tools.md) -----
+
+    /// The messages the owner deleted that are still kept (until the garbage collector's retention ends), by id after `after`, at most `limit` (clamped to [`MAX_PAGE`]).
+    pub async fn list_deleted(&self, after: i64, limit: u32) -> Result<Vec<DeletedMessage>> {
+        let limit = page_limit(limit)?;
+        self.repo.list_deleted(self.id, after, limit).await
+    }
+
+    /// Bring a deleted message back as a new message in `folder` (the original is not touched; it goes with the retention), with its internal date. `NotFound` for one that is live, already
+    /// purged or another mailbox's.
+    pub async fn recover(&self, id: MessageId, folder: FolderId) -> Result<MessageRef> {
+        let deleted = self.repo.get_deleted(self.id, id).await?;
+        let raw = self.blobs.store(deleted.raw.store).await?.get(&deleted.raw.blob).await?;
+        self.append_dated(folder, raw, Flags::default(), deleted.internal_date.clamp(0, MAX_SUPPLIED_TIME)).await
     }
 
     // ----- reads -----

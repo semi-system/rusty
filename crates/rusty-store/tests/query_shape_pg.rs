@@ -64,6 +64,8 @@ const BUDGET: &[(&str, usize)] = &[
     ("list_folders", 1),
     ("get_message", 1),
     ("get_raw_ref", 1),
+    ("list_deleted", 1),
+    ("get_deleted", 1),
     ("keywords", 2),
     ("keywords_many", 1),
     ("latest_change_seq", 1),
