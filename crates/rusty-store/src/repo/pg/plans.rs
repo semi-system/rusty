@@ -28,6 +28,11 @@ impl PlanRepo for PgRepo {
         Ok(())
     }
 
+    async fn mailbox_used(&self, mailbox: i64) -> Result<i64> {
+        let v: Option<i64> = sqlx::query_scalar(r(sql::MAILBOX_USED)).bind(mailbox).fetch_optional(self.store.pool()).await.map_err(map_db_error)?;
+        Ok(v.unwrap_or(0))
+    }
+
     async fn usage_of(&self, accounts: &[i64]) -> Result<Vec<AccountUsage>> {
         if accounts.len() > 500 {
             return Err(Error::Invalid("too many accounts".into()));

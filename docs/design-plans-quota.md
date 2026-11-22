@@ -18,6 +18,10 @@ Built 2026-11-17 (P1 item 3 of `design-admin-parity.md`), first slice.
 
 ## Not done (next slices)
 
-* The IMAP `QUOTA` extension (`GETQUOTA`, `GETQUOTAROOT`, `[OVERQUOTA]`), the 90 % warning mail, and deletion of the plan.
+* The 90 % warning mail and deletion of a plan.
 * A domain default (the domain layer exists and is honoured; no screen sets it), a quota per domain total, messages per hour, protocols allowed and password policy per plan.
 * Caching the layers per mailbox open: today one indexed query per delivery.
+
+## IMAP QUOTA (RFC 9208)
+
+Built 2026-11-22. The IMAP service advertises `QUOTA` and answers `GETQUOTA` and `GETQUOTAROOT` (parsed by `rusty-imap/src/ext.rs`, since the grammar library has no QUOTA). A mailbox has one quota root, the empty name, with the `STORAGE` resource in KiB (rounded up): `* QUOTAROOT INBOX ""` and `* QUOTA "" (STORAGE 4 100)`. The used figure is read from `mailboxes.used_bytes` at the time of the command; the limit is the one the mailbox was opened with at sign-in (so a plan changed during a long session shows at the next sign-in, while the check at delivery always uses the current one). With no limit there is no root: `GETQUOTAROOT` names none and `GETQUOTA` answers `NO [NONEXISTENT]`. A client cannot set a quota (`SETQUOTA` is not offered). An `APPEND` that does not fit answers `NO [OVERQUOTA] Mailbox is full`; any other limit stays `[LIMIT]`.

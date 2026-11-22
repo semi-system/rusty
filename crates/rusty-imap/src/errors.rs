@@ -30,6 +30,8 @@ pub enum Op {
 pub fn status_for(op: Op, e: &Error) -> Status {
     match e {
         Error::Busy(_) => Status { code: Some("UNAVAILABLE"), text: "Temporary failure, try again later" },
+        // A mailbox that is full says so with the code of RFC 9208, which clients show as "mailbox full"; any other limit (a message too large, too many in a batch) is a LIMIT.
+        Error::Quota(why) if why.contains("mailbox is full") => Status { code: Some("OVERQUOTA"), text: "Mailbox is full" },
         Error::Quota(_) => Status { code: Some("LIMIT"), text: "Limit exceeded" },
         Error::Invalid(_) => Status { code: Some("CANNOT"), text: "Not allowed" },
         Error::NotFound(_) => match op {
@@ -58,6 +60,7 @@ mod tests {
     fn every_variant_has_a_fixed_status() {
         assert_eq!(s(Op::Mailbox, Error::Busy("x".into())).0, Some("UNAVAILABLE"));
         assert_eq!(s(Op::Store, Error::Quota("x".into())).0, Some("LIMIT"));
+        assert_eq!(s(Op::Store, Error::Quota("mailbox is full".into())).0, Some("OVERQUOTA"), "a full mailbox has its own code (RFC 9208)");
         assert_eq!(s(Op::Mailbox, Error::Invalid("x".into())).0, Some("CANNOT"));
         assert_eq!(s(Op::Mailbox, Error::NotFound("x".into())).0, Some("NONEXISTENT"));
         assert_eq!(s(Op::Store, Error::NotFound("x".into())).0, Some("TRYCREATE"));

@@ -61,12 +61,12 @@ pub(crate) fn wildcard_match(pattern: &str, name: &str, delim: char) -> bool {
 }
 
 impl Session {
-    async fn folders(&self) -> Result<Vec<FolderInfo>, Done> {
+    pub(crate) async fn folders(&self) -> Result<Vec<FolderInfo>, Done> {
         let mb = self.mailbox().ok_or_else(|| Done::bad("Not authenticated"))?;
         mb.list_folders().await.map_err(|e| Done::store(Op::Mailbox, &e))
     }
 
-    fn resolve_name(&self, folders: &[FolderInfo], m: &str) -> Result<Option<FolderId>, Done> {
+    pub(crate) fn resolve_name(&self, folders: &[FolderInfo], m: &str) -> Result<Option<FolderId>, Done> {
         Ok(self.resolver.lookup(folders, m))
     }
 

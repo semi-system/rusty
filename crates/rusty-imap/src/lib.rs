@@ -35,6 +35,7 @@ pub mod session;
 mod cmds_fetch;
 mod cmds_folder;
 mod cmds_msg;
+mod cmds_quota;
 pub mod driver;
 
 pub use driver::ImapHandler;
