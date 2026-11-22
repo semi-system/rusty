@@ -21,6 +21,7 @@ pub mod outbound;
 pub mod plans;
 pub mod routing;
 pub mod protocols;
+pub mod queue;
 pub mod run;
 pub mod session;
 pub mod setup;

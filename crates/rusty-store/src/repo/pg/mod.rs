@@ -14,6 +14,7 @@ mod relay;
 mod settings;
 mod plans;
 mod routing;
+mod queue;
 mod admin;
 pub mod tx;
 

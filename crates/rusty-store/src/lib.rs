@@ -65,5 +65,6 @@ pub use migrate::{
 pub use pg::{PgPassword, PgLimits, PgSecurity, PgStore};
 pub use pg_queue::{MailboxPermit, MailboxQueue, STRIPES};
 pub use jobs::BatchSpec;
-pub use repo::{AccountUsage, ListInfo, MemberInfo, PlanRepo, PlanRow, RoutingRepo, SettingsRepo, PROTOCOLS, HeartbeatRepo, HeartbeatRow, BlobStoreRepo, BlobStoreRow, StoreId, PLATFORM_STORE, FlagUpdate, FolderCounts, FolderInfo, JobFence, MessageDetail, OwnerLimits, PurgeBatch, RawRef};
+pub use repo::HELD_UNTIL;
+pub use repo::{AccountUsage, ListInfo, LogRow, MemberInfo, NewLogRow, PlanRepo, PlanRow, QueueJob, QueueRepo, RoutingRepo, SettingsRepo, PROTOCOLS, HeartbeatRepo, HeartbeatRow, BlobStoreRepo, BlobStoreRow, StoreId, PLATFORM_STORE, FlagUpdate, FolderCounts, FolderInfo, JobFence, MessageDetail, OwnerLimits, PurgeBatch, RawRef};
 pub use store::{Repos, Store, StoreConfig};

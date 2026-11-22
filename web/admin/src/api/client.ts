@@ -1,7 +1,7 @@
 // The API client: the contract's endpoints as typed calls. It knows the three rules of a state-changing request (design section 5): the JSON content type,
 // the CSRF token of the session (the browser adds `Origin` itself) and that a failure is a fixed code, never text to show.
 
-import type { Account, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, MailList, Member, Members, Monitor, Plan, PlanList, Routing, Protocols, Queue, Relay, SetupState, Storage } from './types';
+import type { Account, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, MailList, Member, Members, Monitor, Plan, PlanList, QueueList, Routing, Trace, Protocols, Queue, Relay, SetupState, Storage } from './types';
 import type { MessageKey } from '../i18n';
 
 /** A page of a list, the cursor of the next one and how many rows match in all. */
@@ -82,7 +82,7 @@ export class ApiError extends Error {
   }
 }
 
-const KNOWN = new Set(['unauthorized', 'invalid', 'forbidden', 'not_found', 'exists', 'not_closed', 'not_empty', 'unsupported', 'throttled', 'busy', 'unavailable']);
+const KNOWN = new Set(['unauthorized', 'invalid', 'forbidden', 'not_found', 'exists', 'not_closed', 'not_empty', 'wrong_state', 'unsupported', 'throttled', 'busy', 'unavailable']);
 
 /** The catalogue key of an error and its parameters. The server never sends text for people; the wording is ours. */
 export function errorMessage(e: unknown): { key: MessageKey; params: Record<string, number> } {
@@ -224,6 +224,29 @@ export class Client {
 
   setAccountStatus(address: string, action: 'enable' | 'lock' | 'disable'): Promise<Account> {
     return this.call('POST', `/api/v1/accounts/${seg(address)}/${action}`);
+  }
+
+  /** The outbound queue of a domain, newest first. */
+  queue(domain: string, opts: { state?: string; q?: string; before?: number } = {}): Promise<QueueList> {
+    const parts: string[] = [];
+    if (opts.state !== undefined && opts.state !== '') parts.push(`state=${encodeURIComponent(opts.state)}`);
+    if (opts.q !== undefined && opts.q.trim() !== '') parts.push(`q=${encodeURIComponent(opts.q.trim())}`);
+    if (opts.before !== undefined) parts.push(`before=${opts.before}`);
+    return this.call('GET', `/api/v1/domains/${seg(domain)}/queue${parts.length > 0 ? '?' + parts.join('&') : ''}`);
+  }
+
+  async queueAction(domain: string, id: number, action: 'hold' | 'release' | 'retry' | 'delete'): Promise<void> {
+    const path = `/api/v1/domains/${seg(domain)}/queue/${id}`;
+    if (action === 'delete') await this.call('DELETE', path);
+    else await this.call('POST', `${path}/${action}`);
+  }
+
+  /** The delivery log of a domain's outgoing mail, newest first. */
+  trace(domain: string, opts: { q?: string; before?: number } = {}): Promise<Trace> {
+    const parts: string[] = [];
+    if (opts.q !== undefined && opts.q.trim() !== '') parts.push(`q=${encodeURIComponent(opts.q.trim())}`);
+    if (opts.before !== undefined) parts.push(`before=${opts.before}`);
+    return this.call('GET', `/api/v1/domains/${seg(domain)}/trace${parts.length > 0 ? '?' + parts.join('&') : ''}`);
   }
 
   /** Lists, the catch-all and the alias domains of a domain. */

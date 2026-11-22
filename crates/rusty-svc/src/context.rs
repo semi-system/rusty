@@ -34,6 +34,8 @@ pub struct Context {
     pub quota: Arc<dyn QuotaPolicy>,
     /// The operator's protocol switches (read from the database, cached).
     pub protocols: ProtocolSwitches,
+    /// The outbound queue as the admin web manages it and the delivery log the outbound worker writes.
+    pub queue: Arc<dyn rusty_store::QueueRepo>,
 }
 
 impl Context {
@@ -79,6 +81,7 @@ impl Context {
             rate: Arc::new(AuthThrottle::from_limits(&cfg.limits)),
             quota: Arc::new(SizeCap { max_message_bytes: cfg.max_message_bytes }),
             protocols: ProtocolSwitches::new(repos.settings.clone()),
+            queue: repos.queue.clone(),
             cfg,
         })
     }

@@ -284,3 +284,36 @@ export interface CatchAll {
 export interface DomainAliasName {
   name: string;
 }
+
+export interface QueueJob {
+  id: number;
+  state: string;
+  sender: string;
+  recipients: string[];
+  destination: string;
+  attempts: number;
+  created_at: number;
+  next_attempt_at: number | null;
+  last_error: string | null;
+}
+
+export interface QueueList {
+  items: QueueJob[];
+  next: number | null;
+}
+
+export interface LogLine {
+  id: number;
+  at: number;
+  sender: string;
+  recipient: string;
+  event: string;
+  remote: string | null;
+  status: string | null;
+  detail: string | null;
+}
+
+export interface Trace {
+  items: LogLine[];
+  next: number | null;
+}

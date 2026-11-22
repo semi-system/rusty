@@ -160,6 +160,16 @@ COLUMN list_members.seq bigint nullable=NO identity=NO/ collation= default=
 COLUMN lists.id bigint nullable=NO identity=YES/ALWAYS collation= default=
 COLUMN lists.local_part text nullable=NO identity=NO/ collation=C default=
 COLUMN lists.domain_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN mail_log.id bigint nullable=NO identity=YES/ALWAYS collation= default=
+COLUMN mail_log.at bigint nullable=NO identity=NO/ collation= default=
+COLUMN mail_log.domain_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN mail_log.job_id bigint nullable=YES identity=NO/ collation= default=
+COLUMN mail_log.sender text nullable=NO identity=NO/ collation=C default=
+COLUMN mail_log.recipient text nullable=NO identity=NO/ collation=C default=
+COLUMN mail_log.event text nullable=NO identity=NO/ collation=C default=
+COLUMN mail_log.remote text nullable=YES identity=NO/ collation=C default=
+COLUMN mail_log.status text nullable=YES identity=NO/ collation=C default=
+COLUMN mail_log.detail text nullable=YES identity=NO/ collation=C default=
 COLUMN mailboxes.id bigint nullable=NO identity=YES/ALWAYS collation= default=
 COLUMN mailboxes.account_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN mailboxes.next_msg_id bigint nullable=NO identity=NO/ collation= default=1
@@ -486,6 +496,21 @@ CONSTRAINT lists.lists_local_part_domain_id_key UNIQUE (local_part, domain_id)
 CONSTRAINT lists.lists_local_part_not_null NOT NULL local_part
 CONSTRAINT lists.lists_local_part_valid CHECK (length(local_part) > 0 AND local_part = lower(local_part))
 CONSTRAINT lists.lists_pkey PRIMARY KEY (id)
+CONSTRAINT mail_log.mail_log_at_not_null NOT NULL at
+CONSTRAINT mail_log.mail_log_at_valid CHECK (at >= 0)
+CONSTRAINT mail_log.mail_log_detail_valid CHECK (detail IS NULL OR length(detail) <= 512)
+CONSTRAINT mail_log.mail_log_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+CONSTRAINT mail_log.mail_log_domain_id_not_null NOT NULL domain_id
+CONSTRAINT mail_log.mail_log_event_not_null NOT NULL event
+CONSTRAINT mail_log.mail_log_event_valid CHECK (event = ANY (ARRAY['delivered'::text, 'deferred'::text, 'bounced'::text, 'expired'::text]))
+CONSTRAINT mail_log.mail_log_id_not_null NOT NULL id
+CONSTRAINT mail_log.mail_log_pkey PRIMARY KEY (id)
+CONSTRAINT mail_log.mail_log_recipient_not_null NOT NULL recipient
+CONSTRAINT mail_log.mail_log_recipient_valid CHECK (length(recipient) >= 1 AND length(recipient) <= 320)
+CONSTRAINT mail_log.mail_log_remote_valid CHECK (remote IS NULL OR length(remote) <= 255)
+CONSTRAINT mail_log.mail_log_sender_not_null NOT NULL sender
+CONSTRAINT mail_log.mail_log_sender_valid CHECK (length(sender) <= 320)
+CONSTRAINT mail_log.mail_log_status_valid CHECK (status IS NULL OR length(status) <= 16)
 CONSTRAINT mailboxes.mailboxes_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 CONSTRAINT mailboxes.mailboxes_account_id_key UNIQUE (account_id)
 CONSTRAINT mailboxes.mailboxes_account_id_not_null NOT NULL account_id
@@ -616,6 +641,9 @@ INDEX list_members.list_members_list_id_external_key CREATE UNIQUE INDEX list_me
 INDEX list_members.list_members_seq CREATE UNIQUE INDEX list_members_seq ON public.list_members USING btree (list_id, seq)
 INDEX lists.lists_local_part_domain_id_key CREATE UNIQUE INDEX lists_local_part_domain_id_key ON public.lists USING btree (local_part, domain_id)
 INDEX lists.lists_pkey CREATE UNIQUE INDEX lists_pkey ON public.lists USING btree (id)
+INDEX mail_log.mail_log_at CREATE INDEX mail_log_at ON public.mail_log USING btree (at)
+INDEX mail_log.mail_log_domain CREATE INDEX mail_log_domain ON public.mail_log USING btree (domain_id, id DESC)
+INDEX mail_log.mail_log_pkey CREATE UNIQUE INDEX mail_log_pkey ON public.mail_log USING btree (id)
 INDEX mailboxes.mailboxes_account_id_key CREATE UNIQUE INDEX mailboxes_account_id_key ON public.mailboxes USING btree (account_id)
 INDEX mailboxes.mailboxes_pkey CREATE UNIQUE INDEX mailboxes_pkey ON public.mailboxes USING btree (id)
 INDEX messages.messages_blob CREATE INDEX messages_blob ON public.messages USING btree (blob_store_id, blob_hash)
