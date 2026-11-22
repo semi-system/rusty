@@ -37,6 +37,8 @@ pub enum FilterVerdict {
     Quarantine(QuarantineFolder),
     /// Add these headers (`X-` names only).
     Tag(Vec<(String, String)>),
+    /// Accepted without asking the filters after this one (the recipients allow the sender).
+    Bypass,
     /// Both: deliver into a system folder and add these headers.
     QuarantineTagged(QuarantineFolder, Vec<(String, String)>),
 }
@@ -71,6 +73,7 @@ pub async fn run_filters(filters: &[Arc<dyn InboundFilter>], ctx: &FilterContext
     for f in filters {
         match f.check(ctx).await {
             FilterVerdict::Accept => {}
+            FilterVerdict::Bypass => return outcome,
             FilterVerdict::Reject { code, enhanced, text } => {
                 let code = if (400..600).contains(&code) { code } else { 451 };
                 outcome.reject = Some(Reply::new(code, enhanced, text));

@@ -156,3 +156,24 @@ async fn domain_settings_set_the_defaults_limits_and_password_rules_that_account
     assert_eq!(c.mutate("PUT", "/api/v1/domains/set.test/settings", Some(json!({ "default_plan": "nope" }))).await.status, 400);
     assert_eq!(c.mutate("PUT", "/api/v1/domains/set.test/settings", Some(json!({ "password_min_length": 3 }))).await.status, 400);
 }
+
+#[tokio::test]
+async fn the_sender_lists_of_a_domain_are_kept_clean_and_a_domain_administrator_keeps_its_own() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    make_admin(&r, "tenant@lists.test", true).await;
+    let c = Client::sign_in(r.addr, "root@home.test").await;
+    let t = Client::sign_in(r.addr, "tenant@lists.test").await;
+    let put = t.mutate("PUT", "/api/v1/domains/lists.test/settings", Some(json!({ "sender_allow": [" Boss@Far.example ", "partner.example", "boss@far.example"], "sender_block": ["spam.example"] }))).await;
+    assert_eq!(put.status, 200, "{}", put.body);
+    conforms(&put.json(), "DomainSettings");
+    assert_eq!(put.json()["sender_allow"], json!(["boss@far.example", "partner.example"]), "trimmed, lower case, sorted, without repeats");
+    assert_eq!(c.get("/api/v1/domains/lists.test/settings").await.json()["sender_block"], json!(["spam.example"]));
+    // What is neither an address nor a domain, or is too long a list, is refused.
+    for bad in [json!(["not a domain"]), json!(["a@b@c.example"]), json!(["nodot"]), json!([".example"]), json!(vec!["x.example"; 501])] {
+        assert_eq!(t.mutate("PUT", "/api/v1/domains/lists.test/settings", Some(json!({ "sender_allow": bad }))).await.status, 400, "{bad}");
+    }
+    // Clearing a list removes it.
+    assert_eq!(t.mutate("PUT", "/api/v1/domains/lists.test/settings", Some(json!({ "sender_allow": [], "sender_block": [] }))).await.status, 200);
+    assert_eq!(c.get("/api/v1/domains/lists.test/settings").await.json()["sender_allow"], json!([]));
+}

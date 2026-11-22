@@ -300,6 +300,8 @@ export interface PlatformSettings {
 }
 
 export interface DomainSettings {
+  sender_allow: string[];
+  sender_block: string[];
   default_plan: string | null;
   max_accounts: number | null;
   quota_bytes: number | null;

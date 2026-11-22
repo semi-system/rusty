@@ -38,6 +38,41 @@ pub struct DomainSettings {
     pub max_message_bytes: Option<u64>,
     pub password_min_length: Option<u32>,
     pub password_classes: Option<u32>,
+    /// Senders (an address, or a domain with its subdomains) the domain's recipients accept without the spam and virus scan.
+    #[serde(default)]
+    pub sender_allow: Vec<String>,
+    /// Senders refused at the end of DATA (when every recipient blocks them).
+    #[serde(default)]
+    pub sender_block: Vec<String>,
+}
+
+/// Most entries in one list.
+const MAX_LIST: usize = 500;
+
+/// A list entry in its stored form: trimmed, lower case, an address or a domain; `None` when it is neither.
+fn list_entry(e: &str) -> Option<String> {
+    let e = e.trim().to_ascii_lowercase();
+    let ok_char = |c: char| c.is_ascii_alphanumeric() || "-._+@".contains(c);
+    let shape = match e.split_once('@') {
+        Some((local, domain)) => !local.is_empty() && domain.contains('.') && !domain.contains('@'),
+        None => e.contains('.'),
+    };
+    (e.len() <= 254 && shape && e.chars().all(ok_char) && !e.starts_with('.') && !e.ends_with('.')).then_some(e)
+}
+
+/// The list in its stored form, or `None` when it is too long or has an entry that is neither an address nor a domain.
+fn clean_list(list: &[String]) -> Option<Vec<String>> {
+    if list.len() > MAX_LIST {
+        return None;
+    }
+    let mut out: Vec<String> = list.iter().map(|e| list_entry(e)).collect::<Option<_>>()?;
+    out.sort();
+    out.dedup();
+    Some(out)
+}
+
+fn text_list(v: &Value, key: &str) -> Vec<String> {
+    v.get(key).and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect()).unwrap_or_default()
 }
 
 impl DomainSettings {
@@ -51,6 +86,8 @@ impl DomainSettings {
             max_message_bytes: n("max_message_bytes"),
             password_min_length: n("password_min_length").and_then(|x| u32::try_from(x).ok()),
             password_classes: n("password_classes").and_then(|x| u32::try_from(x).ok()),
+            sender_allow: text_list(&v, "sender_allow"),
+            sender_block: text_list(&v, "sender_block"),
         }
     }
 
@@ -62,6 +99,8 @@ impl DomainSettings {
             || self.password_min_length.is_some_and(|n| !(MIN_LENGTH_FLOOR..=128).contains(&n))
             || self.password_classes.is_some_and(|n| n > 4)
             || self.default_plan.as_deref().is_some_and(|p| p.is_empty() || p.len() > 64)
+            || clean_list(&self.sender_allow).is_none()
+            || clean_list(&self.sender_block).is_none()
     }
 
     /// Why `password` does not meet the rules of the domain, in a fixed word, or `None` when it does.
@@ -118,10 +157,13 @@ async fn put(app: &AdminApp, req: Request) -> Response {
         Ok(d) => d,
         Err(r) => return r,
     };
-    let Ok(new) = serde_json::from_slice::<DomainSettings>(&req.body) else { return err(400, "invalid") };
+    let Ok(mut new) = serde_json::from_slice::<DomainSettings>(&req.body) else { return err(400, "invalid") };
     if new.invalid() {
         return err(400, "invalid");
     }
+    // Stored (and answered) in one form: trimmed, lower case, sorted, without repeats.
+    new.sender_allow = clean_list(&new.sender_allow).unwrap_or_default();
+    new.sender_block = clean_list(&new.sender_block).unwrap_or_default();
     let Some(s) = app.services.as_ref() else { return err(503, "unavailable") };
     let old = match of(app, dom.id).await {
         Ok(o) => o,
@@ -129,7 +171,13 @@ async fn put(app: &AdminApp, req: Request) -> Response {
     };
     // A domain administrator may change only the password rules; every other value must stay as it is.
     if !p.scope.is_platform() {
-        let same = DomainSettings { password_min_length: old.password_min_length, password_classes: old.password_classes, ..new.clone() } == old;
+        let same = DomainSettings {
+            password_min_length: old.password_min_length,
+            password_classes: old.password_classes,
+            sender_allow: old.sender_allow.clone(),
+            sender_block: old.sender_block.clone(),
+            ..new.clone()
+        } == old;
         if !same {
             return err(403, "forbidden");
         }
@@ -150,6 +198,8 @@ async fn put(app: &AdminApp, req: Request) -> Response {
         ("max_message_bytes", new.max_message_bytes.map(Value::from)),
         ("password_min_length", new.password_min_length.map(Value::from)),
         ("password_classes", new.password_classes.map(Value::from)),
+        ("sender_allow", (!new.sender_allow.is_empty()).then(|| Value::from(new.sender_allow.clone()))),
+        ("sender_block", (!new.sender_block.is_empty()).then(|| Value::from(new.sender_block.clone()))),
     ] {
         match value {
             Some(v) => {

@@ -971,3 +971,31 @@ async fn a_message_stored_for_a_local_recipient_is_in_the_delivery_log_as_receiv
     })
     .await;
 }
+
+#[tokio::test]
+async fn the_sender_lists_of_the_recipients_refuse_a_blocked_sender_and_let_an_allowed_one_skip_the_scanners() {
+    for_each_backend(|b| async move {
+        let (alice, _) = b.seed().await;
+        let mut o = Opts::default();
+        // The policy first, then a filter that would refuse everything (the scanner's place).
+        o.options.filters = vec![Arc::new(rusty_smtp::policy::SenderPolicy::new(b.dir.clone())), Arc::new(Reject)];
+        let s = start(&b, o).await;
+        // No list: the scanner (here the refusing filter) decides.
+        let mut c = Client::hello(s.addr).await;
+        let r = c.mail("friend@remote.example", &["alice@example.net"], MSG).await;
+        assert!(r.starts_with("554 5.7.1"), "{r}");
+        // Allowed: the scanners are skipped and the mail arrives.
+        s.ctx.directory.set_account_config(alice, serde_json::json!({ "sender_allow": ["friend@remote.example"], "sender_block": ["remote.example"] })).await.unwrap();
+        let mut c = Client::hello(s.addr).await;
+        let r = c.mail("Friend@Remote.example", &["alice@example.net"], MSG).await;
+        assert!(r.starts_with("250"), "{r}");
+        assert_eq!(b.inbox(alice, &s.blobs).await.len(), 1);
+        // Blocked: refused with the policy's own words, before any scanner.
+        let mut c = Client::hello(s.addr).await;
+        let r = c.mail("spam@mail.remote.example", &["alice@example.net"], MSG).await;
+        assert!(r.starts_with("550 5.7.1 Sender blocked"), "{r}");
+        assert_eq!(b.inbox(alice, &s.blobs).await.len(), 1, "nothing more was stored");
+        s.stop().await;
+    })
+    .await;
+}
