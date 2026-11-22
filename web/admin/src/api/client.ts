@@ -1,7 +1,7 @@
 // The API client: the contract's endpoints as typed calls. It knows the three rules of a state-changing request (design section 5): the JSON content type,
 // the CSRF token of the session (the browser adds `Origin` itself) and that a failure is a fixed code, never text to show.
 
-import type { Account, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, ImportResult, MailList, Member, Members, Monitor, Plan, PlanList, QueueList, Routing, Trace, Protocols, Queue, Relay, SetupState, Storage } from './types';
+import type { Account, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, DomainSettings, ImportResult, MailList, Member, Members, Monitor, Plan, PlanList, QueueList, Routing, Trace, Protocols, Queue, Relay, SetupState, Storage } from './types';
 import type { MessageKey } from '../i18n';
 
 /** A page of a list, the cursor of the next one and how many rows match in all. */
@@ -82,7 +82,7 @@ export class ApiError extends Error {
   }
 }
 
-const KNOWN = new Set(['unauthorized', 'invalid', 'forbidden', 'not_found', 'exists', 'not_closed', 'not_empty', 'wrong_state', 'unsupported', 'throttled', 'busy', 'unavailable']);
+const KNOWN = new Set(['unauthorized', 'invalid', 'forbidden', 'not_found', 'exists', 'not_closed', 'not_empty', 'wrong_state', 'limit_reached', 'unsupported', 'throttled', 'busy', 'unavailable']);
 
 /** The catalogue key of an error and its parameters. The server never sends text for people; the wording is ours. */
 export function errorMessage(e: unknown): { key: MessageKey; params: Record<string, number> } {
@@ -218,8 +218,8 @@ export class Client {
     return this.call('POST', `/api/v1/domains/${seg(domain)}/accounts`, password === undefined || password === '' ? { local } : { local, password });
   }
 
-  async setPassword(address: string, password: string): Promise<void> {
-    await this.call('POST', `/api/v1/accounts/${seg(address)}/password`, { password });
+  async setPassword(address: string, password: string, mustChange = false): Promise<void> {
+    await this.call('POST', `/api/v1/accounts/${seg(address)}/password`, { password, must_change: mustChange });
   }
 
   setAccountStatus(address: string, action: 'enable' | 'lock' | 'disable'): Promise<Account> {
@@ -229,6 +229,15 @@ export class Client {
   /** Make accounts from CSV text (at most 500 lines a request); with `dryRun` nothing is changed and the answer says what would happen. */
   importAccounts(domain: string, csv: string, dryRun: boolean): Promise<ImportResult> {
     return this.call('POST', `/api/v1/domains/${seg(domain)}/accounts/import`, { csv, dry_run: dryRun });
+  }
+
+  /** The defaults, limits and password rules of a domain. */
+  domainSettings(domain: string): Promise<DomainSettings> {
+    return this.call('GET', `/api/v1/domains/${seg(domain)}/settings`);
+  }
+
+  setDomainSettings(domain: string, settings: DomainSettings): Promise<DomainSettings> {
+    return this.call('PUT', `/api/v1/domains/${seg(domain)}/settings`, settings);
   }
 
   /** The outbound queue of a domain, newest first. */
@@ -412,8 +421,8 @@ export class Client {
   }
 
   /** Create a plan or change its limits (platform administrators): a null limit removes it. */
-  putPlan(name: string, quotaBytes: number | null, maxMessageBytes: number | null): Promise<Plan> {
-    return this.call('PUT', '/api/v1/plans', { name, quota_bytes: quotaBytes, max_message_bytes: maxMessageBytes });
+  putPlan(name: string, quotaBytes: number | null, maxMessageBytes: number | null, messagesPerHour: number | null = null, protocols: string[] | null = null): Promise<Plan> {
+    return this.call('PUT', '/api/v1/plans', { name, quota_bytes: quotaBytes, max_message_bytes: maxMessageBytes, messages_per_hour: messagesPerHour, protocols });
   }
 
   /** Put an account on a plan, or on none. */

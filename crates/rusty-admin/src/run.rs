@@ -136,6 +136,7 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     let router = crate::routing::routes(app.clone(), router);
     let router = crate::queue::routes(app.clone(), router);
     let router = crate::import::routes(app.clone(), router);
+    let router = crate::settings::routes(app.clone(), router);
     let router = crate::autoconfig::routes(app.clone(), router);
     let router = crate::autodiscover::routes(app.clone(), router);
     let router = crate::monitor::routes(app.clone(), router);

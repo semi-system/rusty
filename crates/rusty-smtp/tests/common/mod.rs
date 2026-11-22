@@ -177,6 +177,7 @@ pub async fn start(b: &Backend, opts: Opts) -> Server {
             outbound: Arc::new(JobOutbound::new(ctx.jobs.clone(), ctx.directory.clone()).with_limits(opts.submit_limits.unwrap_or_default())),
             limiter: Arc::new(MemorySubmissionLimiter::new(opts.per_hour, Arc::new(SystemClock::new()))),
             remote_enabled: opts.remote_enabled,
+            default_per_hour: opts.per_hour,
         };
         Arc::new(InboundHandler::submission(&ctx, opts.options, deps))
     } else {

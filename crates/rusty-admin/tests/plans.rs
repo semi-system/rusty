@@ -95,3 +95,21 @@ async fn a_domain_administrator_may_delete_its_closed_accounts_but_not_a_domain(
     assert_eq!(t.mutate("DELETE", "/api/v1/accounts/bob@one.test", None).await.status, 200);
     assert_eq!(t.mutate("DELETE", "/api/v1/domains/one.test", None).await.status, 403);
 }
+
+#[tokio::test]
+async fn a_temporary_password_is_shown_on_the_account_until_another_password_is_set() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    let c = Client::sign_in(r.addr, "root@home.test").await;
+    assert_eq!(c.post("/api/v1/domains", json!({ "name": "one.test" })).await.status, 201);
+    assert_eq!(c.post("/api/v1/domains/one.test/accounts", json!({ "local": "alice", "password": "alice-password-1" })).await.status, 201);
+    assert_eq!(flag(&c).await, json!(false));
+    assert_eq!(c.post("/api/v1/accounts/alice@one.test/password", json!({ "password": "temporary-pass-1", "must_change": true })).await.status, 200);
+    assert_eq!(flag(&c).await, json!(true));
+    assert_eq!(c.post("/api/v1/accounts/alice@one.test/password", json!({ "password": "chosen-by-user-1" })).await.status, 200);
+    assert_eq!(flag(&c).await, json!(false), "a password without the flag clears it");
+}
+
+async fn flag(c: &Client) -> serde_json::Value {
+    c.get("/api/v1/domains/one.test/accounts").await.json()["items"][0]["must_change_password"].clone()
+}

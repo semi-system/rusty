@@ -16,6 +16,16 @@ pub trait SubmissionLimiter: Send + Sync {
     /// Count one message for `account` if the budget allows it, in ONE atomic step (parallel
     /// connections cannot all pass a separate check). `false`: over the limit, nothing counted.
     async fn try_record(&self, account: AccountId) -> bool;
+    /// [`allow`](Self::allow) with a budget of `cap` messages an hour in place of the configured one (the plan of the account says how many it may send).
+    async fn allow_capped(&self, account: AccountId, cap: u32) -> bool {
+        let _ = cap;
+        self.allow(account).await
+    }
+    /// [`try_record`](Self::try_record) with a budget of `cap` messages an hour.
+    async fn try_record_capped(&self, account: AccountId, cap: u32) -> bool {
+        let _ = cap;
+        self.try_record(account).await
+    }
 }
 
 /// The shared in-flight memory budget now lives in rusty-svc (IMAP APPEND draws on it too).
@@ -50,18 +60,26 @@ impl MemorySubmissionLimiter {
 #[async_trait::async_trait]
 impl SubmissionLimiter for MemorySubmissionLimiter {
     async fn allow(&self, account: AccountId) -> bool {
+        self.allow_capped(account, self.max_per_hour).await
+    }
+
+    async fn try_record(&self, account: AccountId) -> bool {
+        self.try_record_capped(account, self.max_per_hour).await
+    }
+
+    async fn allow_capped(&self, account: AccountId, cap: u32) -> bool {
         let now = self.clock.now_ms();
         let mut m = self.lock();
         match m.get_mut(&account) {
             Some(w) => {
                 Self::expire(w, now);
-                w.len() < self.max_per_hour as usize
+                w.len() < cap as usize
             }
-            None => self.max_per_hour > 0,
+            None => cap > 0,
         }
     }
 
-    async fn try_record(&self, account: AccountId) -> bool {
+    async fn try_record_capped(&self, account: AccountId, cap: u32) -> bool {
         let now = self.clock.now_ms();
         let mut m = self.lock();
         if !m.contains_key(&account) && m.len() >= MAX_TRACKED_ACCOUNTS {
@@ -73,7 +91,7 @@ impl SubmissionLimiter for MemorySubmissionLimiter {
         let w = m.entry(account).or_default();
         Self::expire(w, now);
         // Bounded by the cap: never more entries than the limit.
-        if w.len() < self.max_per_hour as usize {
+        if w.len() < cap as usize {
             w.push_back(now);
             true
         } else {
@@ -108,27 +126,35 @@ impl ValkeySubmissionLimiter {
 #[async_trait::async_trait]
 impl SubmissionLimiter for ValkeySubmissionLimiter {
     async fn allow(&self, account: AccountId) -> bool {
+        self.allow_capped(account, self.max_per_hour).await
+    }
+
+    async fn try_record(&self, account: AccountId) -> bool {
+        self.try_record_capped(account, self.max_per_hour).await
+    }
+
+    async fn allow_capped(&self, account: AccountId, cap: u32) -> bool {
         match self.kv.window_count(&Self::key(account), Self::WINDOW).await {
-            Ok(n) => n < self.max_per_hour,
+            Ok(n) => n < cap,
             Err(e) => {
                 tracing::warn!(error = %e, "the shared sending budget is unreachable; this process's own window decides");
-                self.local.allow(account).await
+                self.local.allow_capped(account, cap).await
             }
         }
     }
 
-    async fn try_record(&self, account: AccountId) -> bool {
-        match self.kv.window_try_record(&Self::key(account), Self::WINDOW, self.max_per_hour).await {
+    async fn try_record_capped(&self, account: AccountId, cap: u32) -> bool {
+        match self.kv.window_try_record(&Self::key(account), Self::WINDOW, cap).await {
             Ok(out) => {
                 if out.allowed {
                     // Counted in the process too, so the floor stays in step while the store is reachable.
-                    self.local.try_record(account).await;
+                    self.local.try_record_capped(account, cap).await;
                 }
                 out.allowed
             }
             Err(e) => {
                 tracing::warn!(error = %e, "the shared sending budget is unreachable; this process's own window decides");
-                self.local.try_record(account).await
+                self.local.try_record_capped(account, cap).await
             }
         }
     }

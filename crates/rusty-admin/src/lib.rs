@@ -25,6 +25,7 @@ pub mod protocols;
 pub mod queue;
 pub mod run;
 pub mod session;
+pub mod settings;
 pub mod setup;
 pub mod storage;
 pub mod web;

@@ -256,6 +256,7 @@ async fn build(
                         None => Arc::new(MemorySubmissionLimiter::new(SUBMISSIONS_PER_HOUR, Arc::new(SystemClock::new()))),
                     },
                     remote_enabled: cfg.outbound.enabled,
+                    default_per_hour: SUBMISSIONS_PER_HOUR,
                 };
                 let options = InboundOptions {
                     max_transactions: SUBMISSION_TRANSACTIONS,

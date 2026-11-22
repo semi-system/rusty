@@ -529,6 +529,17 @@ impl Session {
             }
             Err(e) => return Err(Done::store(Op::Mailbox, &e)),
         };
+        // The plan of the account can leave IMAP out of the protocols it may use.
+        match self.ctx.directory.protocol_allowed(account, "imap").await {
+            Ok(true) => {}
+            Ok(false) => return Err(Done::no("AUTHORIZATIONFAILED", "This account may not use IMAP")),
+            Err(e) => return Err(Done::store(Op::Mailbox, &e)),
+        }
+        match self.ctx.plans.must_change_password(account.0).await {
+            Ok(false) => {}
+            Ok(true) => return Err(Done::no("AUTHORIZATIONFAILED", "The password must be changed before this account is used")),
+            Err(e) => return Err(Done::store(Op::Mailbox, &e)),
+        }
         let mailbox = match self.ctx.hub.open_for(account).await {
             Ok(m) => m,
             Err(e) => return Err(Done::store(Op::Mailbox, &e)),

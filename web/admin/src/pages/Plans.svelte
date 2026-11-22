@@ -21,6 +21,11 @@
   let name = $state('');
   let quota = $state('');
   let maxMessage = $state('');
+  let perHour = $state('');
+  // The protocols the plan allows; all three checked means the plan does not limit them.
+  let protoImap = $state(true);
+  let protoPop3 = $state(true);
+  let protoSubmission = $state(true);
 
   onMount(() => void load.run());
 
@@ -28,6 +33,10 @@
     name = p.name;
     quota = p.quota_bytes === null ? '' : String(p.quota_bytes / 1_048_576);
     maxMessage = p.max_message_bytes === null ? '' : String(p.max_message_bytes / 1_048_576);
+    perHour = p.messages_per_hour === null ? '' : String(p.messages_per_hour);
+    protoImap = p.protocols === null || p.protocols.includes('imap');
+    protoPop3 = p.protocols === null || p.protocols.includes('pop3');
+    protoSubmission = p.protocols === null || p.protocols.includes('submission');
     notice = null;
     invalid = false;
   };
@@ -36,17 +45,22 @@
     e.preventDefault();
     const q = megabytes(quota);
     const m = megabytes(maxMessage);
-    invalid = Number.isNaN(q) || Number.isNaN(m);
+    const hours = perHour.trim() === '' ? null : Number(perHour);
+    invalid = Number.isNaN(q) || Number.isNaN(m) || (hours !== null && (!Number.isInteger(hours) || hours < 1));
     if (invalid) return;
+    const allowed = [protoImap ? 'imap' : '', protoPop3 ? 'pop3' : '', protoSubmission ? 'submission' : ''].filter((x) => x !== '');
+    const protocols = allowed.length === 3 ? null : allowed;
     busy = true;
     error = null;
     notice = null;
     try {
-      const saved = await app.client.putPlan(name.trim(), q, m);
+      const saved = await app.client.putPlan(name.trim(), q, m, hours, protocols);
       notice = t('plans.saved', { name: saved.name });
       name = '';
       quota = '';
       maxMessage = '';
+      perHour = '';
+      protoImap = protoPop3 = protoSubmission = true;
       await load.run();
     } catch (err) {
       error = err;
@@ -73,7 +87,7 @@
       <div class="table-wrap">
         <table use:labelled aria-label={t('plans.title')}>
           <thead>
-            <tr><th scope="col">{t('plans.col.name')}</th><th scope="col">{t('plans.col.quota')}</th><th scope="col">{t('plans.col.maxMessage')}</th><th scope="col" class="col-actions">{t('plans.col.action')}</th></tr>
+            <tr><th scope="col">{t('plans.col.name')}</th><th scope="col">{t('plans.col.quota')}</th><th scope="col">{t('plans.col.maxMessage')}</th><th scope="col">{t('plans.col.perHour')}</th><th scope="col">{t('plans.col.protocols')}</th><th scope="col" class="col-actions">{t('plans.col.action')}</th></tr>
           </thead>
           <tbody>
             {#each load.state.data as p (p.name)}
@@ -81,6 +95,8 @@
                 <th scope="row">{p.name}</th>
                 <td>{limit(p.quota_bytes)}</td>
                 <td>{limit(p.max_message_bytes)}</td>
+                <td>{p.messages_per_hour === null ? t('plans.none') : p.messages_per_hour}</td>
+                <td>{p.protocols === null ? t('plans.allProtocols') : p.protocols.join(', ')}</td>
                 <td class="col-actions"><button type="button" class="secondary" onclick={() => edit(p)}>{t('plans.edit')}</button></td>
               </tr>
             {/each}
@@ -95,8 +111,15 @@
           <label>{t('plans.col.name')}<input bind:value={name} name="name" type="text" autocapitalize="none" spellcheck="false" required /></label>
           <label>{t('plans.quotaMb')}<input bind:value={quota} name="quota" type="text" inputmode="decimal" /></label>
           <label>{t('plans.maxMessageMb')}<input bind:value={maxMessage} name="max" type="text" inputmode="decimal" /></label>
+          <label>{t('plans.perHour')}<input bind:value={perHour} name="perhour" type="text" inputmode="numeric" /></label>
           <button type="submit" class="primary" disabled={busy}>{busy ? t('common.saving') : t('common.save')}</button>
         </div>
+        <fieldset class="checks">
+          <legend>{t('plans.protocols')}</legend>
+          <label><input type="checkbox" bind:checked={protoImap} /> {t('plans.imap')}</label>
+          <label><input type="checkbox" bind:checked={protoPop3} /> {t('plans.pop3')}</label>
+          <label><input type="checkbox" bind:checked={protoSubmission} /> {t('plans.submission')}</label>
+        </fieldset>
         <p class="muted">{t('plans.note')}</p>
       </form>
     </section>

@@ -157,3 +157,21 @@ async fn quota_is_reported_in_kibibytes_and_a_mailbox_without_a_limit_has_no_quo
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_plan_that_leaves_imap_out_refuses_the_sign_in_and_one_that_lists_it_allows_it() {
+    for_each_backend(|b| async move {
+        let acc = b.account("alice@a.test", "pw").await;
+        let ctx = b.ctx().await;
+        ctx.directory.set_account_config(acc, serde_json::json!({ "protocols": ["pop3", "submission"] })).await.unwrap();
+        let mut c = Conn::open(handler(ctx.clone()), true);
+        c.line().await;
+        let r = c.status("LOGIN alice@a.test pw").await;
+        assert!(r.contains("NO [AUTHORIZATIONFAILED]"), "{r}");
+        ctx.directory.set_account_config(acc, serde_json::json!({ "protocols": ["imap"] })).await.unwrap();
+        let mut c = Conn::open(handler(ctx.clone()), true);
+        c.line().await;
+        assert!(c.status("LOGIN alice@a.test pw").await.contains("OK"));
+    })
+    .await;
+}
