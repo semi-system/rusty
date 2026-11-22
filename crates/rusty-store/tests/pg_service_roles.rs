@@ -93,6 +93,12 @@ async fn each_service_keeps_to_its_own_writes() {
     let cases = [
         // only the collector deletes message bodies' references and blobs; no one but the delivering services creates a message
         ("rusty_gc", "blobs", "DELETE", true),
+        // the removal of a closed account after its retention is the collector's alone (docs/design-delete.md)
+        ("rusty_gc", "accounts", "DELETE", true),
+        ("rusty_imap", "accounts", "DELETE", false),
+        ("rusty_smtp_in", "accounts", "DELETE", false),
+        ("rusty_submission", "accounts", "DELETE", false),
+        ("rusty_outbound", "accounts", "DELETE", false),
         ("rusty_smtp_in", "blobs", "DELETE", false),
         ("rusty_submission", "blobs", "DELETE", false),
         ("rusty_imap", "blobs", "DELETE", false),

@@ -57,3 +57,41 @@ async fn a_domain_administrator_reads_the_plans_and_assigns_its_own_accounts_but
     assert_eq!(t.mutate("PUT", "/api/v1/accounts/x@two.test/plan", Some(json!({ "plan": "small" }))).await.status, 404);
     assert_eq!(send(r.addr, "GET", "/api/v1/plans", &[], "").await.status, 401);
 }
+
+#[tokio::test]
+async fn a_closed_account_can_be_deleted_and_an_open_one_cannot_and_an_empty_domain_goes() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    let c = Client::sign_in(r.addr, "root@home.test").await;
+    assert_eq!(c.post("/api/v1/domains", json!({ "name": "gone.test" })).await.status, 201);
+    assert_eq!(c.post("/api/v1/domains/gone.test/accounts", json!({ "local": "alice", "password": "alice-password-1" })).await.status, 201);
+    // A domain that has an account is not empty.
+    let held = c.mutate("DELETE", "/api/v1/domains/gone.test", None).await;
+    assert_eq!((held.status, held.json()["error"].clone()), (409, json!("not_empty")));
+    // An open account cannot be deleted; a closed one is scheduled.
+    let open = c.mutate("DELETE", "/api/v1/accounts/alice@gone.test", None).await;
+    assert_eq!((open.status, open.json()["error"].clone()), (409, json!("not_closed")));
+    assert_eq!(c.post_empty("/api/v1/accounts/alice@gone.test/disable").await.status, 200);
+    let done = c.mutate("DELETE", "/api/v1/accounts/alice@gone.test", None).await;
+    assert_eq!(done.status, 200, "{}", done.body);
+    conforms(&done.json(), "Deletion");
+    // You cannot delete the account you are signed in with.
+    assert_eq!(c.mutate("DELETE", "/api/v1/accounts/root@home.test", None).await.status, 400);
+    // The collector removes the account (the test plays its part); then the domain is empty and goes.
+    rusty_store::Gc::new(r.outbound.repos().gc.clone()).purge_closed_accounts(1, 10).await.unwrap();
+    assert_eq!(c.mutate("DELETE", "/api/v1/domains/gone.test", None).await.status, 200);
+    assert_eq!(c.mutate("DELETE", "/api/v1/domains/gone.test", None).await.status, 404);
+}
+
+#[tokio::test]
+async fn a_domain_administrator_may_delete_its_closed_accounts_but_not_a_domain() {
+    let r = rig().await;
+    make_admin(&r, "tenant@one.test", true).await;
+    let root_domain_account = r.dir.find_domain("one.test").await.unwrap().unwrap();
+    let _ = root_domain_account;
+    let t = Client::sign_in(r.addr, "tenant@one.test").await;
+    assert_eq!(t.post("/api/v1/domains/one.test/accounts", json!({ "local": "bob", "password": "bob-password-12" })).await.status, 201);
+    assert_eq!(t.post_empty("/api/v1/accounts/bob@one.test/disable").await.status, 200);
+    assert_eq!(t.mutate("DELETE", "/api/v1/accounts/bob@one.test", None).await.status, 200);
+    assert_eq!(t.mutate("DELETE", "/api/v1/domains/one.test", None).await.status, 403);
+}

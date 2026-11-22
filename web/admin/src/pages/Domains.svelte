@@ -25,6 +25,26 @@
   let name = $state('');
   let busy = $state(false);
   let created = $state<string | null>(null);
+  let deleted = $state<string | null>(null);
+  // The domain whose deletion is being confirmed (platform administrators): it cannot be undone.
+  let deleting = $state<string | null>(null);
+
+  async function remove(d: Domain): Promise<void> {
+    busy = true;
+    error = null;
+    created = null;
+    deleted = null;
+    try {
+      await app.client.deleteDomain(d.name);
+      deleted = d.name;
+      deleting = null;
+      await load();
+    } catch (err) {
+      error = err;
+    } finally {
+      busy = false;
+    }
+  }
 
   async function load(after?: number, quiet = false): Promise<void> {
     try {
@@ -68,6 +88,7 @@
 
   {#if error !== null}<ErrorNote {error} />{/if}
   {#if created !== null}<p class="alert ok" role="status">{t('domains.created', { name: created })}</p>{/if}
+  {#if deleted !== null}<p class="alert ok" role="status">{t('domains.deleted', { name: deleted })}</p>{/if}
 
   {#if loaded}
     <ListBar bind:q bind:status bind:limit {total} shown={items.length} label={t('list.searchDomains')} onchange={() => void load()}
@@ -81,13 +102,30 @@
     <div class="table-wrap">
       <table use:labelled aria-label={t('domains.list')}>
         <thead>
-          <tr><th scope="col">{t('domains.name')}</th><th scope="col">{t('domains.status')}</th></tr>
+          <tr>
+            <th scope="col">{t('domains.name')}</th><th scope="col">{t('domains.status')}</th>
+            {#if me.scope === 'platform'}<th scope="col" class="col-actions">{t('domains.col.action')}</th>{/if}
+          </tr>
         </thead>
         <tbody>
           {#each items as d (d.id)}
             <tr>
               <th scope="row"><Link href={href('/domains/{name}/overview', { name: d.name })}>{d.name}</Link></th>
               <td><Badge tone={d.status === 'active' ? 'ok' : 'warn'}>{tFor('domain.status.', d.status, 'domain.status.active')}</Badge></td>
+              {#if me.scope === 'platform'}
+                <td class="col-actions">
+                  <button type="button" disabled={busy} aria-label={t('domains.delete', { name: d.name })} onclick={() => (deleting = deleting === d.name ? null : d.name)}>{t('domains.deleteShort')}</button>
+                  {#if deleting === d.name}
+                    <div class="row-form" role="alert">
+                      <p>{t('domains.deleteAsk', { name: d.name })}</p>
+                      <div class="form-actions">
+                        <button type="button" class="danger" disabled={busy} onclick={() => remove(d)}>{t('domains.deleteYes')}</button>
+                        <button type="button" class="secondary" onclick={() => (deleting = null)}>{t('accounts.cancel')}</button>
+                      </div>
+                    </div>
+                  {/if}
+                </td>
+              {/if}
             </tr>
           {/each}
         </tbody>

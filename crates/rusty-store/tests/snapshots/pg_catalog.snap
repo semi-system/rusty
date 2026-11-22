@@ -10,6 +10,7 @@ COLUMN accounts.config jsonb nullable=NO identity=NO/ collation= default='{}'::j
 COLUMN accounts.created_at bigint nullable=NO identity=NO/ collation= default=
 COLUMN accounts.password_set boolean nullable=YES identity=NO/ collation= default=
 COLUMN accounts.last_login_at bigint nullable=YES identity=NO/ collation= default=
+COLUMN accounts.closed_at bigint nullable=YES identity=NO/ collation= default=
 COLUMN address_owners.domain_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN address_owners.local_part text nullable=NO identity=NO/ collation=C default=
 COLUMN address_owners.owner_kind text nullable=NO identity=NO/ collation= default=
@@ -202,6 +203,7 @@ COLUMN service_heartbeats.started_at bigint nullable=NO identity=NO/ collation= 
 COLUMN service_heartbeats.last_seen bigint nullable=NO identity=NO/ collation= default=
 COLUMN service_heartbeats.status text nullable=NO identity=NO/ collation=C default=
 COLUMN service_heartbeats.detail text nullable=NO identity=NO/ collation=C default='{}'::text
+CONSTRAINT accounts.accounts_closed_at_valid CHECK (closed_at IS NULL OR closed_at >= 0)
 CONSTRAINT accounts.accounts_config_not_null NOT NULL config
 CONSTRAINT accounts.accounts_created_at_not_null NOT NULL created_at
 CONSTRAINT accounts.accounts_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE RESTRICT

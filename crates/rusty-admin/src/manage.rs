@@ -581,6 +581,50 @@ async fn remove_alias(app: &AdminApp, req: Request) -> Response {
     }
 }
 
+/// Delete a CLOSED account now: the garbage collector removes it and its mailbox at its next pass (a closed account is removed by itself after `closed_account_days`). An account that is not
+/// closed is `409 not_closed`; an administrator cannot delete the account it is signed in with.
+async fn delete_account(app: &AdminApp, req: Request) -> Response {
+    let (session, p) = match app.require(&req, true).await {
+        Ok(x) => x,
+        Err(r) => return r,
+    };
+    if let Err(r) = no_query(&req) {
+        return r;
+    }
+    let (acc, dom) = match scoped_account(app, &p, req.param("a").unwrap_or_default()).await {
+        Ok(x) => x,
+        Err(r) => return r,
+    };
+    if format!("{}@{}", acc.local, dom.name) == session.address {
+        return err(400, "invalid");
+    }
+    match app.directory.request_account_delete(acc.id).await {
+        Ok(true) => json(200, &serde_json::json!({ "deletion": "scheduled" })),
+        Ok(false) => err(409, "not_closed"),
+        Err(e) => fail(&e),
+    }
+}
+
+/// Delete a domain that holds nothing (platform administrators): `409 not_empty` otherwise.
+async fn delete_domain(app: &AdminApp, req: Request) -> Response {
+    let (_, p) = match app.require(&req, true).await {
+        Ok(x) => x,
+        Err(r) => return r,
+    };
+    if let Err(r) = platform_only(&p).and(no_query(&req)) {
+        return r;
+    }
+    let dom = match scoped_domain(app, &p, req.param("d").unwrap_or_default()).await {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    match app.directory.delete_domain(dom.id).await {
+        Ok(()) => json(200, &serde_json::json!({})),
+        Err(Error::Conflict(_)) => err(409, "not_empty"),
+        Err(e) => fail(&e),
+    }
+}
+
 // ------------------------------------------------------------------------------------------------ routes
 
 macro_rules! route {
@@ -613,5 +657,7 @@ pub fn routes(app: Arc<AdminApp>, router: Router) -> Router {
     let router = route!(router, app, Method::Post, "/api/v1/accounts/{a}/enable", |a, r| set_account_status(&a, r, AccountStatus::Active).await);
     let router = route!(router, app, Method::Get, "/api/v1/domains/{d}/aliases", |a, r| list_aliases(&a, r).await);
     let router = route!(router, app, Method::Post, "/api/v1/domains/{d}/aliases", |a, r| create_alias(&a, r).await);
+    let router = route!(router, app, Method::Delete, "/api/v1/accounts/{a}", |a, r| delete_account(&a, r).await);
+    let router = route!(router, app, Method::Delete, "/api/v1/domains/{d}", |a, r| delete_domain(&a, r).await);
     route!(router, app, Method::Delete, "/api/v1/aliases/{a}", |a, r| remove_alias(&a, r).await)
 }

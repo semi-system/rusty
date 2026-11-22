@@ -197,7 +197,7 @@ fn prod_config(dir: &Path, store: &str) -> PathBuf {
     std::fs::write(
         &cfg,
         format!(
-            "blob_dir = \"{}\"\nhostname = \"mx.example.test\"\n[smtp]\nlisten_587 = \"\"\nlisten_465 = \"\"\n[imap]\nlisten_143 = \"\"\nlisten_993 = \"\"\n[store]\n{store}",
+            "blob_dir = \"{}\"\nhostname = \"mx.example.test\"\n[smtp]\nlisten_587 = \"\"\nlisten_465 = \"\"\n[imap]\nlisten_143 = \"\"\nlisten_993 = \"\"\nlisten_110 = \"\"\nlisten_995 = \"\"\n[store]\n{store}",
             dir.join("data/blobs").display()
         ),
     )

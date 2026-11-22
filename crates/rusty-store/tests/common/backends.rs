@@ -579,6 +579,9 @@ impl GcRepo for SkewedGc {
     async fn purge_capabilities_batch(&self, o: i64, l: i64) -> Result<u64, Error> {
         self.inner.purge_capabilities_batch(o, l).await
     }
+    async fn purge_closed_account_batch(&self, o: i64, l: i64) -> Result<rusty_store::repo::ClosedAccountBatch, Error> {
+        self.inner.purge_closed_account_batch(o, l).await
+    }
 }
 
 /// The Postgres backend (`RUSTY_TEST_PG_URL` is mandatory: a missing server panics in `pg_admin_url`).

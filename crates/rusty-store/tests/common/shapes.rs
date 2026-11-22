@@ -266,6 +266,10 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
     other!("GcRepo", "purge_capabilities_batch", true,
         Some(("DELETE FROM capabilities", "DELETE FROM capabilities")), None,
         g.purge_capabilities_batch(i64::MAX, 1000));
+    // Nothing is due (no account is closed): the call is the lock-and-look statement alone; the work itself is covered by pg_delete.rs.
+    other!("GcRepo", "purge_closed_account_batch", true,
+        Some(("FROM accounts a LEFT JOIN mailboxes m ON m.account_id = a.id", "FROM accounts a LEFT JOIN mailboxes m ON m.account_id = a.id")), None,
+        g.purge_closed_account_batch(i64::MAX, 1000));
     out
 }
 

@@ -250,3 +250,7 @@ export interface PlanList {
 export interface AccountPlan {
   plan: string | null;
 }
+
+export interface Deletion {
+  deletion: string;
+}

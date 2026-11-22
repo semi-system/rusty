@@ -354,6 +354,16 @@ impl Directory {
     }
 
     /// Remove the alias with this address (`NotFound` if there is none).
+    /// Make a closed account due for removal now (the garbage collector does it); `false` when it is not closed.
+    pub async fn request_account_delete(&self, account: AccountId) -> Result<bool> {
+        self.repo.request_account_delete(account).await
+    }
+
+    /// Remove a domain that has no accounts, aliases, lists, pending jobs or storage of its own.
+    pub async fn delete_domain(&self, domain: DomainId) -> Result<()> {
+        self.repo.delete_domain(domain).await
+    }
+
     pub async fn remove_alias(&self, addr: &str) -> Result<()> {
         let (local, domain) = parse_address(addr)?;
         self.repo.remove_alias(&local, &domain).await

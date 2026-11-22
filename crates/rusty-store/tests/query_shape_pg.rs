@@ -95,6 +95,7 @@ const BUDGET: &[(&str, usize)] = &[
     ("purge_deleted_batch (1 message)", 7),
     ("purge_deliveries_batch", 3),
     ("purge_capabilities_batch", 3),
+    ("purge_closed_account_batch", 3),
 ];
 
 /// How far below its ceiling an operation may get before the ceiling counts as stale.
