@@ -6,7 +6,7 @@ use sqlx::Row;
 
 use super::PgRepo;
 use crate::map_db_error;
-use crate::repo::blob_store::{sql, BlobStoreRepo, BlobStoreRow, StoreId, PLATFORM_STORE};
+use crate::repo::blob_store::{sql, BlobStoreRepo, BlobStoreRow, Commitments, StoreId, PLATFORM_STORE};
 use crate::repo::render_pg as r;
 
 fn row(x: &sqlx::postgres::PgRow) -> std::result::Result<BlobStoreRow, sqlx::Error> {
@@ -17,6 +17,11 @@ fn row(x: &sqlx::postgres::PgRow) -> std::result::Result<BlobStoreRow, sqlx::Err
         config: x.try_get(3)?,
         check_status: x.try_get(4)?,
         checked_at: x.try_get(5)?,
+        capacity_bytes: x.try_get(6)?,
+        used_bytes: x.try_get(7)?,
+        promised_bytes: x.try_get(8)?,
+        unlimited_accounts: x.try_get(9)?,
+        capacity_status: x.try_get(10)?,
     })
 }
 
@@ -31,6 +36,24 @@ impl BlobStoreRepo for PgRepo {
     async fn for_domain(&self, domain: DomainId) -> Result<Option<BlobStoreRow>> {
         let x = sqlx::query(r(sql::FOR_DOMAIN)).bind(domain.0).fetch_optional(self.store.pool()).await.map_err(map_db_error)?;
         x.as_ref().map(row).transpose().map_err(map_db_error)
+    }
+
+    async fn set_capacity(&self, id: StoreId, capacity: Option<i64>) -> Result<()> {
+        let n = sqlx::query(r(sql::SET_CAPACITY)).bind(id.0).bind(capacity).execute(self.store.pool()).await.map_err(map_db_error)?.rows_affected();
+        if n == 0 {
+            return Err(Error::NotFound("blob store".into()));
+        }
+        Ok(())
+    }
+
+    async fn commitments(&self, domain: DomainId) -> Result<Commitments> {
+        let x = sqlx::query(r(sql::COMMITMENTS)).bind(domain.0).bind(crate::repo::GLOBAL_PLAN).fetch_one(self.store.pool()).await.map_err(map_db_error)?;
+        Ok(Commitments { used_bytes: x.try_get(0).map_err(map_db_error)?, promised_bytes: x.try_get(1).map_err(map_db_error)?, unlimited_accounts: x.try_get(2).map_err(map_db_error)? })
+    }
+
+    async fn record_capacity(&self, id: StoreId, found: Commitments, status: &str) -> Result<()> {
+        sqlx::query(r(sql::RECORD_CAPACITY)).bind(id.0).bind(found.used_bytes).bind(found.promised_bytes).bind(found.unlimited_accounts).bind(status).execute(self.store.pool()).await.map_err(map_db_error)?;
+        Ok(())
     }
 
     async fn update_config(&self, id: StoreId, config: &str) -> Result<()> {

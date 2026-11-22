@@ -24,6 +24,11 @@
   let maxMessageMb = $state('');
   let minLength = $state('');
   let classes = $state('');
+  // One entry a line: an address or a domain.
+  let footer = $state('');
+  let allowText = $state('');
+  let blockText = $state('');
+  const lines = (text: string): string[] => text.split('\n').map((l) => l.trim()).filter((l) => l !== '');
 
   const mb = (n: number | null): string => (n === null ? '' : String(n / 1_048_576));
   const whole = (n: number | null): string => (n === null ? '' : String(n));
@@ -38,6 +43,9 @@
       maxMessageMb = mb(s.max_message_bytes);
       minLength = whole(s.password_min_length);
       classes = whole(s.password_classes);
+      footer = s.footer_text ?? '';
+      allowText = s.sender_allow.join('\n');
+      blockText = s.sender_block.join('\n');
       loaded = true;
     } catch (e) {
       error = e;
@@ -69,6 +77,9 @@
       max_message_bytes: message,
       password_min_length: length ?? null,
       password_classes: kinds ?? null,
+      footer_text: footer.trim() === '' ? null : footer.trim(),
+      sender_allow: lines(allowText),
+      sender_block: lines(blockText),
     };
     busy = true;
     error = null;
@@ -121,6 +132,19 @@
           <div class="field-row">
             <label>{t('settings.minLength')}<input bind:value={minLength} name="length" type="text" inputmode="numeric" /></label>
             <label>{t('settings.classes')}<input bind:value={classes} name="classes" type="text" inputmode="numeric" /></label>
+          </div>
+        </section>
+        <section class="panel" aria-labelledby="set-footer">
+          <h2 id="set-footer">{t('settings.footer')}</h2>
+          <p class="hint">{t('settings.footerLede')}</p>
+          <label>{t('settings.footerText')}<textarea bind:value={footer} name="footer" rows="4" maxlength="2000"></textarea></label>
+        </section>
+        <section class="panel" aria-labelledby="set-senders">
+          <h2 id="set-senders">{t('settings.senders')}</h2>
+          <p class="hint">{t('settings.sendersLede')}</p>
+          <div class="field-row">
+            <label>{t('settings.allow')}<textarea bind:value={allowText} name="allow" rows="5" autocapitalize="none" spellcheck="false"></textarea></label>
+            <label>{t('settings.block')}<textarea bind:value={blockText} name="block" rows="5" autocapitalize="none" spellcheck="false"></textarea></label>
           </div>
         </section>
         <div class="form-actions"><button type="submit" class="primary" disabled={busy}>{busy ? t('common.saving') : t('common.save')}</button></div>

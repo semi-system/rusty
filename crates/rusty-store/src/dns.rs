@@ -165,6 +165,11 @@ impl DnsStore {
         self.repo.due_for_check(interval_secs, jitter_secs, limit, Some(now)).await
     }
 
+    /// Retire a DKIM key: remove its public row (the outbound service stops signing with the selector); whether there was one.
+    pub async fn delete_dkim_key(&self, domain: DomainId, selector: &str) -> Result<bool> {
+        self.repo.delete_dkim_key(domain, selector).await
+    }
+
     /// The domain's DKIM public keys (one per published selector), ordered by selector.
     pub async fn dkim_keys(&self, domain: DomainId) -> Result<Vec<DkimKeyRow>> {
         self.repo.dkim_keys(domain).await

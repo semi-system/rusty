@@ -253,3 +253,47 @@ async fn a_domain_with_a_single_store_is_not_made_a_pool_and_a_pool_needs_the_se
     assert_eq!(n.post("/api/v1/domains/p.test/storage/backends", backend("a", "bucket-a")).await.status, 503);
     assert_eq!(n.get("/api/v1/domains/p.test/storage").await.json()["storage"]["backends"].as_array().map(Vec::len), Some(0), "no half-made backend");
 }
+
+#[tokio::test]
+async fn the_storage_check_judges_the_declared_room_against_what_the_tenant_holds_and_was_promised() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    make_admin(&r, "tenant@one.test", true).await;
+    let c = Client::sign_in(r.addr, "root@home.test").await;
+    assert_eq!(c.mutate("PUT", "/api/v1/domains/one.test/storage", Some(body("https://s3.example-cloud.com", "tenant-mail"))).await.status, 200);
+    assert_eq!(c.post("/api/v1/domains/one.test/accounts", json!({ "local": "alice", "password": "alice-password-1" })).await.status, 201);
+    let dom = r.dir.find_domain("one.test").await.unwrap().unwrap().id;
+    let admin_store = rusty_store::BlobStoreAdmin::with_repo(r.store.repos().blob_stores.clone());
+    let store = admin_store.for_domain(dom).await.unwrap().unwrap();
+    let state = || async { c.get("/api/v1/domains/one.test/storage").await.json()["storage"]["capacity"].clone() };
+    assert_eq!(state().await["status"], json!("unset"), "no room declared");
+
+    // The tenant's accounts have no quota: whatever is declared, they could fill it.
+    let put = c.mutate("PUT", "/api/v1/domains/one.test/storage/capacity", Some(json!({ "capacity_bytes": 10_000_000 }))).await;
+    assert_eq!(put.status, 200, "{}", put.body);
+    conforms(&put.json(), "Queued");
+    assert_eq!(r.count_jobs("storage.check").await, 1, "a check is queued to judge it");
+    admin_store.check_capacity(store.id, dom).await.unwrap();
+    let cap = state().await;
+    assert_eq!((cap["declared_bytes"].clone(), cap["status"].clone(), cap["unlimited_accounts"].clone()), (json!(10_000_000), json!("overcommitted"), json!(2)));
+    // A quota that fits inside the room: fine.
+    assert_eq!(c.mutate("PUT", "/api/v1/domains/one.test/settings", Some(json!({ "quota_bytes": 5_000_000 }))).await.status, 200);
+    admin_store.check_capacity(store.id, dom).await.unwrap();
+    assert_eq!(state().await["status"], json!("ok"));
+    assert_eq!(state().await["promised_bytes"], json!(10_000_000), "two accounts of 5 MB each");
+    // A quota that adds up to more than the room.
+    assert_eq!(c.mutate("PUT", "/api/v1/domains/one.test/settings", Some(json!({ "quota_bytes": 20_000_000 }))).await.status, 200);
+    admin_store.check_capacity(store.id, dom).await.unwrap();
+    assert_eq!(state().await["status"], json!("overcommitted"));
+    // Only a platform administrator declares it; garbage is refused; clearing returns to `unset`.
+    let t = Client::sign_in(r.addr, "tenant@one.test").await;
+    assert_eq!(t.mutate("PUT", "/api/v1/domains/one.test/storage/capacity", Some(json!({ "capacity_bytes": 1 }))).await.status, 403);
+    assert_eq!(t.get("/api/v1/domains/one.test/storage").await.json()["storage"]["capacity"]["status"], json!("overcommitted"), "a domain administrator sees the verdict");
+    assert_eq!(c.mutate("PUT", "/api/v1/domains/one.test/storage/capacity", Some(json!({ "capacity_bytes": 0 }))).await.status, 400);
+    assert_eq!(c.mutate("PUT", "/api/v1/domains/one.test/storage/capacity", Some(json!({ "capacity_bytes": null }))).await.status, 200);
+    admin_store.check_capacity(store.id, dom).await.unwrap();
+    assert_eq!(state().await["status"], json!("unset"));
+    // A domain without a store of its own has no room to declare.
+    assert_eq!(c.post("/api/v1/domains", json!({ "name": "two.test" })).await.status, 201);
+    assert_eq!(c.mutate("PUT", "/api/v1/domains/two.test/storage/capacity", Some(json!({ "capacity_bytes": 1 }))).await.status, 404);
+}

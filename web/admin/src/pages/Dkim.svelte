@@ -16,6 +16,33 @@
   let notice = $state<string | null>(null);
   let busy = $state(false);
   let selector = $state('');
+  let retiring = $state<string | null>(null);
+
+  const when = (s: number): string => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(s * 1000));
+
+  // A new selector named after today, so that two rotations never meet on one name.
+  const rotationName = (): string => 'r' + new Date().toISOString().slice(0, 10).replaceAll('-', '');
+
+  async function retire(k: Dkim): Promise<void> {
+    busy = true;
+    error = null;
+    notice = null;
+    try {
+      await app.client.deleteDkim(name, k.selector);
+      notice = t('dkim.retired', { selector: k.selector });
+      retiring = null;
+      await load();
+    } catch (err) {
+      error = err;
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function rotate(): Promise<void> {
+    selector = rotationName();
+    await make(new SubmitEvent('submit'));
+  }
 
   async function load(quiet = false): Promise<void> {
     try {
@@ -74,6 +101,19 @@
             </div>
             <p>{t('dkim.recordName')} <Copy value={k.record_name} label={t('dkim.recordName')} /></p>
             <p>{t('dkim.recordValue')} <Copy value={k.record_value} label={t('dkim.recordValue')} /></p>
+            <p class="muted">{t('dkim.madeOn', { date: when(k.created_at) })}</p>
+            {#if items.length > 1}
+              <p><button type="button" class="secondary" disabled={busy} aria-label={t('dkim.retireFor', { selector: k.selector })} onclick={() => (retiring = retiring === k.selector ? null : k.selector)}>{t('dkim.retire')}</button></p>
+              {#if retiring === k.selector}
+                <div class="row-form" role="alert">
+                  <p>{t('dkim.retireAsk')}</p>
+                  <div class="form-actions">
+                    <button type="button" class="danger" disabled={busy} onclick={() => retire(k)}>{t('dkim.retireYes')}</button>
+                    <button type="button" class="secondary" onclick={() => (retiring = null)}>{t('accounts.cancel')}</button>
+                  </div>
+                </div>
+              {/if}
+            {/if}
           </li>
         {/each}
       </ul>
@@ -88,7 +128,9 @@
             <input bind:value={selector} name="selector" type="text" autocapitalize="none" spellcheck="false" />
           </label>
           <button type="submit" disabled={busy}>{busy ? t('common.creating') : t('dkim.new')}</button>
+          <button type="button" class="secondary" disabled={busy} onclick={rotate}>{t('dkim.rotate')}</button>
         </div>
+        <p class="hint">{t('dkim.rotateHelp')}</p>
       </form>
     </section>
   </DomainShell>

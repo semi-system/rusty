@@ -100,3 +100,32 @@ async fn the_list_needs_a_session_and_refuses_a_malformed_cursor() {
     }
     assert_eq!(c.get("/api/v1/admins?after=0").await.status, 200);
 }
+
+#[tokio::test]
+async fn a_helpdesk_administrator_may_list_accounts_and_reset_passwords_and_nothing_more() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    make_admin(&r, "help@one.test", false).await;
+    let root = Client::sign_in(r.addr, "root@home.test").await;
+    assert_eq!(root.post("/api/v1/domains/one.test/accounts", json!({ "local": "alice", "password": "alice-password-1" })).await.status, 201);
+    // A helpdesk grant needs a domain; revoking and granting again with the role.
+    assert_eq!(root.mutate("DELETE", "/api/v1/admins/help@one.test", None).await.status, 200);
+    assert_eq!(root.post("/api/v1/admins", json!({ "address": "help@one.test", "domain": null, "role": "helpdesk" })).await.status, 400);
+    assert_eq!(root.post("/api/v1/admins", json!({ "address": "help@one.test", "domain": "one.test", "role": "bogus" })).await.status, 400);
+    let made = root.post("/api/v1/admins", json!({ "address": "help@one.test", "domain": "one.test", "role": "helpdesk" })).await;
+    assert_eq!(made.status, 201, "{}", made.body);
+    conforms(&made.json(), "AdminEntry");
+    assert_eq!(made.json()["role"], json!("helpdesk"));
+
+    let help = Client::sign_in(r.addr, "help@one.test").await;
+    assert_eq!(help.get("/api/v1/domains/one.test/accounts").await.status, 200, "may look at the accounts of its domain");
+    assert_eq!(help.post("/api/v1/accounts/alice@one.test/password", json!({ "password": "a-new-password-2", "must_change": true })).await.status, 200);
+    assert_eq!(help.post_empty("/api/v1/accounts/alice@one.test/lock").await.status, 200);
+    assert_eq!(help.post_empty("/api/v1/accounts/alice@one.test/enable").await.status, 200);
+    // Nothing else: no new account, no deletion, no administrators, no settings, no audit log.
+    assert_eq!(help.post("/api/v1/domains/one.test/accounts", json!({ "local": "bob", "password": "bob-password-12" })).await.status, 403);
+    assert_eq!(help.mutate("DELETE", "/api/v1/accounts/alice@one.test", None).await.status, 403);
+    assert_eq!(help.get("/api/v1/admins").await.status, 403);
+    assert_eq!(help.get("/api/v1/audit").await.status, 403);
+    assert_eq!(help.get("/api/v1/domains/one.test/settings").await.status, 403);
+}

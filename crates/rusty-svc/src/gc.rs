@@ -12,6 +12,7 @@ use crate::service::Service;
 
 /// How long a row of the delivery log is kept.
 const LOG_RETENTION_SECS: i64 = 30 * 86_400;
+const AUDIT_RETENTION_SECS: i64 = 365 * 86_400;
 
 /// What one pass did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -24,6 +25,8 @@ pub struct GcSummary {
     pub account_messages_removed: u64,
     /// Rows of the delivery log past their retention.
     pub log_purged: u64,
+    /// Rows of the audit log past their 365 days.
+    pub audit_purged: u64,
     /// Steps that failed (logged); a failed step never stops the others.
     pub errors: usize,
 }
@@ -62,6 +65,14 @@ impl GcService {
             Ok(now) => match ctx.queue.purge_log(now.saturating_sub(LOG_RETENTION_SECS), 5000).await {
                 Ok(n) => s.log_purged = n,
                 Err(e) => step_failed(&mut s, "purge the delivery log", &e),
+            },
+            Err(e) => step_failed(&mut s, "read the clock", &e),
+        }
+        // The audit log of the admin web is kept for 365 days (docs/design-audit.md).
+        match ctx.jobs.now().await {
+            Ok(now) => match ctx.audit.purge(now.saturating_sub(AUDIT_RETENTION_SECS), 5000).await {
+                Ok(n) => s.audit_purged = n,
+                Err(e) => step_failed(&mut s, "purge the audit log", &e),
             },
             Err(e) => step_failed(&mut s, "read the clock", &e),
         }

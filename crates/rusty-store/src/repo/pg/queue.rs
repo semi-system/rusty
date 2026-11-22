@@ -6,7 +6,7 @@ use sqlx::Row;
 
 use super::PgRepo;
 use crate::map_db_error;
-use crate::repo::queue::{sql, InboundRow, LogRow, NewLogRow, QueueJob, QueueRepo, HELD_UNTIL};
+use crate::repo::queue::{sql, StatRow, InboundRow, LogRow, NewLogRow, QueueJob, QueueRepo, HELD_UNTIL};
 use crate::repo::render_pg as r;
 
 #[async_trait]
@@ -121,6 +121,14 @@ impl QueueRepo for PgRepo {
             .await
             .map_err(map_db_error)?;
         Ok(())
+    }
+
+    async fn stats(&self, domain: DomainId, since: i64) -> Result<Vec<StatRow>> {
+        let rows = sqlx::query(r(sql::STATS)).bind(domain.0).bind(since).fetch_all(self.store.pool()).await.map_err(map_db_error)?;
+        rows.iter()
+            .map(|x| Ok(StatRow { day: x.try_get(0)?, direction: x.try_get(1)?, event: x.try_get(2)?, count: x.try_get(3)? }))
+            .collect::<std::result::Result<Vec<_>, sqlx::Error>>()
+            .map_err(map_db_error)
     }
 
     async fn purge_log(&self, older_than: i64, limit: i64) -> Result<u64> {

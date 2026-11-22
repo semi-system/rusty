@@ -1,7 +1,7 @@
 // The API client: the contract's endpoints as typed calls. It knows the three rules of a state-changing request (design section 5): the JSON content type,
 // the CSRF token of the session (the browser adds `Origin` itself) and that a failure is a fixed code, never text to show.
 
-import type { Account, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, DomainSettings, ImportResult, MailList, Member, Members, Monitor, Plan, PlanList, QueueList, Routing, Trace, Protocols, Queue, Relay, SetupState, Storage } from './types';
+import type { Account, CertificateList, Stats, PlatformSettings, Audit, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, DomainSettings, ImportResult, MailList, Member, Members, Monitor, Plan, PlanList, QueueList, Routing, Trace, Protocols, Queue, Relay, SetupState, Storage } from './types';
 import type { MessageKey } from '../i18n';
 
 /** A page of a list, the cursor of the next one and how many rows match in all. */
@@ -236,6 +236,14 @@ export class Client {
     return this.call('GET', `/api/v1/domains/${seg(domain)}/settings`);
   }
 
+  platformSettings(): Promise<PlatformSettings> {
+    return this.call('GET', '/api/v1/settings');
+  }
+
+  setPlatformSettings(settings: PlatformSettings): Promise<PlatformSettings> {
+    return this.call('PUT', '/api/v1/settings', settings);
+  }
+
   setDomainSettings(domain: string, settings: DomainSettings): Promise<DomainSettings> {
     return this.call('PUT', `/api/v1/domains/${seg(domain)}/settings`, settings);
   }
@@ -253,6 +261,24 @@ export class Client {
     const path = `/api/v1/domains/${seg(domain)}/queue/${id}`;
     if (action === 'delete') await this.call('DELETE', path);
     else await this.call('POST', `${path}/${action}`);
+  }
+
+  /** The audit log: the changes administrators made, newest first. */
+  audit(opts: { domain?: string; before?: number } = {}): Promise<Audit> {
+    const parts: string[] = [];
+    if (opts.domain !== undefined && opts.domain.trim() !== '') parts.push(`domain=${encodeURIComponent(opts.domain.trim())}`);
+    if (opts.before !== undefined) parts.push(`before=${opts.before}`);
+    return this.call('GET', `/api/v1/audit${parts.length > 0 ? '?' + parts.join('&') : ''}`);
+  }
+
+  /** What the public names of this server present as their certificates. */
+  certificates(): Promise<CertificateList> {
+    return this.call('GET', '/api/v1/certificates');
+  }
+
+  /** Mail counted per day for the last 30 days. */
+  stats(domain: string): Promise<Stats> {
+    return this.call('GET', `/api/v1/domains/${seg(domain)}/stats`);
   }
 
   /** The delivery log of a domain's outgoing mail, newest first. */
@@ -326,8 +352,8 @@ export class Client {
     return this.call('GET', `/api/v1/admins${cursor(after, opts)}`);
   }
 
-  grantAdmin(address: string, domain: string | null): Promise<AdminEntry> {
-    return this.call('POST', '/api/v1/admins', { address, domain });
+  grantAdmin(address: string, domain: string | null, helpdesk = false): Promise<AdminEntry> {
+    return this.call('POST', '/api/v1/admins', helpdesk ? { address, domain, role: 'helpdesk' } : { address, domain });
   }
 
   async revokeAdmin(address: string): Promise<void> {
@@ -336,6 +362,10 @@ export class Client {
 
   async dkim(domain: string): Promise<Dkim[]> {
     return (await this.call<DkimList>('GET', `/api/v1/domains/${seg(domain)}/dkim`)).items;
+  }
+
+  async deleteDkim(domain: string, selector: string): Promise<void> {
+    await this.call('DELETE', `/api/v1/domains/${seg(domain)}/dkim/${seg(selector)}`);
   }
 
   createDkim(domain: string, selector?: string): Promise<Dkim> {
@@ -387,6 +417,11 @@ export class Client {
 
   async deleteBackend(domain: string, backend: string): Promise<void> {
     await this.call('DELETE', `/api/v1/domains/${seg(domain)}/storage/backends/${seg(backend)}`);
+  }
+
+  /** Declare how much room the tenant's store has, in bytes (`null` clears it); a check is queued to judge it. */
+  async setStorageCapacity(domain: string, capacityBytes: number | null): Promise<void> {
+    await this.call('PUT', `/api/v1/domains/${seg(domain)}/storage/capacity`, { capacity_bytes: capacityBytes });
   }
 
   async checkStorage(domain: string): Promise<void> {

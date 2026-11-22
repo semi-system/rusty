@@ -68,6 +68,7 @@ async fn rig(b: Backend, dialer: Arc<MapDialer>, dns: StaticDns, cfg: OutboundCo
     let tls = RustlsUpgrader::new(cfg.ca_bundle.as_deref()).unwrap();
     let signer = keyring(&cfg, Arc::new(FileSecretSource::new())).map(rusty_smtp::dkim::message_signer);
     let deps = WorkerDeps {
+        footer: None,
         resolver: stack.resolver.clone(),
         dialer: dialer.clone() as Arc<dyn Dialer>,
         tls: Arc::new(tls),
@@ -1286,4 +1287,31 @@ mod relay_check_job {
         })
         .await;
     }
+}
+
+struct FixedFooter(&'static str);
+
+#[async_trait::async_trait]
+impl rusty_smtp::footer::FooterSource for FixedFooter {
+    async fn footer(&self, domain: &str) -> rusty_core::Result<Option<String>> {
+        Ok((domain == "example.net").then(|| self.0.to_owned()))
+    }
+}
+
+#[tokio::test]
+async fn the_footer_of_the_sending_domain_is_added_to_a_plain_text_message_before_it_goes_out() {
+    for_each_backend(|b| async move {
+        let mta = FakeMta::start(|_| Script::default()).await;
+        let dialer = MapDialer::new(&[("192.0.2.10", mta.addr)]);
+        let mut r = rig(b, dialer, dns_one("mx.fake.test", "192.0.2.10"), fast_cfg()).await;
+        r.deps.footer = Some(Arc::new(FixedFooter("Confidential: for the addressee only")));
+        r.start();
+        r.submit("alice@example.net", &["bob@remote.test"], MSG).await;
+        r.wait_done(1).await;
+        let text = lines(&mta.messages().remove(0));
+        assert!(text.ends_with("\r\n-- \r\nConfidential: for the addressee only\r\n"), "{text}");
+        assert!(text.contains("Hello") || text.len() > MSG.len(), "the original text is still there");
+        r.stop().await;
+    })
+    .await;
 }

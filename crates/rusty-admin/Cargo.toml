@@ -27,11 +27,14 @@ hex.workspace = true
 rand_core.workspace = true
 tokio = { workspace = true, features = ["sync", "rt-multi-thread", "macros", "time"] }
 bytes.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
 
 [dev-dependencies]
 rusty-store = { path = "../rusty-store", features = ["test-fixtures"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
 tempfile.workspace = true
+rcgen = { workspace = true, features = ["pem"] }
 
 [[bin]]
 name = "rusty-admin"

@@ -311,3 +311,25 @@ async fn the_queue_figures_are_the_domains_own_and_another_tenant_sees_nothing_o
     assert_eq!(a.status, 404);
     assert_eq!(send(r.addr, "GET", "/api/v1/domains/one.test/outbound", &[], "").await.status, 401);
 }
+
+#[tokio::test]
+async fn an_old_dkim_key_is_retired_after_a_rotation_and_the_last_key_stays() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    let c = Client::sign_in(r.addr, "root@home.test").await;
+    c.post("/api/v1/domains", json!({ "name": "one.test" })).await;
+    let id = domain_id(&r, "one.test").await;
+    let old = c.post("/api/v1/domains/one.test/dkim", json!({})).await.json()["selector"].as_str().unwrap().to_owned();
+    assert_eq!(c.mutate("DELETE", &format!("/api/v1/domains/one.test/dkim/{old}"), None).await.status, 409, "the last key stays: a domain would send unsigned mail");
+    let new = c.post("/api/v1/domains/one.test/dkim", json!({ "selector": "r20261122" })).await;
+    assert_eq!(new.status, 201);
+    assert!(new.json()["created_at"].as_i64().unwrap() > 0);
+    assert_eq!(c.mutate("DELETE", "/api/v1/domains/one.test/dkim/nope", None).await.status, 404);
+    assert_eq!(c.mutate("DELETE", &format!("/api/v1/domains/one.test/dkim/{old}"), None).await.status, 200);
+    let list = c.get("/api/v1/domains/one.test/dkim").await.json()["items"].as_array().unwrap().clone();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["selector"], json!("r20261122-ed25519"));
+    // Its sealed private half went with it.
+    let purposes: Vec<String> = r.outbound.repos().sealed.meta("domain", id).await.unwrap().into_iter().map(|m| m.purpose).collect();
+    assert!(!purposes.contains(&sealed_purpose(&old)), "{purposes:?}");
+}

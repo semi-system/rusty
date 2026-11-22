@@ -87,6 +87,7 @@ export interface AdminEntry {
   id: number;
   address: string;
   scope: string;
+  role: string;
   domain: string | null;
   created_at: number;
 }
@@ -103,6 +104,7 @@ export interface Dkim {
   record_name: string;
   record_value: string;
   sealed: boolean;
+  created_at: number;
 }
 
 export interface DkimList {
@@ -151,7 +153,16 @@ export interface StorageBackend {
   objects: number | null;
 }
 
+export interface StorageCapacity {
+  declared_bytes: number | null;
+  used_bytes: number | null;
+  promised_bytes: number | null;
+  unlimited_accounts: number | null;
+  status: string;
+}
+
 export interface Storage {
+  capacity: StorageCapacity | null;
   kind: string;
   ready: boolean;
   check_status: string;
@@ -291,7 +302,16 @@ export interface DomainAliasName {
   name: string;
 }
 
+export interface PlatformSettings {
+  quota_bytes: number | null;
+  max_message_bytes: number | null;
+  messages_per_hour: number | null;
+}
+
 export interface DomainSettings {
+  footer_text: string | null;
+  sender_allow: string[];
+  sender_block: string[];
   default_plan: string | null;
   max_accounts: number | null;
   quota_bytes: number | null;
@@ -346,5 +366,51 @@ export interface LogLine {
 
 export interface Trace {
   items: LogLine[];
+  next: number | null;
+}
+
+export interface Certificate {
+  host: string;
+  port: number;
+  purpose: string;
+  subject: string | null;
+  issuer: string | null;
+  not_before: number | null;
+  not_after: number | null;
+  days_left: number | null;
+  error: string | null;
+}
+
+export interface CertificateList {
+  items: Certificate[];
+}
+
+export interface DayStats {
+  day: number;
+  received: number;
+  rejected: number;
+  sent: number;
+  deferred: number;
+  failed: number;
+}
+
+export interface Stats {
+  days: DayStats[];
+}
+
+export interface AuditEntry {
+  id: number;
+  at: number;
+  actor: string;
+  domain_id: number | null;
+  ip: string;
+  method: string;
+  route: string;
+  path: string;
+  status: number;
+}
+
+export interface Audit {
+  items: AuditEntry[];
   next: number | null;
 }

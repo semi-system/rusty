@@ -6,6 +6,7 @@
   import DomainShell from '../lib/DomainShell.svelte';
   import ErrorNote from '../lib/ErrorNote.svelte';
   import StoragePool from './StoragePool.svelte';
+  import { bytes } from '../lib/bytes';
   import { t, tFor } from '../i18n';
 
   let { app, me, name }: { app: App; me: Me; name: string } = $props();
@@ -20,6 +21,9 @@
   let busy = $state(false);
   // A platform administrator who chose a pool for a domain that has no store of its own yet.
   let poolMode = $state(false);
+  // The room declared for the store, in gigabytes (empty: none).
+  let capacityGb = $state('');
+  let capacityInvalid = $state(false);
 
   let endpoint = $state('');
   let region = $state('');
@@ -39,6 +43,10 @@
         bucket = s.bucket;
         prefix = s.prefix;
         pathStyle = s.path_style;
+      }
+      if (!quiet) {
+        const room = storage?.capacity?.declared_bytes ?? null;
+        capacityGb = room === null ? '' : String(room / 1_073_741_824);
       }
       error = null;
     } catch (e) {
@@ -83,6 +91,18 @@
       notice = t('storage.checkQueued');
     });
 
+  const saveCapacity = (e: SubmitEvent): Promise<void> => {
+    e.preventDefault();
+    const text = capacityGb.trim();
+    const gb = text === '' ? null : Number(text);
+    capacityInvalid = gb !== null && (!Number.isFinite(gb) || gb <= 0);
+    if (capacityInvalid) return Promise.resolve();
+    return guarded(async () => {
+      await app.client.setStorageCapacity(name, gb === null ? null : Math.round(gb * 1_073_741_824));
+      notice = t('storage.capacitySaved');
+    });
+  };
+
   const when = (s: number): string => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(s * 1000));
 </script>
 
@@ -117,6 +137,33 @@
             <li><Badge tone={storage.access_key_set && storage.secret_key_set ? 'ok' : 'warn'}>{storage.access_key_set && storage.secret_key_set ? t('storage.keysSet') : t('storage.keysNotSet')}</Badge></li>
           {/if}
         </ul>
+      </section>
+    {/if}
+
+    {#if storage !== null && storage.capacity !== null}
+      {@const cap = storage.capacity}
+      <section class="panel" aria-labelledby="capacity">
+        <h2 id="capacity">{t('storage.capacity')}</h2>
+        <p class="hint">{t('storage.capacityLede')}</p>
+        <ul class="checklist">
+          <li>
+            <Badge tone={cap.status === 'ok' ? 'ok' : cap.status === 'unset' ? 'neutral' : cap.status === 'overcommitted' ? 'warn' : 'danger'}>{tFor('storage.capacity.', cap.status, 'storage.capacity.unset')}</Badge>
+            {#if cap.declared_bytes !== null}<span class="muted">{t('storage.capacityDeclared', { size: bytes(cap.declared_bytes) })}</span>{/if}
+          </li>
+          {#if cap.used_bytes !== null && cap.promised_bytes !== null && cap.unlimited_accounts !== null}
+            <li>{t('storage.capacityHeld', { used: bytes(cap.used_bytes), promised: bytes(cap.promised_bytes) })}</li>
+            {#if cap.unlimited_accounts > 0}<li>{t('storage.capacityUnlimited', { n: cap.unlimited_accounts })}</li>{/if}
+          {/if}
+        </ul>
+        {#if platform}
+          {#if capacityInvalid}<p class="alert danger" role="alert">{t('storage.capacityInvalid')}</p>{/if}
+          <form onsubmit={saveCapacity}>
+            <div class="field-row">
+              <label>{t('storage.capacityGb')}<input bind:value={capacityGb} name="capacity" type="text" inputmode="decimal" /></label>
+              <button type="submit" class="secondary" disabled={busy}>{busy ? t('common.saving') : t('common.save')}</button>
+            </div>
+          </form>
+        {/if}
       </section>
     {/if}
 

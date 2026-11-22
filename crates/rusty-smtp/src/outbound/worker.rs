@@ -68,6 +68,8 @@ pub struct WorkerDeps {
     pub route: Arc<dyn OutboundRoute>,
     /// `None`: mail goes unsigned.
     pub signer: Option<Arc<dyn MessageSigner>>,
+    /// `None`: no footers (docs/design-footer.md).
+    pub footer: Option<Arc<dyn crate::footer::FooterSource>>,
 }
 
 #[derive(Debug, Clone)]
@@ -402,7 +404,24 @@ impl Inner {
     /// DKIM-sign when a key exists for the domain of the header `From` (alignment) and it is the
     /// sender's tenant; otherwise the message goes unsigned.
     async fn signed(&self, payload: &OutboundPayload, stored: &Bytes) -> Result<Bytes> {
-        let original = &Bytes::from(crate::message::outbound_copy(stored));
+        let mut copy = crate::message::outbound_copy(stored);
+        // The footer of the sending domain goes in before the signature, so that the signature covers it. Only mail the domain itself sends (the From domain is the tenant's).
+        if let Some(source) = &self.deps.footer {
+            let from = crate::message::from_addresses(&copy).ok().and_then(|a| if a.len() == 1 { a.into_iter().next() } else { None });
+            if from.and_then(|a| a.rsplit_once('@').map(|(_, d)| d.to_ascii_lowercase())).as_deref() == Some(payload.sender_domain.as_str()) {
+                match source.footer(&payload.sender_domain).await {
+                    Ok(Some(text)) => {
+                        if let Some(with) = crate::footer::append_footer(&copy, &text) {
+                            copy = with;
+                        }
+                    }
+                    Ok(None) => {}
+                    // A footer that cannot be read is not a reason to hold the mail.
+                    Err(e) => tracing::warn!(error = %e, "the mail footer could not be read; sending without it"),
+                }
+            }
+        }
+        let original = &Bytes::from(copy);
         let Some(signer) = &self.deps.signer else { return Ok(original.clone()) };
         let from_domain = crate::message::from_addresses(original)
             .ok()

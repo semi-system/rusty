@@ -19,10 +19,21 @@ COLUMN address_owners.owner_id bigint nullable=NO identity=NO/ collation= defaul
 COLUMN admin_grants.account_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN admin_grants.domain_id bigint nullable=YES identity=NO/ collation= default=
 COLUMN admin_grants.created_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN admin_grants.helpdesk boolean nullable=NO identity=NO/ collation= default=false
 COLUMN aliases.id bigint nullable=NO identity=YES/ALWAYS collation= default=
 COLUMN aliases.local_part text nullable=NO identity=NO/ collation=C default=
 COLUMN aliases.domain_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN aliases.account_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN audit_log.id bigint nullable=NO identity=YES/ALWAYS collation= default=
+COLUMN audit_log.at bigint nullable=NO identity=NO/ collation= default=
+COLUMN audit_log.actor_id bigint nullable=YES identity=NO/ collation= default=
+COLUMN audit_log.actor text nullable=NO identity=NO/ collation=C default=
+COLUMN audit_log.domain_id bigint nullable=YES identity=NO/ collation= default=
+COLUMN audit_log.ip text nullable=NO identity=NO/ collation=C default=
+COLUMN audit_log.method text nullable=NO identity=NO/ collation=C default=
+COLUMN audit_log.route text nullable=NO identity=NO/ collation=C default=
+COLUMN audit_log.path text nullable=NO identity=NO/ collation=C default=
+COLUMN audit_log.status integer nullable=NO identity=NO/ collation= default=
 COLUMN blob_backends.id bigint nullable=NO identity=YES/ALWAYS collation= default=
 COLUMN blob_backends.store_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN blob_backends.name text nullable=NO identity=NO/ collation=C default=
@@ -47,6 +58,11 @@ COLUMN blob_stores.config jsonb nullable=NO identity=NO/ collation= default='{}'
 COLUMN blob_stores.check_status text nullable=NO identity=NO/ collation=C default='unchecked'::text
 COLUMN blob_stores.checked_at bigint nullable=YES identity=NO/ collation= default=
 COLUMN blob_stores.created_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN blob_stores.capacity_bytes bigint nullable=YES identity=NO/ collation= default=
+COLUMN blob_stores.used_bytes bigint nullable=YES identity=NO/ collation= default=
+COLUMN blob_stores.promised_bytes bigint nullable=YES identity=NO/ collation= default=
+COLUMN blob_stores.unlimited_accounts bigint nullable=YES identity=NO/ collation= default=
+COLUMN blob_stores.capacity_status text nullable=NO identity=NO/ collation=C default='unset'::text
 COLUMN blobs.hash bytea nullable=NO identity=NO/ collation= default=
 COLUMN blobs.size bigint nullable=NO identity=NO/ collation= default=
 COLUMN blobs.refcount bigint nullable=NO identity=NO/ collation= default=0
@@ -246,6 +262,8 @@ CONSTRAINT admin_grants.admin_grants_account_id_fkey FOREIGN KEY (account_id) RE
 CONSTRAINT admin_grants.admin_grants_account_id_not_null NOT NULL account_id
 CONSTRAINT admin_grants.admin_grants_created_at_not_null NOT NULL created_at
 CONSTRAINT admin_grants.admin_grants_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+CONSTRAINT admin_grants.admin_grants_helpdesk_domain CHECK (NOT helpdesk OR domain_id IS NOT NULL)
+CONSTRAINT admin_grants.admin_grants_helpdesk_not_null NOT NULL helpdesk
 CONSTRAINT admin_grants.admin_grants_pkey PRIMARY KEY (account_id)
 CONSTRAINT aliases.aliases_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 CONSTRAINT aliases.aliases_account_id_not_null NOT NULL account_id
@@ -256,6 +274,21 @@ CONSTRAINT aliases.aliases_local_part_domain_id_key UNIQUE (local_part, domain_i
 CONSTRAINT aliases.aliases_local_part_not_null NOT NULL local_part
 CONSTRAINT aliases.aliases_local_part_valid CHECK (length(local_part) > 0 AND local_part = lower(local_part))
 CONSTRAINT aliases.aliases_pkey PRIMARY KEY (id)
+CONSTRAINT audit_log.audit_log_actor_not_null NOT NULL actor
+CONSTRAINT audit_log.audit_log_actor_valid CHECK (length(actor) <= 320)
+CONSTRAINT audit_log.audit_log_at_not_null NOT NULL at
+CONSTRAINT audit_log.audit_log_at_valid CHECK (at >= 0)
+CONSTRAINT audit_log.audit_log_id_not_null NOT NULL id
+CONSTRAINT audit_log.audit_log_ip_not_null NOT NULL ip
+CONSTRAINT audit_log.audit_log_ip_valid CHECK (length(ip) <= 64)
+CONSTRAINT audit_log.audit_log_method_not_null NOT NULL method
+CONSTRAINT audit_log.audit_log_method_valid CHECK (method = ANY (ARRAY['POST'::text, 'PUT'::text, 'PATCH'::text, 'DELETE'::text]))
+CONSTRAINT audit_log.audit_log_path_not_null NOT NULL path
+CONSTRAINT audit_log.audit_log_path_valid CHECK (length(path) <= 512)
+CONSTRAINT audit_log.audit_log_pkey PRIMARY KEY (id)
+CONSTRAINT audit_log.audit_log_route_not_null NOT NULL route
+CONSTRAINT audit_log.audit_log_route_valid CHECK (length(route) <= 200)
+CONSTRAINT audit_log.audit_log_status_not_null NOT NULL status
 CONSTRAINT blob_backends.blob_backends_check_status_not_null NOT NULL check_status
 CONSTRAINT blob_backends.blob_backends_check_valid CHECK (length(check_status) >= 1 AND length(check_status) <= 64)
 CONSTRAINT blob_backends.blob_backends_config_not_null NOT NULL config
@@ -288,6 +321,9 @@ CONSTRAINT blob_store_leases.blob_store_leases_holder_valid CHECK (length(holder
 CONSTRAINT blob_store_leases.blob_store_leases_pkey PRIMARY KEY (store_id)
 CONSTRAINT blob_store_leases.blob_store_leases_store_id_fkey FOREIGN KEY (store_id) REFERENCES blob_stores(id) ON DELETE CASCADE
 CONSTRAINT blob_store_leases.blob_store_leases_store_id_not_null NOT NULL store_id
+CONSTRAINT blob_stores.blob_stores_capacity_status_not_null NOT NULL capacity_status
+CONSTRAINT blob_stores.blob_stores_capacity_status_valid CHECK (capacity_status = ANY (ARRAY['unset'::text, 'ok'::text, 'overcommitted'::text, 'nearly_full'::text, 'full'::text]))
+CONSTRAINT blob_stores.blob_stores_capacity_valid CHECK (capacity_bytes IS NULL OR capacity_bytes > 0)
 CONSTRAINT blob_stores.blob_stores_check_status_not_null NOT NULL check_status
 CONSTRAINT blob_stores.blob_stores_check_valid CHECK (length(check_status) >= 1 AND length(check_status) <= 64)
 CONSTRAINT blob_stores.blob_stores_config_not_null NOT NULL config
@@ -605,6 +641,9 @@ INDEX admin_grants.admin_grants_domain CREATE INDEX admin_grants_domain ON publi
 INDEX admin_grants.admin_grants_pkey CREATE UNIQUE INDEX admin_grants_pkey ON public.admin_grants USING btree (account_id)
 INDEX aliases.aliases_local_part_domain_id_key CREATE UNIQUE INDEX aliases_local_part_domain_id_key ON public.aliases USING btree (local_part, domain_id)
 INDEX aliases.aliases_pkey CREATE UNIQUE INDEX aliases_pkey ON public.aliases USING btree (id)
+INDEX audit_log.audit_log_at CREATE INDEX audit_log_at ON public.audit_log USING btree (at)
+INDEX audit_log.audit_log_domain CREATE INDEX audit_log_domain ON public.audit_log USING btree (domain_id, id DESC)
+INDEX audit_log.audit_log_pkey CREATE UNIQUE INDEX audit_log_pkey ON public.audit_log USING btree (id)
 INDEX blob_backends.blob_backends_name_unique CREATE UNIQUE INDEX blob_backends_name_unique ON public.blob_backends USING btree (store_id, name)
 INDEX blob_backends.blob_backends_pkey CREATE UNIQUE INDEX blob_backends_pkey ON public.blob_backends USING btree (id)
 INDEX blob_locations.blob_locations_backend CREATE INDEX blob_locations_backend ON public.blob_locations USING btree (backend_id, state)

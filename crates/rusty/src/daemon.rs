@@ -194,6 +194,8 @@ async fn build(
     let secrets = Arc::new(FileSecretSource::new());
     // The scanners of the inbound listener (`[filter]`): the virus scan first (a virus is refused before anything else is asked), then the spam scorer.
     let mut inbound_filters: Vec<Arc<dyn rusty_smtp::filter::InboundFilter>> = Vec::new();
+    // The sender allow and block lists of the recipients come first: an allowed sender skips the scanners, a blocked one is refused.
+    inbound_filters.push(Arc::new(rusty_smtp::policy::SenderPolicy::new(ctx.directory.clone())));
     if let Some(f) = &cfg.filter {
         let max = f.max_scan_bytes;
         if let Some(addr) = &f.clamd_addr {
@@ -293,6 +295,7 @@ async fn build(
             tls: Arc::new(RustlsUpgrader::new(cfg.outbound.ca_bundle.as_deref())?),
             route: route_of(&cfg, store, &ctx, secrets.as_ref())?,
             signer: signer_of(&cfg, store, &ctx, secrets.as_ref())?,
+            footer: Some(Arc::new(rusty_smtp::footer::DomainFooter::new(ctx.directory.clone(), ctx.plans.clone()))),
         };
         // The check of a tenant's relay (`relay.check`) runs here, where the unsealing key is: only with `[unsealing]` can a relay password be opened.
         if cfg.unsealing.is_some() {

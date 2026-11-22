@@ -117,6 +117,12 @@ impl StorageCheckWorker {
     /// Run the check of one store and record its category. `Ok(())` also for a store that is gone or is not an S3 store (nothing to record).
     async fn check(&self, store: StoreId, nonce: u64) -> Result<()> {
         let Some(row) = self.stores.get(store).await? else { return Ok(()) };
+        // The room is judged with every check, whatever the probe found: a store that works can still be too small for what was promised on it.
+        if let Some(domain) = row.domain {
+            if let Err(e) = self.stores.check_capacity(store, domain).await {
+                tracing::warn!(error = %e, "the capacity of a blob store could not be judged");
+            }
+        }
         match row.kind.as_str() {
             "s3" => {
                 let category = self.prober.probe(&row, nonce).await;

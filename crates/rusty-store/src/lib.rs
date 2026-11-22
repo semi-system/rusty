@@ -43,7 +43,7 @@ pub use blob_stores::{STORE_REFRESH, BackendOpener, BlobRouter, BlobStores, FsSt
 pub use pool::{Breaker, Placement, PoolPolicy, PoolStore, ReadRule, RepairReport};
 pub use relay::{tls_of, tls_text, RelayStore, CHECK_STATUSES};
 pub use admin::{AdminStore, MAX_ADMIN_PAGE};
-pub use repo::{AdminEntry, Revoked};
+pub use repo::{AdminEntry, AdminGrant, Revoked};
 pub use feed::{AdminChange, AdminKind, AdminSink, ChangeFeed, ChangeSink, PgAdminFeed, PgChangeFeed, CHANNEL_ADMIN, CHANNEL_JOBS, CHANNEL_MAILBOX};
 pub use jobs::{
     ClaimedJob, JobQueue, DEFAULT_JOB_ATTEMPTS, JOB_RETENTION_SECS, MAX_CLAIM_KINDS,
@@ -66,5 +66,5 @@ pub use pg::{PgPassword, PgLimits, PgSecurity, PgStore};
 pub use pg_queue::{MailboxPermit, MailboxQueue, STRIPES};
 pub use jobs::BatchSpec;
 pub use repo::HELD_UNTIL;
-pub use repo::{AccountUsage, InboundRow, ListInfo, LogRow, MemberInfo, NewLogRow, PlanRepo, PlanRow, QueueJob, QueueRepo, RoutingRepo, SettingsRepo, PROTOCOLS, HeartbeatRepo, HeartbeatRow, BlobStoreRepo, BlobStoreRow, StoreId, PLATFORM_STORE, FlagUpdate, FolderCounts, FolderInfo, JobFence, MessageDetail, OwnerLimits, PurgeBatch, RawRef};
+pub use repo::{StatRow, AuditRepo, AuditRow, NewAuditRow, AccountUsage, InboundRow, ListInfo, LogRow, MemberInfo, NewLogRow, PlanRepo, PlanRow, QueueJob, QueueRepo, RoutingRepo, SettingsRepo, PROTOCOLS, HeartbeatRepo, HeartbeatRow, BlobStoreRepo, BlobStoreRow, StoreId, PLATFORM_STORE, FlagUpdate, FolderCounts, FolderInfo, JobFence, MessageDetail, OwnerLimits, PurgeBatch, RawRef};
 pub use store::{Repos, Store, StoreConfig};

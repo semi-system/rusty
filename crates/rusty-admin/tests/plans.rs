@@ -113,3 +113,45 @@ async fn a_temporary_password_is_shown_on_the_account_until_another_password_is_
 async fn flag(c: &Client) -> serde_json::Value {
     c.get("/api/v1/domains/one.test/accounts").await.json()["items"][0]["must_change_password"].clone()
 }
+
+#[tokio::test]
+async fn the_platform_limits_are_the_last_layer_and_only_platform_administrators_change_them() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    make_admin(&r, "tenant@one.test", true).await;
+    let root = Client::sign_in(r.addr, "root@home.test").await;
+    let none = root.get("/api/v1/settings").await;
+    conforms(&none.json(), "PlatformSettings");
+    assert_eq!(none.json(), json!({ "quota_bytes": null, "max_message_bytes": null, "messages_per_hour": null }));
+    assert_eq!(root.post("/api/v1/domains/one.test/accounts", json!({ "local": "alice", "password": "alice-password-1" })).await.status, 201);
+    let put = root.mutate("PUT", "/api/v1/settings", Some(json!({ "quota_bytes": 5_000_000, "max_message_bytes": null, "messages_per_hour": 40 }))).await;
+    assert_eq!((put.status, put.json()["messages_per_hour"].clone()), (200, json!(40)), "{}", put.body);
+    let alice = root.get("/api/v1/domains/one.test/accounts").await.json()["items"].as_array().unwrap().iter().find(|a| a["address"] == "alice@one.test").unwrap().clone();
+    assert_eq!(alice["quota_bytes"], json!(5_000_000), "the account has the platform quota when nothing nearer sets one");
+    // Clearing a value removes it; the others stay.
+    assert_eq!(root.mutate("PUT", "/api/v1/settings", Some(json!({ "quota_bytes": null, "max_message_bytes": null, "messages_per_hour": 40 }))).await.status, 200);
+    assert_eq!(root.get("/api/v1/settings").await.json()["quota_bytes"], json!(null));
+    for bad in [json!({ "quota_bytes": 0, "max_message_bytes": null, "messages_per_hour": null }), json!({ "extra": 1 })] {
+        assert_eq!(root.mutate("PUT", "/api/v1/settings", Some(bad)).await.status, 400);
+    }
+    let tenant = Client::sign_in(r.addr, "tenant@one.test").await;
+    assert_eq!(tenant.get("/api/v1/settings").await.status, 403);
+    assert_eq!(tenant.mutate("PUT", "/api/v1/settings", Some(json!({ "quota_bytes": 1, "max_message_bytes": null, "messages_per_hour": null }))).await.status, 403);
+}
+
+#[tokio::test]
+async fn the_certificates_page_is_for_platform_administrators_and_a_failed_probe_carries_its_reason() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    make_admin(&r, "tenant@one.test", true).await;
+    let root = Client::sign_in(r.addr, "root@home.test").await;
+    let got = root.get("/api/v1/certificates").await;
+    assert_eq!(got.status, 200, "{}", got.body);
+    conforms(&got.json(), "CertificateList");
+    let items = got.json()["items"].as_array().unwrap().clone();
+    assert!(items.iter().any(|i| i["purpose"] == "web") && items.iter().any(|i| i["purpose"] == "imap"), "{items:?}");
+    // Nothing listens at the test names: each carries why it could not be read, and no certificate fields.
+    assert!(items.iter().all(|i| i["error"].is_string() && i["not_after"].is_null()), "{items:?}");
+    let tenant = Client::sign_in(r.addr, "tenant@one.test").await;
+    assert_eq!(tenant.get("/api/v1/certificates").await.status, 403);
+}

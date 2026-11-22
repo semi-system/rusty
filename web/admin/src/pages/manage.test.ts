@@ -89,7 +89,7 @@ describe('overview', () => {
     expect(screen.getByText(t('domain.queueDead', { n: 2 }))).toBeTruthy();
     const tabs = screen.getByRole('navigation', { name: t('domain.tabs', { name: 'example.org' }) });
     expect(within(tabs).getAllByRole('link').map((a) => a.getAttribute('href'))).toEqual(
-      ['overview', 'accounts', 'aliases', 'routing', 'queue', 'settings', 'dkim', 'dns', 'relay', 'storage'].map((p) => `/domains/example.org/${p}`),
+      ['overview', 'accounts', 'aliases', 'routing', 'queue', 'stats', 'settings', 'dkim', 'dns', 'relay', 'storage'].map((p) => `/domains/example.org/${p}`),
     );
     expect(within(tabs).getByRole('link', { name: t('domain.overview') }).getAttribute('aria-current')).toBe('page');
   });
@@ -214,7 +214,7 @@ describe('aliases', () => {
 });
 
 describe('dkim', () => {
-  const K: Dkim = { selector: 'rusty-ed25519', algorithm: 'ed25519', record_name: 'rusty-ed25519._domainkey.example.org', record_value: 'v=DKIM1; k=ed25519; p=AAAA', sealed: true };
+  const K: Dkim = { selector: 'rusty-ed25519', algorithm: 'ed25519', record_name: 'rusty-ed25519._domainkey.example.org', record_value: 'v=DKIM1; k=ed25519; p=AAAA', sealed: true, created_at: 1700000000 };
 
   it('shows the public record in selectable fields and says the private key is sealed, never showing one', async () => {
     await open('/domains/example.org/dkim', PLATFORM, { 'GET /api/v1/domains/example.org/dkim': ok({ items: [K] }) });
@@ -374,6 +374,7 @@ describe('navigation', () => {
 describe('storage', () => {
   const ST: Storage = {
     kind: 's3',
+    capacity: { declared_bytes: null, used_bytes: null, promised_bytes: null, unlimited_accounts: null, status: 'unset' },
     ready: false,
     check_status: 'auth',
     checked_at: 1_700_000_000,
@@ -385,6 +386,7 @@ describe('storage', () => {
   };
   const POOL: Storage = {
     kind: 'pool',
+    capacity: null,
     ready: false,
     check_status: 'unchecked',
     checked_at: null,
@@ -521,8 +523,8 @@ describe('storage', () => {
 });
 
 describe('administrators', () => {
-  const ROOT = { id: 1, address: 'root@example.org', scope: 'platform', domain: null, created_at: 1700000000 };
-  const CAROL = { id: 2, address: 'carol@example.org', scope: 'domain', domain: 'example.org', created_at: 1700000100 };
+  const ROOT = { id: 1, address: 'root@example.org', scope: 'platform', role: 'admin', domain: null, created_at: 1700000000 };
+  const CAROL = { id: 2, address: 'carol@example.org', scope: 'domain', role: 'admin', domain: 'example.org', created_at: 1700000100 };
 
   it('lists the administrators with what each may manage and removes one, but never offers to remove oneself', async () => {
     const s = await open('/administrators', PLATFORM, {

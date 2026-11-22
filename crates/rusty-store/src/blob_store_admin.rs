@@ -63,6 +63,22 @@ impl BlobStoreAdmin {
         }
     }
 
+    /// Declare the room of a tenant's store (`None` clears it).
+    pub async fn set_capacity(&self, id: StoreId, capacity: Option<i64>) -> Result<()> {
+        if capacity.is_some_and(|c| c <= 0) {
+            return Err(Error::Invalid("the capacity must be positive".into()));
+        }
+        self.repo.set_capacity(id, capacity).await
+    }
+
+    /// Judge the room of the store of `domain` from what it holds and has been promised, and record the verdict with the figures (the storage check does this after its probe).
+    pub async fn check_capacity(&self, id: StoreId, domain: DomainId) -> Result<()> {
+        let Some(row) = self.repo.get(id).await? else { return Ok(()) };
+        let found = self.repo.commitments(domain).await?;
+        let status = rusty_core::storage_policy::capacity_status(row.capacity_bytes, found.used_bytes, found.promised_bytes, found.unlimited_accounts);
+        self.repo.record_capacity(id, found, status).await
+    }
+
     /// Record the result of a check: one of [`CHECK_STATUSES`].
     pub async fn record_check(&self, id: StoreId, status: &str) -> Result<()> {
         if !CHECK_STATUSES.contains(&status) {

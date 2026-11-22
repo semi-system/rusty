@@ -58,6 +58,8 @@ pub struct Services {
     pub routing: Arc<dyn rusty_store::RoutingRepo>,
     /// The outbound queue and the delivery log (docs/design-queue.md).
     pub queue: Arc<dyn rusty_store::QueueRepo>,
+    /// The audit log (docs/design-audit.md).
+    pub audit: Arc<dyn rusty_store::AuditRepo>,
     /// `[sealing] public_key`: what secrets are sealed to. `None`: nothing can be sealed, the endpoints that need it answer `503 unavailable`.
     pub sealing: Option<rusty_seal::SealingKey>,
     /// `None` (no host name configured): the DNS page answers `503 unavailable`.
@@ -120,6 +122,9 @@ impl AdminApp {
             Err(_) => return Err(error(503, "busy")),
         };
         let Some((session, principal)) = found else { return Err(error(401, "unauthorized")) };
+        if !principal.may(req.method.as_str(), &req.path) {
+            return Err(error(403, "forbidden"));
+        }
         if mutating {
             guard_mutation(req, &self.public_origin, &session.csrf).map_err(no_store)?;
         }

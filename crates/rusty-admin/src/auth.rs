@@ -44,6 +44,22 @@ impl Scope {
 pub struct Principal {
     pub account: AccountId,
     pub scope: Scope,
+    /// A helpdesk administrator: a domain administrator that may only look at accounts, reset passwords and lock or unlock (see `Principal::may`).
+    pub helpdesk: bool,
+}
+
+impl Principal {
+    /// May this administrator make this request? Everyone but a helpdesk administrator may (the handlers then check the scope); a helpdesk administrator only the few that its role is for.
+    pub fn may(&self, method: &str, path: &str) -> bool {
+        if !self.helpdesk {
+            return true;
+        }
+        let segs: Vec<&str> = path.trim_matches('/').split('/').collect();
+        matches!(
+            (method, segs.as_slice()),
+            ("GET", ["api", "v1", "session"] | ["api", "v1", "domains"] | ["api", "v1", "domains", _, "accounts" | "overview"]) | ("POST", ["api", "v1", "accounts", _, "password" | "lock" | "enable"])
+        )
+    }
 }
 
 /// Why a sign-in did not happen. The texts the HTTP layer shows are fixed per variant and never say which part was wrong.
@@ -149,7 +165,7 @@ impl AdminAuth {
             return Ok(None);
         };
         let scope = grant.domain.map_or(Scope::Platform, Scope::Domain);
-        Ok(Some((session, Principal { account, scope })))
+        Ok(Some((session, Principal { account, scope, helpdesk: grant.helpdesk })))
     }
 
     pub async fn sign_out(&self, session_id: &str) -> Result<()> {

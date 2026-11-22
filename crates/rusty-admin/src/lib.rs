@@ -9,9 +9,11 @@
 
 pub mod admins;
 pub mod api;
+pub mod audit;
 pub mod auth;
 pub mod autoconfig;
 pub mod autodiscover;
+pub mod certs;
 pub mod dns;
 pub mod health;
 pub mod import;

@@ -42,6 +42,7 @@ enum Seg {
 }
 
 struct Route {
+    pattern: String,
     method: Method,
     segs: Vec<Seg>,
     handler: Arc<dyn Handler>,
@@ -90,7 +91,15 @@ impl Router {
                 None => Seg::Lit(s.to_owned()),
             })
             .collect();
-        self.routes.push(Route { method, segs, handler });
+        self.routes.push(Route { pattern: pattern.to_owned(), method, segs, handler });
+        self
+    }
+
+    /// Replace every route's handler by `f(method, pattern, handler)`: a wrapper that sees the registered pattern (the audit log of the admin web uses it). The fallback is left as it is.
+    pub fn wrap_routes(mut self, f: impl Fn(Method, &str, Arc<dyn Handler>) -> Arc<dyn Handler>) -> Router {
+        for r in &mut self.routes {
+            r.handler = f(r.method, &r.pattern, r.handler.clone());
+        }
         self
     }
 

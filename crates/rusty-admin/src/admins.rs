@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use rusty_directory::parse_address;
 use rusty_http::{handler, Method, Request, Response, Router};
-use rusty_store::{AdminEntry, Revoked};
+use rusty_store::{AdminEntry, AdminGrant, Revoked};
 use serde::{Deserialize, Serialize};
 
 use crate::api::{fail, AdminApp};
@@ -28,13 +28,15 @@ struct AdminJson {
     address: String,
     /// `platform` or `domain`.
     scope: &'static str,
+    /// `admin`, or `helpdesk` (a domain administrator that only resets passwords and locks accounts).
+    role: &'static str,
     domain: Option<String>,
     created_at: i64,
 }
 
 fn admin_json(e: &AdminEntry) -> AdminJson {
     let domain = e.grant.domain.and_then(|_| e.address.rsplit_once('@').map(|(_, d)| d.to_owned()));
-    AdminJson { id: e.grant.account.0, address: e.address.clone(), scope: if e.grant.domain.is_some() { "domain" } else { "platform" }, domain, created_at: e.grant.created_at }
+    AdminJson { id: e.grant.account.0, address: e.address.clone(), scope: if e.grant.domain.is_some() { "domain" } else { "platform" }, role: if e.grant.helpdesk { "helpdesk" } else { "admin" }, domain, created_at: e.grant.created_at }
 }
 
 #[derive(Serialize)]
@@ -74,6 +76,9 @@ struct Grant {
     address: String,
     /// `null`: every domain (a platform administrator); a name: the administrator of that domain only.
     domain: Option<String>,
+    /// `admin` (the default) or `helpdesk`; helpdesk needs a domain.
+    #[serde(default)]
+    role: Option<String>,
 }
 
 async fn grant_admin(app: &AdminApp, req: Request) -> Response {
@@ -102,6 +107,14 @@ async fn grant_admin(app: &AdminApp, req: Request) -> Response {
     if !account.has_password {
         return err(400, "invalid");
     }
+    let helpdesk = match b.role.as_deref() {
+        None | Some("admin") => false,
+        Some("helpdesk") => true,
+        Some(_) => return err(400, "invalid"),
+    };
+    if helpdesk && b.domain.is_none() {
+        return err(400, "invalid");
+    }
     let domain = match b.domain.as_deref() {
         None => None,
         Some(name) => match scoped_domain(app, &p, name).await {
@@ -118,6 +131,14 @@ async fn grant_admin(app: &AdminApp, req: Request) -> Response {
     let g = match app.admins.grant(account.id, domain.as_ref().map(|d| d.id)).await {
         Ok(g) => g,
         Err(e) => return fail(&e),
+    };
+    let g = if helpdesk {
+        match app.admins.set_helpdesk(account.id, true).await {
+            Ok(_) => AdminGrant { helpdesk: true, ..g },
+            Err(e) => return fail(&e),
+        }
+    } else {
+        g
     };
     let entry = AdminEntry { grant: g, address: b.address.trim().to_ascii_lowercase() };
     Response::json(201, &admin_json(&entry)).with_header("cache-control", "no-store")

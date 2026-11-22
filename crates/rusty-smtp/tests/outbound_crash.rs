@@ -56,6 +56,7 @@ fn worker(mta: std::net::SocketAddr) -> OutboundWorker {
     dns.addrs.insert("mx.fake.test".into(), vec!["192.0.2.10".parse().unwrap()]);
     let c = cfg();
     let deps = WorkerDeps {
+        footer: None,
         resolver: Arc::new(dns),
         dialer: MapDialer::new(&[("192.0.2.10", mta)]),
         tls: Arc::new(RustlsUpgrader::new(None).unwrap()),

@@ -62,8 +62,19 @@ pub struct NewLogRow {
     pub detail: Option<String>,
 }
 
+/// How many log lines of one kind a day had: `day` is the number of the UTC day (seconds since the epoch divided by 86 400).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatRow {
+    pub day: i64,
+    pub direction: String,
+    pub event: String,
+    pub count: i64,
+}
+
 #[async_trait]
 pub trait QueueRepo: Send + Sync {
+    /// The log lines of a domain since `since` (unix seconds), counted per day, direction and event, oldest day first (the statistics page).
+    async fn stats(&self, domain: DomainId, since: i64) -> Result<Vec<StatRow>>;
     /// The outbound jobs of a domain, newest first, from just below `before` (a job id; `None`: the newest). `state` is one of the job states; `held` selects queued jobs that are held, and
     /// `waiting` the other queued ones. `needle` (lower case) must occur in the payload: a recipient, the sender or the destination.
     async fn jobs(&self, domain: DomainId, state: Option<&str>, needle: Option<&str>, before: Option<i64>, limit: i64) -> Result<Vec<QueueJob>>;
@@ -104,5 +115,6 @@ pub(crate) mod sql {
     pub const LOG_INBOUND: &str = "INSERT INTO mail_log (at, domain_id, direction, sender, recipient, event, remote, status, detail) \
         SELECT rs_now(), d.id, 'in', x.s, x.r, x.e, x.m, x.t, x.n FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[]) AS x(s, r, e, m, t, n) \
         JOIN domains d ON d.name = lower(split_part(x.r, '@', 2))";
+    pub const STATS: &str = "SELECT at / 86400, direction, event, count(*) FROM mail_log WHERE domain_id = $1 AND at >= $2 GROUP BY 1, 2, 3 ORDER BY 1, 2, 3";
     pub const PURGE_LOG: &str = "DELETE FROM mail_log WHERE id IN (SELECT id FROM mail_log WHERE at < $1 ORDER BY id LIMIT $2)";
 }

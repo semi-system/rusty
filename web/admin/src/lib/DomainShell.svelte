@@ -13,6 +13,7 @@
     { page: 'aliases', label: 'domain.aliases' },
     { page: 'routing', label: 'domain.routing' },
     { page: 'queue', label: 'domain.queue' },
+    { page: 'stats', label: 'domain.stats' },
     { page: 'settings', label: 'domain.settings' },
     { page: 'dkim', label: 'domain.dkim' },
     { page: 'dns', label: 'domain.dns' },

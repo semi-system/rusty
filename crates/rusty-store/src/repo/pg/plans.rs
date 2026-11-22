@@ -51,6 +51,16 @@ impl PlanRepo for PgRepo {
         Ok(())
     }
 
+    async fn global_config(&self) -> Result<String> {
+        let v: Option<String> = sqlx::query_scalar(r(sql::GLOBAL_CONFIG)).bind(crate::repo::GLOBAL_PLAN).fetch_optional(self.store.pool()).await.map_err(map_db_error)?;
+        Ok(v.unwrap_or_else(|| "{}".to_owned()))
+    }
+
+    async fn set_global_keys(&self, remove: &[String], set: &str) -> Result<()> {
+        sqlx::query(r(sql::SET_GLOBAL_KEYS)).bind(crate::repo::GLOBAL_PLAN).bind(remove).bind(set).execute(self.store.pool()).await.map_err(map_db_error)?;
+        Ok(())
+    }
+
     async fn mailbox_used(&self, mailbox: i64) -> Result<i64> {
         let v: Option<i64> = sqlx::query_scalar(r(sql::MAILBOX_USED)).bind(mailbox).fetch_optional(self.store.pool()).await.map_err(map_db_error)?;
         Ok(v.unwrap_or(0))
