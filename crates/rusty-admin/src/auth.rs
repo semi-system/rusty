@@ -55,12 +55,10 @@ impl Principal {
             return true;
         }
         let segs: Vec<&str> = path.trim_matches('/').split('/').collect();
-        match (method, segs.as_slice()) {
-            ("GET", ["api", "v1", "session"] | ["api", "v1", "domains"]) => true,
-            ("GET", ["api", "v1", "domains", _, "accounts" | "overview"]) => true,
-            ("POST", ["api", "v1", "accounts", _, "password" | "lock" | "enable"]) => true,
-            _ => false,
-        }
+        matches!(
+            (method, segs.as_slice()),
+            ("GET", ["api", "v1", "session"] | ["api", "v1", "domains"] | ["api", "v1", "domains", _, "accounts" | "overview"]) | ("POST", ["api", "v1", "accounts", _, "password" | "lock" | "enable"])
+        )
     }
 }
 
