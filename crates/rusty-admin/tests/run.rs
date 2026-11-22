@@ -259,6 +259,17 @@ async fn behind_an_edge_that_sends_the_proxy_header_the_connection_needs_it_and_
     assert!(String::from_utf8_lossy(&out).starts_with("HTTP/1.1 200"), "{}", String::from_utf8_lossy(&out));
     stop.cancel();
     assert!(tokio::time::timeout(Duration::from_secs(10), r.task).await.is_ok());
+    // More origins: listed ones only, valid ones only.
+    assert!(StartupConfig::from_toml_str_for(Role::Admin, &format!("{BASE}[admin]
+listen = \"127.0.0.1:0\"
+public_origin = \"https://admin.example.org\"
+extra_origins = [\"https://admin.example.org:20443\"]
+")).is_ok());
+    assert!(StartupConfig::from_toml_str_for(Role::Admin, &format!("{BASE}[admin]
+listen = \"127.0.0.1:0\"
+public_origin = \"https://admin.example.org\"
+extra_origins = [\"http://admin.example.org\"]
+")).is_err());
     // The setting is refused without the peers that may send the header.
     assert!(StartupConfig::from_toml_str_for(Role::Admin, &format!("{BASE}[admin]\nlisten = \"127.0.0.1:0\"\npublic_origin = \"https://admin.example.org\"\nproxy_protocol = true\n")).is_err());
 }

@@ -123,7 +123,7 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
         let stop = shutdown.clone();
         tokio::spawn(async move { beat.run_until(stop).await });
     }
-    let app = Arc::new(AdminApp::new(auth, directory, admins, gate, &admin.public_origin, SessionConfig::default()).with_services(services));
+    let app = Arc::new(AdminApp::new(auth, directory, admins, gate, &admin.public_origin, SessionConfig::default()).with_services(services).with_extra_origins(admin.extra_origins.clone()));
     // What other processes write (the outbound service's checks, another replica, rustyctl) reaches the open pages through the database's announcements.
     crate::live::spawn_feed(app.clone(), store.admin_feed(), shutdown.clone());
     // The older DKIM keys of a rotation end by themselves after their time (docs/design-dkim-rotation.md).
