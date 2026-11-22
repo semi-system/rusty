@@ -138,3 +138,20 @@ async fn the_platform_limits_are_the_last_layer_and_only_platform_administrators
     assert_eq!(tenant.get("/api/v1/settings").await.status, 403);
     assert_eq!(tenant.mutate("PUT", "/api/v1/settings", Some(json!({ "quota_bytes": 1, "max_message_bytes": null, "messages_per_hour": null }))).await.status, 403);
 }
+
+#[tokio::test]
+async fn the_certificates_page_is_for_platform_administrators_and_a_failed_probe_carries_its_reason() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    make_admin(&r, "tenant@one.test", true).await;
+    let root = Client::sign_in(r.addr, "root@home.test").await;
+    let got = root.get("/api/v1/certificates").await;
+    assert_eq!(got.status, 200, "{}", got.body);
+    conforms(&got.json(), "CertificateList");
+    let items = got.json()["items"].as_array().unwrap().clone();
+    assert!(items.iter().any(|i| i["purpose"] == "web") && items.iter().any(|i| i["purpose"] == "imap"), "{items:?}");
+    // Nothing listens at the test names: each carries why it could not be read, and no certificate fields.
+    assert!(items.iter().all(|i| i["error"].is_string() && i["not_after"].is_null()), "{items:?}");
+    let tenant = Client::sign_in(r.addr, "tenant@one.test").await;
+    assert_eq!(tenant.get("/api/v1/certificates").await.status, 403);
+}

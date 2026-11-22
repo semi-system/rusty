@@ -360,6 +360,22 @@ export interface Trace {
   next: number | null;
 }
 
+export interface Certificate {
+  host: string;
+  port: number;
+  purpose: string;
+  subject: string | null;
+  issuer: string | null;
+  not_before: number | null;
+  not_after: number | null;
+  days_left: number | null;
+  error: string | null;
+}
+
+export interface CertificateList {
+  items: Certificate[];
+}
+
 export interface DayStats {
   day: number;
   received: number;
