@@ -143,6 +143,7 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     let router = crate::monitor::routes(app.clone(), router);
     let router = crate::audit::routes(app.clone(), router);
     let router = crate::certs::routes(app.clone(), router);
+    let router = crate::mailrules::routes(app.clone(), router);
     let router = crate::audit::record_changes(app.clone(), router);
     // The front end embedded at build time answers every other path (and the single-page routes); without one this is an API server only.
     let router = match crate::web::handler() {

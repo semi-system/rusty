@@ -15,6 +15,7 @@ mod settings;
 mod plans;
 mod routing;
 mod queue;
+mod rules;
 mod audit;
 mod admin;
 pub mod tx;

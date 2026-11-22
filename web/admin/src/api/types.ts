@@ -369,6 +369,24 @@ export interface Trace {
   next: number | null;
 }
 
+export interface MailForward {
+  to: string[];
+  keep: boolean;
+}
+
+export interface MailVacation {
+  enabled: boolean;
+  subject: string;
+  body: string;
+  from: number | null;
+  until: number | null;
+}
+
+export interface MailRules {
+  forward: MailForward | null;
+  vacation: MailVacation | null;
+}
+
 export interface Certificate {
   host: string;
   port: number;

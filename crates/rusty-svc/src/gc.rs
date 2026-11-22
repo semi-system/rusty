@@ -27,6 +27,8 @@ pub struct GcSummary {
     pub log_purged: u64,
     /// Rows of the audit log past their 365 days.
     pub audit_purged: u64,
+    /// Rows of the vacation book-keeping older than 60 days.
+    pub vacation_purged: u64,
     /// Steps that failed (logged); a failed step never stops the others.
     pub errors: usize,
 }
@@ -73,6 +75,13 @@ impl GcService {
             Ok(now) => match ctx.audit.purge(now.saturating_sub(AUDIT_RETENTION_SECS), 5000).await {
                 Ok(n) => s.audit_purged = n,
                 Err(e) => step_failed(&mut s, "purge the audit log", &e),
+            },
+            Err(e) => step_failed(&mut s, "read the clock", &e),
+        }
+        match ctx.jobs.now().await {
+            Ok(now) => match ctx.rules.purge_vacation_replies(now.saturating_sub(60 * 86_400), 5000).await {
+                Ok(n) => s.vacation_purged = n,
+                Err(e) => step_failed(&mut s, "purge the vacation replies", &e),
             },
             Err(e) => step_failed(&mut s, "read the clock", &e),
         }

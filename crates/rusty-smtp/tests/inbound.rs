@@ -999,3 +999,35 @@ async fn the_sender_lists_of_the_recipients_refuse_a_blocked_sender_and_let_an_a
     })
     .await;
 }
+
+#[tokio::test]
+async fn the_rules_of_an_account_forward_its_mail_and_answer_each_sender_once() {
+    for_each_backend(|b| async move {
+        let (alice, _) = b.seed().await;
+        let mut o = Opts::default();
+        o.forward = true;
+        let s = start(&b, o).await;
+        s.ctx
+            .directory
+            .set_account_config(alice, serde_json::json!({ "mail_rules": { "forward": { "to": ["me@other.example"], "keep": true }, "vacation": { "enabled": true, "subject": "Away", "body": "Back on Monday." } } }))
+            .await
+            .unwrap();
+        // First message: kept, forwarded (one job) and answered (one job).
+        let mut c = Client::hello(s.addr).await;
+        assert!(c.mail("sender@remote.example", &["alice@example.net"], MSG).await.starts_with("250"));
+        assert_eq!(b.inbox(alice, &s.blobs).await.len(), 1, "the copy is kept");
+        assert_eq!(b.count("jobs").await, 2, "a forward and an automatic reply");
+        // The same sender again: forwarded, but not answered a second time.
+        let mut c = Client::hello(s.addr).await;
+        assert!(c.mail("sender@remote.example", &["alice@example.net"], &[MSG, b"A second message.
+"].concat()).await.starts_with("250"));
+        assert_eq!(b.count("jobs").await, 3, "only the forward");
+        // A list's mail is never answered; the null sender neither.
+        let bulk = b"From: news@remote.example\r\nTo: alice@example.net\r\nSubject: News\r\nList-Id: <news.remote.example>\r\n\r\nHi\r\n";
+        let mut c = Client::hello(s.addr).await;
+        assert!(c.mail("news@remote.example", &["alice@example.net"], bulk).await.starts_with("250"));
+        assert_eq!(b.count("jobs").await, 4, "forwarded, not answered");
+        s.stop().await;
+    })
+    .await;
+}

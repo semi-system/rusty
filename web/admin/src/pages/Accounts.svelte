@@ -5,6 +5,7 @@
   import type { Account, ImportResult, Plan } from '../api/types';
   import { bytes } from '../lib/bytes';
   import DomainShell from '../lib/DomainShell.svelte';
+  import MailRulesForm from '../lib/MailRules.svelte';
   import ErrorNote from '../lib/ErrorNote.svelte';
   import { labelled } from '../lib/stack';
   import ListBar from '../lib/ListBar.svelte';
@@ -69,6 +70,8 @@
   let editing = $state<string | null>(null);
   let fresh = $state('');
   let temporary = $state(false);
+  // The account whose forwarding and automatic reply are open.
+  let rulesFor = $state<string | null>(null);
 
   async function load(after?: number, quiet = false): Promise<void> {
     try {
@@ -215,8 +218,12 @@
                     {#if a.status === 'disabled'}
                       <button type="button" disabled={busy} aria-label={t('accounts.delete', { address: a.address })} onclick={() => (deleting = deleting === a.address ? null : a.address)}>{t('accounts.deleteShort')}</button>
                     {/if}
+                    <button type="button" aria-label={t('rules.open', { address: a.address })} onclick={() => (rulesFor = rulesFor === a.address ? null : a.address)}>{t('rules.openShort')}</button>
                     <button type="button" aria-label={t('accounts.setPassword', { address: a.address })} onclick={() => { editing = editing === a.address ? null : a.address; fresh = ''; tooShort = false; }}>{t('accounts.setPasswordShort')}</button>
                   </div>
+                  {#if rulesFor === a.address}
+                    <MailRulesForm {app} address={a.address} onclose={() => (rulesFor = null)} />
+                  {/if}
                   {#if deleting === a.address}
                     <div class="row-form" role="alert">
                       <p>{t('accounts.deleteAsk', { address: a.address })}</p>

@@ -133,6 +133,7 @@ pub struct InboundHandler {
     hub: MailboxHub,
     quota: Arc<dyn QuotaPolicy>,
     plans: Arc<dyn rusty_store::PlanRepo>,
+    rules: Arc<dyn rusty_store::RulesRepo>,
     /// The delivery log the trace of the admin web reads (docs/design-queue.md).
     queue: Arc<dyn rusty_store::QueueRepo>,
     tls: TlsProvider,
@@ -197,6 +198,7 @@ impl InboundHandler {
             hub: ctx.hub.clone(),
             quota: ctx.quota.clone(),
             plans: ctx.plans.clone(),
+            rules: ctx.rules.clone(),
             queue: ctx.queue.clone(),
             tls: ctx.tls.clone(),
             hostname,
@@ -348,7 +350,7 @@ impl InboundHandler {
         original: &[u8],
         stored: Bytes,
         folder: FolderId,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         self.quota.check_append(account, stored.len() as u64)?;
         let mailbox = self.hub.open_for(account).await?;
         let id = delivery_id_for(mail_from, account.0, original);
@@ -356,17 +358,70 @@ impl InboundHandler {
         match mailbox.deliver(folder, stored, Flags::default(), id).await {
             Ok(DeliverOutcome::Created(_)) => {
                 self.warn_when_nearly_full(&mailbox, account, size).await;
-                Ok(())
+                Ok(true)
             }
-            Ok(DeliverOutcome::Duplicate(_)) => Ok(()),
+            Ok(DeliverOutcome::Duplicate(_)) => Ok(false),
             // The id is derived from the ORIGINAL data, the stored bytes carry the arrival time. A retry that
             // crosses a second therefore stores different bytes under an id the store already knows and is
             // answered Conflict: the message is already delivered, which is what the retry wants to know.
             Err(Error::Conflict(_)) => {
                 tracing::debug!("retry of an already delivered message");
-                Ok(())
+                Ok(false)
             }
             Err(e) => Err(e),
+        }
+    }
+
+    /// The rules of the account that received a message on port 25 (docs/design-mail-rules.md): forwarding to other addresses and the automatic reply. Best effort, after the copy is stored:
+    /// a rule that cannot run is logged and never fails the delivery. `to` is the address the mail was sent to (the reply comes from it).
+    async fn apply_rules(&self, account: AccountId, to: &str, mail_from: &str, original: &[u8]) {
+        let Some(queue) = &self.forwarder else { return };
+        let Ok(config) = self.directory.account_config(account).await else { return };
+        let Some(raw) = config.get(crate::rules::KEY) else { return };
+        let rules = crate::rules::MailRules::from_value(raw);
+        let Some((_, domain)) = to.rsplit_once('@') else { return };
+        let now = self.options.clock.now_unix();
+        if let Some(fwd) = &rules.forward {
+            let targets = crate::rules::forward_targets(fwd, original, to);
+            if !targets.is_empty() {
+                let copy = Bytes::from(crate::rules::forwarded_copy(original, to));
+                let key = hex::encode(Sha256::digest(format!("forward\0{}\0{}\0{}", account.0, targets.join(","), BlobHash::of(original).as_str()).as_bytes()));
+                match self.blobs.put(copy.clone()).await {
+                    Ok(blob) => {
+                        let msg = OutboundMessage { blob, envelope_from: to.to_owned(), recipients: targets, sender_domain: domain.to_owned(), account: 0, submission_key: key, bytes: copy.len() as u64 };
+                        if let Err(e) = queue.enqueue(msg).await {
+                            tracing::warn!(error = %e, "a forward could not be queued");
+                        }
+                    }
+                    Err(e) => tracing::warn!(error = %e, "a forward could not be stored"),
+                }
+            }
+        }
+        if let Some(v) = rules.vacation.as_ref().filter(|v| v.active(now)) {
+            if crate::rules::is_automatic(original, mail_from) || mail_from.eq_ignore_ascii_case(to) {
+                return;
+            }
+            match self.rules.claim_vacation_reply(account.0, &mail_from.to_ascii_lowercase(), crate::rules::REPLY_WINDOW_SECS).await {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(e) => {
+                    tracing::warn!(error = %e, "the vacation book could not be read; no reply");
+                    return;
+                }
+            }
+            let token = hex12(&BlobHash::of(format!("{}\0{}\0{}", account.0, mail_from, now).as_bytes()));
+            let reply = Bytes::from(crate::rules::vacation_reply(v, to, mail_from, original, &self.hostname, now, &token));
+            match self.blobs.put(reply.clone()).await {
+                Ok(blob) => {
+                    let key = hex::encode(Sha256::digest(format!("vacation\0{}\0{}\0{}", account.0, mail_from, BlobHash::of(original).as_str()).as_bytes()));
+                    // The null sender: nothing comes back to this reply.
+                    let msg = OutboundMessage { blob, envelope_from: String::new(), recipients: vec![mail_from.to_owned()], sender_domain: domain.to_owned(), account: 0, submission_key: key, bytes: reply.len() as u64 };
+                    if let Err(e) = queue.enqueue(msg).await {
+                        tracing::warn!(error = %e, "an automatic reply could not be queued");
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "an automatic reply could not be stored"),
+            }
         }
     }
 
@@ -579,7 +634,13 @@ impl InboundHandler {
             t.recipients.iter().flat_map(|r| r.accounts.iter().copied()).filter(|a| seen.insert(*a)).collect();
         let mut results = Vec::with_capacity(accounts.len());
         for a in &accounts {
-            results.push(self.deliver_one(*a, &t.mail_from, &t.data, stored.clone(), folder).await);
+            let delivered = self.deliver_one(*a, &t.mail_from, &t.data, stored.clone(), folder).await;
+            // A copy that was stored now (not a retry that found it) is what the account's rules act on.
+            if let Ok(true) = delivered {
+                let to = t.recipients.iter().find(|r| r.accounts.contains(a)).map(|r| r.address.as_str()).unwrap_or_default();
+                self.apply_rules(*a, to, &t.mail_from, &t.data).await;
+            }
+            results.push(delivered.map(|_| ()));
         }
         // The outside members of a list (port 25 has no queue of its own for them): after every local copy is stored.
         if results.iter().all(Result::is_ok) && !t.remote_recipients.is_empty() {
@@ -744,7 +805,7 @@ impl InboundHandler {
         // job repositories are separate seams.)
         let mut results: Vec<Result<(), Error>> = Vec::new();
         for a in &accounts {
-            results.push(self.deliver_one(*a, &t.mail_from, &t.data, stored.clone(), system_folder("inbox")).await);
+            results.push(self.deliver_one(*a, &t.mail_from, &t.data, stored.clone(), system_folder("inbox")).await.map(|_| ()));
         }
         if results.iter().all(Result::is_ok) && !t.remote_recipients.is_empty() {
             let sender_domain = identity.address.rsplit_once('@').map(|(_, d)| d.to_owned()).unwrap_or_default();
