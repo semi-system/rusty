@@ -295,6 +295,7 @@ async fn build(
             tls: Arc::new(RustlsUpgrader::new(cfg.outbound.ca_bundle.as_deref())?),
             route: route_of(&cfg, store, &ctx, secrets.as_ref())?,
             signer: signer_of(&cfg, store, &ctx, secrets.as_ref())?,
+            footer: Some(Arc::new(rusty_smtp::footer::DomainFooter::new(ctx.directory.clone(), ctx.plans.clone()))),
         };
         // The check of a tenant's relay (`relay.check`) runs here, where the unsealing key is: only with `[unsealing]` can a relay password be opened.
         if cfg.unsealing.is_some() {

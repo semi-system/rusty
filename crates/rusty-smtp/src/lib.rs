@@ -19,6 +19,7 @@ pub mod authres;
 pub mod codec;
 pub mod dkim;
 pub mod filter;
+pub mod footer;
 pub mod fuzzing;
 pub mod inbound;
 pub mod limits;

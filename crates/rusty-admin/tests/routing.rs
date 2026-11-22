@@ -177,3 +177,19 @@ async fn the_sender_lists_of_a_domain_are_kept_clean_and_a_domain_administrator_
     assert_eq!(t.mutate("PUT", "/api/v1/domains/lists.test/settings", Some(json!({ "sender_allow": [], "sender_block": [] }))).await.status, 200);
     assert_eq!(c.get("/api/v1/domains/lists.test/settings").await.json()["sender_allow"], json!([]));
 }
+
+#[tokio::test]
+async fn the_mail_footer_of_a_domain_is_kept_and_a_blank_or_oversized_one_is_refused() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    make_admin(&r, "tenant@foot.test", true).await;
+    let t = Client::sign_in(r.addr, "tenant@foot.test").await;
+    let put = t.mutate("PUT", "/api/v1/domains/foot.test/settings", Some(json!({ "footer_text": "Sent from Foot Ltd" }))).await;
+    assert_eq!(put.status, 200, "{}", put.body);
+    assert_eq!(t.get("/api/v1/domains/foot.test/settings").await.json()["footer_text"], json!("Sent from Foot Ltd"));
+    for bad in [json!("   "), json!("x".repeat(2001))] {
+        assert_eq!(t.mutate("PUT", "/api/v1/domains/foot.test/settings", Some(json!({ "footer_text": bad }))).await.status, 400);
+    }
+    assert_eq!(t.mutate("PUT", "/api/v1/domains/foot.test/settings", Some(json!({ "footer_text": null }))).await.status, 200);
+    assert_eq!(t.get("/api/v1/domains/foot.test/settings").await.json()["footer_text"], json!(null));
+}

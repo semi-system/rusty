@@ -300,6 +300,7 @@ export interface PlatformSettings {
 }
 
 export interface DomainSettings {
+  footer_text: string | null;
   sender_allow: string[];
   sender_block: string[];
   default_plan: string | null;

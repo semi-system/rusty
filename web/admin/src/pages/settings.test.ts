@@ -13,7 +13,7 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-const SETTINGS = { default_plan: null, max_accounts: null, quota_bytes: null, max_message_bytes: null, password_min_length: null, password_classes: null, sender_allow: ['boss@far.example'], sender_block: [] };
+const SETTINGS = { default_plan: null, max_accounts: null, quota_bytes: null, max_message_bytes: null, password_min_length: null, password_classes: null, sender_allow: ['boss@far.example'], sender_block: [], footer_text: null };
 
 describe('domain settings: sender lists', () => {
   it('shows the lists a line each and saves what was typed as lists', async () => {

@@ -44,6 +44,9 @@ pub struct DomainSettings {
     /// Senders refused at the end of DATA (when every recipient blocks them).
     #[serde(default)]
     pub sender_block: Vec<String>,
+    /// A text added to the end of every plain-text or HTML message the domain sends (a disclaimer); `null`: none.
+    #[serde(default)]
+    pub footer_text: Option<String>,
 }
 
 /// Most entries in one list.
@@ -88,6 +91,7 @@ impl DomainSettings {
             password_classes: n("password_classes").and_then(|x| u32::try_from(x).ok()),
             sender_allow: text_list(&v, "sender_allow"),
             sender_block: text_list(&v, "sender_block"),
+            footer_text: v.get("footer_text").and_then(Value::as_str).map(str::to_owned),
         }
     }
 
@@ -99,6 +103,7 @@ impl DomainSettings {
             || self.password_min_length.is_some_and(|n| !(MIN_LENGTH_FLOOR..=128).contains(&n))
             || self.password_classes.is_some_and(|n| n > 4)
             || self.default_plan.as_deref().is_some_and(|p| p.is_empty() || p.len() > 64)
+            || self.footer_text.as_deref().is_some_and(|f| f.trim().is_empty() || f.len() > rusty_smtp::footer::MAX_FOOTER || f.contains('\0'))
             || clean_list(&self.sender_allow).is_none()
             || clean_list(&self.sender_block).is_none()
     }
@@ -176,6 +181,7 @@ async fn put(app: &AdminApp, req: Request) -> Response {
             password_classes: old.password_classes,
             sender_allow: old.sender_allow.clone(),
             sender_block: old.sender_block.clone(),
+            footer_text: old.footer_text.clone(),
             ..new.clone()
         } == old;
         if !same {
@@ -198,6 +204,7 @@ async fn put(app: &AdminApp, req: Request) -> Response {
         ("max_message_bytes", new.max_message_bytes.map(Value::from)),
         ("password_min_length", new.password_min_length.map(Value::from)),
         ("password_classes", new.password_classes.map(Value::from)),
+        ("footer_text", new.footer_text.clone().map(Value::from)),
         ("sender_allow", (!new.sender_allow.is_empty()).then(|| Value::from(new.sender_allow.clone()))),
         ("sender_block", (!new.sender_block.is_empty()).then(|| Value::from(new.sender_block.clone()))),
     ] {

@@ -25,6 +25,7 @@
   let minLength = $state('');
   let classes = $state('');
   // One entry a line: an address or a domain.
+  let footer = $state('');
   let allowText = $state('');
   let blockText = $state('');
   const lines = (text: string): string[] => text.split('\n').map((l) => l.trim()).filter((l) => l !== '');
@@ -42,6 +43,7 @@
       maxMessageMb = mb(s.max_message_bytes);
       minLength = whole(s.password_min_length);
       classes = whole(s.password_classes);
+      footer = s.footer_text ?? '';
       allowText = s.sender_allow.join('\n');
       blockText = s.sender_block.join('\n');
       loaded = true;
@@ -75,6 +77,7 @@
       max_message_bytes: message,
       password_min_length: length ?? null,
       password_classes: kinds ?? null,
+      footer_text: footer.trim() === '' ? null : footer.trim(),
       sender_allow: lines(allowText),
       sender_block: lines(blockText),
     };
@@ -130,6 +133,11 @@
             <label>{t('settings.minLength')}<input bind:value={minLength} name="length" type="text" inputmode="numeric" /></label>
             <label>{t('settings.classes')}<input bind:value={classes} name="classes" type="text" inputmode="numeric" /></label>
           </div>
+        </section>
+        <section class="panel" aria-labelledby="set-footer">
+          <h2 id="set-footer">{t('settings.footer')}</h2>
+          <p class="hint">{t('settings.footerLede')}</p>
+          <label>{t('settings.footerText')}<textarea bind:value={footer} name="footer" rows="4" maxlength="2000"></textarea></label>
         </section>
         <section class="panel" aria-labelledby="set-senders">
           <h2 id="set-senders">{t('settings.senders')}</h2>
