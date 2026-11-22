@@ -19,7 +19,8 @@ export function fakeServer(routes: Record<string, Handler>): { client: Client; c
   const calls: Call[] = [];
   const fetcher: Fetch = async (path, init) => {
     const key = `${init?.method ?? 'GET'} ${path}`;
-    const body = init?.body === undefined ? undefined : JSON.parse(String(init.body));
+    // A piece of an upload is bytes, not JSON: it is recorded as it is.
+    const body = init?.body === undefined ? undefined : typeof init.body === 'string' ? JSON.parse(init.body) : init.body;
     calls.push({ key, body, headers: (init?.headers ?? {}) as Record<string, string> });
     const h = routes[key];
     const a = typeof h === 'function' ? h(body) : Array.isArray(h) ? h.shift() : h;

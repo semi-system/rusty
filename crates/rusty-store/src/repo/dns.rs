@@ -122,6 +122,12 @@ pub trait DnsRepo: Send + Sync {
     ) -> Result<(DkimKeyRow, bool)>;
     /// The domain's DKIM public keys, ordered by selector.
     async fn dkim_keys(&self, domain: DomainId) -> Result<Vec<DkimKeyRow>>;
+    /// Schedule the retirement of these selectors `delay_secs` from now (a selector already scheduled keeps its earlier time).
+    async fn schedule_dkim_retirements(&self, domain: DomainId, selectors: &[String], delay_secs: i64) -> Result<()>;
+    /// The retirements that are due at `now` (unix seconds), at most `limit`.
+    async fn due_dkim_retirements(&self, now: i64, limit: i64) -> Result<Vec<(DomainId, String)>>;
+    /// Forget a scheduled retirement (done, or the key was retired by hand).
+    async fn clear_dkim_retirement(&self, domain: DomainId, selector: &str) -> Result<()>;
     /// Remove the public row of a selector (a retired key: the signer stops using it at once); whether there was one. The sealed private half is the caller's to remove.
     async fn delete_dkim_key(&self, domain: DomainId, selector: &str) -> Result<bool>;
     /// Active domains whose DNS records are due for a check: the newest check of any of their records is older than `interval_secs` plus a stable per-domain
@@ -176,6 +182,9 @@ pub(crate) mod sql {
     pub const GET_KEY: &str = "SELECT selector, algorithm, public_key_b64, created_at FROM domain_dkim_keys \
         WHERE domain_id = $1 AND selector = $2";
     pub const DELETE_KEY: &str = "DELETE FROM domain_dkim_keys WHERE domain_id = $1 AND selector = $2";
+    pub const SCHEDULE_RETIRE: &str = "INSERT INTO dkim_retirements (domain_id, selector, retire_at) SELECT $1, x, {NOW} + $3 FROM unnest($2::text[]) AS x ON CONFLICT (domain_id, selector) DO NOTHING";
+    pub const DUE_RETIRE: &str = "SELECT domain_id, selector FROM dkim_retirements WHERE retire_at <= $1 ORDER BY retire_at LIMIT $2";
+    pub const CLEAR_RETIRE: &str = "DELETE FROM dkim_retirements WHERE domain_id = $1 AND selector = $2";
     pub const LIST_KEYS: &str = "SELECT selector, algorithm, public_key_b64, created_at FROM domain_dkim_keys \
         WHERE domain_id = $1 ORDER BY selector";
     pub const DUE: &str = "SELECT d.id, d.name FROM domains d \

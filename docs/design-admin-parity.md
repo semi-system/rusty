@@ -131,3 +131,18 @@ The admin console is finished first (P1 and P2), then the users' side (P3), then
 * **Nothing destructive without a step back.** Closing precedes deleting; deleting a domain needs it empty; a CSV import is a dry run first; every destructive action asks for the exact name.
 * **Text in the catalogue**, errors with stable codes, every table with paging and a size cap, every list a query with a budget (`query_shape_pg.rs`).
 * **One migration per item,** forward only, with its privilege lines in `grants_pg.sql`; the per-service roles get only what the service needs (the delivery service reads quotas; it does not write plans).
+
+## P2 status (checked against section 2, 2026-11-22)
+
+| P2 item (section 2) | State |
+|---|---|
+| Statistics per day and domain | done: log for 28 days, daily roll-up for 400 (`design-queue.md`) |
+| Audit log | done: 365 days, domain administrators see their domain (`design-audit.md`) |
+| Helpdesk role | done (`design-helpdesk.md`) |
+| Export, import, deleted items | done: `rustyctl mailbox` (mbox and Maildir) **and** a Mailbox button in the admin web for platform administrators (export file, upload and import, audit, kept a day: `design-mailbox-transfers.md`); a retention of deleted mail with recovery |
+| Mail footer | done for text, HTML, alternative and mixed messages; not for encoded bodies or other charsets (`design-footer.md`) |
+| DKIM rotation | done: rotate (a dated key), the old key retires itself after 7 days, or by hand |
+| Platform settings with hot reload | done for message size, rate, quota, virus action and blocked attachment types (layers are read at use, no restart). **Not** done: the banner, RBLs and greylisting. RBLs and greylisting are rspamd modules of the deployment, the banner is the greeting built from `hostname`; none is a Rusty key yet |
+| Anti-spam: thresholds, lists, quarantine, release | done: thresholds per plan, allow/block per domain, held-mail view of the trace; release is the person moving the message out of Spam (the administrator cannot read mail) |
+| Anti-virus action | done: reject or quarantine |
+| Certificates page | done for hosts, issuer, expiry and days left; **not** done: the next renewal (ACME state lives in the edge) and a manual upload |

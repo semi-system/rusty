@@ -18,6 +18,9 @@
   let quotaMb = $state('');
   let maxMessageMb = $state('');
   let perHour = $state('');
+  // What happens to a message with a virus: refused (the default) or filed in the Spam folder.
+  let virusAction = $state('reject');
+  let blockedText = $state('');
 
   const mb = (n: number | null): string => (n === null ? '' : String(n / 1_048_576));
 
@@ -27,6 +30,8 @@
       quotaMb = mb(s.quota_bytes);
       maxMessageMb = mb(s.max_message_bytes);
       perHour = s.messages_per_hour === null ? '' : String(s.messages_per_hour);
+      virusAction = s.virus_action ?? 'reject';
+      blockedText = s.blocked_extensions.join(' ');
       loaded = true;
     } catch (e) {
       error = e;
@@ -44,7 +49,7 @@
     error = null;
     notice = null;
     try {
-      await app.client.setPlatformSettings({ quota_bytes: quota, max_message_bytes: message, messages_per_hour: hours });
+      await app.client.setPlatformSettings({ quota_bytes: quota, max_message_bytes: message, messages_per_hour: hours, virus_action: virusAction === 'reject' ? null : virusAction, blocked_extensions: blockedText.split(/[\s,]+/).filter((x) => x !== '') });
       notice = t('platform.saved');
     } catch (err) {
       error = err;
@@ -68,6 +73,19 @@
         <label>{t('platform.maxMessageMb')}<input bind:value={maxMessageMb} name="message" type="text" inputmode="decimal" /></label>
         <label>{t('platform.perHour')}<input bind:value={perHour} name="perhour" type="text" inputmode="numeric" /></label>
       </div>
+      <div class="field-row">
+        <label>
+          {t('platform.virus')}
+          <select bind:value={virusAction} name="virus">
+            <option value="reject">{t('platform.virusReject')}</option>
+            <option value="quarantine">{t('platform.virusQuarantine')}</option>
+          </select>
+        </label>
+      </div>
+      <div class="field-row">
+        <label>{t('platform.blocked')}<input bind:value={blockedText} name="blocked" type="text" autocapitalize="none" spellcheck="false" /></label>
+      </div>
+      <p class="hint">{t('platform.blockedHelp')}</p>
       <div class="form-actions"><button type="submit" class="primary" disabled={busy}>{busy ? t('common.saving') : t('common.save')}</button></div>
     </form>
   {/if}

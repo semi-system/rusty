@@ -85,11 +85,47 @@ pub struct ClamdFilter {
     max_bytes: u64,
     on_error: OnError,
     observer: Option<Observer>,
+    policy: Option<std::sync::Arc<dyn VirusPolicy>>,
+}
+
+/// What to do with a message clamd found a virus in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VirusAction {
+    /// Refuse it at the end of DATA (`550`), the default.
+    Reject,
+    /// Deliver it to the Spam folder, tagged `X-Virus-Scan: FOUND`.
+    Quarantine,
+}
+
+/// The virus action of the recipients (the key `virus_action` of the configuration layers: `reject` or `quarantine`).
+#[async_trait]
+pub trait VirusPolicy: Send + Sync {
+    async fn action(&self, accounts: &[rusty_core::AccountId]) -> VirusAction;
+}
+
+/// The action the directory's layers give; the first recipient's account decides (one message has one fate after DATA). Anything unreadable is a rejection.
+pub struct DirectoryVirusPolicy(pub rusty_directory::Directory);
+
+#[async_trait]
+impl VirusPolicy for DirectoryVirusPolicy {
+    async fn action(&self, accounts: &[rusty_core::AccountId]) -> VirusAction {
+        let Some(first) = accounts.first() else { return VirusAction::Reject };
+        match self.0.effective_config(*first, "virus_action").await {
+            Ok(Some(v)) if v.as_str() == Some("quarantine") => VirusAction::Quarantine,
+            _ => VirusAction::Reject,
+        }
+    }
 }
 
 impl ClamdFilter {
     pub fn new(addr: &str, timeout: Duration, max_bytes: u64, on_error: OnError) -> ClamdFilter {
-        ClamdFilter { addr: addr.to_owned(), timeout, max_bytes, on_error, observer: None }
+        ClamdFilter { addr: addr.to_owned(), timeout, max_bytes, on_error, observer: None, policy: None }
+    }
+
+    /// Let the recipients' configuration choose between refusing a message with a virus and filing it in the Spam folder.
+    pub fn with_policy(mut self, policy: std::sync::Arc<dyn VirusPolicy>) -> ClamdFilter {
+        self.policy = Some(policy);
+        self
     }
 
     pub fn with_observer(mut self, observer: Observer) -> ClamdFilter {
@@ -156,6 +192,13 @@ impl InboundFilter for ClamdFilter {
             }
             Ok(Reply::Found) => {
                 self.note("virus");
+                if let Some(p) = &self.policy {
+                    let accounts: Vec<rusty_core::AccountId> = ctx.recipients.iter().flat_map(|x| x.accounts.iter().copied()).collect();
+                    if p.action(&accounts).await == VirusAction::Quarantine {
+                        tracing::info!(scanner = "clamd", "a message with a virus was filed in the Spam folder");
+                        return FilterVerdict::QuarantineTagged(QuarantineFolder::Spam, vec![("X-Virus-Scan".to_owned(), "FOUND".to_owned())]);
+                    }
+                }
                 tracing::info!(scanner = "clamd", "a message was refused: virus");
                 FilterVerdict::Reject { code: 550, enhanced: "5.7.1", text: "Message refused: it contains a virus".to_owned() }
             }

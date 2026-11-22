@@ -197,6 +197,24 @@ impl DnsRepo for PgRepo {
             .map_err(map_db_error)
     }
 
+    async fn schedule_dkim_retirements(&self, domain: DomainId, selectors: &[String], delay_secs: i64) -> Result<()> {
+        if selectors.is_empty() {
+            return Ok(());
+        }
+        sqlx::query(r(sql::SCHEDULE_RETIRE)).bind(domain.0).bind(selectors).bind(delay_secs).execute(self.store.pool()).await.map_err(map_db_error)?;
+        Ok(())
+    }
+
+    async fn due_dkim_retirements(&self, now: i64, limit: i64) -> Result<Vec<(DomainId, String)>> {
+        let rows = sqlx::query(r(sql::DUE_RETIRE)).bind(now).bind(limit).fetch_all(self.store.pool()).await.map_err(map_db_error)?;
+        rows.iter().map(|x| Ok((DomainId(x.try_get::<i64, _>(0)?), x.try_get::<String, _>(1)?))).collect::<std::result::Result<Vec<_>, sqlx::Error>>().map_err(map_db_error)
+    }
+
+    async fn clear_dkim_retirement(&self, domain: DomainId, selector: &str) -> Result<()> {
+        sqlx::query(r(sql::CLEAR_RETIRE)).bind(domain.0).bind(selector).execute(self.store.pool()).await.map_err(map_db_error)?;
+        Ok(())
+    }
+
     async fn delete_dkim_key(&self, domain: DomainId, selector: &str) -> Result<bool> {
         let done = sqlx::query(r(sql::DELETE_KEY)).bind(domain.0).bind(selector).execute(self.store.pool()).await.map_err(map_db_error)?;
         Ok(done.rows_affected() > 0)

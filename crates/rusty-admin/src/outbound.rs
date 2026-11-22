@@ -171,11 +171,34 @@ async fn dkim_create(app: &AdminApp, req: Request) -> Response {
     if let Err(e) = s.sealed.put("domain", dom.id.0, &key.purpose, &key.key_id, &key.sealed).await {
         return fail(&e);
     }
+    // A rotation: the older keys end by themselves after the time receivers need to stop using their records (a failure to schedule leaves them for a retirement by hand).
+    let older: Vec<String> = existing.iter().map(|k| k.selector.clone()).collect();
+    if let Err(e) = s.dns.schedule_dkim_retirements(dom.id, &older, DKIM_RETIRE_AFTER_SECS).await {
+        tracing::warn!(error = %e, "the retirement of the older DKIM keys could not be scheduled");
+    }
     let made = match s.dns.dkim_keys(dom.id).await {
         Ok(k) => k.into_iter().find(|k| k.selector == key.selector).map_or(0, |k| k.created_at),
         Err(e) => return fail(&e),
     };
     json(201, &dkim_json(&key.selector, "ed25519", &key.public_key_b64, &dom.name, true, made))
+}
+
+/// How long after a rotation the older keys are retired by themselves: receivers cache the DNS record and check mail that is still in transit.
+pub const DKIM_RETIRE_AFTER_SECS: i64 = 7 * 86_400;
+
+/// Retire the keys whose time has come (`dkim_retirements`): the public row and then the sealed private half, unless the key is the domain's only one (then the entry is dropped and the key stays).
+/// Returns how many keys were retired. Called by the admin service every few minutes.
+pub async fn retire_due_dkim_keys(s: &Services, now: i64) -> rusty_core::Result<usize> {
+    let mut retired = 0;
+    for (domain, selector) in s.dns.due_dkim_retirements(now, 100).await? {
+        let keys = s.dns.dkim_keys(domain).await?;
+        if keys.len() >= 2 && keys.iter().any(|k| k.selector == selector) && s.dns.delete_dkim_key(domain, &selector).await? {
+            s.sealed.delete("domain", domain.0, &sealed_purpose(&selector)).await?;
+            retired += 1;
+        }
+        s.dns.clear_dkim_retirement(domain, &selector).await?;
+    }
+    Ok(retired)
 }
 
 /// `DELETE /api/v1/domains/{d}/dkim/{k}`: retire a key after a rotation. The last key cannot be retired (`409 wrong_state`): a domain would then send unsigned mail. Mail signed with the old key
@@ -207,6 +230,7 @@ async fn dkim_delete(app: &AdminApp, req: Request) -> Response {
     if keys.len() < 2 {
         return err(409, "wrong_state");
     }
+    let _ = s.dns.clear_dkim_retirement(dom.id, &selector).await;
     // The public row first: the signer lists keys from it, so signing with the selector stops at once; then the sealed private half.
     match s.dns.delete_dkim_key(dom.id, &selector).await {
         Ok(true) => {}

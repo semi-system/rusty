@@ -113,6 +113,7 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
         routing: repos.routing.clone(),
         queue: repos.queue.clone(),
         audit: repos.audit.clone(),
+        transfers: repos.transfers.clone(),
         sealing,
         mail: cfg.hostname.clone().map(|host| MailSettings { host, public_ips: admin.public_ips.clone(), spf_include: admin.spf_include.clone() }),
     };
@@ -125,6 +126,25 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     let app = Arc::new(AdminApp::new(auth, directory, admins, gate, &admin.public_origin, SessionConfig::default()).with_services(services));
     // What other processes write (the outbound service's checks, another replica, rustyctl) reaches the open pages through the database's announcements.
     crate::live::spawn_feed(app.clone(), store.admin_feed(), shutdown.clone());
+    // The older DKIM keys of a rotation end by themselves after their time (docs/design-dkim-rotation.md).
+    {
+        let (app, jobs, stop) = (app.clone(), rusty_store::JobQueue::with_repo(repos.jobs.clone()), shutdown.clone());
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    () = stop.cancelled() => break,
+                    () = tokio::time::sleep(Duration::from_secs(600)) => {}
+                }
+                if let (Some(s), Ok(now)) = (app.services.as_ref(), jobs.now().await) {
+                    match crate::outbound::retire_due_dkim_keys(s, now).await {
+                        Ok(n) if n > 0 => tracing::info!(retired = n, "old DKIM keys were retired"),
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!(error = %e, "the scheduled retirement of DKIM keys failed"),
+                    }
+                }
+            }
+        });
+    }
     let router = routes(app.clone(), Router::new());
     let router = crate::manage::routes(app.clone(), router);
     let router = crate::storage::routes(app.clone(), router);
@@ -144,6 +164,7 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     let router = crate::audit::routes(app.clone(), router);
     let router = crate::certs::routes(app.clone(), router);
     let router = crate::mailrules::routes(app.clone(), router);
+    let router = crate::transfers::routes(app.clone(), router);
     let router = crate::audit::record_changes(app.clone(), router);
     // The front end embedded at build time answers every other path (and the single-page routes); without one this is an API server only.
     let router = match crate::web::handler() {
@@ -165,6 +186,10 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     // Behind the edge only: another container on the network must not reach the service directly and skip the edge's address allow-list.
     let accept: Arc<dyn Accept> = if admin.allowed_peers.is_empty() && admin.allowed_hosts.is_empty() {
         accept
+    } else if admin.proxy_protocol {
+        // The edge says who the client is: the header is read from the allowed peers only, and the address that follows is the client's (docs/design-prost-edge.md).
+        let named = rusty_svc::NamedPeers::start(admin.allowed_hosts.clone(), rusty_svc::NAMED_PEERS_REFRESH, shutdown.clone()).await;
+        Arc::new(rusty_svc::proxy::EdgeAccept::new(admin.allowed_peers.clone(), true).with_named(named))
     } else {
         let named = rusty_svc::NamedPeers::start(admin.allowed_hosts.clone(), rusty_svc::NAMED_PEERS_REFRESH, shutdown.clone()).await;
         Arc::new(PeerAllow::new(accept, admin.allowed_peers.clone()).with_named(named))

@@ -137,4 +137,4 @@ backend be_pop3s
 
 backend be_admin
     mode http
-    server-template admin 1-4 admin:8080 resolvers docker init-addr none check inter 5s
+    server-template admin 1-4 admin:8080 resolvers docker init-addr none check inter 5s send-proxy-v2

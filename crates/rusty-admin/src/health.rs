@@ -18,10 +18,17 @@ fn target(listen: SocketAddr) -> SocketAddr {
     }
 }
 
-/// The status code of the answer to `GET /api/v1/session` at `listen`, if there was one within `limit`.
-pub async fn status(listen: SocketAddr, limit: Duration) -> Option<u16> {
+/// The PROXY protocol v2 header of a `LOCAL` command (a proxy's own health check): the signature, version 2 and `LOCAL`, no address family, no payload.
+const PROXY_V2_LOCAL: [u8; 16] = [0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A, 0x20, 0x00, 0x00, 0x00];
+
+/// The status code of the answer to `GET /api/v1/session` at `listen`, if there was one within `limit`. `proxied`: the service reads the PROXY header (`[admin] proxy_protocol`), so the probe
+/// starts with the `LOCAL` one, as the edge's own health checks do.
+pub async fn status(listen: SocketAddr, limit: Duration, proxied: bool) -> Option<u16> {
     tokio::time::timeout(limit, async {
         let mut s = TcpStream::connect(target(listen)).await.ok()?;
+        if proxied {
+            s.write_all(&PROXY_V2_LOCAL).await.ok()?;
+        }
         s.write_all(b"GET /api/v1/session HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAccept: application/json\r\n\r\n").await.ok()?;
         let mut head = Vec::with_capacity(64);
         let mut buf = [0u8; 64];
@@ -43,8 +50,8 @@ pub async fn status(listen: SocketAddr, limit: Duration) -> Option<u16> {
 }
 
 /// Healthy: the service answered `200` or `401`.
-pub async fn healthy(listen: SocketAddr, limit: Duration) -> bool {
-    matches!(status(listen, limit).await, Some(200 | 401))
+pub async fn healthy(listen: SocketAddr, limit: Duration, proxied: bool) -> bool {
+    matches!(status(listen, limit, proxied).await, Some(200 | 401))
 }
 
 #[cfg(test)]
@@ -68,12 +75,12 @@ mod tests {
     #[tokio::test]
     async fn only_a_200_or_401_from_the_service_is_healthy() {
         let t = Duration::from_millis(500);
-        assert!(healthy(serve_once(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n").await, t).await);
-        assert!(healthy(serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await, t).await);
-        assert!(!healthy(serve_once(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n").await, t).await);
-        assert!(!healthy(serve_once(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n").await, t).await);
-        assert!(!healthy(serve_once(b"SSH-2.0-OpenSSH\r\n").await, t).await, "not HTTP");
-        assert!(!healthy(serve_once(b"").await, t).await, "closed without an answer");
+        assert!(healthy(serve_once(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n").await, t, false).await);
+        assert!(healthy(serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await, t, false).await);
+        assert!(!healthy(serve_once(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n").await, t, false).await);
+        assert!(!healthy(serve_once(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n").await, t, false).await);
+        assert!(!healthy(serve_once(b"SSH-2.0-OpenSSH\r\n").await, t, false).await, "not HTTP");
+        assert!(!healthy(serve_once(b"").await, t, false).await, "closed without an answer");
     }
 
     #[tokio::test]
@@ -81,14 +88,14 @@ mod tests {
         let free = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = free.local_addr().unwrap();
         drop(free);
-        assert!(!healthy(addr, Duration::from_millis(500)).await);
+        assert!(!healthy(addr, Duration::from_millis(500), false).await);
         let silent = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = silent.local_addr().unwrap();
         tokio::spawn(async move {
             let _held = silent.accept().await;
             tokio::time::sleep(Duration::from_secs(30)).await;
         });
-        assert!(!healthy(addr, Duration::from_millis(300)).await);
+        assert!(!healthy(addr, Duration::from_millis(300), false).await);
     }
 
     #[test]

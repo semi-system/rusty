@@ -31,6 +31,7 @@ pub mod session;
 pub mod settings;
 pub mod setup;
 pub mod storage;
+pub mod transfers;
 pub mod web;
 
 pub use auth::{AdminAuth, Principal, Scope, SignInError};

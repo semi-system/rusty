@@ -23,7 +23,7 @@ fn err(status: u16, code: &'static str) -> Response {
 /// Wrap every route that changes something so that its success is written to the audit log. A failed write is logged and does not undo the change (the change has happened).
 pub fn record_changes(app: Arc<AdminApp>, router: Router) -> Router {
     router.wrap_routes(move |method, pattern, inner: Arc<dyn Handler>| {
-        if method == Method::Get || method == Method::Head || pattern == SKIPPED {
+        if method == Method::Get || method == Method::Head || pattern == SKIPPED || pattern == crate::transfers::CHUNK_ROUTE {
             return inner;
         }
         let (app, pattern) = (app.clone(), pattern.to_owned());

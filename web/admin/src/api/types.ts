@@ -308,9 +308,12 @@ export interface PlatformSettings {
   quota_bytes: number | null;
   max_message_bytes: number | null;
   messages_per_hour: number | null;
+  virus_action: string | null;
+  blocked_extensions: string[];
 }
 
 export interface DomainSettings {
+  blocked_extensions: string[];
   footer_text: string | null;
   sender_allow: string[];
   sender_block: string[];
@@ -369,6 +372,25 @@ export interface LogLine {
 export interface Trace {
   items: LogLine[];
   next: number | null;
+}
+
+export interface Transfer {
+  id: number;
+  kind: string;
+  requested_by: string;
+  state: string;
+  folder: string | null;
+  size: number;
+  messages: number;
+  skipped: number;
+  error: string | null;
+  created_at: number;
+  finished_at: number | null;
+  expires_at: number;
+}
+
+export interface TransferList {
+  items: Transfer[];
 }
 
 export interface MailForward {

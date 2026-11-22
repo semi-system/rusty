@@ -70,7 +70,7 @@ async fn healthcheck(path: PathBuf) -> u8 {
         }
     };
     let Some(admin) = cfg.admin.as_ref() else { return 2 };
-    if rusty_admin::health::healthy(admin.listen, std::time::Duration::from_secs(5)).await {
+    if rusty_admin::health::healthy(admin.listen, std::time::Duration::from_secs(5), admin.proxy_protocol).await {
         0
     } else {
         1

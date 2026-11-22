@@ -93,6 +93,7 @@ async fn build(with_sealing: bool) -> Rig {
         routing: repos.routing.clone(),
         queue: repos.queue.clone(),
         audit: repos.audit.clone(),
+        transfers: repos.transfers.clone(),
         sealing: with_sealing.then_some(seal_key),
         mail: Some(MailSettings { host: "mail.example.org".into(), public_ips: vec!["203.0.114.5".parse().unwrap()], spf_include: None }),
     };
@@ -111,6 +112,7 @@ async fn build(with_sealing: bool) -> Rig {
     let router = rusty_admin::audit::routes(app.clone(), router);
     let router = rusty_admin::certs::routes(app.clone(), router);
     let router = rusty_admin::mailrules::routes(app.clone(), router);
+    let router = rusty_admin::transfers::routes(app.clone(), router);
     let router = rusty_admin::audit::record_changes(app.clone(), router);
     let served_app = app.clone();
     let h = HttpHandler::new(router, HttpConfig::default());
@@ -184,6 +186,12 @@ impl Client {
         let text = body.map(|b| b.to_string()).unwrap_or_default();
         let h = [("Cookie", self.cookie.as_str()), ("Origin", ORIGIN), ("Content-Type", "application/json"), ("X-CSRF-Token", self.csrf.as_str())];
         send(self.addr, method, path, &h, &text).await
+    }
+
+    /// A request whose body is these bytes as they are (a piece of an upload). It still says `application/json`: the CSRF guard of the server asks every change for that type, and the body of a piece is not read as JSON.
+    pub async fn put_raw(&self, path: &str, body: &str) -> Reply {
+        let h = [("Cookie", self.cookie.as_str()), ("Origin", ORIGIN), ("Content-Type", "application/json"), ("X-CSRF-Token", self.csrf.as_str())];
+        send(self.addr, "PUT", path, &h, body).await
     }
 
     pub async fn post(&self, path: &str, body: Value) -> Reply {

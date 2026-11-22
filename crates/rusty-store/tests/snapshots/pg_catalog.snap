@@ -85,6 +85,9 @@ COLUMN deliveries.delivery_id bytea nullable=NO identity=NO/ collation= default=
 COLUMN deliveries.message_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN deliveries.blob_hash bytea nullable=NO identity=NO/ collation= default=
 COLUMN deliveries.created_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN dkim_retirements.domain_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN dkim_retirements.selector text nullable=NO identity=NO/ collation=C default=
+COLUMN dkim_retirements.retire_at bigint nullable=NO identity=NO/ collation= default=
 COLUMN domain_aliases.name text nullable=NO identity=NO/ collation=C default=
 COLUMN domain_aliases.domain_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN domain_dkim_keys.domain_id bigint nullable=NO identity=NO/ collation= default=
@@ -188,6 +191,22 @@ COLUMN mail_log.remote text nullable=YES identity=NO/ collation=C default=
 COLUMN mail_log.status text nullable=YES identity=NO/ collation=C default=
 COLUMN mail_log.detail text nullable=YES identity=NO/ collation=C default=
 COLUMN mail_log.direction text nullable=NO identity=NO/ collation=C default='out'::text
+COLUMN mailbox_transfer_chunks.transfer_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN mailbox_transfer_chunks.seq integer nullable=NO identity=NO/ collation= default=
+COLUMN mailbox_transfer_chunks.data bytea nullable=NO identity=NO/ collation= default=
+COLUMN mailbox_transfers.id bigint nullable=NO identity=YES/ALWAYS collation= default=
+COLUMN mailbox_transfers.kind text nullable=NO identity=NO/ collation=C default=
+COLUMN mailbox_transfers.account_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN mailbox_transfers.requested_by text nullable=NO identity=NO/ collation=C default=
+COLUMN mailbox_transfers.state text nullable=NO identity=NO/ collation=C default=
+COLUMN mailbox_transfers.folder text nullable=YES identity=NO/ collation=C default=
+COLUMN mailbox_transfers.size bigint nullable=NO identity=NO/ collation= default=0
+COLUMN mailbox_transfers.messages bigint nullable=NO identity=NO/ collation= default=0
+COLUMN mailbox_transfers.skipped bigint nullable=NO identity=NO/ collation= default=0
+COLUMN mailbox_transfers.error text nullable=YES identity=NO/ collation=C default=
+COLUMN mailbox_transfers.created_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN mailbox_transfers.finished_at bigint nullable=YES identity=NO/ collation= default=
+COLUMN mailbox_transfers.expires_at bigint nullable=NO identity=NO/ collation= default=
 COLUMN mailboxes.id bigint nullable=NO identity=YES/ALWAYS collation= default=
 COLUMN mailboxes.account_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN mailboxes.next_msg_id bigint nullable=NO identity=NO/ collation= default=1
@@ -196,6 +215,11 @@ COLUMN mailboxes.uid_validity bigint nullable=NO identity=NO/ collation= default
 COLUMN mailboxes.next_folder_id bigint nullable=NO identity=NO/ collation= default=1
 COLUMN mailboxes.used_bytes bigint nullable=NO identity=NO/ collation= default=0
 COLUMN mailboxes.last_delivery_at bigint nullable=YES identity=NO/ collation= default=
+COLUMN message_stats.domain_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN message_stats.day bigint nullable=NO identity=NO/ collation= default=
+COLUMN message_stats.direction text nullable=NO identity=NO/ collation=C default=
+COLUMN message_stats.event text nullable=NO identity=NO/ collation=C default=
+COLUMN message_stats.count bigint nullable=NO identity=NO/ collation= default=
 COLUMN messages.mailbox_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN messages.id bigint nullable=NO identity=NO/ collation= default=
 COLUMN messages.folder_id bigint nullable=NO identity=NO/ collation= default=
@@ -380,6 +404,13 @@ CONSTRAINT deliveries.deliveries_mailbox_id_message_id_fkey FOREIGN KEY (mailbox
 CONSTRAINT deliveries.deliveries_mailbox_id_not_null NOT NULL mailbox_id
 CONSTRAINT deliveries.deliveries_message_id_not_null NOT NULL message_id
 CONSTRAINT deliveries.deliveries_pkey PRIMARY KEY (mailbox_id, delivery_id)
+CONSTRAINT dkim_retirements.dkim_retirements_at_valid CHECK (retire_at >= 0)
+CONSTRAINT dkim_retirements.dkim_retirements_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+CONSTRAINT dkim_retirements.dkim_retirements_domain_id_not_null NOT NULL domain_id
+CONSTRAINT dkim_retirements.dkim_retirements_pkey PRIMARY KEY (domain_id, selector)
+CONSTRAINT dkim_retirements.dkim_retirements_retire_at_not_null NOT NULL retire_at
+CONSTRAINT dkim_retirements.dkim_retirements_selector_not_null NOT NULL selector
+CONSTRAINT dkim_retirements.dkim_retirements_selector_valid CHECK (length(selector) >= 1 AND length(selector) <= 63)
 CONSTRAINT domain_aliases.domain_aliases_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
 CONSTRAINT domain_aliases.domain_aliases_domain_id_not_null NOT NULL domain_id
 CONSTRAINT domain_aliases.domain_aliases_name_not_null NOT NULL name
@@ -556,6 +587,30 @@ CONSTRAINT mail_log.mail_log_remote_valid CHECK (remote IS NULL OR length(remote
 CONSTRAINT mail_log.mail_log_sender_not_null NOT NULL sender
 CONSTRAINT mail_log.mail_log_sender_valid CHECK (length(sender) <= 320)
 CONSTRAINT mail_log.mail_log_status_valid CHECK (status IS NULL OR length(status) <= 16)
+CONSTRAINT mailbox_transfer_chunks.mailbox_transfer_chunks_data_not_null NOT NULL data
+CONSTRAINT mailbox_transfer_chunks.mailbox_transfer_chunks_pkey PRIMARY KEY (transfer_id, seq)
+CONSTRAINT mailbox_transfer_chunks.mailbox_transfer_chunks_seq_not_null NOT NULL seq
+CONSTRAINT mailbox_transfer_chunks.mailbox_transfer_chunks_seq_valid CHECK (seq >= 0)
+CONSTRAINT mailbox_transfer_chunks.mailbox_transfer_chunks_transfer_id_fkey FOREIGN KEY (transfer_id) REFERENCES mailbox_transfers(id) ON DELETE CASCADE
+CONSTRAINT mailbox_transfer_chunks.mailbox_transfer_chunks_transfer_id_not_null NOT NULL transfer_id
+CONSTRAINT mailbox_transfers.mailbox_transfers_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+CONSTRAINT mailbox_transfers.mailbox_transfers_account_id_not_null NOT NULL account_id
+CONSTRAINT mailbox_transfers.mailbox_transfers_by_valid CHECK (length(requested_by) <= 320)
+CONSTRAINT mailbox_transfers.mailbox_transfers_created_at_not_null NOT NULL created_at
+CONSTRAINT mailbox_transfers.mailbox_transfers_error_valid CHECK (error IS NULL OR length(error) <= 32)
+CONSTRAINT mailbox_transfers.mailbox_transfers_expires_at_not_null NOT NULL expires_at
+CONSTRAINT mailbox_transfers.mailbox_transfers_folder_valid CHECK (folder IS NULL OR length(folder) <= 200)
+CONSTRAINT mailbox_transfers.mailbox_transfers_id_not_null NOT NULL id
+CONSTRAINT mailbox_transfers.mailbox_transfers_kind_not_null NOT NULL kind
+CONSTRAINT mailbox_transfers.mailbox_transfers_kind_valid CHECK (kind = ANY (ARRAY['export'::text, 'import'::text]))
+CONSTRAINT mailbox_transfers.mailbox_transfers_messages_not_null NOT NULL messages
+CONSTRAINT mailbox_transfers.mailbox_transfers_pkey PRIMARY KEY (id)
+CONSTRAINT mailbox_transfers.mailbox_transfers_requested_by_not_null NOT NULL requested_by
+CONSTRAINT mailbox_transfers.mailbox_transfers_size_not_null NOT NULL size
+CONSTRAINT mailbox_transfers.mailbox_transfers_size_valid CHECK (size >= 0)
+CONSTRAINT mailbox_transfers.mailbox_transfers_skipped_not_null NOT NULL skipped
+CONSTRAINT mailbox_transfers.mailbox_transfers_state_not_null NOT NULL state
+CONSTRAINT mailbox_transfers.mailbox_transfers_state_valid CHECK (state = ANY (ARRAY['uploading'::text, 'queued'::text, 'running'::text, 'done'::text, 'failed'::text]))
 CONSTRAINT mailboxes.mailboxes_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 CONSTRAINT mailboxes.mailboxes_account_id_key UNIQUE (account_id)
 CONSTRAINT mailboxes.mailboxes_account_id_not_null NOT NULL account_id
@@ -572,6 +627,17 @@ CONSTRAINT mailboxes.mailboxes_uid_validity_not_null NOT NULL uid_validity
 CONSTRAINT mailboxes.mailboxes_uid_validity_valid CHECK (uid_validity > 0)
 CONSTRAINT mailboxes.mailboxes_used_bytes_not_null NOT NULL used_bytes
 CONSTRAINT mailboxes.mailboxes_used_bytes_valid CHECK (used_bytes >= 0)
+CONSTRAINT message_stats.message_stats_count_not_null NOT NULL count
+CONSTRAINT message_stats.message_stats_count_valid CHECK (count >= 0)
+CONSTRAINT message_stats.message_stats_day_not_null NOT NULL day
+CONSTRAINT message_stats.message_stats_day_valid CHECK (day >= 0)
+CONSTRAINT message_stats.message_stats_direction_not_null NOT NULL direction
+CONSTRAINT message_stats.message_stats_direction_valid CHECK (direction = ANY (ARRAY['out'::text, 'in'::text]))
+CONSTRAINT message_stats.message_stats_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+CONSTRAINT message_stats.message_stats_domain_id_not_null NOT NULL domain_id
+CONSTRAINT message_stats.message_stats_event_not_null NOT NULL event
+CONSTRAINT message_stats.message_stats_event_valid CHECK (length(event) >= 1 AND length(event) <= 32)
+CONSTRAINT message_stats.message_stats_pkey PRIMARY KEY (domain_id, day, direction, event)
 CONSTRAINT messages.messages_blob_fkey FOREIGN KEY (blob_store_id, blob_hash) REFERENCES blobs(store_id, hash) ON DELETE RESTRICT
 CONSTRAINT messages.messages_blob_hash_not_null NOT NULL blob_hash
 CONSTRAINT messages.messages_blob_store_id_not_null NOT NULL blob_store_id
@@ -670,6 +736,8 @@ INDEX change_log.change_log_pkey CREATE UNIQUE INDEX change_log_pkey ON public.c
 INDEX deliveries.deliveries_created CREATE INDEX deliveries_created ON public.deliveries USING btree (created_at)
 INDEX deliveries.deliveries_message CREATE INDEX deliveries_message ON public.deliveries USING btree (mailbox_id, message_id)
 INDEX deliveries.deliveries_pkey CREATE UNIQUE INDEX deliveries_pkey ON public.deliveries USING btree (mailbox_id, delivery_id)
+INDEX dkim_retirements.dkim_retirements_at CREATE INDEX dkim_retirements_at ON public.dkim_retirements USING btree (retire_at)
+INDEX dkim_retirements.dkim_retirements_pkey CREATE UNIQUE INDEX dkim_retirements_pkey ON public.dkim_retirements USING btree (domain_id, selector)
 INDEX domain_aliases.domain_aliases_domain CREATE INDEX domain_aliases_domain ON public.domain_aliases USING btree (domain_id)
 INDEX domain_aliases.domain_aliases_pkey CREATE UNIQUE INDEX domain_aliases_pkey ON public.domain_aliases USING btree (name)
 INDEX domain_dkim_keys.domain_dkim_keys_pkey CREATE UNIQUE INDEX domain_dkim_keys_pkey ON public.domain_dkim_keys USING btree (domain_id, selector)
@@ -700,8 +768,15 @@ INDEX lists.lists_pkey CREATE UNIQUE INDEX lists_pkey ON public.lists USING btre
 INDEX mail_log.mail_log_at CREATE INDEX mail_log_at ON public.mail_log USING btree (at)
 INDEX mail_log.mail_log_domain CREATE INDEX mail_log_domain ON public.mail_log USING btree (domain_id, id DESC)
 INDEX mail_log.mail_log_pkey CREATE UNIQUE INDEX mail_log_pkey ON public.mail_log USING btree (id)
+INDEX mailbox_transfer_chunks.mailbox_transfer_chunks_pkey CREATE UNIQUE INDEX mailbox_transfer_chunks_pkey ON public.mailbox_transfer_chunks USING btree (transfer_id, seq)
+INDEX mailbox_transfers.mailbox_transfers_account CREATE INDEX mailbox_transfers_account ON public.mailbox_transfers USING btree (account_id, id DESC)
+INDEX mailbox_transfers.mailbox_transfers_expires CREATE INDEX mailbox_transfers_expires ON public.mailbox_transfers USING btree (expires_at)
+INDEX mailbox_transfers.mailbox_transfers_pkey CREATE UNIQUE INDEX mailbox_transfers_pkey ON public.mailbox_transfers USING btree (id)
+INDEX mailbox_transfers.mailbox_transfers_queued CREATE INDEX mailbox_transfers_queued ON public.mailbox_transfers USING btree (id) WHERE (state = 'queued'::text)
 INDEX mailboxes.mailboxes_account_id_key CREATE UNIQUE INDEX mailboxes_account_id_key ON public.mailboxes USING btree (account_id)
 INDEX mailboxes.mailboxes_pkey CREATE UNIQUE INDEX mailboxes_pkey ON public.mailboxes USING btree (id)
+INDEX message_stats.message_stats_day CREATE INDEX message_stats_day ON public.message_stats USING btree (day)
+INDEX message_stats.message_stats_pkey CREATE UNIQUE INDEX message_stats_pkey ON public.message_stats USING btree (domain_id, day, direction, event)
 INDEX messages.messages_blob CREATE INDEX messages_blob ON public.messages USING btree (blob_store_id, blob_hash)
 INDEX messages.messages_deleted_at CREATE INDEX messages_deleted_at ON public.messages USING btree (deleted_at) WHERE (deleted_at IS NOT NULL)
 INDEX messages.messages_mailbox_id_folder_id_uid_key CREATE UNIQUE INDEX messages_mailbox_id_folder_id_uid_key ON public.messages USING btree (mailbox_id, folder_id, uid)

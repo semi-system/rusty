@@ -8,4 +8,6 @@ Every key of a domain signs (the outbound service signs with each selector it fi
 
 The last key cannot be retired (`409 wrong_state`): the domain would send unsigned mail. A key shows when it was made (`created_at`), so the page tells which one is old.
 
-Not done: an automatic rotation on a schedule (it needs the DNS to be published by the operator or by a DNS server of ours, which is the separate DNS project).
+**Automatic retirement.** Making a key for a domain that already has keys schedules each older key (`dkim_retirements`, migration 0045) to be retired 7 days later; the admin service checks every ten minutes and retires the due ones (public row, then the sealed half), never the last key of a domain. Retiring a key by hand drops its entry.
+
+Not done: a rotation that makes the new key by itself on a schedule (it needs the new record published, by the operator or by a DNS server of ours, which is the separate DNS project).

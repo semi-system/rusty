@@ -165,6 +165,20 @@ impl DnsStore {
         self.repo.due_for_check(interval_secs, jitter_secs, limit, Some(now)).await
     }
 
+    /// After a rotation: retire these older selectors `delay_secs` from now.
+    pub async fn schedule_dkim_retirements(&self, domain: DomainId, selectors: &[String], delay_secs: i64) -> Result<()> {
+        self.repo.schedule_dkim_retirements(domain, selectors, delay_secs).await
+    }
+
+    /// The scheduled retirements due at `now`.
+    pub async fn due_dkim_retirements(&self, now: i64, limit: i64) -> Result<Vec<(DomainId, String)>> {
+        self.repo.due_dkim_retirements(now, limit).await
+    }
+
+    pub async fn clear_dkim_retirement(&self, domain: DomainId, selector: &str) -> Result<()> {
+        self.repo.clear_dkim_retirement(domain, selector).await
+    }
+
     /// Retire a DKIM key: remove its public row (the outbound service stops signing with the selector); whether there was one.
     pub async fn delete_dkim_key(&self, domain: DomainId, selector: &str) -> Result<bool> {
         self.repo.delete_dkim_key(domain, selector).await

@@ -27,10 +27,12 @@ BEGIN
   END IF;
   IF to_regrole('rusty_admin') IS NOT NULL THEN
     REVOKE ALL ON ALL TABLES IN SCHEMA public FROM rusty_admin;
-    GRANT SELECT ON mail_log TO rusty_admin;   -- the message trace
+    GRANT SELECT ON mail_log, message_stats TO rusty_admin;
+    GRANT SELECT, INSERT, UPDATE ON mailbox_transfers TO rusty_admin;   -- an export or import asked for in the admin web, and the pieces of the file (it never reads a mailbox itself)
+    GRANT SELECT, INSERT ON mailbox_transfer_chunks TO rusty_admin;   -- the message trace
     GRANT SELECT, INSERT ON audit_log TO rusty_admin;   -- the audit log of the admin web (docs/design-audit.md)
     GRANT SELECT, INSERT, UPDATE, DELETE ON domains, accounts, aliases, domain_aliases, lists, list_members, plans, capabilities, mailboxes,
-      domain_dkim_keys, domain_dns_config, domain_dns_event, domain_dns_state, domain_relays, admin_grants, jobs TO rusty_admin;
+      domain_dkim_keys, dkim_retirements, domain_dns_config, domain_dns_event, domain_dns_state, domain_relays, admin_grants, jobs TO rusty_admin;
     GRANT SELECT ON address_owners, _sqlx_migrations, schema_compat TO rusty_admin;
     GRANT SELECT ON service_heartbeats TO rusty_admin;   -- the monitor page
     GRANT SELECT, INSERT, UPDATE ON platform_settings TO rusty_admin;   -- the protocol switches (docs/design-protocols.md)
@@ -115,6 +117,8 @@ BEGIN
   IF to_regrole('rusty_imap') IS NOT NULL THEN
     GRANT SELECT ON accounts, domains, aliases, domain_aliases, lists, list_members, plans, address_owners, mailboxes, folders, deliveries, blob_stores, blob_backends, sealed_secrets TO rusty_imap;
     GRANT UPDATE (last_login_at) ON accounts TO rusty_imap;   -- the time of the last sign-in (DirectoryRepo::record_login)
+    GRANT SELECT, UPDATE ON mailbox_transfers TO rusty_imap;   -- the exports and imports of the admin web are done where the mailboxes are (docs/design-mailbox-transfers.md)
+    GRANT SELECT, INSERT ON mailbox_transfer_chunks TO rusty_imap;
     GRANT SELECT, INSERT, UPDATE, DELETE ON messages TO rusty_imap;
     GRANT SELECT, INSERT, UPDATE ON blobs, blob_locations TO rusty_imap;
     GRANT SELECT, INSERT, DELETE ON keywords TO rusty_imap;
@@ -156,7 +160,9 @@ BEGIN
     GRANT SELECT, UPDATE, DELETE ON blobs, deliveries TO rusty_gc;
     GRANT SELECT, INSERT, UPDATE, DELETE ON blob_locations, blob_store_leases, jobs TO rusty_gc;
     GRANT SELECT, INSERT, UPDATE ON job_turns TO rusty_gc;
-    GRANT SELECT, DELETE ON mail_log TO rusty_gc;   -- the log is kept 30 days
+    GRANT SELECT, DELETE ON mail_log TO rusty_gc;
+    GRANT SELECT, DELETE ON mailbox_transfers, mailbox_transfer_chunks TO rusty_gc;   -- an export or import is kept a day (docs/design-mailbox-transfers.md)
+    GRANT SELECT, INSERT, UPDATE, DELETE ON message_stats TO rusty_gc;   -- the roll-up of the delivery log into days (docs/design-queue.md)   -- the log is kept 30 days
     GRANT SELECT, DELETE ON audit_log TO rusty_gc;
     GRANT SELECT, DELETE ON vacation_replies TO rusty_gc;   -- the vacation book-keeping is kept 60 days (docs/design-mail-rules.md)   -- the audit log is kept 365 days
     GRANT SELECT, INSERT, UPDATE ON blob_stores, blob_backends TO rusty_gc;

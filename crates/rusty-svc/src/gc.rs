@@ -29,6 +29,11 @@ pub struct GcSummary {
     pub audit_purged: u64,
     /// Rows of the vacation book-keeping older than 60 days.
     pub vacation_purged: u64,
+    /// Exports and imports of mailboxes older than a day, removed with their pieces.
+    pub transfers_purged: u64,
+    /// Rows of the per-day statistics written and removed.
+    pub stats_rolled: u64,
+    pub stats_purged: u64,
     /// Messages people deleted that were kept for recovery and are now removed for good (their bodies are freed by the blob collection below).
     pub deleted_purged: u64,
     /// Steps that failed (logged); a failed step never stops the others.
@@ -72,6 +77,20 @@ impl GcService {
             },
             Err(e) => step_failed(&mut s, "read the clock", &e),
         }
+        // The days the log holds are counted into the statistics before the log is cut, and the statistics are kept 400 days.
+        match ctx.jobs.now().await {
+            Ok(now) => {
+                match ctx.queue.roll_up_stats(now).await {
+                    Ok(n) => s.stats_rolled = n,
+                    Err(e) => step_failed(&mut s, "roll up the statistics", &e),
+                }
+                match ctx.queue.purge_stats(now.div_euclid(86_400) - 400, 5000).await {
+                    Ok(n) => s.stats_purged = n,
+                    Err(e) => step_failed(&mut s, "purge the statistics", &e),
+                }
+            }
+            Err(e) => step_failed(&mut s, "read the clock", &e),
+        }
         // The delivery log is kept for 30 days (docs/design-queue.md).
         match ctx.jobs.now().await {
             Ok(now) => match ctx.queue.purge_log(now.saturating_sub(LOG_RETENTION_SECS), 5000).await {
@@ -94,6 +113,10 @@ impl GcService {
                 Err(e) => step_failed(&mut s, "purge the vacation replies", &e),
             },
             Err(e) => step_failed(&mut s, "read the clock", &e),
+        }
+        match ctx.transfers.purge_expired(1000).await {
+            Ok(n) => s.transfers_purged = n,
+            Err(e) => step_failed(&mut s, "purge the mailbox transfers", &e),
         }
         let grace = Duration::from_secs(ctx.cfg.gc_grace_seconds);
         // One collection per blob store: each store's rows and objects are its own.

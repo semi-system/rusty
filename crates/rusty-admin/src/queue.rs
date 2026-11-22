@@ -217,14 +217,23 @@ struct StatsJson {
     days: Vec<DayJson>,
 }
 
-/// `GET /api/v1/domains/{d}/stats`: the counts of the last 30 days (the log is kept that long), newest day first.
+/// `GET /api/v1/domains/{d}/stats?days=N`: the counts of the last N days (30 by default, at most 365), newest day first: the recent days from the delivery log, the older ones from the daily roll-up.
 async fn stats(app: &AdminApp, req: Request) -> Response {
     let (s, dom) = begin!(app, req, false);
     let now = match s.jobs.now().await {
         Ok(n) => n,
         Err(e) => return fail(&e),
     };
-    let rows = match s.queue.stats(dom.id, now.saturating_sub(30 * 86_400)).await {
+    let wanted = req
+        .query
+        .as_deref()
+        .unwrap_or_default()
+        .split('&')
+        .find_map(|p| p.strip_prefix("days="))
+        .map(|v| v.parse::<i64>().ok().filter(|d| (1..=365).contains(d)))
+        .unwrap_or(Some(30));
+    let Some(wanted) = wanted else { return err(400, "invalid") };
+    let rows = match s.queue.stats(dom.id, now.saturating_sub(wanted * 86_400), now).await {
         Ok(r) => r,
         Err(e) => return fail(&e),
     };

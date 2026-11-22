@@ -7,6 +7,8 @@ public_origin = "https://@ADMIN_HOST@"
 public_ips = ["@PUBLIC_IP@"]
 # Only the edge (and the container's own health probe) may connect: another container cannot reach the admin web directly and skip the edge's address allow-list.
 allowed_peers = ["10.77.0.2/32", "127.0.0.1/32"]
+# The edge says who the client is (PROXY protocol v2): the audit log and the sign-in throttle see the client address, not the edge's.
+proxy_protocol = true
 
 [store]
 # The admin web has a database role of its own: no mail tables, no reading of sealed secrets back (docs/postgres-production.md).

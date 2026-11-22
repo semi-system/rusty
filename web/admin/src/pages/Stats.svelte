@@ -12,17 +12,22 @@
   const day = (s: number): string => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(s * 1000));
 
   let days = $state<DayStats[]>([]);
+  // How far back to look: the last 28 days come from the delivery log, older days from the daily counts kept for 400 days.
+  let range = $state(30);
   let loaded = $state(false);
   let error = $state<unknown>(null);
 
-  onMount(async () => {
+  async function load(): Promise<void> {
+    error = null;
     try {
-      days = (await app.client.stats(name)).days;
+      days = (await app.client.stats(name, range)).days;
     } catch (e) {
       error = e;
     }
     loaded = true;
-  });
+  }
+
+  onMount(() => void load());
 </script>
 
 <main id="content" tabindex="-1">
@@ -32,6 +37,14 @@
       <p>{t('stats.lede')}</p>
     </div>
     {#if error !== null}<ErrorNote {error} />{/if}
+    <label class="inline">
+      {t('stats.range')}
+      <select bind:value={range} onchange={() => void load()}>
+        <option value={30}>{t('stats.days', { n: 30 })}</option>
+        <option value={90}>{t('stats.days', { n: 90 })}</option>
+        <option value={365}>{t('stats.days', { n: 365 })}</option>
+      </select>
+    </label>
     {#if !loaded}
       <p class="muted" role="status">{t('app.loading')}</p>
     {:else if days.length === 0}

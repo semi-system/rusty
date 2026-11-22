@@ -6,7 +6,7 @@
 //!
 //! **Maildir** keeps one file per message; the flags are the letters after `:2,` in its name (`D` draft, `F` flagged, `R` answered, `S` seen) and the date is the number the name starts with.
 
-use rusty_core::Flags;
+use crate::Flags;
 
 /// `Mon Jan  1 00:00:00 2024` for a unix time (UTC), the date of a `From ` line.
 pub fn asctime(unix: i64) -> String {
@@ -65,6 +65,11 @@ fn status_headers(flags: Flags) -> String {
     out
 }
 
+fn is_folder_line(line: &[u8]) -> bool {
+    let lower: Vec<u8> = line.iter().take(FOLDER_HEADER.len() + 1).map(u8::to_ascii_lowercase).collect();
+    lower.starts_with(format!("{}:", FOLDER_HEADER.to_ascii_lowercase()).as_bytes())
+}
+
 fn is_status_line(line: &[u8]) -> bool {
     let lower: Vec<u8> = line.iter().take(9).map(u8::to_ascii_lowercase).collect();
     lower.starts_with(b"status:") || lower.starts_with(b"x-status:")
@@ -72,6 +77,14 @@ fn is_status_line(line: &[u8]) -> bool {
 
 /// Append one message to an mbox in `out`: the `From ` line, the flags as `Status` headers, the message with LF line ends and the `>From ` quoting, and a blank line.
 pub fn write_message(out: &mut Vec<u8>, internal_date: i64, flags: Flags, raw: &[u8]) {
+    write_message_in(out, internal_date, flags, None, raw);
+}
+
+/// The header that says which folder a message was in, for an mbox that holds several folders (taken off again on the way in).
+pub const FOLDER_HEADER: &str = "X-Rusty-Folder";
+
+/// [`write_message`] for a file that holds every folder of a mailbox: the folder's name is written in `X-Rusty-Folder` (line breaks and control characters dropped).
+pub fn write_message_in(out: &mut Vec<u8>, internal_date: i64, flags: Flags, folder: Option<&str>, raw: &[u8]) {
     out.extend_from_slice(format!("From MAILER-DAEMON {}\n", asctime(internal_date)).as_bytes());
     let mut in_header = true;
     let mut wrote_status = false;
@@ -85,9 +98,13 @@ pub fn write_message(out: &mut Vec<u8>, internal_date: i64, flags: Flags, raw: &
         if in_header {
             if line.is_empty() {
                 out.extend_from_slice(status_headers(flags).as_bytes());
+                if let Some(f) = folder {
+                    let clean: String = f.chars().filter(|c| !c.is_control()).take(200).collect();
+                    out.extend_from_slice(format!("{FOLDER_HEADER}: {clean}\n").as_bytes());
+                }
                 wrote_status = true;
                 in_header = false;
-            } else if is_status_line(line) {
+            } else if is_status_line(line) || is_folder_line(line) {
                 // Our own come from the flags; the ones the message arrived with would say it twice.
                 continue;
             }
@@ -102,6 +119,10 @@ pub fn write_message(out: &mut Vec<u8>, internal_date: i64, flags: Flags, raw: &
     if in_header && !wrote_status {
         // A message that is only headers.
         out.extend_from_slice(status_headers(flags).as_bytes());
+        if let Some(f) = folder {
+            let clean: String = f.chars().filter(|c| !c.is_control()).take(200).collect();
+            out.extend_from_slice(format!("{FOLDER_HEADER}: {clean}\n").as_bytes());
+        }
     }
     if out.last() != Some(&b'\n') {
         out.push(b'\n');
@@ -116,6 +137,8 @@ pub struct Parsed {
     pub raw: Vec<u8>,
     pub internal_date: Option<i64>,
     pub flags: Flags,
+    /// The folder the file says it was in (`X-Rusty-Folder`), taken off the message.
+    pub folder: Option<String>,
 }
 
 fn flags_of_headers(status: &str, x_status: &str) -> Flags {
@@ -172,7 +195,7 @@ fn finish(mut m: Vec<u8>, internal_date: Option<i64>) -> Parsed {
     if m == b"\r\n" {
         m.clear();
     }
-    let (mut status, mut x_status) = (String::new(), String::new());
+    let (mut status, mut x_status, mut folder) = (String::new(), String::new(), None::<String>);
     let mut out = Vec::with_capacity(m.len());
     let mut in_header = true;
     for line in m.split_inclusive(|b| *b == b'\n') {
@@ -180,6 +203,12 @@ fn finish(mut m: Vec<u8>, internal_date: Option<i64>) -> Parsed {
         if in_header {
             if bare.is_empty() {
                 in_header = false;
+            } else if is_folder_line(bare) {
+                let value = String::from_utf8_lossy(bare).split_once(':').map(|(_, v)| v.trim().to_owned()).unwrap_or_default();
+                if !value.is_empty() {
+                    folder = Some(value.chars().filter(|c| !c.is_control()).take(200).collect());
+                }
+                continue;
             } else if is_status_line(bare) {
                 let text = String::from_utf8_lossy(bare).to_ascii_uppercase();
                 let value = text.split_once(':').map(|(_, v)| v.trim().to_owned()).unwrap_or_default();
@@ -193,7 +222,7 @@ fn finish(mut m: Vec<u8>, internal_date: Option<i64>) -> Parsed {
         }
         out.extend_from_slice(line);
     }
-    Parsed { raw: out, internal_date, flags: flags_of_headers(&status, &x_status) }
+    Parsed { raw: out, internal_date, flags: flags_of_headers(&status, &x_status), folder }
 }
 
 // ------------------------------------------------------------------------------------------------ Maildir
@@ -230,7 +259,7 @@ pub fn maildir_message(name: &str, bytes: &[u8]) -> Parsed {
         raw.push(*b);
         previous = *b;
     }
-    Parsed { raw, internal_date, flags }
+    Parsed { raw, internal_date, flags, folder: None }
 }
 
 #[cfg(test)]
@@ -267,7 +296,7 @@ mod tests {
         write_message(&mut out, 200, Flags::empty(), &b);
         let back = split(&out);
         assert_eq!(back.len(), 2);
-        assert_eq!(back[0], Parsed { raw: a, internal_date: Some(1_700_000_000), flags: both });
+        assert_eq!(back[0], Parsed { raw: a, internal_date: Some(1_700_000_000), flags: both, folder: None });
         assert_eq!(back[1].raw, b"Subject: two\r\n\r\nbody without a final line end\r\n".to_vec(), "its own Status header was replaced by the flags, and a final line end was added");
         assert_eq!((back[1].internal_date, back[1].flags), (Some(200), Flags::empty()));
     }
@@ -280,6 +309,16 @@ mod tests {
         assert!(String::from_utf8_lossy(&got[0].raw).contains("From not a separator"));
         assert!(String::from_utf8_lossy(&got[1].raw).starts_with("Subject: y"));
         assert!(split(b"not an mbox at all\n").is_empty());
+    }
+
+    #[test]
+    fn a_file_with_several_folders_says_which_message_was_in_which() {
+        let mut out = Vec::new();
+        write_message_in(&mut out, 100, Flags::SEEN, Some("Projects/Q4"), b"Subject: a\r\n\r\nbody\r\n");
+        write_message_in(&mut out, 200, Flags::empty(), Some("Inbox"), b"Subject: b\r\n\r\nbody b\r\n");
+        let back = split(&out);
+        assert_eq!(back.iter().map(|m| m.folder.as_deref()).collect::<Vec<_>>(), vec![Some("Projects/Q4"), Some("Inbox")]);
+        assert_eq!(back[0].raw, b"Subject: a\r\n\r\nbody\r\n".to_vec(), "the folder header is taken off again");
     }
 
     #[test]
