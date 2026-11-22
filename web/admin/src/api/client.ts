@@ -359,6 +359,10 @@ export class Client {
     return (await this.call<DkimList>('GET', `/api/v1/domains/${seg(domain)}/dkim`)).items;
   }
 
+  async deleteDkim(domain: string, selector: string): Promise<void> {
+    await this.call('DELETE', `/api/v1/domains/${seg(domain)}/dkim/${seg(selector)}`);
+  }
+
   createDkim(domain: string, selector?: string): Promise<Dkim> {
     return this.call('POST', `/api/v1/domains/${seg(domain)}/dkim`, selector === undefined || selector === '' ? {} : { selector });
   }

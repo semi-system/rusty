@@ -104,6 +104,7 @@ export interface Dkim {
   record_name: string;
   record_value: string;
   sealed: boolean;
+  created_at: number;
 }
 
 export interface DkimList {

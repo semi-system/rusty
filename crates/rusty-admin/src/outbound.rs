@@ -62,15 +62,18 @@ struct DkimJson {
     record_value: String,
     /// Whether the private half is sealed in the database (the outbound service signs with it); `false` for a key made elsewhere.
     sealed: bool,
+    /// When the key was made (seconds), for the age of a key that is due for rotation.
+    created_at: i64,
 }
 
-fn dkim_json(selector: &str, algorithm: &str, public_key_b64: &str, domain: &str, sealed: bool) -> DkimJson {
+fn dkim_json(selector: &str, algorithm: &str, public_key_b64: &str, domain: &str, sealed: bool, created_at: i64) -> DkimJson {
     DkimJson {
         selector: selector.to_owned(),
         algorithm: algorithm.to_owned(),
         record_name: format!("{selector}._domainkey.{domain}"),
         record_value: format!("v=DKIM1; k={algorithm}; p={public_key_b64}"),
         sealed,
+        created_at,
     }
 }
 
@@ -107,7 +110,7 @@ async fn dkim_list(app: &AdminApp, req: Request) -> Response {
         .iter()
         .map(|k| {
             let purpose = sealed_purpose(&k.selector);
-            dkim_json(&k.selector, &k.algorithm, &k.public_key_b64, &dom.name, sealed.iter().any(|m| m.purpose == purpose))
+            dkim_json(&k.selector, &k.algorithm, &k.public_key_b64, &dom.name, sealed.iter().any(|m| m.purpose == purpose), k.created_at)
         })
         .collect();
     json(200, &DkimList { items })
@@ -168,7 +171,52 @@ async fn dkim_create(app: &AdminApp, req: Request) -> Response {
     if let Err(e) = s.sealed.put("domain", dom.id.0, &key.purpose, &key.key_id, &key.sealed).await {
         return fail(&e);
     }
-    json(201, &dkim_json(&key.selector, "ed25519", &key.public_key_b64, &dom.name, true))
+    let made = match s.dns.dkim_keys(dom.id).await {
+        Ok(k) => k.into_iter().find(|k| k.selector == key.selector).map_or(0, |k| k.created_at),
+        Err(e) => return fail(&e),
+    };
+    json(201, &dkim_json(&key.selector, "ed25519", &key.public_key_b64, &dom.name, true, made))
+}
+
+/// `DELETE /api/v1/domains/{d}/dkim/{k}`: retire a key after a rotation. The last key cannot be retired (`409 wrong_state`): a domain would then send unsigned mail. Mail signed with the old key
+/// stays valid for as long as its DNS record is published, so remove the record only after the delay the receivers need (days).
+async fn dkim_delete(app: &AdminApp, req: Request) -> Response {
+    let (_, p) = match app.require(&req, true).await {
+        Ok(x) => x,
+        Err(r) => return r,
+    };
+    if let Err(r) = no_query(&req) {
+        return r;
+    }
+    let dom = match scoped(app, &p, req.param("d").unwrap_or_default()).await {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let s = match services(app) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let selector = req.param("k").unwrap_or_default().to_owned();
+    let keys = match s.dns.dkim_keys(dom.id).await {
+        Ok(k) => k,
+        Err(e) => return fail(&e),
+    };
+    if !keys.iter().any(|k| k.selector == selector) {
+        return err(404, "not_found");
+    }
+    if keys.len() < 2 {
+        return err(409, "wrong_state");
+    }
+    // The public row first: the signer lists keys from it, so signing with the selector stops at once; then the sealed private half.
+    match s.dns.delete_dkim_key(dom.id, &selector).await {
+        Ok(true) => {}
+        Ok(false) => return err(404, "not_found"),
+        Err(e) => return fail(&e),
+    }
+    if let Err(e) = s.sealed.delete("domain", dom.id.0, &sealed_purpose(&selector)).await {
+        return fail(&e);
+    }
+    json(200, &serde_json::json!({}))
 }
 
 // ------------------------------------------------------------------------------------------------ relay
@@ -409,6 +457,7 @@ macro_rules! route {
 pub fn routes(app: Arc<AdminApp>, router: Router) -> Router {
     let router = route!(router, app, Method::Get, "/api/v1/domains/{d}/dkim", |a, r| dkim_list(&a, r).await);
     let router = route!(router, app, Method::Post, "/api/v1/domains/{d}/dkim", |a, r| dkim_create(&a, r).await);
+    let router = route!(router, app, Method::Delete, "/api/v1/domains/{d}/dkim/{k}", |a, r| dkim_delete(&a, r).await);
     let router = route!(router, app, Method::Get, "/api/v1/domains/{d}/relay", |a, r| relay_get(&a, r).await);
     let router = route!(router, app, Method::Put, "/api/v1/domains/{d}/relay", |a, r| relay_put(&a, r).await);
     let router = route!(router, app, Method::Delete, "/api/v1/domains/{d}/relay", |a, r| relay_delete(&a, r).await);

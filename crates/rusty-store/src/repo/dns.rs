@@ -122,6 +122,8 @@ pub trait DnsRepo: Send + Sync {
     ) -> Result<(DkimKeyRow, bool)>;
     /// The domain's DKIM public keys, ordered by selector.
     async fn dkim_keys(&self, domain: DomainId) -> Result<Vec<DkimKeyRow>>;
+    /// Remove the public row of a selector (a retired key: the signer stops using it at once); whether there was one. The sealed private half is the caller's to remove.
+    async fn delete_dkim_key(&self, domain: DomainId, selector: &str) -> Result<bool>;
     /// Active domains whose DNS records are due for a check: the newest check of any of their records is older than `interval_secs` plus a stable per-domain
     /// offset in `0..jitter_secs` (so domains are not all queried in the same minute), or they were never checked. Oldest first, at most `limit`.
     async fn due_for_check(&self, interval_secs: i64, jitter_secs: i64, limit: u32, now: Option<i64>) -> Result<Vec<(DomainId, String)>>;
@@ -173,6 +175,7 @@ pub(crate) mod sql {
         VALUES ($1, $2, $3, $4, COALESCE($5, {NOW})) ON CONFLICT (domain_id, selector) DO NOTHING";
     pub const GET_KEY: &str = "SELECT selector, algorithm, public_key_b64, created_at FROM domain_dkim_keys \
         WHERE domain_id = $1 AND selector = $2";
+    pub const DELETE_KEY: &str = "DELETE FROM domain_dkim_keys WHERE domain_id = $1 AND selector = $2";
     pub const LIST_KEYS: &str = "SELECT selector, algorithm, public_key_b64, created_at FROM domain_dkim_keys \
         WHERE domain_id = $1 ORDER BY selector";
     pub const DUE: &str = "SELECT d.id, d.name FROM domains d \

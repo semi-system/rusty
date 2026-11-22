@@ -214,7 +214,7 @@ describe('aliases', () => {
 });
 
 describe('dkim', () => {
-  const K: Dkim = { selector: 'rusty-ed25519', algorithm: 'ed25519', record_name: 'rusty-ed25519._domainkey.example.org', record_value: 'v=DKIM1; k=ed25519; p=AAAA', sealed: true };
+  const K: Dkim = { selector: 'rusty-ed25519', algorithm: 'ed25519', record_name: 'rusty-ed25519._domainkey.example.org', record_value: 'v=DKIM1; k=ed25519; p=AAAA', sealed: true, created_at: 1700000000 };
 
   it('shows the public record in selectable fields and says the private key is sealed, never showing one', async () => {
     await open('/domains/example.org/dkim', PLATFORM, { 'GET /api/v1/domains/example.org/dkim': ok({ items: [K] }) });

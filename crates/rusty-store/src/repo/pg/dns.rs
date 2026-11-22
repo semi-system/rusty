@@ -197,6 +197,11 @@ impl DnsRepo for PgRepo {
             .map_err(map_db_error)
     }
 
+    async fn delete_dkim_key(&self, domain: DomainId, selector: &str) -> Result<bool> {
+        let done = sqlx::query(r(sql::DELETE_KEY)).bind(domain.0).bind(selector).execute(self.store.pool()).await.map_err(map_db_error)?;
+        Ok(done.rows_affected() > 0)
+    }
+
     async fn dkim_keys(&self, domain: DomainId)
  -> Result<Vec<DkimKeyRow>> {
         let rows = sqlx::query(r(sql::LIST_KEYS)).bind(domain.0).fetch_all(self.store.pool()).await.map_err(map_db_error)?;
