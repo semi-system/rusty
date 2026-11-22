@@ -212,6 +212,44 @@ fn header_names(original: &[u8]) -> Vec<String> {
 }
 
 /// Does the header section of `original` carry a field called `name` (case-insensitive)?
+/// How many times a header field of this name is in the message.
+pub fn header_count(original: &[u8], name: &str) -> usize {
+    let name = name.to_ascii_lowercase();
+    header_names(original).iter().filter(|n| **n == name).count()
+}
+
+/// The values of every header field of this name (unfolded, trimmed), in order. Only the header block is read.
+pub fn header_values(original: &[u8], name: &str) -> Vec<String> {
+    let norm = normalise_crlf(original);
+    let head: &[u8] = if norm.starts_with(b"\r\n") {
+        &[]
+    } else if let Some(p) = norm.windows(4).position(|w| w == b"\r\n\r\n") {
+        norm.get(..p + 2).unwrap_or_default()
+    } else {
+        &norm
+    };
+    let text = String::from_utf8_lossy(head);
+    let prefix = format!("{}:", name.to_ascii_lowercase());
+    let mut out: Vec<String> = Vec::new();
+    let mut open = false;
+    for line in text.split("\r\n") {
+        if line.starts_with(' ') || line.starts_with('\t') {
+            if open {
+                if let Some(last) = out.last_mut() {
+                    last.push(' ');
+                    last.push_str(line.trim());
+                }
+            }
+            continue;
+        }
+        open = line.to_ascii_lowercase().starts_with(&prefix);
+        if open {
+            out.push(line.split_once(':').map_or("", |(_, v)| v).trim().to_owned());
+        }
+    }
+    out
+}
+
 pub fn has_header(original: &[u8], name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     header_names(original).contains(&name)

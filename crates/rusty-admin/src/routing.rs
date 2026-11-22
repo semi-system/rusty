@@ -131,8 +131,8 @@ async fn members(app: &AdminApp, req: Request) -> Response {
     }
 }
 
-/// Add a member: a local account (of any hosted domain). An address outside this server is refused for now (`400 invalid`): mail to it would have to be forwarded, which needs the outbound
-/// queue and loop protection (docs/design-routing.md, "Not done").
+/// Add a member: an account of any hosted domain, or an address outside this server (the list forwards to it through the outbound queue, docs/design-routing.md). An address of a hosted
+/// domain that has no such account is refused (`400 invalid`): it is a typo, not an outside address.
 async fn add_member(app: &AdminApp, req: Request) -> Response {
     let (_p, s, dom) = begin!(app, req, true);
     let Ok(b) = serde_json::from_slice::<NewMember>(&req.body) else { return err(400, "invalid") };
@@ -141,12 +141,19 @@ async fn add_member(app: &AdminApp, req: Request) -> Response {
         Ok(None) => return err(404, "not_found"),
         Err(e) => return fail(&e),
     };
-    let account = match app.directory.find_account(&b.address).await {
-        Ok(Some(a)) => a,
-        Ok(None) | Err(Error::Invalid(_)) => return err(400, "invalid"),
+    let Ok((local, domain)) = parse_address(&b.address) else { return err(400, "invalid") };
+    let added = match app.directory.find_account(&b.address).await {
+        Ok(Some(a)) => app.directory.add_list_member(list.id, Some(a.id), None).await,
+        Ok(None) => match app.directory.find_domain(&domain).await {
+            // Ours, but no such account.
+            Ok(Some(_)) => return err(400, "invalid"),
+            Ok(None) => app.directory.add_list_member(list.id, None, Some(&format!("{local}@{domain}"))).await,
+            Err(e) => return fail(&e),
+        },
+        Err(Error::Invalid(_)) => return err(400, "invalid"),
         Err(e) => return fail(&e),
     };
-    if let Err(e) = app.directory.add_list_member(list.id, Some(account.id), None).await {
+    if let Err(e) = added {
         return fail(&e);
     }
     match s.routing.members(list.id).await {

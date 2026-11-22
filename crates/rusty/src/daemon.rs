@@ -232,10 +232,16 @@ async fn build(
         };
         let handler: Arc<dyn SessionHandler> = match planned.kind {
             ListenerKind::Smtp25 => {
-                Arc::new(InboundHandler::new(
+                let handler = InboundHandler::new(
                     &ctx,
                     InboundOptions { budget: budget.clone(), auth: dns.as_ref().map(|d| d.checker.clone()), filters: inbound_filters.clone(), ..InboundOptions::default() },
-                ))
+                );
+                // With the outbound worker enabled, the outside members of a distribution list receive what is written to it (docs/design-routing.md); without it such members are skipped.
+                Arc::new(if cfg.outbound.enabled {
+                    handler.with_forwarder(Arc::new(JobOutbound::new(ctx.jobs.clone(), ctx.directory.clone()).with_limits(SubmitLimits::from_config(&cfg.outbound)).with_wake(wake.clone())))
+                } else {
+                    handler
+                })
             }
             ListenerKind::Submission587 | ListenerKind::Submissions465 => {
                 let deps = SubmissionDeps {

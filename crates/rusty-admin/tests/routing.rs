@@ -30,13 +30,17 @@ async fn a_list_takes_local_members_and_delivers_to_each() {
         conforms(&added.json(), "Members");
     }
     assert_eq!(c.post("/api/v1/domains/one.test/lists/team/members", json!({ "address": "alice@one.test" })).await.status, 409, "once only");
-    assert_eq!(c.post("/api/v1/domains/one.test/lists/team/members", json!({ "address": "x@elsewhere.test" })).await.status, 400, "outside addresses are not accepted yet");
+    assert_eq!(c.post("/api/v1/domains/one.test/lists/team/members", json!({ "address": "ghost@one.test" })).await.status, 400, "an address of a hosted domain with no such account is a typo");
+    let outside = c.post("/api/v1/domains/one.test/lists/team/members", json!({ "address": "Far@Elsewhere.Test" })).await;
+    assert_eq!(outside.status, 201, "{}", outside.body);
+    assert_eq!(outside.json()["items"].as_array().unwrap().iter().filter(|m| m["external"] == true).count(), 1);
+    assert!(outside.body.contains("far@elsewhere.test"), "stored normalised");
     let routing = c.get("/api/v1/domains/one.test/routing").await;
     conforms(&routing.json(), "Routing");
-    assert_eq!(routing.json()["lists"][0]["members"], 2);
+    assert_eq!(routing.json()["lists"][0]["members"], 3);
     // The directory expands the list to its two accounts.
     match r.dir.resolve("team@one.test").await.unwrap() {
-        rusty_directory::Resolved::List(m) => assert_eq!(m.len(), 2),
+        rusty_directory::Resolved::List(m) => assert_eq!(m.len(), 3, "two accounts and one outside address"),
         other => panic!("{other:?}"),
     }
     let members = c.get("/api/v1/domains/one.test/lists/team/members").await;
