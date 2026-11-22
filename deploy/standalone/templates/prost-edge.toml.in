@@ -159,18 +159,18 @@ id = "smtp"
 address = "0.0.0.0:10025"
 protocol = "tcp"
 upstream = "smtp"
-max_connections_per_ip = 50
+max_connections_per_ip = @MAX_PER_IP@
 client_write_timeout_ms = 30000
 [[listeners.plugins]]
 name = "connection_rate"
-config = {connections_per_second=10, burst=100, max_keys=100000, idle_timeout_ms=30000}
+config = {connections_per_second=@CONN_RATE@, burst=@CONN_BURST@, max_keys=100000, idle_timeout_ms=30000}
 
 [[listeners]]
 id = "submission"
 address = "0.0.0.0:10587"
 protocol = "tcp"
 upstream = "submission"
-max_connections_per_ip = 50
+max_connections_per_ip = @MAX_PER_IP@
 client_write_timeout_ms = 30000
 
 [[listeners]]
@@ -178,7 +178,7 @@ id = "imap"
 address = "0.0.0.0:10143"
 protocol = "tcp"
 upstream = "imap"
-max_connections_per_ip = 50
+max_connections_per_ip = @MAX_PER_IP@
 client_write_timeout_ms = 30000
 
 [[listeners]]
@@ -186,7 +186,7 @@ id = "pop3"
 address = "0.0.0.0:10110"
 protocol = "tcp"
 upstream = "pop3"
-max_connections_per_ip = 50
+max_connections_per_ip = @MAX_PER_IP@
 client_write_timeout_ms = 30000
 
 [[listeners]]
@@ -194,7 +194,7 @@ id = "smtps"
 address = "0.0.0.0:10465"
 protocol = "tcp"
 upstream = "smtps"
-max_connections_per_ip = 50
+max_connections_per_ip = @MAX_PER_IP@
 client_write_timeout_ms = 30000
 tls_handshake_timeout_ms = 5000
 [listeners.tls]
@@ -214,7 +214,7 @@ id = "imaps"
 address = "0.0.0.0:10993"
 protocol = "tcp"
 upstream = "imaps"
-max_connections_per_ip = 50
+max_connections_per_ip = @MAX_PER_IP@
 client_write_timeout_ms = 30000
 tls_handshake_timeout_ms = 5000
 [listeners.tls]
@@ -234,7 +234,7 @@ id = "pop3s"
 address = "0.0.0.0:10995"
 protocol = "tcp"
 upstream = "pop3s"
-max_connections_per_ip = 50
+max_connections_per_ip = @MAX_PER_IP@
 client_write_timeout_ms = 30000
 tls_handshake_timeout_ms = 5000
 [listeners.tls]

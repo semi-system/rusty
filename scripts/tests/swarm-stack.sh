@@ -189,6 +189,19 @@ grep -q 'certificate = "/run/secrets/edge_mail_crt"' "$tmp/state-prostself/stack
 ! grep -q '^address = "certd:8088"' "$tmp/state-prostself/stack/etc/prost-edge.toml" || fail "prostself: an ACME route without prost-certd"
 prost_check prostself
 
+scenario limits "$EXT"$'
+EDGE=prost
+TLS_MODE=self
+PROST_MAX_PER_IP=500
+PROST_CONN_RATE=200
+PROST_CONN_BURST=1000
+REPLICAS_DEFAULT=1' "edge" "certd db s3"
+lq="$tmp/state-limits/stack/etc/prost-edge.toml"
+no_placeholders "$lq"
+grep -q '^max_connections_per_ip = 500$' "$lq" && grep -q 'connections_per_second=200, burst=1000,' "$lq" || fail "limits: the per-address limits of the edge are not the inventory's"
+grep -q '^max_connections_per_ip = 50$' "$pe/prost-edge.toml" && grep -q 'connections_per_second=10, burst=100,' "$pe/prost-edge.toml" || fail "prost: the default per-address limits changed"
+prost_check limits
+
 scenario adminproxy "$EXT"$'\nEDGE=prost\nTLS_MODE=self\nADMIN_PROXY=1\nREPLICAS_DEFAULT=1' "edge admin" "certd db s3"
 ap="$tmp/state-adminproxy/stack/etc"
 grep -q '^proxy_protocol = true' "$ap/admin.toml" || fail "adminproxy: the admin web does not read the PROXY header"
@@ -252,6 +265,7 @@ refuse "the pilot with ACME certificates and no bucket for them" $'EDGE=prost-pi
 refuse "a pilot offset that is out of range" $'EDGE=prost-pilot\nPROST_PILOT_OFFSET=500'
 refuse "the certificates in the bucket of the mail" $'EDGE=prost\nTLS_MODE=acme\nCERT_S3=1\nCERT_S3_BUCKET=rusty-mail'
 refuse "a bad ADMIN_PROXY" 'ADMIN_PROXY=2'
+refuse "a per-address limit of zero" 'PROST_MAX_PER_IP=0'
 refuse "a bad image" 'PROST_IMAGE="Prost Latest"'
 echo "  ok    bad values are refused"
 # For a look at what the tool rendered (SWARM_STACK_KEEP=DIR): the Prost edge configuration of the scenario "prost".
