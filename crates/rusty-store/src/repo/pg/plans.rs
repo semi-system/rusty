@@ -39,7 +39,7 @@ impl PlanRepo for PgRepo {
         }
         let rows = sqlx::query(r(sql::USAGE_OF)).bind(accounts).bind(GLOBAL_PLAN).fetch_all(self.store.pool()).await.map_err(map_db_error)?;
         rows.iter()
-            .map(|x| Ok(AccountUsage { account: x.try_get(0)?, used_bytes: x.try_get(1)?, plan: x.try_get(2)?, quota_bytes: x.try_get(3)? }))
+            .map(|x| Ok(AccountUsage { account: x.try_get(0)?, used_bytes: x.try_get(1)?, plan: x.try_get(2)?, last_delivery_at: x.try_get(3)?, quota_bytes: x.try_get(4)? }))
             .collect::<std::result::Result<Vec<_>, sqlx::Error>>()
             .map_err(map_db_error)
     }

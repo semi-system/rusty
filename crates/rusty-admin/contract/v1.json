@@ -21,8 +21,8 @@
     "Me": { "address": "string", "scope": "string", "domain": "integer|null", "csrf": "string" },
     "SetupState": { "required": "boolean" },
     "Domain": { "id": "integer", "name": "string", "status": "string" },
-    "Account": { "id": "integer", "address": "string", "status": "string", "has_password": "boolean", "last_login_at": "integer|null", "plan": "string|null", "used_bytes": "integer", "quota_bytes": "integer|null" },
-    "AccountCreated": { "id": "integer", "address": "string", "status": "string", "has_password": "boolean", "last_login_at": "integer|null", "plan": "string|null", "used_bytes": "integer", "quota_bytes": "integer|null", "aliases_created": "string[]" },
+    "Account": { "id": "integer", "address": "string", "status": "string", "has_password": "boolean", "last_login_at": "integer|null", "plan": "string|null", "used_bytes": "integer", "quota_bytes": "integer|null", "last_delivery_at": "integer|null" },
+    "AccountCreated": { "id": "integer", "address": "string", "status": "string", "has_password": "boolean", "last_login_at": "integer|null", "plan": "string|null", "used_bytes": "integer", "quota_bytes": "integer|null", "last_delivery_at": "integer|null", "aliases_created": "string[]" },
     "Alias": { "id": "integer", "alias": "string", "target": "string" },
     "AliasCreated": { "alias": "string", "target": "string" },
     "DomainList": { "items": "Domain[]", "next": "integer|null", "total": "integer" },
@@ -65,7 +65,7 @@
     "ImportResult": { "dry_run": "boolean", "created": "integer", "exists": "integer", "invalid": "integer", "rows": "ImportRow[]" },
     "QueueJob": { "id": "integer", "state": "string", "sender": "string", "recipients": "string[]", "destination": "string", "attempts": "integer", "created_at": "integer", "next_attempt_at": "integer|null", "last_error": "string|null" },
     "QueueList": { "items": "QueueJob[]", "next": "integer|null" },
-    "LogLine": { "id": "integer", "at": "integer", "sender": "string", "recipient": "string", "event": "string", "remote": "string|null", "status": "string|null", "detail": "string|null" },
+    "LogLine": { "id": "integer", "direction": "string", "at": "integer", "sender": "string", "recipient": "string", "event": "string", "remote": "string|null", "status": "string|null", "detail": "string|null" },
     "Trace": { "items": "LogLine[]", "next": "integer|null" }
   },
   "endpoints": [

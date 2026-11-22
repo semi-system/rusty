@@ -95,6 +95,7 @@ BEGIN
     GRANT SELECT ON domains, aliases, domain_aliases, lists, list_members, plans, address_owners, mailboxes, folders, deliveries, blob_stores, blob_backends, sealed_secrets TO rusty_smtp_in;
     GRANT SELECT, INSERT, UPDATE ON messages, blobs, blob_locations TO rusty_smtp_in;
     GRANT INSERT ON keywords, change_log, deliveries, jobs TO rusty_smtp_in;
+    GRANT INSERT ON mail_log TO rusty_smtp_in;   -- the trace of incoming mail (docs/design-queue.md)
     GRANT UPDATE ON mailboxes, folders TO rusty_smtp_in;
   END IF;
 

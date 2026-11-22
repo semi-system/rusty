@@ -161,12 +161,13 @@
         <div class="table-wrap">
           <table use:labelled aria-label={t('queue.trace')}>
             <thead>
-              <tr><th scope="col">{t('queue.when')}</th><th scope="col">{t('queue.recipient')}</th><th scope="col">{t('queue.event')}</th><th scope="col">{t('queue.detail')}</th></tr>
+              <tr><th scope="col">{t('queue.when')}</th><th scope="col">{t('queue.direction')}</th><th scope="col">{t('queue.recipient')}</th><th scope="col">{t('queue.event')}</th><th scope="col">{t('queue.detail')}</th></tr>
             </thead>
             <tbody>
               {#each lines as l (l.id)}
                 <tr>
                   <td>{when(l.at)}</td>
+                  <td>{l.direction === 'in' ? t('queue.received') : t('queue.sent')}</td>
                   <th scope="row">{l.recipient}<br /><span class="muted">{t('queue.from', { sender: l.sender })}</span></th>
                   <td><Badge tone={eventTone(l.event)}>{tFor('queue.event.', l.event, 'queue.event.delivered')}</Badge></td>
                   <td>{[l.remote, l.status, l.detail].filter((x) => x !== null && x !== '').join(' · ')}</td>

@@ -32,6 +32,7 @@ export interface Account {
   plan: string | null;
   used_bytes: number;
   quota_bytes: number | null;
+  last_delivery_at: number | null;
 }
 
 export interface AccountCreated {
@@ -43,6 +44,7 @@ export interface AccountCreated {
   plan: string | null;
   used_bytes: number;
   quota_bytes: number | null;
+  last_delivery_at: number | null;
   aliases_created: string[];
 }
 
@@ -319,6 +321,7 @@ export interface QueueList {
 
 export interface LogLine {
   id: number;
+  direction: string;
   at: number;
   sender: string;
   recipient: string;

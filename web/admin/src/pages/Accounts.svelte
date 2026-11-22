@@ -181,6 +181,7 @@
               <th scope="col">{t('accounts.plan')}</th>
               <th scope="col">{t('accounts.storage')}</th>
               <th scope="col">{t('accounts.lastLogin')}</th>
+              <th scope="col">{t('accounts.lastDelivery')}</th>
               <th scope="col" class="col-actions"><span class="sr">{t('domain.accounts')}</span></th>
             </tr>
           </thead>
@@ -200,6 +201,7 @@
                 </td>
                 <td>{storage(a)}{#if nearFull(a)} <Badge tone="warn">{t('accounts.nearFull')}</Badge>{/if}</td>
                 <td>{a.last_login_at === null ? t('common.never') : when(a.last_login_at)}</td>
+                <td>{a.last_delivery_at === null ? t('common.never') : when(a.last_delivery_at)}</td>
                 <td class="col-actions">
                   <div class="row-actions">
                     {#if a.status === 'active'}

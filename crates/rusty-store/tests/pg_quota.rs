@@ -41,3 +41,18 @@ async fn usage_follows_the_messages_and_a_write_past_the_quota_is_refused_and_re
     let (_, _, free) = acct(&b, "free").await;
     free.append(INBOX, msg(5000), Flags::empty()).await.unwrap();
 }
+
+#[tokio::test]
+async fn a_delivery_stamps_the_mailbox_and_an_append_does_not() {
+    if pg_admin_url().is_none() {
+        return;
+    }
+    use rusty_core::DeliveryId;
+    let b = pg_backend().await.unwrap();
+    let (_, _, mb) = acct(&b, "stamp").await;
+    assert_eq!(scalar(&b, "SELECT count(*) FROM mailboxes WHERE last_delivery_at IS NOT NULL").await, 0, "nothing arrived yet");
+    mb.append(INBOX, msg(10), Flags::empty()).await.unwrap();
+    assert_eq!(scalar(&b, "SELECT count(*) FROM mailboxes WHERE last_delivery_at IS NOT NULL").await, 0, "an IMAP append is not an arrival");
+    mb.deliver(INBOX, msg(20), Flags::empty(), DeliveryId::derive(&rusty_core::BlobHash::of(b"x"), "a", "b")).await.unwrap();
+    assert_eq!(scalar(&b, "SELECT count(*) FROM mailboxes WHERE last_delivery_at IS NOT NULL").await, 1, "a delivery is");
+}

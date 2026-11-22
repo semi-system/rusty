@@ -71,6 +71,8 @@ fn job_json(j: &QueueJob) -> JobJson {
 #[derive(Serialize)]
 struct LogJson {
     id: i64,
+    /// `out` (sent) or `in` (received).
+    direction: String,
     at: i64,
     sender: String,
     recipient: String,
@@ -87,7 +89,7 @@ struct TraceJson {
 }
 
 fn log_json(r: &LogRow) -> LogJson {
-    LogJson { id: r.id, at: r.at, sender: r.sender.clone(), recipient: r.recipient.clone(), event: r.event.clone(), remote: r.remote.clone(), status: r.status.clone(), detail: r.detail.clone() }
+    LogJson { id: r.id, direction: r.direction.clone(), at: r.at, sender: r.sender.clone(), recipient: r.recipient.clone(), event: r.event.clone(), remote: r.remote.clone(), status: r.status.clone(), detail: r.detail.clone() }
 }
 
 /// `state`, `q` and `before` of the query string; anything else, or a value that is not one of the known ones, is `400 invalid`.

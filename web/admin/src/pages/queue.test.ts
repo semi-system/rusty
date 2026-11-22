@@ -35,7 +35,7 @@ describe('queue', () => {
       signedIn(PLATFORM, {
         'GET /api/v1/domains': () => ok({ items: [D], next: null, total: 1 }),
         'GET /api/v1/domains/one.test/queue': () => ok({ items: jobs, next: null }),
-        'GET /api/v1/domains/one.test/trace': () => ok({ items: [{ id: 1, at: 1_700_000_100, sender: 'alice@one.test', recipient: 'user1@far.example', event: 'deferred', remote: 'mx.far.example', status: null, detail: 'greylisted' }], next: null }),
+        'GET /api/v1/domains/one.test/trace': () => ok({ items: [{ id: 1, direction: 'out', at: 1_700_000_100, sender: 'alice@one.test', recipient: 'user1@far.example', event: 'deferred', remote: 'mx.far.example', status: null, detail: 'greylisted' }], next: null }),
         'POST /api/v1/domains/one.test/queue/1/release': () => {
           jobs = jobs.filter((j) => j.id !== 1);
           return ok({});

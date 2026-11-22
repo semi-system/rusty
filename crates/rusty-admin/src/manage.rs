@@ -62,6 +62,8 @@ struct AccountJson {
     used_bytes: i64,
     /// The quota that applies in bytes (account, plan, domain, global), `null` for unlimited.
     quota_bytes: Option<i64>,
+    /// When mail last arrived (seconds), `null` if none has.
+    last_delivery_at: Option<i64>,
 }
 
 fn account_json(a: &AccountInfo, domain: &str, usage: Option<&rusty_store::AccountUsage>) -> AccountJson {
@@ -74,6 +76,7 @@ fn account_json(a: &AccountInfo, domain: &str, usage: Option<&rusty_store::Accou
         plan: usage.and_then(|u| u.plan.clone()),
         used_bytes: usage.map_or(0, |u| u.used_bytes),
         quota_bytes: usage.and_then(|u| u.quota_bytes),
+        last_delivery_at: usage.and_then(|u| u.last_delivery_at),
     }
 }
 

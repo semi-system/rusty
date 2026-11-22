@@ -44,7 +44,7 @@ pub use relay::{RelayRepo, RelayRow};
 pub use settings::{SettingsRepo, PROTOCOLS};
 pub use plans::{AccountUsage, PlanRepo, PlanRow};
 pub use routing::{ListInfo, MemberInfo, RoutingRepo};
-pub use queue::{LogRow, NewLogRow, QueueJob, QueueRepo, HELD_UNTIL};
+pub use queue::{InboundRow, LogRow, NewLogRow, QueueJob, QueueRepo, HELD_UNTIL};
 pub use admin::{AdminEntry, AdminGrant, AdminRepo, Revoked};
 pub use jobs::{BatchJob, BatchRequest, ClaimRequest, JobRepo, NewJob, OwnerLimits};
 pub use directory::{

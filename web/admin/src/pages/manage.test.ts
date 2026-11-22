@@ -11,8 +11,8 @@ import { PLATFORM, TENANT, created, fail, fakeServer, ok, signedIn, type Answer,
 
 const D1: Domain = { id: 1, name: 'example.org', status: 'active' };
 const D2: Domain = { id: 2, name: 'other.org', status: 'disabled' };
-const ACC: Account = { id: 10, address: 'alice@example.org', status: 'active', has_password: true, last_login_at: 1700000000, plan: null, used_bytes: 0, quota_bytes: null };
-const ACC2: Account = { id: 11, address: 'bob@example.org', status: 'disabled', has_password: false, last_login_at: null, plan: null, used_bytes: 0, quota_bytes: null };
+const ACC: Account = { id: 10, address: 'alice@example.org', status: 'active', has_password: true, last_login_at: 1700000000, plan: null, used_bytes: 0, quota_bytes: null, last_delivery_at: 1700000100 };
+const ACC2: Account = { id: 11, address: 'bob@example.org', status: 'disabled', has_password: false, last_login_at: null, plan: null, used_bytes: 0, quota_bytes: null, last_delivery_at: 1700000200 };
 
 beforeEach(() => {
   setCatalogue(en, 'en');

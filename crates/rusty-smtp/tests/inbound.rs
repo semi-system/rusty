@@ -930,3 +930,44 @@ async fn the_real_scanners_refuse_a_virus_file_spam_in_the_spam_folder_and_mark_
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_delivery_that_takes_the_mailbox_past_90_percent_of_its_quota_leaves_one_warning() {
+    for_each_backend(|b| async move {
+        let (alice, bob) = b.seed().await;
+        let s = start(&b, Opts::default()).await;
+        // The size of a stored message is what the mailbox holds: measure it in bob's (no limit), then give alice a quota that one such message takes to about 95 %.
+        let mut c = Client::hello(s.addr).await;
+        assert!(c.mail("sender@remote.example", &["bob@example.net"], MSG).await.starts_with("250"));
+        let size = b.inbox(bob, &s.blobs).await[0].len() as u64;
+        let quota = size * 100 / 95;
+        s.ctx.directory.set_account_config(alice, serde_json::json!({ "quota_bytes": quota })).await.unwrap();
+        let mut c = Client::hello(s.addr).await;
+        assert!(c.mail("sender@remote.example", &["alice@example.net"], MSG).await.starts_with("250"));
+        let inbox = b.inbox(alice, &s.blobs).await;
+        assert!(inbox.iter().any(|m| String::from_utf8_lossy(m).contains("Your mailbox is")), "the warning is in the Inbox: {}", inbox.len());
+        // A second message does not add another warning.
+        let mut c = Client::hello(s.addr).await;
+        let _ = c.mail("other@remote.example", &["alice@example.net"], b"From: o@remote.example\r\nSubject: s\r\n\r\nb\r\n").await;
+        let warnings = b.inbox(alice, &s.blobs).await.iter().filter(|m| String::from_utf8_lossy(m).contains("Your mailbox is")).count();
+        assert_eq!(warnings, 1, "once");
+        s.stop().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_message_stored_for_a_local_recipient_is_in_the_delivery_log_as_received() {
+    for_each_backend(|b| async move {
+        let (_alice, _) = b.seed().await;
+        let s = start(&b, Opts::default()).await;
+        let mut c = Client::hello(s.addr).await;
+        assert!(c.mail("sender@remote.example", &["alice@example.net"], MSG).await.starts_with("250"));
+        assert_eq!(b.count("mail_log").await, 1, "one line for the one recipient");
+        let rows = s.ctx.queue.trace(b.dir.find_domain("example.net").await.unwrap().unwrap().id, None, None, 10).await.unwrap();
+        assert_eq!((rows[0].direction.as_str(), rows[0].event.as_str(), rows[0].recipient.as_str(), rows[0].sender.as_str()), ("in", "delivered", "alice@example.net", "sender@remote.example"));
+        assert_eq!(rows[0].remote.as_deref(), Some("127.0.0.1"));
+        s.stop().await;
+    })
+    .await;
+}

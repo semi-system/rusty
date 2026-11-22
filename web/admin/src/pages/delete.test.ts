@@ -12,7 +12,7 @@ beforeEach(() => setCatalogue(en, 'en'));
 afterEach(cleanup);
 
 const D: Domain = { id: 1, name: 'one.test', status: 'active' };
-const closed: Account = { id: 5, address: 'bob@one.test', status: 'disabled', has_password: true, last_login_at: null, plan: null, used_bytes: 0, quota_bytes: null };
+const closed: Account = { id: 5, address: 'bob@one.test', status: 'disabled', has_password: true, last_login_at: null, plan: null, used_bytes: 0, quota_bytes: null, last_delivery_at: null };
 const open: Account = { ...closed, id: 6, address: 'amy@one.test', status: 'active' };
 
 describe('deleting', () => {

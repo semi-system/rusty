@@ -18,6 +18,8 @@ pub struct AccountUsage {
     pub account: i64,
     /// Bytes of the messages the mailbox has (migration 0032).
     pub used_bytes: i64,
+    /// When mail last arrived by delivery (migration 0037); `None`: never.
+    pub last_delivery_at: Option<i64>,
     /// The name of the plan the account is on, if any.
     pub plan: Option<String>,
     /// The quota in bytes that applies (account, plan, domain, global config; the first that has one). `None`: unlimited.
@@ -41,7 +43,7 @@ pub(crate) mod sql {
     pub const SET_ACCOUNT_PLAN: &str = "UPDATE accounts SET plan_id = (SELECT id FROM plans WHERE name = CAST($2 AS TEXT) AND name <> $3) \
         WHERE id = $1 AND (CAST($2 AS TEXT) IS NULL OR EXISTS (SELECT 1 FROM plans WHERE name = CAST($2 AS TEXT) AND name <> $3))";
     pub const MAILBOX_USED: &str = "SELECT used_bytes FROM mailboxes WHERE id = $1";
-    pub const USAGE_OF: &str = "SELECT a.id, COALESCE(m.used_bytes, 0), p.name, \
+    pub const USAGE_OF: &str = "SELECT a.id, COALESCE(m.used_bytes, 0), p.name, m.last_delivery_at, \
         CAST(COALESCE(a.config->>'quota_bytes', p.config->>'quota_bytes', d.config->>'quota_bytes', g.config->>'quota_bytes') AS BIGINT) \
         FROM accounts a JOIN domains d ON d.id = a.domain_id LEFT JOIN mailboxes m ON m.account_id = a.id \
         LEFT JOIN plans p ON p.id = a.plan_id LEFT JOIN plans g ON g.name = $2 \
