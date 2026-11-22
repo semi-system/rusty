@@ -79,9 +79,9 @@ pub enum Command {
     MailboxDeleted { addr: String },
     /// `mailbox recover`: bring a deleted message back as a new message in a folder (default: the Inbox).
     MailboxRecover { addr: String, id: i64, folder: Option<String> },
-    /// `mailbox export`: write every folder of the mailbox as an mbox file into a new directory.
-    MailboxExport { addr: String, dir: PathBuf },
-    /// `mailbox import`: add the messages of an mbox file to a folder (default: the Inbox; created when it does not exist).
+    /// `mailbox export`: write every folder of the mailbox into a new directory, as an mbox file each or (with `maildir`) as a Maildir each.
+    MailboxExport { addr: String, dir: PathBuf, maildir: bool },
+    /// `mailbox import`: add the messages of an mbox file, or of a Maildir when the path is a directory, to a folder (default: the Inbox; created when it does not exist).
     MailboxImport { addr: String, file: PathBuf, folder: Option<String> },
     /// `blobs init`: make the blob directory of the configuration (mode 0700, with its marker) once, before the first start, or, with `[blob_s3]`, the bucket; it needs no database. Safe to repeat.
     BlobsInit,
@@ -551,9 +551,9 @@ pub fn parse_args(args: &[String]) -> Result<Parsed, UsageError> {
             };
             done(Command::MailboxRecover { addr: (*addr).to_owned(), id, folder })
         }
-        ["mailbox", "export", addr, dir] => {
+        ["mailbox", "export", addr, dir] | ["mailbox", "export", addr, dir, "maildir"] => {
             plain()?;
-            done(Command::MailboxExport { addr: (*addr).to_owned(), dir: PathBuf::from(dir) })
+            done(Command::MailboxExport { addr: (*addr).to_owned(), dir: PathBuf::from(dir), maildir: words.len() == 5 })
         }
         ["mailbox", "import", addr, file] | ["mailbox", "import", addr, file, _] => {
             plain()?;

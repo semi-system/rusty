@@ -176,6 +176,8 @@ pub struct DeletedMessage {
     pub internal_date: i64,
     pub from: String,
     pub subject: String,
+    /// The flags it had (a recovered message keeps them).
+    pub flags: Flags,
     pub raw: RawRef,
 }
 

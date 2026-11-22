@@ -833,7 +833,7 @@ impl Mailbox {
     pub async fn recover(&self, id: MessageId, folder: FolderId) -> Result<MessageRef> {
         let deleted = self.repo.get_deleted(self.id, id).await?;
         let raw = self.blobs.store(deleted.raw.store).await?.get(&deleted.raw.blob).await?;
-        self.append_dated(folder, raw, Flags::default(), deleted.internal_date.clamp(0, MAX_SUPPLIED_TIME)).await
+        self.append_dated(folder, raw, deleted.flags, deleted.internal_date.clamp(0, MAX_SUPPLIED_TIME)).await
     }
 
     // ----- reads -----

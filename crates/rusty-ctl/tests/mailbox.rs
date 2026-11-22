@@ -23,7 +23,7 @@ async fn deleted_mail_is_listed_and_recovered_and_a_mailbox_goes_out_and_comes_i
         let mail = b.mail.clone().unwrap();
         let mb = Mailbox::open_with(mail.repo.clone(), mail.stores.clone(), alice).await.unwrap();
         let inbox = mb.list_folders().await.unwrap().into_iter().find(|f| f.role == "inbox").unwrap().id;
-        let first = mb.append_dated(inbox, bytes::Bytes::from_static(ONE), rusty_core::Flags::default(), 1_700_000_000).await.unwrap();
+        let first = mb.append_dated(inbox, bytes::Bytes::from_static(ONE), rusty_core::Flags::from_bits(rusty_core::Flags::SEEN.bits() | rusty_core::Flags::FLAGGED.bits()).unwrap(), 1_700_000_000).await.unwrap();
         mb.append(inbox, bytes::Bytes::from_static(TWO), rusty_core::Flags::default()).await.unwrap();
         mb.expunge(first.id).await.unwrap();
 
@@ -43,12 +43,12 @@ async fn deleted_mail_is_listed_and_recovered_and_a_mailbox_goes_out_and_comes_i
 
         // Export: one mbox per folder, into a directory that must not exist; the quoting of a line that starts with `From ` is there.
         let dir = b.tmp.path().join("export");
-        let out = b.run(Command::MailboxExport { addr: "alice@example.org".into(), dir: dir.clone() }, &[]).await.unwrap();
+        let out = b.run(Command::MailboxExport { addr: "alice@example.org".into(), dir: dir.clone(), maildir: false }, &[]).await.unwrap();
         assert_eq!(out.json["messages"], 2, "{}", out.text);
         let inbox_file = std::fs::read_to_string(dir.join("Inbox.mbox")).unwrap();
         assert_eq!(inbox_file.matches("\nFrom MAILER-DAEMON ").count() + usize::from(inbox_file.starts_with("From MAILER-DAEMON ")), 2, "{inbox_file}");
         assert!(inbox_file.contains("\n>From the start of a line\n"), "{inbox_file}");
-        assert!(b.run(Command::MailboxExport { addr: "alice@example.org".into(), dir: dir.clone() }, &[]).await.is_err(), "nothing is overwritten");
+        assert!(b.run(Command::MailboxExport { addr: "alice@example.org".into(), dir: dir.clone(), maildir: false }, &[]).await.is_err(), "nothing is overwritten");
 
         // Import into another account's folder (made when missing): the same two messages, byte for byte but for the line ends.
         let done = b.run(Command::MailboxImport { addr: "bob@example.org".into(), file: dir.join("Inbox.mbox"), folder: Some("Archive".into()) }, &[]).await.unwrap();
@@ -59,11 +59,46 @@ async fn deleted_mail_is_listed_and_recovered_and_a_mailbox_goes_out_and_comes_i
         assert_eq!(moved.len(), 2);
         let raw = bmb.get_raw(moved.iter().find(|m| m.subject == "first").unwrap().id).await.unwrap();
         assert_eq!(&raw[..], ONE, "the message is what it was, with its From line unquoted");
+        let kept = moved.iter().find(|m| m.subject == "first").unwrap();
+        assert_eq!(kept.internal_date, 1_700_000_000, "the date of the From line is kept");
+        assert_eq!(kept.flags.bits(), rusty_core::Flags::SEEN.bits() | rusty_core::Flags::FLAGGED.bits(), "and so are the flags");
         // Something that is not an mbox imports nothing.
         let junk = b.tmp.path().join("junk.txt");
         std::fs::write(&junk, "hello\n").unwrap();
         let none = b.run(Command::MailboxImport { addr: "bob@example.org".into(), file: junk, folder: None }, &[]).await.unwrap();
         assert_eq!(none.json["imported"], 0);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_mailbox_goes_out_as_a_maildir_with_its_flags_in_the_names_and_comes_back_in() {
+    for_each_backend(|b| async move {
+        b.run(Command::DomainAdd { name: "example.org".into() }, &[]).await.unwrap();
+        let alice = account(&b, "alice@example.org").await;
+        let carol = account(&b, "carol@example.org").await;
+        let mail = b.mail.clone().unwrap();
+        let mb = Mailbox::open_with(mail.repo.clone(), mail.stores.clone(), alice).await.unwrap();
+        let inbox = mb.list_folders().await.unwrap().into_iter().find(|f| f.role == "inbox").unwrap().id;
+        let flags = rusty_core::Flags::from_bits(rusty_core::Flags::SEEN.bits() | rusty_core::Flags::ANSWERED.bits()).unwrap();
+        mb.append_dated(inbox, bytes::Bytes::from_static(TWO), flags, 1_650_000_000).await.unwrap();
+        let dir = b.tmp.path().join("maildirs");
+        let out = b.run(Command::MailboxExport { addr: "alice@example.org".into(), dir: dir.clone(), maildir: true }, &[]).await.unwrap();
+        assert_eq!(out.json["messages"], 1, "{}", out.text);
+        for sub in ["tmp", "new", "cur"] {
+            assert!(dir.join("Inbox").join(sub).is_dir(), "{sub}");
+        }
+        let names: Vec<String> = std::fs::read_dir(dir.join("Inbox").join("cur")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(names.len(), 1);
+        assert!(names[0].starts_with("1650000000.") && names[0].ends_with(":2,RS"), "{names:?}");
+        // A Maildir directory is imported by its path: the date and the flags of the name, the content with CRLF line ends.
+        let done = b.run(Command::MailboxImport { addr: "carol@example.org".into(), file: dir.join("Inbox"), folder: None }, &[]).await.unwrap();
+        assert_eq!(done.json["imported"], 1, "{}", done.text);
+        let cmb = Mailbox::open_with(mail.repo.clone(), mail.stores.clone(), carol).await.unwrap();
+        let cinbox = cmb.list_folders().await.unwrap().into_iter().find(|f| f.role == "inbox").unwrap().id;
+        let got = cmb.list_folder(cinbox, 0, 10).await.unwrap();
+        assert_eq!((got[0].internal_date, got[0].flags), (1_650_000_000, flags));
+        assert_eq!(&cmb.get_raw(got[0].id).await.unwrap()[..], TWO);
     })
     .await;
 }

@@ -337,15 +337,15 @@ async fn insert_messages(
 
 type DetailRow = (i64, i64, i64, i64, String, String, i64, i64, i64, Vec<u8>, Option<i64>);
 
-type DeletedRow = (i64, i64, i64, i64, i64, String, String, Vec<u8>, i64);
+type DeletedRow = (i64, i64, i64, i64, i64, String, String, Vec<u8>, i64, i64);
 
-const DELETED_SELECT_LIST: &str = "SELECT id, folder_id, size, deleted_at, internal_date, from_addr, subject, blob_hash, blob_store_id FROM messages \
+const DELETED_SELECT_LIST: &str = "SELECT id, folder_id, size, deleted_at, internal_date, from_addr, subject, blob_hash, blob_store_id, flags FROM messages \
      WHERE mailbox_id = $1 AND deleted_at IS NOT NULL AND id > $2 ORDER BY id LIMIT $3";
-const DELETED_SELECT_ONE: &str = "SELECT id, folder_id, size, deleted_at, internal_date, from_addr, subject, blob_hash, blob_store_id FROM messages \
+const DELETED_SELECT_ONE: &str = "SELECT id, folder_id, size, deleted_at, internal_date, from_addr, subject, blob_hash, blob_store_id, flags FROM messages \
      WHERE mailbox_id = $1 AND id = $2 AND deleted_at IS NOT NULL";
 
 fn deleted_from_row(r: DeletedRow) -> Result<DeletedMessage> {
-    let (id, folder, size, deleted_at, internal_date, from, subject, hash, store) = r;
+    let (id, folder, size, deleted_at, internal_date, from, subject, hash, store, flags) = r;
     Ok(DeletedMessage {
         id: MessageId(id),
         folder: FolderId(folder),
@@ -354,6 +354,7 @@ fn deleted_from_row(r: DeletedRow) -> Result<DeletedMessage> {
         internal_date,
         from,
         subject,
+        flags: u8::try_from(flags).ok().and_then(Flags::from_bits).unwrap_or_default(),
         raw: RawRef { blob: BlobHash::parse(&hex::encode(hash))?, size, store: crate::repo::StoreId(store) },
     })
 }

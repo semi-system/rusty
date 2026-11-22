@@ -552,7 +552,7 @@ fn file_name_of(name: &str) -> String {
 }
 
 /// `mailbox export`: one mbox file per folder, in a directory that does not exist yet (nothing is overwritten).
-async fn mailbox_export(env: &mut CtlEnv<'_>, addr: &str, dir: &std::path::Path) -> Result<Outcome, CtlError> {
+async fn mailbox_export(env: &mut CtlEnv<'_>, addr: &str, dir: &std::path::Path, maildir: bool) -> Result<Outcome, CtlError> {
     let (mb, _) = mailbox_of(env, addr).await?;
     if dir.exists() {
         return Err(CtlError::runtime("the directory already exists; export into a new one"));
@@ -567,19 +567,35 @@ async fn mailbox_export(env: &mut CtlEnv<'_>, addr: &str, dir: &std::path::Path)
         }
         let mut out: Vec<u8> = Vec::new();
         let (mut count, mut after) = (0u64, 0u32);
+        // A Maildir is a directory of three: `tmp`, `new` and `cur` (everything exported is `cur`, with its flags in the name).
+        let maildir_root = dir.join(&file);
+        if maildir {
+            for sub in ["tmp", "new", "cur"] {
+                std::fs::create_dir_all(maildir_root.join(sub)).map_err(|e| CtlError::runtime(format!("cannot create the directory: {e}")))?;
+            }
+        }
         loop {
             let page = mb.list_folder(f.id, after, 500).await.map_err(|e| map_error(&e, "mailbox"))?;
             let Some(last) = page.last() else { break };
             after = last.uid;
             for m in &page {
                 let raw = mb.get_raw(m.id).await.map_err(|e| map_error(&e, "message"))?;
-                crate::mbox::write_message(&mut out, m.internal_date, &raw);
+                if maildir {
+                    std::fs::write(maildir_root.join("cur").join(crate::mbox::maildir_name(m.internal_date, m.id.0, m.flags)), &raw[..]).map_err(|e| CtlError::runtime(format!("cannot write the file: {e}")))?;
+                } else {
+                    crate::mbox::write_message(&mut out, m.internal_date, m.flags, &raw);
+                }
                 count += 1;
             }
         }
-        std::fs::write(dir.join(format!("{file}.mbox")), &out).map_err(|e| CtlError::runtime(format!("cannot write the file: {e}")))?;
+        let written = if maildir {
+            file.clone()
+        } else {
+            std::fs::write(dir.join(format!("{file}.mbox")), &out).map_err(|e| CtlError::runtime(format!("cannot write the file: {e}")))?;
+            format!("{file}.mbox")
+        };
         total += count;
-        report.push(json!({ "folder": f.name, "file": format!("{file}.mbox"), "messages": count }));
+        report.push(json!({ "folder": f.name, "file": written, "messages": count }));
     }
     let text = report.iter().map(|r| format!("{}: {} messages -> {}", r["folder"].as_str().unwrap_or(""), r["messages"], r["file"].as_str().unwrap_or(""))).collect::<Vec<_>>().join("\n");
     Ok(Outcome::new(format!("{text}\n{total} messages exported to {}", dir.display()), json!({ "messages": total, "folders": report })))
@@ -591,11 +607,31 @@ const MAX_IMPORT_BYTES: u64 = 1 << 30;
 /// `mailbox import`: the messages of an mbox file are added to a folder (made when it is missing). A message that cannot be stored (too large, not a message) is counted and skipped.
 async fn mailbox_import(env: &mut CtlEnv<'_>, addr: &str, file: &std::path::Path, folder: Option<&str>) -> Result<Outcome, CtlError> {
     let (mb, _) = mailbox_of(env, addr).await?;
-    let size = std::fs::metadata(file).map_err(|e| CtlError::runtime(format!("cannot read the file: {e}")))?.len();
-    if size > MAX_IMPORT_BYTES {
-        return Err(CtlError::runtime("the file is larger than 1 GiB; split it"));
-    }
-    let bytes = std::fs::read(file).map_err(|e| CtlError::runtime(format!("cannot read the file: {e}")))?;
+    let meta = std::fs::metadata(file).map_err(|e| CtlError::runtime(format!("cannot read the file: {e}")))?;
+    // A directory is a Maildir (its `cur` and `new`); a file is an mbox.
+    let parsed: Vec<crate::mbox::Parsed> = if meta.is_dir() {
+        let mut found = Vec::new();
+        for sub in ["cur", "new"] {
+            let Ok(entries) = std::fs::read_dir(file.join(sub)) else { continue };
+            let mut names: Vec<_> = entries.filter_map(Result::ok).filter(|e| e.file_type().is_ok_and(|t| t.is_file())).collect();
+            names.sort_by_key(std::fs::DirEntry::file_name);
+            for e in names {
+                if e.metadata().map_or(true, |m| m.len() > MAX_IMPORT_BYTES) {
+                    continue;
+                }
+                if let Ok(bytes) = std::fs::read(e.path()) {
+                    found.push(crate::mbox::maildir_message(&e.file_name().to_string_lossy(), &bytes));
+                }
+            }
+        }
+        found
+    } else {
+        if meta.len() > MAX_IMPORT_BYTES {
+            return Err(CtlError::runtime("the file is larger than 1 GiB; split it"));
+        }
+        let bytes = std::fs::read(file).map_err(|e| CtlError::runtime(format!("cannot read the file: {e}")))?;
+        crate::mbox::split(&bytes)
+    };
     let folders = mb.list_folders().await.map_err(|e| map_error(&e, "mailbox"))?;
     let target = match find_folder(&folders, folder) {
         Some(f) => f,
@@ -603,8 +639,10 @@ async fn mailbox_import(env: &mut CtlEnv<'_>, addr: &str, file: &std::path::Path
     };
     let (mut stored, mut skipped) = (0u64, 0u64);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
-    for raw in crate::mbox::split(&bytes) {
-        match mb.append_dated(target, bytes::Bytes::from(raw), rusty_core::Flags::default(), now).await {
+    for m in parsed {
+        // The date the file gave it, else the time of the import; the flags it had.
+        let date = m.internal_date.filter(|d| (0..=4_102_444_800).contains(d)).unwrap_or(now);
+        match mb.append_dated(target, bytes::Bytes::from(m.raw), m.flags, date).await {
             Ok(_) => stored += 1,
             Err(_) => skipped += 1,
         }
@@ -970,7 +1008,7 @@ pub async fn execute(command: &Command, env: &mut CtlEnv<'_>) -> Result<Outcome,
 
         Command::MailboxRecover { addr, id, folder } => mailbox_recover(env, addr, *id, folder.as_deref()).await,
 
-        Command::MailboxExport { addr, dir } => mailbox_export(env, addr, dir).await,
+        Command::MailboxExport { addr, dir, maildir } => mailbox_export(env, addr, dir, *maildir).await,
 
         Command::MailboxImport { addr, file, folder } => mailbox_import(env, addr, file, folder.as_deref()).await,
 
