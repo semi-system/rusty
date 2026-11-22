@@ -122,6 +122,9 @@ impl AdminApp {
             Err(_) => return Err(error(503, "busy")),
         };
         let Some((session, principal)) = found else { return Err(error(401, "unauthorized")) };
+        if !principal.may(req.method.as_str(), &req.path) {
+            return Err(error(403, "forbidden"));
+        }
         if mutating {
             guard_mutation(req, &self.public_origin, &session.csrf).map_err(no_store)?;
         }

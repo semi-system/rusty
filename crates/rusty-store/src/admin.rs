@@ -33,6 +33,11 @@ impl AdminStore {
         self.repo.put(account, domain, Some(now)).await
     }
 
+    /// Make the grant a helpdesk grant (`true`) or a full one (`false`); whether the account has a grant.
+    pub async fn set_helpdesk(&self, account: AccountId, on: bool) -> Result<bool> {
+        self.repo.set_helpdesk(account, on).await
+    }
+
     pub async fn get(&self, account: AccountId) -> Result<Option<AdminGrant>> {
         self.repo.get(account).await
     }

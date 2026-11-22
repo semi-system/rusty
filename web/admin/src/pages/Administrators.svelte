@@ -29,6 +29,7 @@
   let busy = $state(false);
   let address = $state('');
   let domain = $state('');
+  let helpdesk = $state(false);
 
   async function load(after?: number, quiet = false): Promise<void> {
     try {
@@ -92,7 +93,7 @@
   const grant = (e: SubmitEvent): Promise<void> => {
     e.preventDefault();
     return guarded('grant', async () => {
-      const g = await app.client.grantAdmin(address.trim(), domain === '' ? null : domain);
+      const g = await app.client.grantAdmin(address.trim(), domain === '' ? null : domain, helpdesk && domain !== '');
       notice = t('admins.added', { address: g.address });
       address = '';
       await load();
@@ -138,7 +139,7 @@
           {#each items as a (a.id)}
             <tr>
               <th scope="row">{a.address}</th>
-              <td><Badge tone={a.scope === 'platform' ? 'ok' : 'neutral'}>{a.domain === null ? t('admins.scopePlatform') : t('admins.scopeDomain', { domain: a.domain })}</Badge></td>
+              <td><Badge tone={a.scope === 'platform' ? 'ok' : 'neutral'}>{a.domain === null ? t('admins.scopePlatform') : t('admins.scopeDomain', { domain: a.domain })}</Badge>{#if a.role === 'helpdesk'} <Badge tone="warn">{t('admins.roleHelpdesk')}</Badge>{/if}</td>
               <td>{when(a.created_at)}</td>
               {#if platform}
                 <td class="col-actions">
@@ -172,6 +173,7 @@
               {#each domains as d (d.id)}<option value={d.name}>{d.name}</option>{/each}
             </select>
           </label>
+          <label class="check"><input type="checkbox" bind:checked={helpdesk} disabled={domain === ''} /> {t('admins.helpdesk')}</label>
           <button type="submit" disabled={busy}>{busy ? t('admins.adding') : t('admins.add')}</button>
         </div>
       </form>

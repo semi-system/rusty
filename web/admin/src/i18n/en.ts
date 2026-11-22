@@ -27,6 +27,8 @@ export const en = {
   'nav.protocols': 'Protocols',
   'nav.plans': 'Plans',
   'nav.audit': 'Audit log',
+  'admins.helpdesk': 'Helpdesk only: may list accounts, set passwords, lock and unlock (needs a domain)',
+  'admins.roleHelpdesk': 'Helpdesk',
   'nav.platform': 'Platform settings',
   'platform.title': 'Platform settings',
   'platform.lede': 'The limits that apply to every account unless its plan, its domain or the account itself says otherwise. A change takes effect without a restart.',

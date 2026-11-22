@@ -521,8 +521,8 @@ describe('storage', () => {
 });
 
 describe('administrators', () => {
-  const ROOT = { id: 1, address: 'root@example.org', scope: 'platform', domain: null, created_at: 1700000000 };
-  const CAROL = { id: 2, address: 'carol@example.org', scope: 'domain', domain: 'example.org', created_at: 1700000100 };
+  const ROOT = { id: 1, address: 'root@example.org', scope: 'platform', role: 'admin', domain: null, created_at: 1700000000 };
+  const CAROL = { id: 2, address: 'carol@example.org', scope: 'domain', role: 'admin', domain: 'example.org', created_at: 1700000100 };
 
   it('lists the administrators with what each may manage and removes one, but never offers to remove oneself', async () => {
     const s = await open('/administrators', PLATFORM, {

@@ -19,6 +19,7 @@ COLUMN address_owners.owner_id bigint nullable=NO identity=NO/ collation= defaul
 COLUMN admin_grants.account_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN admin_grants.domain_id bigint nullable=YES identity=NO/ collation= default=
 COLUMN admin_grants.created_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN admin_grants.helpdesk boolean nullable=NO identity=NO/ collation= default=false
 COLUMN aliases.id bigint nullable=NO identity=YES/ALWAYS collation= default=
 COLUMN aliases.local_part text nullable=NO identity=NO/ collation=C default=
 COLUMN aliases.domain_id bigint nullable=NO identity=NO/ collation= default=
@@ -256,6 +257,8 @@ CONSTRAINT admin_grants.admin_grants_account_id_fkey FOREIGN KEY (account_id) RE
 CONSTRAINT admin_grants.admin_grants_account_id_not_null NOT NULL account_id
 CONSTRAINT admin_grants.admin_grants_created_at_not_null NOT NULL created_at
 CONSTRAINT admin_grants.admin_grants_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+CONSTRAINT admin_grants.admin_grants_helpdesk_domain CHECK (NOT helpdesk OR domain_id IS NOT NULL)
+CONSTRAINT admin_grants.admin_grants_helpdesk_not_null NOT NULL helpdesk
 CONSTRAINT admin_grants.admin_grants_pkey PRIMARY KEY (account_id)
 CONSTRAINT aliases.aliases_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 CONSTRAINT aliases.aliases_account_id_not_null NOT NULL account_id

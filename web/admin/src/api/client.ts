@@ -347,8 +347,8 @@ export class Client {
     return this.call('GET', `/api/v1/admins${cursor(after, opts)}`);
   }
 
-  grantAdmin(address: string, domain: string | null): Promise<AdminEntry> {
-    return this.call('POST', '/api/v1/admins', { address, domain });
+  grantAdmin(address: string, domain: string | null, helpdesk = false): Promise<AdminEntry> {
+    return this.call('POST', '/api/v1/admins', helpdesk ? { address, domain, role: 'helpdesk' } : { address, domain });
   }
 
   async revokeAdmin(address: string): Promise<void> {

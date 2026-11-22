@@ -11,7 +11,7 @@ use crate::repo::render_pg as r;
 
 fn grant(x: &sqlx::postgres::PgRow) -> std::result::Result<AdminGrant, sqlx::Error> {
     let domain: Option<i64> = x.try_get(1)?;
-    Ok(AdminGrant { account: AccountId(x.try_get(0)?), domain: domain.map(DomainId), created_at: x.try_get(2)? })
+    Ok(AdminGrant { account: AccountId(x.try_get(0)?), domain: domain.map(DomainId), created_at: x.try_get(2)?, helpdesk: x.try_get(3)? })
 }
 
 #[async_trait]
@@ -36,6 +36,15 @@ impl AdminRepo for PgRepo {
         x.as_ref().map(grant).transpose().map_err(map_db_error)
     }
 
+    async fn set_helpdesk(&self, account: AccountId, on: bool) -> Result<bool> {
+        let done = sqlx::query(r(sql::SET_HELPDESK)).bind(account.0).bind(on).execute(self.store.pool()).await.map_err(|e| match &e {
+            // The table's check: a platform grant cannot be a helpdesk one.
+            sqlx::Error::Database(d) if d.code().as_deref() == Some("23514") => Error::Invalid("a helpdesk grant is for one domain".into()),
+            _ => map_db_error(e),
+        })?;
+        Ok(done.rows_affected() > 0)
+    }
+
     async fn delete(&self, account: AccountId) -> Result<bool> {
         let done = sqlx::query(r(sql::DELETE)).bind(account.0).execute(self.store.pool()).await.map_err(map_db_error)?;
         Ok(done.rows_affected() > 0)
@@ -56,7 +65,7 @@ impl AdminRepo for PgRepo {
             .await
             .map_err(map_db_error)?;
         rows.iter()
-            .map(|x| Ok(AdminEntry { grant: grant(x)?, address: x.try_get(3)? }))
+            .map(|x| Ok(AdminEntry { grant: grant(x)?, address: x.try_get(4)? }))
             .collect::<std::result::Result<Vec<_>, sqlx::Error>>()
             .map_err(map_db_error)
     }

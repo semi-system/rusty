@@ -87,6 +87,7 @@ export interface AdminEntry {
   id: number;
   address: string;
   scope: string;
+  role: string;
   domain: string | null;
   created_at: number;
 }
