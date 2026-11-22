@@ -121,3 +121,38 @@ async fn accounts_are_imported_from_csv_line_by_line_with_a_dry_run_that_changes
     assert_eq!(c.post("/api/v1/domains/imp.test/accounts/import", json!({ "csv": big })).await.status, 400);
     assert_eq!(c.post("/api/v1/domains/imp.test/accounts/import", json!({ "csv": "x", "extra": 1 })).await.status, 400);
 }
+
+#[tokio::test]
+async fn domain_settings_set_the_defaults_limits_and_password_rules_that_account_creation_follows() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    let c = Client::sign_in(r.addr, "root@home.test").await;
+    assert_eq!(c.post("/api/v1/domains", json!({ "name": "set.test" })).await.status, 201);
+    assert_eq!(c.mutate("PUT", "/api/v1/plans", Some(json!({ "name": "gold", "quota_bytes": 5_000_000 }))).await.status, 201);
+    let start = c.get("/api/v1/domains/set.test/settings").await;
+    conforms(&start.json(), "DomainSettings");
+    assert_eq!(start.json()["max_accounts"], json!(null));
+    let set = c.mutate("PUT", "/api/v1/domains/set.test/settings", Some(json!({ "default_plan": "gold", "max_accounts": 2, "quota_bytes": 9_000_000, "max_message_bytes": null, "password_min_length": 12, "password_classes": 3 }))).await;
+    assert_eq!(set.status, 200, "{}", set.body);
+    // The password rules: too short, or too few kinds of characters, and one that fits.
+    assert_eq!(c.post("/api/v1/domains/set.test/accounts", json!({ "local": "a", "password": "Short1!" })).await.status, 400);
+    assert_eq!(c.post("/api/v1/domains/set.test/accounts", json!({ "local": "a", "password": "alllowercaseletters" })).await.status, 400);
+    let made = c.post("/api/v1/domains/set.test/accounts", json!({ "local": "a", "password": "Long enough 123" })).await;
+    assert_eq!(made.status, 201, "{}", made.body);
+    assert_eq!(made.json()["plan"], "gold", "the default plan is applied");
+    assert_eq!(c.post("/api/v1/domains/set.test/accounts", json!({ "local": "b", "password": "Long enough 123" })).await.status, 201);
+    let full = c.post("/api/v1/domains/set.test/accounts", json!({ "local": "c", "password": "Long enough 123" })).await;
+    assert_eq!((full.status, full.json()["error"].clone()), (409, json!("limit_reached")), "the domain may have two accounts");
+    // The domain's own quota reaches the accounts that have no plan or setting of their own (account d is not made: the limit holds), and the import follows the same rules.
+    let imp = c.post("/api/v1/domains/set.test/accounts/import", json!({ "csv": "x,Long enough 123\n" })).await;
+    assert_eq!(imp.json()["invalid"], 1, "{}", imp.body);
+    // A domain administrator may change the password rules only.
+    make_admin(&r, "tenant@set.test", true).await;
+    let t = Client::sign_in(r.addr, "tenant@set.test").await;
+    let mine = json!({ "default_plan": "gold", "max_accounts": 2, "quota_bytes": 9_000_000, "max_message_bytes": null, "password_min_length": 14, "password_classes": 2 });
+    assert_eq!(t.mutate("PUT", "/api/v1/domains/set.test/settings", Some(mine)).await.status, 200);
+    let more = json!({ "default_plan": "gold", "max_accounts": 99, "quota_bytes": 9_000_000, "max_message_bytes": null, "password_min_length": 14, "password_classes": 2 });
+    assert_eq!(t.mutate("PUT", "/api/v1/domains/set.test/settings", Some(more)).await.status, 403, "it cannot raise its own limit");
+    assert_eq!(c.mutate("PUT", "/api/v1/domains/set.test/settings", Some(json!({ "default_plan": "nope" }))).await.status, 400);
+    assert_eq!(c.mutate("PUT", "/api/v1/domains/set.test/settings", Some(json!({ "password_min_length": 3 }))).await.status, 400);
+}

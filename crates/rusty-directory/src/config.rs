@@ -55,6 +55,15 @@ impl Directory {
         Ok(self.effective_configs(account, &[key]).await?.remove(0))
     }
 
+    /// May the account use this protocol (`imap`, `pop3` or `submission`)? Its plan (or its own or its domain's configuration) can list the protocols allowed in `protocols`; without that key
+    /// every protocol is. A database that cannot answer is an error, never "allowed".
+    pub async fn protocol_allowed(&self, account: AccountId, protocol: &str) -> Result<bool> {
+        Ok(match self.effective_config(account, "protocols").await? {
+            Some(Value::Array(list)) => list.iter().any(|v| v.as_str() == Some(protocol)),
+            _ => true,
+        })
+    }
+
     /// [`effective_config`](Self::effective_config) for several keys from one read of the layers (one query): the values in the order of `keys`.
     pub async fn effective_configs(&self, account: AccountId, keys: &[&str]) -> Result<Vec<Option<Value>>> {
         let layers = self.repo().config_layers(account).await?;

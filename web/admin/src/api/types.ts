@@ -33,6 +33,7 @@ export interface Account {
   used_bytes: number;
   quota_bytes: number | null;
   last_delivery_at: number | null;
+  must_change_password: boolean;
 }
 
 export interface AccountCreated {
@@ -45,6 +46,7 @@ export interface AccountCreated {
   used_bytes: number;
   quota_bytes: number | null;
   last_delivery_at: number | null;
+  must_change_password: boolean;
   aliases_created: string[];
 }
 
@@ -243,6 +245,8 @@ export interface Plan {
   name: string;
   quota_bytes: number | null;
   max_message_bytes: number | null;
+  messages_per_hour: number | null;
+  protocols: string[] | null;
 }
 
 export interface PlanList {
@@ -285,6 +289,15 @@ export interface CatchAll {
 
 export interface DomainAliasName {
   name: string;
+}
+
+export interface DomainSettings {
+  default_plan: string | null;
+  max_accounts: number | null;
+  quota_bytes: number | null;
+  max_message_bytes: number | null;
+  password_min_length: number | null;
+  password_classes: number | null;
 }
 
 export interface ImportRow {

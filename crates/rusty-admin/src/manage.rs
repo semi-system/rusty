@@ -64,6 +64,8 @@ struct AccountJson {
     quota_bytes: Option<i64>,
     /// When mail last arrived (seconds), `null` if none has.
     last_delivery_at: Option<i64>,
+    /// A temporary password is set: the account cannot sign in until it is changed.
+    must_change_password: bool,
 }
 
 fn account_json(a: &AccountInfo, domain: &str, usage: Option<&rusty_store::AccountUsage>) -> AccountJson {
@@ -77,6 +79,7 @@ fn account_json(a: &AccountInfo, domain: &str, usage: Option<&rusty_store::Accou
         used_bytes: usage.map_or(0, |u| u.used_bytes),
         quota_bytes: usage.and_then(|u| u.quota_bytes),
         last_delivery_at: usage.and_then(|u| u.last_delivery_at),
+        must_change_password: usage.is_some_and(|u| u.must_change_password),
     }
 }
 
@@ -397,9 +400,21 @@ async fn create_account(app: &AdminApp, req: Request) -> Response {
     if b.local.len() > 64 || b.local.contains('@') {
         return err(400, "invalid");
     }
+    // The rules of the domain: its password rules, its limit on accounts, its default plan (docs/design-domain-settings.md).
+    let settings = match crate::settings::of(app, dom.id).await {
+        Ok(s) => s,
+        Err(e) => return fail(&e),
+    };
     if let Some(pw) = &b.password {
-        if let Err(r) = check_password(pw) {
-            return r;
+        if settings.password_problem(pw).is_some() {
+            return err(400, "invalid");
+        }
+    }
+    if let Some(max) = settings.max_accounts {
+        match app.directory.count_accounts(dom.id, &rusty_directory::ListFilter::default()).await {
+            Ok(n) if u64::try_from(n).unwrap_or(u64::MAX) >= max => return err(409, "limit_reached"),
+            Ok(_) => {}
+            Err(e) => return fail(&e),
         }
     }
     let first = match app.directory.list_accounts(dom.id, None, 1).await {
@@ -410,6 +425,11 @@ async fn create_account(app: &AdminApp, req: Request) -> Response {
         Ok(id) => id,
         Err(e) => return fail(&e),
     };
+    if let (Some(plan), Some(s)) = (settings.default_plan.as_deref(), app.services.as_ref()) {
+        if let Err(e) = s.plans.set_account_plan(id, Some(plan)).await {
+            return fail(&e);
+        }
+    }
     let address = format!("{}@{}", b.local, dom.name);
     let info = match app.directory.find_account(&address).await {
         Ok(Some(a)) => a,
@@ -440,6 +460,9 @@ async fn create_account(app: &AdminApp, req: Request) -> Response {
 #[serde(deny_unknown_fields)]
 struct NewPassword {
     password: String,
+    /// The password is temporary: the account cannot sign in until it is changed.
+    #[serde(default)]
+    must_change: bool,
 }
 
 async fn set_password(app: &AdminApp, req: Request) -> Response {
@@ -461,8 +484,20 @@ async fn set_password(app: &AdminApp, req: Request) -> Response {
     if let Err(r) = check_password(&b.password) {
         return r;
     }
+    // The password rules of the account's domain.
+    match crate::settings::of(app, acc.domain).await {
+        Ok(s) if s.password_problem(&b.password).is_some() => return err(400, "invalid"),
+        Ok(_) => {}
+        Err(e) => return fail(&e),
+    }
     if let Err(e) = app.directory.set_password(acc.id, &b.password).await {
         return fail(&e);
+    }
+    // A temporary password (`must_change`) holds the account until it is changed; any other password clears that.
+    if let Some(s) = app.services.as_ref() {
+        if let Err(e) = s.plans.set_must_change_password(acc.id.0, b.must_change).await {
+            return fail(&e);
+        }
     }
     // Every session of this account ends (it may be an administrator).
     if app.auth.revoke_account(acc.id).await.is_err() {

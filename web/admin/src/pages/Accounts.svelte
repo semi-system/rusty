@@ -68,6 +68,7 @@
 
   let editing = $state<string | null>(null);
   let fresh = $state('');
+  let temporary = $state(false);
 
   async function load(after?: number, quiet = false): Promise<void> {
     try {
@@ -143,9 +144,10 @@
       return Promise.resolve();
     }
     return guarded(async () => {
-      await app.client.setPassword(address, fresh);
+      await app.client.setPassword(address, fresh, temporary);
       notice = t('accounts.passwordSet', { address });
       editing = null;
+      temporary = false;
       fresh = '';
       await load();
     });
@@ -230,6 +232,7 @@
                         {t('accounts.passwordFor', { address: a.address })}
                         <input bind:value={fresh} name="password" type="password" autocomplete="new-password" required />
                       </label>
+                      <label class="check"><input type="checkbox" bind:checked={temporary} /> {t('accounts.mustChange')}</label>
                       <div class="form-actions"><button type="submit" class="primary" disabled={busy}>{busy ? t('common.saving') : t('common.save')}</button></div>
                     </form>
                   {/if}

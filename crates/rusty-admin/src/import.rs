@@ -105,6 +105,18 @@ async fn import(app: &AdminApp, req: Request) -> Response {
         Ok(rows) => rows.is_empty(),
         Err(e) => return fail(&e),
     };
+    // The rules of the domain apply to every line (docs/design-domain-settings.md): its password rules, its default plan, and room for the accounts it may still have.
+    let settings = match crate::settings::of(app, dom.id).await {
+        Ok(s) => s,
+        Err(e) => return fail(&e),
+    };
+    let mut room = match settings.max_accounts {
+        Some(max) => match app.directory.count_accounts(dom.id, &rusty_directory::ListFilter::default()).await {
+            Ok(n) => Some(usize::try_from(max).unwrap_or(usize::MAX).saturating_sub(usize::try_from(n).unwrap_or(0))),
+            Err(e) => return fail(&e),
+        },
+        None => None,
+    };
 
     let mut rows: Vec<RowJson> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -137,6 +149,10 @@ async fn import(app: &AdminApp, req: Request) -> Response {
             bad!("the password is too short");
             continue;
         }
+        if password.is_some_and(|pw| settings.password_problem(pw).is_some()) {
+            bad!("the password does not meet the rules of the domain");
+            continue;
+        }
         if let Some(name) = plan {
             if !plans.iter().any(|x| x.name == name) {
                 bad!("no such plan");
@@ -163,8 +179,16 @@ async fn import(app: &AdminApp, req: Request) -> Response {
             rows.push(RowJson { line: n, address, result: "would_create", reason: None });
             continue;
         }
+        if room == Some(0) {
+            bad!("the domain has reached its limit of accounts");
+            continue;
+        }
         match app.directory.create_account(local, dom.id, password, None).await {
             Ok(id) => {
+                if let Some(r) = room.as_mut() {
+                    *r -= 1;
+                }
+                let plan = plan.or(settings.default_plan.as_deref());
                 if let Some(name) = plan {
                     if let Err(e) = s.plans.set_account_plan(id, Some(name)).await {
                         return fail(&e);

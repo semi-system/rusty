@@ -24,6 +24,9 @@ struct PlanJson {
     name: String,
     quota_bytes: Option<u64>,
     max_message_bytes: Option<u64>,
+    messages_per_hour: Option<u64>,
+    /// The protocols accounts of the plan may use (`imap`, `pop3`, `submission`); `null`: all of them.
+    protocols: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -33,7 +36,13 @@ struct PlansJson {
 
 fn plan_json(name: &str, config: &str) -> PlanJson {
     let v: Value = serde_json::from_str(config).unwrap_or(Value::Null);
-    PlanJson { name: name.to_owned(), quota_bytes: v.get("quota_bytes").and_then(Value::as_u64), max_message_bytes: v.get("max_message_bytes").and_then(Value::as_u64) }
+    PlanJson {
+        name: name.to_owned(),
+        quota_bytes: v.get("quota_bytes").and_then(Value::as_u64),
+        max_message_bytes: v.get("max_message_bytes").and_then(Value::as_u64),
+        messages_per_hour: v.get("messages_per_hour").and_then(Value::as_u64),
+        protocols: v.get("protocols").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect()),
+    }
 }
 
 #[derive(Deserialize)]
@@ -42,6 +51,10 @@ struct PutPlan {
     name: String,
     quota_bytes: Option<u64>,
     max_message_bytes: Option<u64>,
+    #[serde(default)]
+    messages_per_hour: Option<u64>,
+    #[serde(default)]
+    protocols: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -75,7 +88,13 @@ async fn put(app: &AdminApp, req: Request) -> Response {
         return r;
     }
     let Ok(b) = serde_json::from_slice::<PutPlan>(&req.body) else { return err(400, "invalid") };
-    if !valid_name(&b.name) || b.quota_bytes.is_some_and(|q| q == 0 || q > MAX_BYTES) || b.max_message_bytes.is_some_and(|m| m == 0 || m > MAX_BYTES) {
+    let protocols_ok = b.protocols.as_ref().is_none_or(|p| p.iter().all(|x| ["imap", "pop3", "submission"].contains(&x.as_str())));
+    if !valid_name(&b.name)
+        || b.quota_bytes.is_some_and(|q| q == 0 || q > MAX_BYTES)
+        || b.max_message_bytes.is_some_and(|m| m == 0 || m > MAX_BYTES)
+        || b.messages_per_hour.is_some_and(|m| m == 0 || m > 1_000_000)
+        || !protocols_ok
+    {
         return err(400, "invalid");
     }
     let Some(s) = app.services.as_ref() else { return err(503, "unavailable") };
@@ -84,7 +103,7 @@ async fn put(app: &AdminApp, req: Request) -> Response {
         Err(e) => return fail(&e),
     };
     let mut config: Map<String, Value> = existing.as_ref().and_then(|r| serde_json::from_str(&r.config).ok()).unwrap_or_default();
-    for (key, value) in [("quota_bytes", b.quota_bytes), ("max_message_bytes", b.max_message_bytes)] {
+    for (key, value) in [("quota_bytes", b.quota_bytes), ("max_message_bytes", b.max_message_bytes), ("messages_per_hour", b.messages_per_hour)] {
         match value {
             Some(v) => {
                 config.insert(key.to_owned(), json!(v));
@@ -92,6 +111,14 @@ async fn put(app: &AdminApp, req: Request) -> Response {
             None => {
                 config.remove(key);
             }
+        }
+    }
+    match &b.protocols {
+        Some(list) => {
+            config.insert("protocols".to_owned(), json!(list));
+        }
+        None => {
+            config.remove("protocols");
         }
     }
     let result = match &existing {

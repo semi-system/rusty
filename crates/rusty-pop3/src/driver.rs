@@ -134,6 +134,17 @@ impl Backend for Rusty {
             }
             Err(_) => return Err(LoginError::Unavailable),
         };
+        // The plan of the account can leave POP3 out of the protocols it may use (the same answer as a wrong password, without counting as one).
+        match self.ctx.directory.protocol_allowed(account, "pop3").await {
+            Ok(true) => {}
+            Ok(false) => return Err(LoginError::Bad),
+            Err(_) => return Err(LoginError::Unavailable),
+        }
+        match self.ctx.plans.must_change_password(account.0).await {
+            Ok(false) => {}
+            Ok(true) => return Err(LoginError::Bad),
+            Err(_) => return Err(LoginError::Unavailable),
+        }
         let mailbox = self.ctx.hub.open_for(account).await.map_err(|_| LoginError::Unavailable)?;
         for k in &keys {
             self.ctx.rate.record_success(ip, k).await;

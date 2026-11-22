@@ -117,6 +117,8 @@ pub struct SubmissionDeps {
     /// The outbound worker runs: remote recipients may be accepted. `false` refuses them with a
     /// temporary status (mail is never accepted into a queue nobody drains).
     pub remote_enabled: bool,
+    /// Messages an hour an account may send when its plan says nothing (the limiter's own budget).
+    pub default_per_hour: u32,
 }
 
 pub struct InboundHandler {
@@ -365,6 +367,15 @@ impl InboundHandler {
                 Ok(())
             }
             Err(e) => Err(e),
+        }
+    }
+
+    /// How many messages an hour this account may submit: `messages_per_hour` of its plan (or its own or its domain's configuration), else the limit of the service.
+    async fn messages_per_hour(&self, account: AccountId) -> u32 {
+        let configured = self.submission.as_ref().map_or(u32::MAX, |d| d.default_per_hour);
+        match self.directory.effective_config(account, "messages_per_hour").await {
+            Ok(Some(v)) => v.as_u64().and_then(|n| u32::try_from(n).ok()).unwrap_or(configured),
+            _ => configured,
         }
     }
 
@@ -618,6 +629,17 @@ impl InboundHandler {
         let service = "submission";
         match (verified, address) {
             (Ok(Some(account)), Ok(address)) => {
+                // The plan of the account can leave submission out of the protocols it may use.
+                match self.directory.protocol_allowed(account, "submission").await {
+                    Ok(true) => {}
+                    Ok(false) => return AuthVerdict::Failure(Reply::new(535, "5.7.8", "Authentication credentials invalid")),
+                    Err(_) => return temporary(),
+                }
+                match self.plans.must_change_password(account.0).await {
+                    Ok(false) => {}
+                    Ok(true) => return AuthVerdict::Failure(Reply::new(535, "5.7.8", "The password must be changed before this account is used")),
+                    Err(_) => return temporary(),
+                }
                 for k in &keys {
                     self.rate.record_success(ip, k).await;
                 }
@@ -645,7 +667,8 @@ impl InboundHandler {
         match self.directory.resolve(&format!("{local}@{domain}")).await {
             Ok(Resolved::Account(id)) if id == identity.account => {
                 if let Some(d) = self.submission.as_ref() {
-                    if !d.limiter.allow(identity.account).await {
+                    let cap = self.messages_per_hour(identity.account).await;
+                    if !d.limiter.allow_capped(identity.account, cap).await {
                         return Err(Reply::new(451, "4.7.1", "Sending limit reached, try again later"));
                     }
                 }
@@ -706,7 +729,8 @@ impl InboundHandler {
         let stored = Bytes::from(prepare_message_with(&t.data, &trace, &extra));
         // The sending budget: counted atomically BEFORE any effect (parallel connections cannot all
         // pass a separate check), restart-safe for remote mail through the queue's own accounting.
-        if !deps.limiter.try_record(identity.account).await {
+        let cap = self.messages_per_hour(identity.account).await;
+        if !deps.limiter.try_record_capped(identity.account, cap).await {
             return Reply::new(451, "4.7.1", "Sending limit reached, try again later");
         }
         let mut seen = HashSet::new();

@@ -11,8 +11,8 @@ import { PLATFORM, TENANT, created, fail, fakeServer, ok, signedIn, type Answer,
 
 const D1: Domain = { id: 1, name: 'example.org', status: 'active' };
 const D2: Domain = { id: 2, name: 'other.org', status: 'disabled' };
-const ACC: Account = { id: 10, address: 'alice@example.org', status: 'active', has_password: true, last_login_at: 1700000000, plan: null, used_bytes: 0, quota_bytes: null, last_delivery_at: 1700000100 };
-const ACC2: Account = { id: 11, address: 'bob@example.org', status: 'disabled', has_password: false, last_login_at: null, plan: null, used_bytes: 0, quota_bytes: null, last_delivery_at: 1700000200 };
+const ACC: Account = { id: 10, address: 'alice@example.org', status: 'active', has_password: true, last_login_at: 1700000000, plan: null, used_bytes: 0, quota_bytes: null, last_delivery_at: 1700000100, must_change_password: false };
+const ACC2: Account = { id: 11, address: 'bob@example.org', status: 'disabled', has_password: false, last_login_at: null, plan: null, used_bytes: 0, quota_bytes: null, last_delivery_at: 1700000200, must_change_password: false };
 
 beforeEach(() => {
   setCatalogue(en, 'en');
@@ -89,7 +89,7 @@ describe('overview', () => {
     expect(screen.getByText(t('domain.queueDead', { n: 2 }))).toBeTruthy();
     const tabs = screen.getByRole('navigation', { name: t('domain.tabs', { name: 'example.org' }) });
     expect(within(tabs).getAllByRole('link').map((a) => a.getAttribute('href'))).toEqual(
-      ['overview', 'accounts', 'aliases', 'routing', 'queue', 'dkim', 'dns', 'relay', 'storage'].map((p) => `/domains/example.org/${p}`),
+      ['overview', 'accounts', 'aliases', 'routing', 'queue', 'settings', 'dkim', 'dns', 'relay', 'storage'].map((p) => `/domains/example.org/${p}`),
     );
     expect(within(tabs).getByRole('link', { name: t('domain.overview') }).getAttribute('aria-current')).toBe('page');
   });
@@ -187,7 +187,7 @@ describe('accounts', () => {
     await type(t('accounts.passwordFor', { address: 'alice@example.org' }), 'a-new-password-1');
     await fireEvent.click(screen.getByRole('button', { name: t('common.save') }));
     expect(await screen.findByText(t('accounts.passwordSet', { address: 'alice@example.org' }))).toBeTruthy();
-    expect(s.last('POST /api/v1/accounts/alice%40example.org/password')!.body).toEqual({ password: 'a-new-password-1' });
+    expect(s.last('POST /api/v1/accounts/alice%40example.org/password')!.body).toEqual({ password: 'a-new-password-1', must_change: false });
     expect(screen.queryByLabelText(t('accounts.passwordFor', { address: 'alice@example.org' }))).toBeNull();
     expect(document.body.textContent).not.toContain('a-new-password-1');
   });
