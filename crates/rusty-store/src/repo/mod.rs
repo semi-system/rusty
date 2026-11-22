@@ -38,7 +38,7 @@ pub mod pg;
 pub use dns::{DkimKeyRow, DnsConfig, DnsConfigRow, DnsEventRow, DnsRepo};
 pub use gc::{ClosedAccountBatch, GcRepo, PurgeBatch};
 pub use sealed::{SealedMeta, SealedRepo, SealedRow};
-pub use blob_store::{BlobStoreRepo, BlobStoreRow, StoreId, PLATFORM_STORE};
+pub use blob_store::{Commitments, BlobStoreRepo, BlobStoreRow, StoreId, PLATFORM_STORE};
 pub use blob_pool::{BackendId, BackendRow, BackendState, BlobPoolRepo, Location, MAX_BACKENDS};
 pub use heartbeat::{HeartbeatRepo, HeartbeatRow};
 pub use relay::{RelayRepo, RelayRow};

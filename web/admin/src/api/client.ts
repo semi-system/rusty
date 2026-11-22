@@ -419,6 +419,11 @@ export class Client {
     await this.call('DELETE', `/api/v1/domains/${seg(domain)}/storage/backends/${seg(backend)}`);
   }
 
+  /** Declare how much room the tenant's store has, in bytes (`null` clears it); a check is queued to judge it. */
+  async setStorageCapacity(domain: string, capacityBytes: number | null): Promise<void> {
+    await this.call('PUT', `/api/v1/domains/${seg(domain)}/storage/capacity`, { capacity_bytes: capacityBytes });
+  }
+
   async checkStorage(domain: string): Promise<void> {
     await this.call('POST', `/api/v1/domains/${seg(domain)}/storage/check`);
   }

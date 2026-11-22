@@ -153,7 +153,16 @@ export interface StorageBackend {
   objects: number | null;
 }
 
+export interface StorageCapacity {
+  declared_bytes: number | null;
+  used_bytes: number | null;
+  promised_bytes: number | null;
+  unlimited_accounts: number | null;
+  status: string;
+}
+
 export interface Storage {
+  capacity: StorageCapacity | null;
   kind: string;
   ready: boolean;
   check_status: string;

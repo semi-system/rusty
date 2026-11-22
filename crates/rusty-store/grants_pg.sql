@@ -133,7 +133,9 @@ BEGIN
     GRANT SELECT, INSERT, UPDATE ON job_turns TO rusty_outbound;   -- the turn order of the tenants (docs/design-fair-claim.md)
     GRANT UPDATE (created_at) ON domains, accounts TO rusty_outbound;   -- the row locks of the DNS check and of a delivery
     GRANT UPDATE (check_status, checked_at) ON domain_relays TO rusty_outbound;
-    GRANT UPDATE (check_status, checked_at) ON blob_stores, blob_backends TO rusty_outbound;   -- the storage check worker locks the row, then records its result; a tenant's store is used only after a check passed
+    GRANT UPDATE (check_status, checked_at) ON blob_stores, blob_backends TO rusty_outbound;
+    GRANT UPDATE (used_bytes, promised_bytes, unlimited_accounts, capacity_status) ON blob_stores TO rusty_outbound;   -- the capacity verdict of the storage check (docs/design-storage-capacity.md)
+    GRANT SELECT ON plans TO rusty_outbound;   -- ...which sums the quotas the plans give   -- the storage check worker locks the row, then records its result; a tenant's store is used only after a check passed
     -- a bounce (DSN) is delivered to the local sender like any inbound message
     GRANT INSERT, UPDATE ON messages, blobs, blob_locations TO rusty_outbound;
     GRANT INSERT ON keywords, change_log, deliveries TO rusty_outbound;

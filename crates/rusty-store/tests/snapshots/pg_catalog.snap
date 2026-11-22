@@ -58,6 +58,11 @@ COLUMN blob_stores.config jsonb nullable=NO identity=NO/ collation= default='{}'
 COLUMN blob_stores.check_status text nullable=NO identity=NO/ collation=C default='unchecked'::text
 COLUMN blob_stores.checked_at bigint nullable=YES identity=NO/ collation= default=
 COLUMN blob_stores.created_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN blob_stores.capacity_bytes bigint nullable=YES identity=NO/ collation= default=
+COLUMN blob_stores.used_bytes bigint nullable=YES identity=NO/ collation= default=
+COLUMN blob_stores.promised_bytes bigint nullable=YES identity=NO/ collation= default=
+COLUMN blob_stores.unlimited_accounts bigint nullable=YES identity=NO/ collation= default=
+COLUMN blob_stores.capacity_status text nullable=NO identity=NO/ collation=C default='unset'::text
 COLUMN blobs.hash bytea nullable=NO identity=NO/ collation= default=
 COLUMN blobs.size bigint nullable=NO identity=NO/ collation= default=
 COLUMN blobs.refcount bigint nullable=NO identity=NO/ collation= default=0
@@ -316,6 +321,9 @@ CONSTRAINT blob_store_leases.blob_store_leases_holder_valid CHECK (length(holder
 CONSTRAINT blob_store_leases.blob_store_leases_pkey PRIMARY KEY (store_id)
 CONSTRAINT blob_store_leases.blob_store_leases_store_id_fkey FOREIGN KEY (store_id) REFERENCES blob_stores(id) ON DELETE CASCADE
 CONSTRAINT blob_store_leases.blob_store_leases_store_id_not_null NOT NULL store_id
+CONSTRAINT blob_stores.blob_stores_capacity_status_not_null NOT NULL capacity_status
+CONSTRAINT blob_stores.blob_stores_capacity_status_valid CHECK (capacity_status = ANY (ARRAY['unset'::text, 'ok'::text, 'overcommitted'::text, 'nearly_full'::text, 'full'::text]))
+CONSTRAINT blob_stores.blob_stores_capacity_valid CHECK (capacity_bytes IS NULL OR capacity_bytes > 0)
 CONSTRAINT blob_stores.blob_stores_check_status_not_null NOT NULL check_status
 CONSTRAINT blob_stores.blob_stores_check_valid CHECK (length(check_status) >= 1 AND length(check_status) <= 64)
 CONSTRAINT blob_stores.blob_stores_config_not_null NOT NULL config

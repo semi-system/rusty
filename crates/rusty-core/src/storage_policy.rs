@@ -81,8 +81,36 @@ pub fn validate_tenant_s3(endpoint: &str, region: &str, bucket: &str, prefix: &s
     Ok(TenantS3 { endpoint, region: region.to_owned(), bucket: bucket.to_owned(), prefix: prefix.to_owned(), path_style })
 }
 
+/// The verdict of a storage check on room: `unset` when no capacity is declared; `full` when the tenant already holds as much as the capacity; `nearly_full` from 90 %;
+/// `overcommitted` when the quotas it has been promised add up to more than the capacity, or any account has no quota at all; otherwise `ok`.
+pub fn capacity_status(capacity: Option<i64>, used: i64, promised: i64, unlimited_accounts: i64) -> &'static str {
+    let Some(cap) = capacity.filter(|c| *c > 0) else { return "unset" };
+    if used >= cap {
+        "full"
+    } else if i128::from(used) * 100 >= i128::from(cap) * 90 {
+        "nearly_full"
+    } else if promised > cap || unlimited_accounts > 0 {
+        "overcommitted"
+    } else {
+        "ok"
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_room_of_a_store_is_judged_by_what_it_holds_and_what_was_promised() {
+        use super::capacity_status as s;
+        assert_eq!(s(None, 5, 5, 0), "unset");
+        assert_eq!(s(Some(1000), 100, 900, 0), "ok");
+        assert_eq!(s(Some(1000), 100, 1001, 0), "overcommitted", "promised more than there is");
+        assert_eq!(s(Some(1000), 100, 10, 2), "overcommitted", "accounts without a quota can fill it");
+        assert_eq!(s(Some(1000), 900, 100, 0), "nearly_full");
+        assert_eq!(s(Some(1000), 899, 100, 0), "ok");
+        assert_eq!(s(Some(1000), 1000, 0, 0), "full");
+        assert_eq!(s(Some(1000), 5000, 0, 0), "full");
+    }
+
     use super::*;
 
     fn ok(e: &str) -> TenantS3 {

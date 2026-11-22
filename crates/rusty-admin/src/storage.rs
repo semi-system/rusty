@@ -83,8 +83,33 @@ struct BackendJson {
     objects: Option<i64>,
 }
 
+/// The room of the store as the last check judged it (docs/design-storage-capacity.md).
+#[derive(Serialize)]
+struct CapacityJson {
+    /// The room the operator declared; `null`: not declared.
+    declared_bytes: Option<i64>,
+    /// What the tenant's mailboxes hold, what its accounts' quotas add up to, and how many accounts have no quota; `null` before the first check.
+    used_bytes: Option<i64>,
+    promised_bytes: Option<i64>,
+    unlimited_accounts: Option<i64>,
+    /// `unset`, `ok`, `overcommitted`, `nearly_full` or `full`.
+    status: String,
+}
+
+fn capacity_of(row: &BlobStoreRow) -> Option<CapacityJson> {
+    (row.domain.is_some() && (row.kind == "s3" || row.kind == "pool")).then(|| CapacityJson {
+        declared_bytes: row.capacity_bytes,
+        used_bytes: row.used_bytes,
+        promised_bytes: row.promised_bytes,
+        unlimited_accounts: row.unlimited_accounts,
+        status: row.capacity_status.clone(),
+    })
+}
+
 #[derive(Serialize)]
 struct StorageJson {
+    /// The room of the store; `null` for a store that is not a tenant's own.
+    capacity: Option<CapacityJson>,
     kind: String,
     /// The store is used for mail: a check passed (a store that is not ready answers deliveries with a temporary failure).
     ready: bool,
@@ -137,6 +162,7 @@ async fn state_of(s: &Services, row: BlobStoreRow, platform: bool) -> Result<Sto
         }
         return Ok(StorageState {
             storage: Some(StorageJson {
+                capacity: capacity_of(&row),
                 ready: row.check_status == "ok",
                 kind: row.kind,
                 check_status: row.check_status,
@@ -158,6 +184,7 @@ async fn state_of(s: &Services, row: BlobStoreRow, platform: bool) -> Result<Sto
     };
     Ok(StorageState {
         storage: Some(StorageJson {
+            capacity: capacity_of(&row),
             ready: row.kind != "s3" || row.check_status == "ok",
             kind: row.kind,
             check_status: row.check_status,
@@ -289,6 +316,51 @@ async fn storage_check(app: &AdminApp, req: Request) -> Response {
         Ok(_) => return err(404, "not_found"),
         Err(e) => return fail(&e),
     };
+    if let Err(e) = s.jobs.enqueue(STORAGE_CHECK_JOB_KIND, Some(dom.id), &serde_json::json!({ "store": row.id.0 }), None).await {
+        return fail(&e);
+    }
+    json(200, &serde_json::json!({ "queued": true }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CapacityBody {
+    /// The room of the store in bytes; `null` clears it.
+    capacity_bytes: Option<i64>,
+}
+
+/// `PUT .../storage/capacity`: declare how much room the tenant's store has (the S3 protocol cannot say). A check is queued so that the verdict follows.
+async fn storage_capacity(app: &AdminApp, req: Request) -> Response {
+    let (_, p) = match app.require(&req, true).await {
+        Ok(x) => x,
+        Err(r) => return r,
+    };
+    if let Err(r) = platform_only(&p).and(no_query(&req)) {
+        return r;
+    }
+    let dom = match scoped(app, &p, req.param("d").unwrap_or_default()).await {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let b: CapacityBody = match body(&req) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    if b.capacity_bytes.is_some_and(|c| c <= 0 || c > 1 << 60) {
+        return err(400, "invalid");
+    }
+    let s = match services(app) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let row = match s.blob_stores.for_domain(dom.id).await {
+        Ok(Some(r)) if r.kind == "s3" || r.kind == "pool" => r,
+        Ok(_) => return err(404, "not_found"),
+        Err(e) => return fail(&e),
+    };
+    if let Err(e) = s.blob_stores.set_capacity(row.id, b.capacity_bytes).await {
+        return fail(&e);
+    }
     if let Err(e) = s.jobs.enqueue(STORAGE_CHECK_JOB_KIND, Some(dom.id), &serde_json::json!({ "store": row.id.0 }), None).await {
         return fail(&e);
     }
@@ -612,5 +684,6 @@ pub fn routes(app: Arc<AdminApp>, router: Router) -> Router {
     let router = route!(router, app, Method::Put, "/api/v1/domains/{d}/storage/backends/{b}", |a, r| backend_put(&a, r).await);
     let router = route!(router, app, Method::Post, "/api/v1/domains/{d}/storage/backends/{b}/keys", |a, r| backend_keys(&a, r).await);
     let router = route!(router, app, Method::Delete, "/api/v1/domains/{d}/storage/backends/{b}", |a, r| backend_delete(&a, r).await);
+    let router = route!(router, app, Method::Put, "/api/v1/domains/{d}/storage/capacity", |a, r| storage_capacity(&a, r).await);
     route!(router, app, Method::Post, "/api/v1/domains/{d}/storage/check", |a, r| storage_check(&a, r).await)
 }

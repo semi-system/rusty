@@ -374,6 +374,7 @@ describe('navigation', () => {
 describe('storage', () => {
   const ST: Storage = {
     kind: 's3',
+    capacity: { declared_bytes: null, used_bytes: null, promised_bytes: null, unlimited_accounts: null, status: 'unset' },
     ready: false,
     check_status: 'auth',
     checked_at: 1_700_000_000,
@@ -385,6 +386,7 @@ describe('storage', () => {
   };
   const POOL: Storage = {
     kind: 'pool',
+    capacity: null,
     ready: false,
     check_status: 'unchecked',
     checked_at: null,
