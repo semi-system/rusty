@@ -355,6 +355,19 @@ export interface Trace {
   next: number | null;
 }
 
+export interface DayStats {
+  day: number;
+  received: number;
+  rejected: number;
+  sent: number;
+  deferred: number;
+  failed: number;
+}
+
+export interface Stats {
+  days: DayStats[];
+}
+
 export interface AuditEntry {
   id: number;
   at: number;

@@ -69,6 +69,8 @@
     "QueueList": { "items": "QueueJob[]", "next": "integer|null" },
     "LogLine": { "id": "integer", "direction": "string", "at": "integer", "sender": "string", "recipient": "string", "event": "string", "remote": "string|null", "status": "string|null", "detail": "string|null" },
     "Trace": { "items": "LogLine[]", "next": "integer|null" },
+    "DayStats": { "day": "integer", "received": "integer", "rejected": "integer", "sent": "integer", "deferred": "integer", "failed": "integer" },
+    "Stats": { "days": "DayStats[]" },
     "AuditEntry": { "id": "integer", "at": "integer", "actor": "string", "domain_id": "integer|null", "ip": "string", "method": "string", "route": "string", "path": "string", "status": "integer" },
     "Audit": { "items": "AuditEntry[]", "next": "integer|null" }
   },
@@ -137,6 +139,7 @@
     { "method": "POST", "path": "/api/v1/domains/{d}/queue/{n}/release", "auth": "admin", "request": null, "response": "Empty", "status": 200, "note": "make a queued job due now (releases a held one); 409 wrong_state when the job is not queued" },
     { "method": "POST", "path": "/api/v1/domains/{d}/queue/{n}/retry", "auth": "admin", "request": null, "response": "Empty", "status": 200, "note": "put a given-up (dead or failed) job back in the queue; 409 wrong_state otherwise" },
     { "method": "DELETE", "path": "/api/v1/domains/{d}/queue/{n}", "auth": "admin", "request": null, "response": "Empty", "status": 200, "note": "delete a job no worker holds; 409 wrong_state while one does" },
+    { "method": "GET", "path": "/api/v1/domains/{d}/stats", "auth": "admin", "request": null, "response": "Stats", "status": 200, "note": "mail counted per UTC day for the last 30 days (the delivery log's retention), newest day first: received, rejected, sent, deferred, failed" },
     { "method": "GET", "path": "/api/v1/domains/{d}/trace", "auth": "admin", "request": null, "response": "Trace", "status": 200, "note": "the delivery log of the domain's outgoing mail (kept 30 days), newest first; query: q (a recipient or the sender), before (a log id)" },
     { "method": "GET", "path": "/api/v1/audit", "auth": "admin", "request": null, "response": "Audit", "status": 200, "note": "the changes administrators made, newest first (kept 365 days); a domain administrator gets its own domain; query: domain, before" },
     { "method": "GET", "path": "/api/v1/plans", "auth": "admin", "request": null, "response": "PlanList", "status": 200 },

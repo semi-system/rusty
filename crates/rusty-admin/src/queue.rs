@@ -196,6 +196,54 @@ async fn trace(app: &AdminApp, req: Request) -> Response {
     json(200, &TraceJson { items: rows.iter().map(log_json).collect(), next })
 }
 
+/// One day of the statistics page. `received`: mail accepted for a mailbox of the domain; `rejected`: mail refused after DATA; `sent`: delivered to the remote server; `deferred`: attempts that
+/// will be tried again; `failed`: bounced or given up.
+#[derive(Serialize, Default)]
+struct DayJson {
+    /// The start of the UTC day, in seconds.
+    day: i64,
+    received: i64,
+    rejected: i64,
+    sent: i64,
+    deferred: i64,
+    failed: i64,
+}
+
+#[derive(Serialize)]
+struct StatsJson {
+    days: Vec<DayJson>,
+}
+
+/// `GET /api/v1/domains/{d}/stats`: the counts of the last 30 days (the log is kept that long), newest day first.
+async fn stats(app: &AdminApp, req: Request) -> Response {
+    let (s, dom) = begin!(app, req, false);
+    let now = match s.jobs.now().await {
+        Ok(n) => n,
+        Err(e) => return fail(&e),
+    };
+    let rows = match s.queue.stats(dom.id, now.saturating_sub(30 * 86_400)).await {
+        Ok(r) => r,
+        Err(e) => return fail(&e),
+    };
+    let mut days: Vec<DayJson> = Vec::new();
+    for r in rows {
+        let start = r.day.saturating_mul(86_400);
+        if days.last().is_none_or(|d| d.day != start) {
+            days.push(DayJson { day: start, ..DayJson::default() });
+        }
+        let Some(d) = days.last_mut() else { continue };
+        match (r.direction.as_str(), r.event.as_str()) {
+            ("in", "delivered") => d.received += r.count,
+            ("in", _) => d.rejected += r.count,
+            (_, "delivered") => d.sent += r.count,
+            (_, "deferred") => d.deferred += r.count,
+            _ => d.failed += r.count,
+        }
+    }
+    days.reverse();
+    json(200, &StatsJson { days })
+}
+
 macro_rules! route {
     ($router:expr, $app:expr, $method:expr, $path:expr, |$a:ident, $r:ident| $body:expr) => {{
         let $a = $app.clone();
@@ -213,5 +261,6 @@ pub fn routes(app: Arc<AdminApp>, router: Router) -> Router {
     let router = route!(router, app, Method::Post, "/api/v1/domains/{d}/queue/{n}/release", |a, r| act(&a, r, "release").await);
     let router = route!(router, app, Method::Post, "/api/v1/domains/{d}/queue/{n}/retry", |a, r| act(&a, r, "retry").await);
     let router = route!(router, app, Method::Delete, "/api/v1/domains/{d}/queue/{n}", |a, r| act(&a, r, "delete").await);
+    let router = route!(router, app, Method::Get, "/api/v1/domains/{d}/stats", |a, r| stats(&a, r).await);
     route!(router, app, Method::Get, "/api/v1/domains/{d}/trace", |a, r| trace(&a, r).await)
 }

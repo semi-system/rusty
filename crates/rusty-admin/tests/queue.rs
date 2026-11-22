@@ -82,3 +82,24 @@ async fn the_trace_shows_the_delivery_log_of_the_domain_and_keeps_to_it() {
     assert_eq!(t.get("/api/v1/domains/one.test/queue").await.status, 404);
     assert_eq!(t.post_empty("/api/v1/domains/one.test/queue/1/hold").await.status, 404);
 }
+
+#[tokio::test]
+async fn the_statistics_count_the_log_per_day_and_kind_for_the_domain_only() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    make_admin(&r, "tenant@two.test", true).await;
+    let c = Client::sign_in(r.addr, "root@home.test").await;
+    assert_eq!(c.post("/api/v1/domains", json!({ "name": "one.test" })).await.status, 201);
+    let dom = r.dir.find_domain("one.test").await.unwrap().unwrap().id;
+    let row = |event: &'static str| NewLogRow { domain: dom, job_id: None, sender: "a@one.test".into(), recipient: "b@far.example".into(), event, remote: None, status: None, detail: None };
+    r.outbound.repos().queue.log(&[row("delivered"), row("delivered"), row("deferred"), row("bounced")]).await.unwrap();
+    let got = c.get("/api/v1/domains/one.test/stats").await;
+    assert_eq!(got.status, 200, "{}", got.body);
+    conforms(&got.json(), "Stats");
+    let days = got.json()["days"].as_array().unwrap().clone();
+    assert_eq!(days.len(), 1, "one day so far");
+    let d = &days[0];
+    assert_eq!((d["sent"].clone(), d["deferred"].clone(), d["failed"].clone(), d["received"].clone()), (json!(2), json!(1), json!(1), json!(0)));
+    let t = Client::sign_in(r.addr, "tenant@two.test").await;
+    assert_eq!(t.get("/api/v1/domains/one.test/stats").await.status, 404);
+}

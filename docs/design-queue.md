@@ -20,3 +20,7 @@ Built 2026-11-22 (P1 item 7 of `design-admin-parity.md`), first slice.
 
 * A queue across all domains for the platform, bulk actions (hold or delete everything for a domain or sender), and a flush of the whole queue.
 * The log rows are not linked from a message to its original submission (no queue id shown to the sender).
+
+## Statistics
+
+`GET /api/v1/domains/{d}/stats` counts the delivery log of the domain per UTC day for the last 30 days (the log's retention), newest day first: `received` (incoming mail accepted into a mailbox), `rejected` (refused after DATA), `sent` (delivered to the remote server), `deferred` (attempts that will be tried again) and `failed` (bounced or given up). It is one grouped read of `mail_log`, so there is no second table to keep in step; a longer history would need a daily roll-up table, which is not made until someone asks for it. The page is the Statistics tab of a domain.
