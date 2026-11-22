@@ -87,7 +87,11 @@ pub trait QueueRepo: Send + Sync {
     /// Delete a job that no worker holds (queued, failed or dead). `false`: none, or a worker holds it now.
     async fn delete(&self, domain: DomainId, job: i64) -> Result<bool>;
     /// The delivery log of a domain, newest first, from just below `before`; `needle` (lower case) must occur in the sender or the recipient.
-    async fn trace(&self, domain: DomainId, needle: Option<&str>, before: Option<i64>, limit: i64) -> Result<Vec<LogRow>>;
+    async fn trace(&self, domain: DomainId, needle: Option<&str>, before: Option<i64>, limit: i64) -> Result<Vec<LogRow>> {
+        self.trace_held(domain, needle, before, limit, false).await
+    }
+    /// [`trace`](Self::trace), optionally only the lines of mail that was filed in the Spam folder (their detail starts with `quarantined`).
+    async fn trace_held(&self, domain: DomainId, needle: Option<&str>, before: Option<i64>, limit: i64, held_only: bool) -> Result<Vec<LogRow>>;
     /// Write rows of the log (the worker's; a failure of the log never fails a delivery, so the caller only logs it).
     async fn log(&self, rows: &[NewLogRow]) -> Result<()>;
     /// Write the lines about incoming mail (best effort, like [`log`](Self::log)).
@@ -109,7 +113,8 @@ pub(crate) mod sql {
     pub const DELETE: &str = "DELETE FROM jobs WHERE id = $1 AND domain_id = $2 AND kind = 'outbound' AND state IN ('queued', 'dead', 'failed')";
     pub const TRACE: &str = "SELECT id, direction, at, job_id, sender, recipient, event, remote, status, detail FROM mail_log \
         WHERE domain_id = $1 AND id < COALESCE($3, CAST(9223372036854775807 AS BIGINT)) \
-        AND (CAST($2 AS TEXT) IS NULL OR strpos(lower(recipient), CAST($2 AS TEXT)) > 0 OR strpos(lower(sender), CAST($2 AS TEXT)) > 0) ORDER BY id DESC LIMIT $4";
+        AND (CAST($2 AS TEXT) IS NULL OR strpos(lower(recipient), CAST($2 AS TEXT)) > 0 OR strpos(lower(sender), CAST($2 AS TEXT)) > 0) \
+        AND (NOT $5 OR detail LIKE 'quarantined%') ORDER BY id DESC LIMIT $4";
     pub const LOG: &str = "INSERT INTO mail_log (at, domain_id, job_id, sender, recipient, event, remote, status, detail) \
         SELECT rs_now(), x.d, x.j, x.s, x.r, x.e, x.m, x.t, x.n FROM unnest($1::bigint[], $2::bigint[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[]) AS x(d, j, s, r, e, m, t, n)";
     pub const LOG_INBOUND: &str = "INSERT INTO mail_log (at, domain_id, direction, sender, recipient, event, remote, status, detail) \

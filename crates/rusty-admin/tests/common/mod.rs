@@ -244,6 +244,7 @@ pub fn type_ok(v: &Value, t: &str, at: &str) {
     }
     let ok = match t {
         "integer" => v.is_i64(),
+        "number" => v.is_number(),
         "string" => v.is_string(),
         "boolean" => v.is_boolean(),
         // Anything else names a shape of the contract.

@@ -8,7 +8,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const contractPath = join(here, '..', '..', '..', 'crates', 'rusty-admin', 'contract', 'v1.json');
 const outPath = join(here, '..', 'src', 'api', 'types.ts');
 
-const PRIMITIVES = { integer: 'number', string: 'string', boolean: 'boolean' };
+const PRIMITIVES = { integer: 'number', number: 'number', string: 'string', boolean: 'boolean' };
 
 export function tsType(t, shapes) {
   const text = String(t).split(' ')[0] ?? '';

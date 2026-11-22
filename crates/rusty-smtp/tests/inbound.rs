@@ -1031,3 +1031,30 @@ async fn the_rules_of_an_account_forward_its_mail_and_answer_each_sender_once() 
     })
     .await;
 }
+
+struct SpamTag;
+
+#[async_trait]
+impl InboundFilter for SpamTag {
+    async fn check(&self, _: &FilterContext<'_>) -> FilterVerdict {
+        FilterVerdict::QuarantineTagged(QuarantineFolder::Spam, vec![("X-Spam-Score".to_owned(), "12.50".to_owned())])
+    }
+}
+
+#[tokio::test]
+async fn mail_filed_as_spam_is_logged_as_held_with_its_score() {
+    for_each_backend(|b| async move {
+        let (alice, _) = b.seed().await;
+        let mut o = Opts::default();
+        o.options.filters = vec![Arc::new(SpamTag)];
+        let s = start(&b, o).await;
+        let mut c = Client::hello(s.addr).await;
+        assert!(c.mail("sender@remote.example", &["alice@example.net"], MSG).await.starts_with("250"));
+        assert!(b.inbox(alice, &s.blobs).await.is_empty());
+        let rows = s.ctx.queue.trace_held(b.seed.find_domain("example.net").await.unwrap().unwrap().id, None, None, 10, true).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].detail.as_deref().is_some_and(|d| d.starts_with("quarantined (spam score 12.50)")), "{:?}", rows[0].detail);
+        s.stop().await;
+    })
+    .await;
+}

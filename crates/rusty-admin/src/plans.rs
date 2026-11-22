@@ -27,6 +27,9 @@ struct PlanJson {
     messages_per_hour: Option<u64>,
     /// The protocols accounts of the plan may use (`imap`, `pop3`, `submission`); `null`: all of them.
     protocols: Option<Vec<String>>,
+    /// The spam score from which mail goes to the Spam folder, and from which it is refused; `null`: rspamd's own actions decide.
+    spam_junk_score: Option<f64>,
+    spam_reject_score: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -42,6 +45,8 @@ fn plan_json(name: &str, config: &str) -> PlanJson {
         max_message_bytes: v.get("max_message_bytes").and_then(Value::as_u64),
         messages_per_hour: v.get("messages_per_hour").and_then(Value::as_u64),
         protocols: v.get("protocols").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect()),
+        spam_junk_score: v.get("spam_junk_score").and_then(Value::as_f64),
+        spam_reject_score: v.get("spam_reject_score").and_then(Value::as_f64),
     }
 }
 
@@ -55,6 +60,10 @@ struct PutPlan {
     messages_per_hour: Option<u64>,
     #[serde(default)]
     protocols: Option<Vec<String>>,
+    #[serde(default)]
+    spam_junk_score: Option<f64>,
+    #[serde(default)]
+    spam_reject_score: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -79,6 +88,12 @@ async fn list(app: &AdminApp, req: Request) -> Response {
 }
 
 /// Create the plan or change its limits (a `null` limit removes the key, so the plan has none of its own: the layers below decide).
+/// The spam lines: each between 0 and 100, and the line for the Spam folder below the line for refusing.
+fn spam_scores_ok(junk: Option<f64>, reject: Option<f64>) -> bool {
+    let in_range = |x: f64| x.is_finite() && (0.0..=100.0).contains(&x);
+    junk.is_none_or(in_range) && reject.is_none_or(in_range) && !matches!((junk, reject), (Some(j), Some(r)) if j >= r)
+}
+
 async fn put(app: &AdminApp, req: Request) -> Response {
     let (_session, p) = match app.require(&req, true).await {
         Ok(x) => x,
@@ -94,6 +109,7 @@ async fn put(app: &AdminApp, req: Request) -> Response {
         || b.max_message_bytes.is_some_and(|m| m == 0 || m > MAX_BYTES)
         || b.messages_per_hour.is_some_and(|m| m == 0 || m > 1_000_000)
         || !protocols_ok
+        || !spam_scores_ok(b.spam_junk_score, b.spam_reject_score)
     {
         return err(400, "invalid");
     }
@@ -104,6 +120,16 @@ async fn put(app: &AdminApp, req: Request) -> Response {
     };
     let mut config: Map<String, Value> = existing.as_ref().and_then(|r| serde_json::from_str(&r.config).ok()).unwrap_or_default();
     for (key, value) in [("quota_bytes", b.quota_bytes), ("max_message_bytes", b.max_message_bytes), ("messages_per_hour", b.messages_per_hour)] {
+        match value {
+            Some(v) => {
+                config.insert(key.to_owned(), json!(v));
+            }
+            None => {
+                config.remove(key);
+            }
+        }
+    }
+    for (key, value) in [("spam_junk_score", b.spam_junk_score), ("spam_reject_score", b.spam_reject_score)] {
         match value {
             Some(v) => {
                 config.insert(key.to_owned(), json!(v));

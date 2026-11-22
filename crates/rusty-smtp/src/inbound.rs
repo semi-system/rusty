@@ -147,6 +147,9 @@ pub(crate) fn system_folder(role: &str) -> FolderId {
     FolderId(id)
 }
 
+/// What the delivery log's detail starts with for mail that went to the Spam folder.
+pub const QUARANTINED: &str = "quarantined";
+
 fn hex12(hash: &BlobHash) -> String {
     hash.as_str().chars().take(12).collect()
 }
@@ -651,7 +654,12 @@ impl InboundHandler {
         }
         let reply = delivery_reply(results);
         if reply.code < 300 {
-            self.trace_inbound(t, "delivered", None).await;
+            // Mail filed in the Spam folder is delivered, and the log says so with the score, so that the administrator sees what was held back (the page filters on this prefix).
+            let held = outcome.quarantine.is_some().then(|| {
+                let score = outcome.tags.iter().find(|(n, _)| n.eq_ignore_ascii_case("x-spam-score")).map(|(_, v)| v.as_str()).unwrap_or("?");
+                Reply::new(250, "2.0.0", format!("{QUARANTINED} (spam score {score})"))
+            });
+            self.trace_inbound(t, "delivered", held.as_ref()).await;
         } else if reply.code >= 500 {
             self.trace_inbound(t, "bounced", Some(&reply)).await;
         }

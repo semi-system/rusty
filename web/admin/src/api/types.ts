@@ -258,6 +258,8 @@ export interface Plan {
   max_message_bytes: number | null;
   messages_per_hour: number | null;
   protocols: string[] | null;
+  spam_junk_score: number | null;
+  spam_reject_score: number | null;
 }
 
 export interface PlanList {

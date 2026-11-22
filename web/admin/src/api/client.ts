@@ -291,8 +291,9 @@ export class Client {
   }
 
   /** The delivery log of a domain's outgoing mail, newest first. */
-  trace(domain: string, opts: { q?: string; before?: number } = {}): Promise<Trace> {
+  trace(domain: string, opts: { q?: string; before?: number; held?: boolean } = {}): Promise<Trace> {
     const parts: string[] = [];
+    if (opts.held === true) parts.push('held=1');
     if (opts.q !== undefined && opts.q.trim() !== '') parts.push(`q=${encodeURIComponent(opts.q.trim())}`);
     if (opts.before !== undefined) parts.push(`before=${opts.before}`);
     return this.call('GET', `/api/v1/domains/${seg(domain)}/trace${parts.length > 0 ? '?' + parts.join('&') : ''}`);
@@ -465,8 +466,8 @@ export class Client {
   }
 
   /** Create a plan or change its limits (platform administrators): a null limit removes it. */
-  putPlan(name: string, quotaBytes: number | null, maxMessageBytes: number | null, messagesPerHour: number | null = null, protocols: string[] | null = null): Promise<Plan> {
-    return this.call('PUT', '/api/v1/plans', { name, quota_bytes: quotaBytes, max_message_bytes: maxMessageBytes, messages_per_hour: messagesPerHour, protocols });
+  putPlan(name: string, quotaBytes: number | null, maxMessageBytes: number | null, messagesPerHour: number | null = null, protocols: string[] | null = null, spamJunk: number | null = null, spamReject: number | null = null): Promise<Plan> {
+    return this.call('PUT', '/api/v1/plans', { name, quota_bytes: quotaBytes, max_message_bytes: maxMessageBytes, messages_per_hour: messagesPerHour, protocols, spam_junk_score: spamJunk, spam_reject_score: spamReject });
   }
 
   /** Put an account on a plan, or on none. */

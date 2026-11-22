@@ -206,7 +206,8 @@ async fn build(
             }));
         }
         if let Some(url) = &f.rspamd_url {
-            let rspamd = rusty_smtp::scan::RspamdFilter::new(url, Duration::from_secs(f.rspamd_timeout_secs), max, f.rspamd_on_error);
+            let rspamd = rusty_smtp::scan::RspamdFilter::new(url, Duration::from_secs(f.rspamd_timeout_secs), max, f.rspamd_on_error)
+                .with_thresholds(Arc::new(rusty_smtp::scan::DirectoryThresholds(ctx.directory.clone())));
             inbound_filters.push(Arc::new(match &scan_observer {
                 Some(o) => rspamd.with_observer(o.clone()),
                 None => rspamd,

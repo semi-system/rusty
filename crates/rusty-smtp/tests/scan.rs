@@ -315,3 +315,45 @@ async fn every_scan_is_told_to_the_observer_as_a_scanner_and_a_fixed_result_word
     ClamdFilter::new(&addr, Duration::from_secs(2), 10, OnError::Accept).with_observer(obs).check(&ctx(&big, &rcpt())).await;
     assert_eq!(seen.lock().unwrap().pop(), Some(("clamd".to_owned(), "skipped".to_owned())));
 }
+
+// ------------------------------------------------------------------------------------------------ the lines of the recipients' plans
+
+struct Lines(Option<f64>, Option<f64>);
+
+#[async_trait::async_trait]
+impl rusty_smtp::scan::ThresholdSource for Lines {
+    async fn thresholds(&self, _: &[rusty_core::AccountId]) -> (Option<f64>, Option<f64>) {
+        (self.0, self.1)
+    }
+}
+
+#[tokio::test]
+async fn the_recipients_own_spam_lines_replace_rspamds_actions_when_they_have_any() {
+    // rspamd says "reject" at score 9; the plan's lines are junk from 10 and refuse from 15: the score is only junk-free mail.
+    let (url, _) = rspamd(Rs::Json(r#"{"action":"reject","score":9.0,"required_score":6.0}"#)).await;
+    let f = rs_filter(&url, OnError::Accept).with_thresholds(Arc::new(Lines(Some(10.0), Some(15.0))));
+    assert!(matches!(f.check(&ctx(MSG, &rcpt())).await, FilterVerdict::Tag(ref t) if t.iter().any(|(k, v)| k == "X-Spam-Status" && v.starts_with("No"))));
+    // The same score under stricter lines goes to the Spam folder, and above the second line is refused.
+    let f = rs_filter(&url, OnError::Accept).with_thresholds(Arc::new(Lines(Some(5.0), Some(15.0))));
+    assert!(matches!(f.check(&ctx(MSG, &rcpt())).await, FilterVerdict::QuarantineTagged(QuarantineFolder::Spam, _)));
+    let f = rs_filter(&url, OnError::Accept).with_thresholds(Arc::new(Lines(Some(5.0), Some(9.0))));
+    assert!(matches!(f.check(&ctx(MSG, &rcpt())).await, FilterVerdict::Reject { code: 550, .. }));
+    // A temporary refusal of rspamd (greylisting) stays one.
+    let (url, _) = rspamd(Rs::Json(r#"{"action":"greylist","score":1.0,"required_score":6.0}"#)).await;
+    let f = rs_filter(&url, OnError::Accept).with_thresholds(Arc::new(Lines(Some(5.0), Some(15.0))));
+    assert!(matches!(f.check(&ctx(MSG, &rcpt())).await, FilterVerdict::Reject { code: 451, .. }));
+    // Without lines rspamd's own action decides, as before.
+    let (url, _) = rspamd(Rs::Json(r#"{"action":"reject","score":9.0,"required_score":6.0}"#)).await;
+    let f = rs_filter(&url, OnError::Accept).with_thresholds(Arc::new(Lines(None, None)));
+    assert!(matches!(f.check(&ctx(MSG, &rcpt())).await, FilterVerdict::Reject { code: 550, .. }));
+}
+
+#[test]
+fn the_score_lines_are_judged_in_order() {
+    use rusty_smtp::scan::judge;
+    assert_eq!(judge(3.0, Some(5.0), Some(10.0)), None);
+    assert_eq!(judge(5.0, Some(5.0), Some(10.0)), Some(false));
+    assert_eq!(judge(10.0, Some(5.0), Some(10.0)), Some(true));
+    assert_eq!(judge(50.0, None, None), None);
+    assert_eq!(judge(50.0, None, Some(10.0)), Some(true));
+}
