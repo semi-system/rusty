@@ -248,9 +248,7 @@ mod tests {
         d.to.clear();
         d.bcc = vec!["quiet@one.test".into()];
         let t = text(&build_draft("alice@one.test", &d, 0).unwrap());
-        assert!(!t.contains("
-To:") && t.contains("Bcc: quiet@one.test
-"));
+        assert!(!t.contains("\r\nTo:") && t.contains("Bcc: quiet@one.test\r\n"));
         d.bcc.clear();
         assert!(build_draft("alice@one.test", &d, 0).unwrap().recipients.is_empty());
         assert_eq!(build("alice@one.test", &d, 0).err(), Some(Invalid::NoRecipient));
