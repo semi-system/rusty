@@ -34,7 +34,12 @@ secret_key_file = \"/run/secrets/s\"
     ("filter", "[filter]\nclamd_addr = \"clamd:3310\"\n"),
     ("resolver", "[resolver]\nnameserver = \"10.78.0.3:53\"\n"),
     ("metrics", "[metrics]\nlisten = \"0.0.0.0:9100\"\nallowed_peers = [\"10.79.0.2/32\"]\n"),
-    ("admin", "[admin]\npublic_origin = \"https://admin.example.org\"\n"),
+    ("admin", "[admin]
+public_origin = \"https://admin.example.org\"
+"),
+    ("webmail", "[webmail]
+public_origin = \"https://webmail.example.org\"
+"),
 ];
 
 fn allowed(role: Role) -> &'static [&'static str] {
@@ -46,10 +51,11 @@ fn allowed(role: Role) -> &'static [&'static str] {
         Role::Outbound => &["hostname", "log_level", "log_format", "store", "limits", "metrics", "blob_dir", "blob_s3", "outbound", "unsealing", "dns_check"],
         Role::Gc => &["hostname", "log_level", "log_format", "store", "limits", "metrics", "blob_dir", "blob_s3", "unsealing", "gc_grace_seconds", "dns_check"],
         Role::Admin => &["hostname", "log_level", "log_format", "store", "limits", "metrics", "tls", "valkey", "sealing", "admin"],
+        Role::Webmail => &["hostname", "log_level", "log_format", "store", "limits", "metrics", "blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "valkey", "webmail"],
     }
 }
 
-const ROLES: [Role; 6] = [Role::SmtpIn, Role::Submission, Role::Imap, Role::Outbound, Role::Gc, Role::Admin];
+const ROLES: [Role; 7] = [Role::SmtpIn, Role::Submission, Role::Imap, Role::Outbound, Role::Gc, Role::Admin, Role::Webmail];
 
 /// A file with exactly the keys in `names` (top-level keys first, then the tables).
 fn file(names: &[&str]) -> String {
@@ -157,7 +163,7 @@ fn an_admin_file_gets_no_usable_blob_directory() {
 #[test]
 fn role_names_are_stable() {
     let names: Vec<&str> = ROLES.iter().map(|r| r.name()).collect();
-    assert_eq!(names, ["smtp-in", "submission", "imap", "outbound", "gc", "admin"]);
+    assert_eq!(names, ["smtp-in", "submission", "imap", "outbound", "gc", "admin", "webmail"]);
     for r in ROLES {
         assert_eq!(Role::from_name(r.name()), Some(r));
     }

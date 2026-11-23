@@ -33,6 +33,8 @@ pub enum Role {
     Gc,
     /// The admin web.
     Admin,
+    /// The webmail: the people who own a mailbox read and write mail in a browser.
+    Webmail,
 }
 
 /// The value standing in for `blob_dir` in the configuration of a role that never touches blobs: a path no service
@@ -51,11 +53,12 @@ impl Role {
             Role::Outbound => "outbound",
             Role::Gc => "gc",
             Role::Admin => "admin",
+            Role::Webmail => "webmail",
         }
     }
 
     pub fn from_name(name: &str) -> Option<Role> {
-        [Role::SmtpIn, Role::Submission, Role::Imap, Role::Outbound, Role::Gc, Role::Admin].into_iter().find(|r| r.name() == name)
+        [Role::SmtpIn, Role::Submission, Role::Imap, Role::Outbound, Role::Gc, Role::Admin, Role::Webmail].into_iter().find(|r| r.name() == name)
     }
 
     /// Whether the service reads or writes message blobs (and so needs `blob_dir`).
@@ -72,6 +75,7 @@ impl Role {
             Role::Outbound => &["blob_dir", "blob_s3", "outbound", "unsealing", "dns_check"],
             Role::Gc => &["blob_dir", "blob_s3", "unsealing", "gc_grace_seconds", "dns_check"],
             Role::Admin => &["tls", "valkey", "sealing", "admin"],
+            Role::Webmail => &["blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "valkey", "webmail"],
         }
     }
 
@@ -82,9 +86,9 @@ impl Role {
 
 /// Every top-level key of the schema. Only these are named in a refusal: a key that is not one of them is
 /// reported as unknown, so nothing the operator typed (or pasted by mistake) is echoed.
-const SCHEMA_KEYS: [&str; 21] = [
+const SCHEMA_KEYS: [&str; 22] = [
     "blob_dir", "blob_s3", "filter", "resolver", "metrics", "log_level", "log_format", "hostname", "max_message_bytes", "gc_grace_seconds", "store", "tls", "smtp", "imap", "outbound",
-    "limits", "dns_check", "valkey", "sealing", "unsealing", "admin",
+    "limits", "dns_check", "valkey", "sealing", "unsealing", "admin", "webmail",
 ];
 
 fn shown(key: &str) -> &'static str {

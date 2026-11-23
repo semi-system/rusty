@@ -13,6 +13,7 @@ use crate::{Error, Result};
 
 pub use crate::config_role::{Role, UNUSED_BLOB_DIR};
 pub use crate::config_admin::{valid_origin, AdminConfig};
+pub use crate::config_webmail::WebmailConfig;
 pub use crate::config_sealing::{SealingConfig, UnsealingConfig, MAX_UNSEALING_KEYS};
 pub use crate::config_blob_s3::{BlobS3Config, DEFAULT_BLOB_S3_CONCURRENT};
 pub use crate::config_filter::{FilterConfig, OnError};
@@ -122,6 +123,9 @@ pub struct StartupConfig {
     /// `[admin]`: the admin web service (listen address, public origin); the admin role only.
     #[serde(default)]
     pub admin: Option<AdminConfig>,
+    /// `[webmail]`: the webmail service (listen address, public origin); the webmail role only.
+    #[serde(default)]
+    pub webmail: Option<WebmailConfig>,
 }
 
 /// Which start-up rules apply (see [`StartupConfig::check_startup`]).
@@ -245,6 +249,9 @@ impl StartupConfig {
         }
         if let Some(a) = &self.admin {
             a.validate()?;
+        }
+        if let Some(w) = &self.webmail {
+            w.validate()?;
         }
         if let Some(u) = &self.unsealing {
             u.validate()?;
@@ -422,6 +429,7 @@ impl StartupConfig {
             resolver: None,
             metrics: None,
             admin: None,
+            webmail: None,
         }
     }
 }

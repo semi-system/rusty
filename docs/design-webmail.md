@@ -1,6 +1,6 @@
 # Design: the webmail (`rusty-webmail`, SolidJS)
 
-Status: **proposal for the owner's review**; the scope (a complete webmail, SolidJS) was decided 2026-11-16. Nothing here is built. Rule of this project: no service is added without its image, its trust boundary and its behaviour when it is down written first. The owner writes Vietnamese; the interface texts live in message catalogues (English first, like the admin web).
+Status: **in progress**; the scope (a complete webmail, SolidJS) was decided 2026-11-16. Built so far (step 1 of section 9): the configuration role `webmail` (`[webmail]`: listen, public origin, allowed peers and hosts, PROXY protocol), the crate `rusty-webmail` with the session and sign-in (one fixed 401, Origin, JSON and CSRF checks, the throttle shared with IMAP, a disabled account signed out at its next request), `GET /api/v1/me`, the health check, and tests against a real Postgres. Not yet: its own database role and the image, the compose and swarm services and the edge entry (next), the read path, the write path and the front end. Rule of this project: no service is added without its image, its trust boundary and its behaviour when it is down written first. The owner writes Vietnamese; the interface texts live in message catalogues (English first, like the admin web).
 
 ## 1. What it is
 

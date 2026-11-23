@@ -70,3 +70,18 @@ fn the_example_file_is_a_valid_admin_configuration() {
         assert!(StartupConfig::from_toml_str_for(role, &text).is_err(), "{role:?}");
     }
 }
+
+#[test]
+fn the_webmail_section_is_the_webmail_roles_own_and_is_checked() {
+    let text = |extra: &str| format!("blob_dir = \"/a/blobs\"\n{BASE}[webmail]\npublic_origin = \"https://webmail.example.org\"\n{extra}");
+    let ok = StartupConfig::from_toml_str_for(Role::Webmail, &text("allowed_hosts = [\"tasks.edge\", \"edge\"]\nproxy_protocol = true\nextra_origins = [\"https://webmail.example.org:20443\"]\n")).unwrap();
+    assert_eq!(ok.webmail.as_ref().unwrap().listen.port(), 8090, "loopback and its own port by default");
+    for bad in ["proxy_protocol = true\n", "extra_origins = [\"http://x.example\"]\n", "allowed_hosts = [\"a b\"]\n"] {
+        assert!(StartupConfig::from_toml_str_for(Role::Webmail, &text(bad)).is_err(), "{bad}");
+    }
+    assert!(StartupConfig::from_toml_str_for(Role::Webmail, &format!("{BASE}[webmail]\npublic_origin = \"webmail.example.org\"\n")).is_err());
+    // Not the admin's: each service refuses the other's section.
+    assert!(StartupConfig::from_toml_str_for(Role::Admin, &text("")).is_err());
+    assert!(StartupConfig::from_toml_str_for(Role::Webmail, &format!("blob_dir = \"/a/blobs\"
+{BASE}[admin]\npublic_origin = \"https://admin.example.org\"\n")).is_err());
+}
