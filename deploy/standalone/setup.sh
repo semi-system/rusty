@@ -107,7 +107,7 @@ R 'cp /s/pgtls/ca.pem /s/etc/db-ca.pem && chown "$HOSTID" /s/etc/db-ca.pem && ch
 
 render() { # template -> file: the values were validated above, none holds a character that matters to sed (| is never in them)
   local keep drop fkeep="#NOFILTER_" vkeep="#NOVALKEY_" mkeep="#NOMETRICS_"; [ "$FILTER" = 1 ] && fkeep="#FILTER "; [ "$VALKEY" = 1 ] && vkeep="#VALKEY "; [ "${#METRICS_ALLOW[@]}" -gt 0 ] && mkeep="#METRICS "; if [ "$SELF" = 1 ]; then keep="#SELF "; drop="#ACME"; else keep="#ACME"; drop="#SELF "; fi
-  sed -e "s|^${fkeep}||" -e "s|^${vkeep}||" -e "s|^${mkeep}||" -e "/^${drop}/d" -e "s|^${keep}||" -e "s|@MAIL_HOST@|$MAIL_HOST|g" -e "s|@ADMIN_HOST@|$ADMIN_HOST|g" -e "s|@CONTACT@|$CONTACT|g" -e "s|@PUBLIC_IP@|$PUBLIC_IP|g" \
+  sed -e "/^#WEBMAIL /d" -e "s|@WEBMAIL_CRT@||g" -e "s|^${fkeep}||" -e "s|^${vkeep}||" -e "s|^${mkeep}||" -e "/^${drop}/d" -e "s|^${keep}||" -e "s|@MAIL_HOST@|$MAIL_HOST|g" -e "s|@ADMIN_HOST@|$ADMIN_HOST|g" -e "s|@CONTACT@|$CONTACT|g" -e "s|@PUBLIC_IP@|$PUBLIC_IP|g" \
       -e "s|@SEAL_PUBLIC@|$SEAL_PUBLIC|g" -e "s|@ACME_DIRECTORY@|$ACME_DIR|g" -e "s|@ADMIN_ALLOW@|${ALLOW[*]}|g" -e "s|@METRICS_ALLOW@|$METRICS_LIST|g" "templates/$1.in" > "$STATE/etc/$1"
 }
 # The sealing key pair: the private half stays in state/keys (mail uid only); the public half goes to both configurations.

@@ -52,6 +52,7 @@ prep_state() { # STATE_DIR MAIL_HOST ADMIN_HOST
   printf 'k' > "$s/keys/unseal.key"; echo "rusty-seal-v1:$(printf '0%.0s' $(seq 1 64))" > "$s/keys/seal.pub"
   local n h e
   for n in mail:$2 admin:$3; do h="${n#*:}"; n="${n%%:*}"; for e in crt key pem; do echo x > "$s/tls/$n.$e"; done; printf '%s' "$h" > "$s/tls/$n.host"; done
+  for e in crt key pem; do echo x > "$s/tls/webmail.$e"; done; printf "%s" webmail.example.org > "$s/tls/webmail.host"
   for d in dbtls kvtls; do echo x > "$s/$d/ca.pem"; echo x > "$s/$d/server.crt"; echo x > "$s/$d/server.key"; done
 }
 
@@ -141,6 +142,22 @@ echo "  ok    pop3 is always open at the edge and in the IMAP service; the edge 
 
 # ---- Prost as the edge (docs/design-prost-edge.md): EDGE=prost, the pilot beside HAProxy, and the three ways the certificates reach it ----------------------------------------------------------------------
 # The rendered edge.toml is valid for the real Prost when its image is here (the check needs the files the paths name, so they are made).
+# The rendered haproxy.cfg is valid for the real HAProxy of the lock when its image and openssl are here (the certificates it names are made for the check).
+haproxy_check() { # NAME  (the haproxy.cfg of that scenario, TLS_MODE=self)
+  local name="$1" img cfg d="$tmp/hapchk-$1" h
+  img="$(awk '$1 == "haproxy:3.4.7-alpine3.24" { print $2 }' "$ROOT/deploy/images.lock")"
+  cfg="$tmp/state-$name/stack/etc/haproxy.cfg"
+  [ -n "$REAL_DOCKER" ] && [ -n "$img" ] && "$REAL_DOCKER" image inspect "$img" >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1 || return 0
+  mkdir -p "$d/certs"
+  for h in admin mail webmail; do
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 30 -subj "/CN=$h.example.org" -keyout "$d/certs/$h.key" -out "$d/certs/$h.crt" 2>/dev/null
+    cat "$d/certs/$h.key" "$d/certs/$h.crt" > "$d/certs/$h.pem"
+  done
+  cp "$cfg" "$d/haproxy.cfg"
+  chmod -R a+rX "$d"
+  "$REAL_DOCKER" run --rm -v "$d/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" -v "$d/certs:/var/lib/haproxy/certs:ro" "$img" haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg >"$tmp/hapchk-$name.out" 2>&1 \
+    || { cat "$tmp/hapchk-$name.out" >&2; fail "$name: HAProxy does not accept the rendered configuration"; }
+}
 prost_check() { # NAME  (the edge.toml of that scenario)
   local name="$1" img="ghcr.io/semi-system/prost:latest" cfg n d
   d="$tmp/prostchk-$name"
@@ -206,7 +223,7 @@ grep -q 'api_url_file: /run/secrets/alert_url' "$me/alertmanager.yml" && grep -q
 ! grep -rq "secret-token" "$mp" "$me" || fail "monitoring: the alert URL is in the stack file or a config (it belongs in the secret)"
 grep -qxF 'allowed_hosts = ["tasks.prometheus"]' "$me/admin.toml" || fail "monitoring: the admin web does not let Prometheus scrape it"
 grep -qF 'targets: ["tasks.admin:9100"]' "$me/prometheus.yml" || fail "monitoring: Prometheus does not scrape the admin web"
-! grep -q "^  prometheus:" "$tmp/pilot.stack.yaml" || fail "monitoring: a stack without MONITORING has Prometheus"
+! grep -q "^  prometheus:" "$tmp/prost.stack.yaml" || fail "monitoring: a stack without MONITORING has Prometheus"
 
 scenario limits "$EXT"$'
 EDGE=prost
@@ -221,6 +238,7 @@ grep -q '^max_connections_per_ip = 500$' "$lq" && grep -q 'connections_per_secon
 grep -q '^max_connections_per_ip = 50$' "$pe/prost-edge.toml" && grep -q 'connections_per_second=10, burst=100,' "$pe/prost-edge.toml" || fail "prost: the default per-address limits changed"
 prost_check limits
 
+haproxy_check external
 scenario webmail "$EXT"$'\nWEBMAIL_HOST=webmail.example.org\nREPLICAS_DEFAULT=2' "edge smtp-in admin webmail" "certd"
 wp="$tmp/webmail.stack.yaml"; we="$tmp/state-webmail/stack/etc"
 grep -qx '  webmail:' "$wp" || fail "webmail: the service is missing"
@@ -232,6 +250,21 @@ wsvc="$(awk '/^  webmail:$/{f=1;next} /^  [a-z]/{f=0} f' "$wp")"
 printf '%s\n' "$wsvc" | grep -q 'replicas: 1$' || fail "webmail: without Valkey the sessions are in the process: one task"
 ! grep -qx '  webmail:' "$tmp/prost.stack.yaml" || fail "a stack without WEBMAIL_HOST has a webmail"
 echo "  ok    the webmail service (its own role, no key, one task without Valkey)"
+haproxy_check webmail
+# The edge entry of the webmail (HAProxy): its own certificate, its host name routed to it with no allow-list, the PROXY header, and nothing of it without WEBMAIL_HOST.
+hc="$we/haproxy.cfg"
+grep -q 'bind :443 ssl crt /var/lib/haproxy/certs/admin.pem crt /var/lib/haproxy/certs/mail.pem crt /var/lib/haproxy/certs/webmail.pem alpn' "$hc" || fail "webmail: the edge does not hold the webmail's certificate"
+grep -qF 'acl webmail_host hdr(host),lower,field(1,:) -m str webmail.example.org' "$hc" && grep -q 'use_backend be_webmail if webmail_host' "$hc" && grep -q 'http-request allow if webmail_host' "$hc" || fail "webmail: the edge does not route its host name"
+awk '/http-request allow if webmail_host/{a=NR} /http-request deny deny_status 403 unless admin_net/{d=NR} END{exit !(a && d && a < d)}' "$hc" || fail "webmail: its host name must be let through before the admin allow-list refuses"
+grep -q 'server-template webmail 1-4 tasks.webmail:8090 .* send-proxy-v2' "$hc" || fail "webmail: the backend is not the task addresses with the PROXY header"
+grep -q 'target: /var/lib/haproxy/certs/webmail.pem' "$wp" || fail "webmail: the self-signed certificate does not reach the edge as a secret"
+! grep -q '@WEBMAIL\|^#WEBMAIL' "$hc" || fail "webmail: a placeholder or a marker is left in haproxy.cfg"
+! grep -qi 'webmail' "$tmp/state-prost/stack/etc/haproxy.cfg" 2>/dev/null || fail "a configuration without WEBMAIL_HOST mentions the webmail"
+scenario webmailacme "$EXT"$'\nWEBMAIL_HOST=webmail.example.org\nTLS_MODE=acme\nREPLICAS_DEFAULT=1' "edge webmail" "certd"
+wa="$tmp/state-webmailacme/stack/etc/haproxy.cfg"
+grep -q 'load crt "webmail.pem" acme letsencrypt domains "webmail.example.org"' "$wa" && grep -q 'crt "/var/lib/haproxy/certs/webmail.pem"\|crt "@certs/webmail.pem"\|webmail.pem" alpn' "$wa" || fail "webmailacme: the certificate of the webmail host is not ordered"
+! grep -q '@WEBMAIL\|^#WEBMAIL' "$wa" || fail "webmailacme: a placeholder or a marker is left"
+echo "  ok    the webmail's entry at the edge (HAProxy, self-signed and ACME)"
 
 scenario adminproxy "$EXT"$'\nEDGE=prost\nTLS_MODE=self\nADMIN_PROXY=1\nREPLICAS_DEFAULT=1' "edge admin" "certd db s3"
 ap="$tmp/state-adminproxy/stack/etc"
@@ -303,6 +336,8 @@ refuse "a bad alert kind" 'ALERT_KIND=sms'
 refuse "a per-address limit of zero" 'PROST_MAX_PER_IP=0'
 refuse "the webmail on the admin host" 'WEBMAIL_HOST=admin.example.org'
 refuse "the webmail on something that is not a host name" 'WEBMAIL_HOST="not a host"'
+refuse "the webmail behind the Prost edge" 'EDGE=prost
+WEBMAIL_HOST=webmail.example.org'
 refuse "a bad image" 'PROST_IMAGE="Prost Latest"'
 echo "  ok    bad values are refused"
 # For a look at what the tool rendered (SWARM_STACK_KEEP=DIR): the Prost edge configuration of the scenario "prost".

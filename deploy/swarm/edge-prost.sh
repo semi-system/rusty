@@ -63,6 +63,7 @@ check_edge_inputs() {
   case "$EDGE" in haproxy|prost|prost-pilot) ;; *) die "EDGE is haproxy (default), prost or prost-pilot" ;; esac
   case "$CERT_S3" in 0|1) ;; *) die "CERT_S3 is 0 or 1" ;; esac
   case "$ADMIN_PROXY" in 0|1) ;; *) die "ADMIN_PROXY is 0 or 1" ;; esac
+  [ -z "$WEBMAIL_HOST" ] || [ "$EDGE" != prost ] || die "WEBMAIL_HOST: the edge entry of the webmail is HAProxy's so far (EDGE=haproxy, or the Prost pilot beside it); the Prost edge follows"
   local v
   for v in PROST_MAX_PER_IP PROST_CONN_RATE PROST_CONN_BURST PROST_MAX_FAILS; do [[ "${!v}" =~ ^[0-9]{1,6}$ ]] && [ "${!v}" -ge 1 ] || die "$v is a number from 1 to 999999"; done
   [[ "$PROST_PILOT_OFFSET" =~ ^[0-9]{4,5}$ ]] && [ "$PROST_PILOT_OFFSET" -ge 10000 ] && [ "$PROST_PILOT_OFFSET" -le 60000 ] || die "PROST_PILOT_OFFSET is a number from 10000 to 60000 (so that every port stays below 65536)"
