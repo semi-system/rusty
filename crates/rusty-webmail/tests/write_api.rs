@@ -238,3 +238,63 @@ async fn a_write_needs_the_token_and_the_origin_and_never_touches_another_accoun
     assert!(after.to_string().contains("BOB-SECRET"));
     r.stop.cancel();
 }
+
+#[tokio::test]
+async fn a_message_is_queued_in_the_outbox_of_the_sender_and_read_back_by_them_alone() {
+    let r = rig().await;
+    let s = alice(&r).await;
+    let sent = s
+        .post(r.addr, "/api/v1/send", serde_json::json!({ "to": ["Bob@One.Test", "far@elsewhere.example"], "bcc": ["quiet@one.test"], "subject": "Café", "text": "Hello\r\nWorld" }))
+        .await;
+    assert_eq!(sent.status, 202, "{}", sent.text());
+    let id = sent.json()["id"].as_i64().unwrap();
+    let outbox = s.get(r.addr, "/api/v1/outbox").await;
+    let item = &outbox["items"][0];
+    assert_eq!((item["id"].clone(), item["state"].clone(), item["subject"].clone()), (serde_json::json!(id), serde_json::json!("queued"), serde_json::json!("Café")));
+    assert_eq!(item["recipients"], serde_json::json!(["bob@one.test", "far@elsewhere.example", "quiet@one.test"]));
+    assert!(!outbox.to_string().contains("Hello"), "the text of the message is not in the list");
+
+    // Bob sees nothing of it, and cannot withdraw it.
+    let (bob_cookie, bob_csrf) = sign_in(r.addr, "bob@one.test", "another-long-password-2").await;
+    let bob = Session { cookie: bob_cookie, csrf: bob_csrf };
+    assert_eq!(bob.get(r.addr, "/api/v1/outbox").await["items"].as_array().unwrap().len(), 0);
+    assert_eq!(bob.delete(r.addr, &format!("/api/v1/outbox/{id}")).await.status, 404);
+    // The owner withdraws it.
+    assert_eq!(s.delete(r.addr, &format!("/api/v1/outbox/{id}")).await.status, 200);
+    assert_eq!(s.delete(r.addr, &format!("/api/v1/outbox/{id}")).await.status, 404);
+    assert_eq!(s.get(r.addr, "/api/v1/outbox").await["items"].as_array().unwrap().len(), 0);
+    r.stop.cancel();
+}
+
+#[tokio::test]
+async fn a_send_needs_the_token_and_refuses_what_could_add_a_header_or_has_no_recipient() {
+    let r = rig().await;
+    let s = alice(&r).await;
+    let body = serde_json::json!({ "to": ["bob@one.test"], "subject": "x", "text": "y" }).to_string();
+    let headers = [("Cookie", s.cookie.as_str()), ("Content-Type", "application/json"), ("Origin", ORIGIN)];
+    assert_eq!(call(r.addr, "POST", "/api/v1/send", &headers, Some(&body)).await.status, 403, "no token");
+    assert_eq!(call(r.addr, "POST", "/api/v1/send", &[("Content-Type", "application/json"), ("Origin", ORIGIN)], Some(&body)).await.status, 401);
+    assert_eq!(call(r.addr, "GET", "/api/v1/outbox", &[], None).await.status, 401);
+    for (bad, code) in [
+        (serde_json::json!({ "to": [], "text": "y" }), "no_recipient"),
+        (serde_json::json!({ "to": ["bob@one.test\r\nBcc: evil@x.test"], "text": "y" }), "bad_address"),
+        (serde_json::json!({ "to": ["not-an-address"], "text": "y" }), "bad_address"),
+        (serde_json::json!({ "to": ["bob@one.test"], "subject": "a\r\nBcc: evil@x.test", "text": "y" }), "invalid"),
+        (serde_json::json!({ "to": ["bob@one.test"], "in_reply_to": "x", "text": "y" }), "invalid"),
+        (serde_json::json!({ "to": ["bob@one.test"], "from": "bob@one.test", "text": "y" }), "invalid"),
+        (serde_json::json!({ "to": (0..101).map(|i| format!("u{i}@x.test")).collect::<Vec<_>>(), "text": "y" }), "too_many_recipients"),
+    ] {
+        let res = s.post(r.addr, "/api/v1/send", bad.clone()).await;
+        assert_eq!((res.status, res.json()["error"].clone()), (400, serde_json::json!(code)), "{bad}: {}", res.text());
+    }
+    // A message over the size limit.
+    let big = "x".repeat(2 << 20);
+    assert_eq!(s.post(r.addr, "/api/v1/send", serde_json::json!({ "to": ["bob@one.test"], "text": big })).await.status, 413);
+    assert_eq!(s.get(r.addr, "/api/v1/outbox").await["items"].as_array().unwrap().len(), 0, "nothing of that was queued");
+    // The outbox of one account holds at most fifty waiting messages.
+    for _ in 0..50 {
+        assert_eq!(s.post(r.addr, "/api/v1/send", serde_json::json!({ "to": ["bob@one.test"], "text": "y" })).await.status, 202);
+    }
+    assert_eq!(s.post(r.addr, "/api/v1/send", serde_json::json!({ "to": ["bob@one.test"], "text": "y" })).await.status, 429);
+    r.stop.cancel();
+}

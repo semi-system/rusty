@@ -121,6 +121,30 @@ pub struct SubmissionDeps {
     pub default_per_hour: u32,
 }
 
+/// Why the webmail's message was not sent: a fixed word each, never a text from a server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmitRefusal {
+    /// The From header or the sender is not an address of the account.
+    NotYours,
+    /// The sending budget of the account is used up.
+    Limit,
+    /// A recipient or the message was refused for good.
+    Refused,
+    /// A temporary failure: try again later.
+    Busy,
+}
+
+impl SubmitRefusal {
+    pub fn word(self) -> &'static str {
+        match self {
+            SubmitRefusal::NotYours => "not_yours",
+            SubmitRefusal::Limit => "limit",
+            SubmitRefusal::Refused => "refused",
+            SubmitRefusal::Busy => "busy",
+        }
+    }
+}
+
 pub struct InboundHandler {
     auth: Arc<dyn Authenticator>,
     rate: Arc<dyn RateLimiter>,
@@ -857,6 +881,55 @@ impl InboundHandler {
             "submitted message finished"
         );
         reply
+    }
+
+    /// Send a message the way an authenticated submission does, for the webmail (docs/design-webmail.md): the recipients are resolved like `RCPT TO` (a list, a local account, the world), then the
+    /// same end-of-DATA step runs (the From check, the sending budget, the local copies, the outbound queue). The answer is a fixed word: `Ok`, or why not.
+    pub async fn submit_for(&self, identity: Identity, recipients: &[String], data: Vec<u8>) -> Result<(), SubmitRefusal> {
+        if self.submission.is_none() {
+            return Err(SubmitRefusal::Refused);
+        }
+        let mut t = Transaction {
+            helo: "webmail".to_owned(),
+            peer: PeerFacts { ip: std::net::IpAddr::from([127, 0, 0, 1]), tls: true },
+            mail_from: identity.address.clone(),
+            recipients: Vec::new(),
+            remote_recipients: Vec::new(),
+            forward_lists: Vec::new(),
+            identity: Some(identity),
+            data,
+            declared_size: None,
+            smtputf8: false,
+        };
+        let mut seen: HashSet<AccountId> = HashSet::new();
+        for address in recipients {
+            match self.resolve_rcpt(address).await {
+                RcptVerdict::Accept(r) => {
+                    seen.extend(r.accounts.iter().copied());
+                    t.recipients.push(r);
+                }
+                RcptVerdict::AcceptRemote(a) => t.remote_recipients.push(a),
+                RcptVerdict::AcceptWithForward(r, f) => {
+                    seen.extend(r.accounts.iter().copied());
+                    t.forward_lists.push(r.address.clone());
+                    t.remote_recipients.extend(f);
+                    t.recipients.push(r);
+                }
+                RcptVerdict::Reject(reply) => return Err(if reply.code >= 500 { SubmitRefusal::Refused } else { SubmitRefusal::Busy }),
+            }
+            if seen.len() > self.session.max_accounts {
+                return Err(SubmitRefusal::Refused);
+            }
+        }
+        let deps = self.submission.as_ref().ok_or(SubmitRefusal::Refused)?;
+        let reply = self.deliver_submitted(&t, deps).await;
+        match (reply.code, reply.enhanced) {
+            (250, _) => Ok(()),
+            (_, "5.7.1") => Err(SubmitRefusal::NotYours),
+            (451, "4.7.1") => Err(SubmitRefusal::Limit),
+            (c, _) if c >= 500 => Err(SubmitRefusal::Refused),
+            _ => Err(SubmitRefusal::Busy),
+        }
     }
 
     /// Write the batched replies. A peer that does not read them is cut at `limit` (a stalled reader

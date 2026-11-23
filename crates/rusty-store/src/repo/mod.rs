@@ -32,6 +32,7 @@ pub(crate) mod transfers;
 pub(crate) mod audit;
 pub(crate) mod imap_migrations;
 pub(crate) mod searches;
+pub(crate) mod outbox;
 pub(crate) mod backups;
 pub(crate) mod admin;
 mod dns;
@@ -56,6 +57,7 @@ pub use queue::{StatRow, InboundRow, LogRow, NewLogRow, QueueJob, QueueRepo, HEL
 pub use audit::{AuditRepo, AuditRow, NewAuditRow};
 pub use imap_migrations::{Migration, MigrationRepo, NewMigration, Progress, SECRET_OWNER as MIGRATION_SECRET_OWNER, SECRET_PURPOSE as MIGRATION_SECRET_PURPOSE};
 pub use searches::{results_json, Found, Search, SearchCriteria, SearchRepo, MAX_FOUND};
+pub use outbox::{OutboxItem, OutboxRepo, MAX_QUEUED_PER_ACCOUNT};
 pub use backups::{BackupRepo, BackupRun};
 pub use admin::{AdminEntry, AdminGrant, AdminRepo, Revoked};
 pub use jobs::{BatchJob, BatchRequest, ClaimRequest, JobRepo, NewJob, OwnerLimits};

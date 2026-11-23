@@ -126,6 +126,11 @@ pub struct WebmailApp {
     pub auth: WebmailAuth,
     /// Opens the mailbox of an account: the read path asks it for the mail of the account behind the session and for nothing else.
     pub hub: rusty_svc::MailboxHub,
+    /// The platform blob store, where a composed message is put before it is queued.
+    pub blobs: Arc<dyn rusty_store::BlobStore>,
+    pub outbox: Arc<dyn rusty_store::OutboxRepo>,
+    /// The most bytes of a message the person may send.
+    pub max_message_bytes: usize,
     /// `https://host[:port]` of the webmail host name, as the browser sends it in `Origin`.
     pub public_origin: String,
     /// Other origins it is reached by (`[webmail] extra_origins`).

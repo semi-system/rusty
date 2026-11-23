@@ -40,6 +40,8 @@ pub struct Context {
     pub audit: Arc<dyn rusty_store::AuditRepo>,
     /// The platform administrator's searches of the mail (docs/design-admin-search.md): run by the IMAP service, read by the admin web.
     pub searches: Arc<dyn rusty_store::SearchRepo>,
+    /// What a person sends from the webmail (docs/design-webmail.md): written by the webmail, sent by the submission service.
+    pub outbox: Arc<dyn rusty_store::OutboxRepo>,
     /// What the deployment tool did about backups: purged by the garbage collector, read by the admin web.
     pub backups: Arc<dyn rusty_store::BackupRepo>,
     /// The moves of a mailbox from another IMAP server (docs/design-imap-migration.md): done by the IMAP service.
@@ -101,6 +103,7 @@ impl Context {
             queue: repos.queue.clone(),
             audit: repos.audit.clone(),
             searches: repos.searches.clone(),
+            outbox: repos.outbox.clone(),
             backups: repos.backups.clone(),
             migrations: repos.migrations.clone(),
             sealed: rusty_store::SealedReader::with_repo(repos.sealed.clone()),
