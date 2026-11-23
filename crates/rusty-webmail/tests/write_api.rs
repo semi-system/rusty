@@ -373,3 +373,30 @@ async fn a_draft_is_kept_in_the_drafts_folder_replaced_by_the_next_save_read_bac
     assert_eq!(call(r.addr, "POST", "/api/v1/drafts", &[("Content-Type", "application/json"), ("Origin", ORIGIN)], Some("{}")).await.status, 401);
     r.stop.cancel();
 }
+
+#[tokio::test]
+async fn the_signature_is_kept_per_account_read_back_and_refused_when_it_is_markup_of_the_wrong_kind_or_too_long() {
+    let r = rig().await;
+    let s = alice(&r).await;
+    assert_eq!(s.get(r.addr, "/api/v1/settings").await["signature"], serde_json::json!(""));
+    let put = |sig: serde_json::Value| {
+        let b = serde_json::json!({ "signature": sig }).to_string();
+        let headers = [("Cookie", s.cookie.clone()), ("Content-Type", "application/json".to_owned()), ("Origin", ORIGIN.to_owned()), ("X-CSRF-Token", s.csrf.clone())];
+        let addr = r.addr;
+        async move {
+            let h: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            call(addr, "PUT", "/api/v1/settings", &h, Some(&b)).await
+        }
+    };
+    let ok = put(serde_json::json!("Alice\r\nOne Test")).await;
+    assert_eq!((ok.status, ok.json()["signature"].clone()), (200, serde_json::json!("Alice\nOne Test")), "{}", ok.text());
+    assert_eq!(s.get(r.addr, "/api/v1/settings").await["signature"], serde_json::json!("Alice\nOne Test"));
+    assert_eq!(put(serde_json::json!("x".repeat(2001))).await.status, 400);
+    assert_eq!(put(serde_json::json!("bell\u{7}")).await.status, 400);
+    // Bob has his own, and a write needs the token.
+    let (bob_cookie, _) = sign_in(r.addr, "bob@one.test", "another-long-password-2").await;
+    assert_eq!(call(r.addr, "GET", "/api/v1/settings", &[("Cookie", &bob_cookie)], None).await.json()["signature"], serde_json::json!(""));
+    let body = serde_json::json!({ "signature": "x" }).to_string();
+    assert_eq!(call(r.addr, "PUT", "/api/v1/settings", &[("Cookie", &s.cookie), ("Content-Type", "application/json"), ("Origin", ORIGIN)], Some(&body)).await.status, 403);
+    r.stop.cancel();
+}

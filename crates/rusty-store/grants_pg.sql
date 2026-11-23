@@ -154,6 +154,7 @@ BEGIN
     GRANT UPDATE ON mailboxes TO rusty_webmail;
     GRANT SELECT, INSERT, DELETE ON webmail_outbox TO rusty_webmail;   -- what a person sends is queued here and read back as the outbox; the message itself is a blob (docs/design-webmail.md)
     GRANT SELECT, INSERT, DELETE ON app_passwords TO rusty_webmail;   -- the person makes and revokes their app passwords (docs/design-app-passwords.md)
+    GRANT SELECT, INSERT, UPDATE ON webmail_settings TO rusty_webmail;   -- the person's own settings of the webmail: the signature (docs/design-webmail.md)
   END IF;
 
   -- rusty_outbound: the delivery worker. Claims and finishes jobs, reads the message and the DKIM and relay settings, writes the DNS check state.

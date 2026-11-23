@@ -5,7 +5,29 @@ import { when } from './format';
 import { t } from './i18n';
 
 /** The app passwords of the account: one per device or program, shown once when made, revoked one by one. The mail protocols accept them; this page never does. */
-export const Settings: Component<{ api: Api }> = (props) => {
+export const Settings: Component<{ api: Api; onSignature: () => void }> = (props) => {
+  const [signature, setSignature] = createSignal('');
+  const [signatureSaved, setSignatureSaved] = createSignal(false);
+  const [loaded] = createResource(async () => {
+    try {
+      setSignature((await props.api.settings()).signature);
+    } catch {
+      setSignature('');
+    }
+    return true;
+  });
+  const saveSignature = async (e: SubmitEvent) => {
+    e.preventDefault();
+    setError('');
+    setSignatureSaved(false);
+    try {
+      setSignature((await props.api.saveSettings(signature())).signature);
+      setSignatureSaved(true);
+      props.onSignature();
+    } catch (err) {
+      setError(errorText(err));
+    }
+  };
   const [items, { refetch }] = createResource(() => props.api.appPasswords());
   const [label, setLabel] = createSignal('');
   const [password, setPassword] = createSignal('');
@@ -39,6 +61,17 @@ export const Settings: Component<{ api: Api }> = (props) => {
   };
   return (
     <section class="settings" aria-label={t('settings.title')}>
+      <h2>{t('settings.signature.title')}</h2>
+      <form onSubmit={saveSignature}>
+        <label>
+          <span>{t('settings.signature.label')}</span>
+          <textarea name="signature" rows="4" maxlength="2000" disabled={!loaded()} value={signature()} onInput={(e) => setSignature(e.currentTarget.value)} />
+        </label>
+        <button type="submit">{t('settings.signature.save')}</button>
+        <Show when={signatureSaved()}>
+          <span class="note" role="status">{t('settings.signature.saved')}</span>
+        </Show>
+      </form>
       <h2>{t('settings.apppw.title')}</h2>
       <p class="note">{t('settings.apppw.about')}</p>
       <Show when={secret() !== ''}>
