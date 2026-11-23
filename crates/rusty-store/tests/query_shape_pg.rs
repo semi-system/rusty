@@ -95,6 +95,7 @@ const BUDGET: &[(&str, usize)] = &[
     ("release_gc_lease", 1),
     ("delete_blob_rows (2 rows)", 4),
     ("purge_deleted_batch (1 message)", 7),
+    ("expunge_by_retention (1 message)", 9),
     ("purge_deliveries_batch", 3),
     ("purge_capabilities_batch", 3),
     ("purge_closed_account_batch", 3),
