@@ -9,7 +9,7 @@ use common::pg::{pg_admin_url, PgTestDb};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
-const SERVICES: [&str; 6] = ["rusty_smtp_in", "rusty_submission", "rusty_imap", "rusty_outbound", "rusty_gc", "rusty_webmail"];
+const SERVICES: [&str; 7] = ["rusty_smtp_in", "rusty_submission", "rusty_imap", "rusty_outbound", "rusty_gc", "rusty_webmail", "rusty_dns"];
 
 async fn admin_pool(db: &PgTestDb) -> PgPool {
     PgPoolOptions::new().max_connections(2).connect(db.admin_db_url()).await.unwrap()
@@ -77,7 +77,8 @@ async fn only_the_services_that_check_a_password_can_read_the_hashes() {
         assert_eq!(column_priv(&admin, role, "accounts", "password_hash", "SELECT").await, may, "{role} and accounts.password_hash");
         assert!(!column_priv(&admin, role, "accounts", "password_hash", "UPDATE").await, "{role} can change a password hash");
         // `password_set` is what the others read to know that an account has a password.
-        assert!(column_priv(&admin, role, "accounts", "password_set", "SELECT").await, "{role} cannot read accounts.password_set");
+        // The name server reads no account at all.
+        assert_eq!(column_priv(&admin, role, "accounts", "password_set", "SELECT").await, role != "rusty_dns", "{role} and accounts.password_set");
     }
     let smtp_in = pool_as(&db, "rusty_smtp_in").await;
     denied(&smtp_in, "SELECT password_hash FROM accounts").await;
@@ -116,6 +117,15 @@ async fn each_service_keeps_to_its_own_writes() {
         // app passwords: made and revoked by the webmail, read (and noted as used) by the services that check a login, never by the others
         ("rusty_webmail", "app_passwords", "DELETE", true),
         ("rusty_webmail", "webmail_settings", "UPDATE", true),
+        // the name server reads the domain data and writes nothing; it never sees mail, accounts or secrets
+        ("rusty_dns", "domains", "SELECT", true),
+        ("rusty_dns", "domains", "UPDATE", false),
+        ("rusty_dns", "domain_dns_extra", "SELECT", true),
+        ("rusty_dns", "accounts", "SELECT", false),
+        ("rusty_dns", "messages", "SELECT", false),
+        ("rusty_dns", "sealed_secrets", "SELECT", false),
+        ("rusty_dns", "domain_relays", "UPDATE", false),
+        ("rusty_webmail", "domain_dns_extra", "SELECT", false),
         ("rusty_webmail", "totp", "UPDATE", true),
         ("rusty_imap", "totp", "UPDATE", false),
         ("rusty_submission", "totp_recovery", "SELECT", false),

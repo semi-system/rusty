@@ -126,6 +126,13 @@ COLUMN domain_dns_event.purpose text nullable=NO identity=NO/ collation=C defaul
 COLUMN domain_dns_event.from_status text nullable=YES identity=NO/ collation=C default=
 COLUMN domain_dns_event.to_status text nullable=NO identity=NO/ collation=C default=
 COLUMN domain_dns_event.at bigint nullable=NO identity=NO/ collation= default=
+COLUMN domain_dns_extra.id bigint nullable=NO identity=YES/ALWAYS collation= default=
+COLUMN domain_dns_extra.domain_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN domain_dns_extra.name text nullable=NO identity=NO/ collation=C default=
+COLUMN domain_dns_extra.rtype text nullable=NO identity=NO/ collation=C default=
+COLUMN domain_dns_extra.value text nullable=NO identity=NO/ collation=C default=
+COLUMN domain_dns_extra.ttl integer nullable=NO identity=NO/ collation= default=3600
+COLUMN domain_dns_extra.created_at bigint nullable=NO identity=NO/ collation= default=
 COLUMN domain_dns_state.domain_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN domain_dns_state.record_name text nullable=NO identity=NO/ collation=C default=
 COLUMN domain_dns_state.record_type text nullable=NO identity=NO/ collation=C default=
@@ -154,6 +161,7 @@ COLUMN domains.config jsonb nullable=NO identity=NO/ collation= default='{}'::js
 COLUMN domains.created_at bigint nullable=NO identity=NO/ collation= default=
 COLUMN domains.status text nullable=NO identity=NO/ collation= default='active'::text
 COLUMN domains.blob_store_id bigint nullable=NO identity=NO/ collation= default=1
+COLUMN domains.dns_mode text nullable=NO identity=NO/ collation=C default='external'::text
 COLUMN folders.mailbox_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN folders.id bigint nullable=NO identity=NO/ collation= default=
 COLUMN folders.parent_id bigint nullable=YES identity=NO/ collation= default=
@@ -545,6 +553,19 @@ CONSTRAINT domain_dns_event.domain_dns_event_record_type_not_null NOT NULL recor
 CONSTRAINT domain_dns_event.domain_dns_event_to_status_not_null NOT NULL to_status
 CONSTRAINT domain_dns_event.domain_dns_event_to_valid CHECK (to_status = ANY (ARRAY['ok'::text, 'missing'::text, 'mismatch'::text, 'warning'::text, 'pending'::text]))
 CONSTRAINT domain_dns_event.domain_dns_event_type_valid CHECK (record_type = ANY (ARRAY['MX'::text, 'A'::text, 'AAAA'::text, 'TXT'::text, 'SRV'::text, 'PTR'::text, 'CNAME'::text]))
+CONSTRAINT domain_dns_extra.domain_dns_extra_created_at_not_null NOT NULL created_at
+CONSTRAINT domain_dns_extra.domain_dns_extra_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+CONSTRAINT domain_dns_extra.domain_dns_extra_domain_id_not_null NOT NULL domain_id
+CONSTRAINT domain_dns_extra.domain_dns_extra_id_not_null NOT NULL id
+CONSTRAINT domain_dns_extra.domain_dns_extra_name_not_null NOT NULL name
+CONSTRAINT domain_dns_extra.domain_dns_extra_name_valid CHECK (length(name) >= 1 AND length(name) <= 200 AND name ~ '^(@|[a-z0-9_]([a-z0-9_.-]*[a-z0-9_])?)$'::text)
+CONSTRAINT domain_dns_extra.domain_dns_extra_pkey PRIMARY KEY (id)
+CONSTRAINT domain_dns_extra.domain_dns_extra_rtype_not_null NOT NULL rtype
+CONSTRAINT domain_dns_extra.domain_dns_extra_rtype_valid CHECK (rtype = ANY (ARRAY['A'::text, 'AAAA'::text, 'CNAME'::text, 'TXT'::text, 'MX'::text, 'SRV'::text]))
+CONSTRAINT domain_dns_extra.domain_dns_extra_ttl_not_null NOT NULL ttl
+CONSTRAINT domain_dns_extra.domain_dns_extra_ttl_valid CHECK (ttl >= 60 AND ttl <= 86400)
+CONSTRAINT domain_dns_extra.domain_dns_extra_value_not_null NOT NULL value
+CONSTRAINT domain_dns_extra.domain_dns_extra_value_valid CHECK (length(value) >= 1 AND length(value) <= 2000 AND value !~ '[[:cntrl:]]'::text)
 CONSTRAINT domain_dns_state.domain_dns_state_consecutive_failures_not_null NOT NULL consecutive_failures
 CONSTRAINT domain_dns_state.domain_dns_state_domain_id_fkey FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
 CONSTRAINT domain_dns_state.domain_dns_state_domain_id_not_null NOT NULL domain_id
@@ -584,6 +605,8 @@ CONSTRAINT domains.domains_blob_store_id_fkey FOREIGN KEY (blob_store_id) REFERE
 CONSTRAINT domains.domains_blob_store_id_not_null NOT NULL blob_store_id
 CONSTRAINT domains.domains_config_not_null NOT NULL config
 CONSTRAINT domains.domains_created_at_not_null NOT NULL created_at
+CONSTRAINT domains.domains_dns_mode_not_null NOT NULL dns_mode
+CONSTRAINT domains.domains_dns_mode_valid CHECK (dns_mode = ANY (ARRAY['external'::text, 'hosted'::text]))
 CONSTRAINT domains.domains_id_not_null NOT NULL id
 CONSTRAINT domains.domains_name_key UNIQUE (name)
 CONSTRAINT domains.domains_name_not_null NOT NULL name
@@ -923,6 +946,8 @@ INDEX domain_dkim_keys.domain_dkim_keys_pkey CREATE UNIQUE INDEX domain_dkim_key
 INDEX domain_dns_config.domain_dns_config_pkey CREATE UNIQUE INDEX domain_dns_config_pkey ON public.domain_dns_config USING btree (domain_id)
 INDEX domain_dns_event.domain_dns_event_by_domain CREATE INDEX domain_dns_event_by_domain ON public.domain_dns_event USING btree (domain_id, id)
 INDEX domain_dns_event.domain_dns_event_pkey CREATE UNIQUE INDEX domain_dns_event_pkey ON public.domain_dns_event USING btree (id)
+INDEX domain_dns_extra.domain_dns_extra_domain CREATE INDEX domain_dns_extra_domain ON public.domain_dns_extra USING btree (domain_id, id)
+INDEX domain_dns_extra.domain_dns_extra_pkey CREATE UNIQUE INDEX domain_dns_extra_pkey ON public.domain_dns_extra USING btree (id)
 INDEX domain_dns_state.domain_dns_state_pkey CREATE UNIQUE INDEX domain_dns_state_pkey ON public.domain_dns_state USING btree (domain_id, record_name, record_type, purpose)
 INDEX domain_relays.domain_relays_pkey CREATE UNIQUE INDEX domain_relays_pkey ON public.domain_relays USING btree (domain_id)
 INDEX domains.domains_name_key CREATE UNIQUE INDEX domains_name_key ON public.domains USING btree (name)
