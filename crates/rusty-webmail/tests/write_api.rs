@@ -1,0 +1,240 @@
+//! The write path of the webmail, first part (docs/design-webmail.md section 5): flags, move, copy, delete, folders; every one needs the CSRF token and the Origin, and every one works on the mailbox of the
+//! signed-in account only. The service runs as its own database role, against a real Postgres and a real blob directory.
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+
+use bytes::Bytes;
+use rusty_core::config::{Role, StartupConfig};
+use rusty_core::FolderId;
+use rusty_directory::Directory;
+use rusty_store::fixtures::pg_db as pg;
+use rusty_store::{BlobRouter, BlobStores, FsBlobStore, FsStoreOpener, KindOpener, Mailbox, Store, StoreConfig};
+use rusty_webmail::run::start;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio_util::sync::CancellationToken;
+
+const ORIGIN: &str = "https://webmail.example.org";
+const INBOX: FolderId = FolderId(1);
+
+struct Reply {
+    status: u16,
+    head: String,
+    body: Vec<u8>,
+}
+
+impl Reply {
+    fn header(&self, name: &str) -> Option<String> {
+        self.head.lines().find_map(|l| l.split_once(':').filter(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.trim().to_owned()))
+    }
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.body).into_owned()
+    }
+    fn json(&self) -> serde_json::Value {
+        serde_json::from_slice(&self.body).unwrap_or(serde_json::Value::Null)
+    }
+}
+
+async fn call(addr: SocketAddr, method: &str, path: &str, headers: &[(&str, &str)], body: Option<&str>) -> Reply {
+    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: t\r\nConnection: close\r\n");
+    for (k, v) in headers {
+        req.push_str(&format!("{k}: {v}\r\n"));
+    }
+    match body {
+        Some(b) => req.push_str(&format!("Content-Length: {}\r\n\r\n{b}", b.len())),
+        None => req.push_str("\r\n"),
+    }
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    s.write_all(req.as_bytes()).await.unwrap();
+    let mut out = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut out)).await;
+    let at = out.windows(4).position(|w| w == b"\r\n\r\n").map_or(out.len(), |p| p + 4);
+    let head = String::from_utf8_lossy(&out[..at.saturating_sub(4).min(out.len())]).into_owned();
+    let status = head.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    Reply { status, head, body: out[at.min(out.len())..].to_vec() }
+}
+
+async fn sign_in(addr: SocketAddr, address: &str, password: &str) -> (String, String) {
+    let body = serde_json::json!({ "address": address, "password": password }).to_string();
+    let r = call(addr, "POST", "/api/v1/session", &[("Content-Type", "application/json"), ("Origin", ORIGIN)], Some(&body)).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    (r.header("set-cookie").unwrap().split(';').next().unwrap().to_owned(), r.json()["csrf"].as_str().unwrap().to_owned())
+}
+
+fn router(store: &Store, dir: &std::path::Path, blobs: Arc<FsBlobStore>) -> Arc<dyn BlobRouter> {
+    let opener = Arc::new(KindOpener::new().with_fs(Arc::new(FsStoreOpener::new(dir.join("stores")))));
+    Arc::new(BlobStores::new(blobs, store.repos().blob_stores.clone(), opener))
+}
+
+struct Rig {
+    addr: SocketAddr,
+    stop: CancellationToken,
+    _db: pg::PgTestDb,
+    _tmp: tempfile::TempDir,
+}
+
+async fn rig() -> Rig {
+    let url = pg::pg_admin_url().expect("RUSTY_TEST_PG_URL");
+    let db = pg::PgTestDb::create_with_roles(&url).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let blob_dir = tmp.path().join("blobs");
+    let service = Store::open(StoreConfig::postgres(db.role_url("rusty_webmail"))).await.unwrap();
+    let operator = Store::open(StoreConfig::postgres(db.role_url("rusty_app"))).await.unwrap();
+    let dir = Directory::with_repo(operator.repos().directory.clone());
+    let d = dir.create_domain("one.test").await.unwrap();
+    let alice_id = dir.create_account("alice", d, Some("correct-horse-battery-1"), None).await.unwrap();
+    let bob_id = dir.create_account("bob", d, Some("another-long-password-2"), None).await.unwrap();
+    FsBlobStore::init(&blob_dir).await.unwrap();
+    let blobs = Arc::new(FsBlobStore::open(&blob_dir).await.unwrap());
+    let stores = router(&operator, tmp.path(), blobs);
+    let alice = Mailbox::open_with(operator.repos().mailbox.clone(), stores.clone(), alice_id).await.unwrap();
+    let bob = Mailbox::open_with(operator.repos().mailbox.clone(), stores, bob_id).await.unwrap();
+    let seen = rusty_core::Flags::SEEN;
+    alice.append_dated(INBOX, Bytes::from_static(b"From: Bob <bob@one.test>\r\nSubject: first\r\nMessage-ID: <1@x>\r\n\r\none\r\n"), seen, 1_700_000_000).await.unwrap();
+    alice.append_dated(INBOX, Bytes::from_static(b"From: =?utf-8?Q?Caf=C3=A9?= <c@x.test>\r\nSubject: =?utf-8?Q?Caf=C3=A9_menu?=\r\nMessage-ID: <2@x>\r\n\r\ntwo\r\n"), rusty_core::Flags::empty(), 1_700_000_100).await.unwrap();
+    alice.append_dated(INBOX, Bytes::from_static(b"From: d@x.test\r\nSubject: with a file\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nSee the file.\r\n--b\r\nContent-Type: application/pdf; name=\"a.pdf\"\r\nContent-Disposition: attachment; filename=\"a.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\nSGVsbG8gd29ybGQh\r\n--b--\r\n"), rusty_core::Flags::empty(), 1_700_000_200).await.unwrap();
+    alice.append_dated(FolderId(2), Bytes::from_static(b"Subject: sent one\r\n\r\nsent\r\n"), seen, 1_700_000_300).await.unwrap();
+    bob.append_dated(INBOX, Bytes::from_static(b"Subject: BOB-SECRET\r\n\r\nBOB-SECRET body\r\n"), rusty_core::Flags::empty(), 1_700_000_050).await.unwrap();
+    let cfg = StartupConfig::from_toml_str_for(
+        Role::Webmail,
+        &format!(
+            "blob_dir = \"{}\"\nhostname = \"webmail.example.org\"\n[store]\nurl = \"postgres://rusty_app@db.internal:5432/rusty\"\npassword_file = \"/run/secrets/pg\"\n[webmail]\nlisten = \"127.0.0.1:0\"\npublic_origin = \"{ORIGIN}\"\n",
+            blob_dir.display()
+        ),
+    )
+    .unwrap();
+    let stop = CancellationToken::new();
+    let r = start(&cfg, &service, stop.clone()).await.unwrap();
+    Rig { addr: r.addr, stop, _db: db, _tmp: tmp }
+}
+
+
+struct Session {
+    cookie: String,
+    csrf: String,
+}
+
+impl Session {
+    async fn post(&self, addr: SocketAddr, path: &str, body: serde_json::Value) -> Reply {
+        let b = body.to_string();
+        call(addr, "POST", path, &[("Cookie", &self.cookie), ("Content-Type", "application/json"), ("Origin", ORIGIN), ("X-CSRF-Token", &self.csrf)], Some(&b)).await
+    }
+    async fn delete(&self, addr: SocketAddr, path: &str) -> Reply {
+        call(addr, "DELETE", path, &[("Cookie", &self.cookie), ("Content-Type", "application/json"), ("Origin", ORIGIN), ("X-CSRF-Token", &self.csrf)], None).await
+    }
+    async fn get(&self, addr: SocketAddr, path: &str) -> serde_json::Value {
+        call(addr, "GET", path, &[("Cookie", &self.cookie)], None).await.json()
+    }
+}
+
+async fn alice(r: &Rig) -> Session {
+    let (cookie, csrf) = sign_in(r.addr, "alice@one.test", "correct-horse-battery-1").await;
+    Session { cookie, csrf }
+}
+
+fn folder(folders: &serde_json::Value, role: &str) -> i64 {
+    folders["items"].as_array().unwrap().iter().find(|f| f["role"] == role).unwrap_or_else(|| panic!("no {role} folder"))["id"].as_i64().unwrap()
+}
+
+#[tokio::test]
+async fn messages_are_marked_flagged_copied_moved_and_deleted_through_the_trash() {
+    let r = rig().await;
+    let s = alice(&r).await;
+    let folders = s.get(r.addr, "/api/v1/folders").await;
+    let (inbox, trash) = (folder(&folders, "inbox"), folder(&folders, "trash"));
+    let page = s.get(r.addr, "/api/v1/folders/1/messages").await;
+    let ids: Vec<i64> = page["items"].as_array().unwrap().iter().map(|i| i["id"].as_i64().unwrap()).collect();
+    assert_eq!(ids.len(), 3);
+
+    // Read, flag.
+    let all = serde_json::json!(ids);
+    let ok = s.post(r.addr, "/api/v1/messages/actions", serde_json::json!({ "ids": all, "action": "read" })).await;
+    assert_eq!((ok.status, ok.json()["applied"].clone()), (200, serde_json::json!(3)), "{}", ok.text());
+    let f = s.get(r.addr, "/api/v1/folders").await;
+    assert_eq!(f["items"].as_array().unwrap().iter().find(|x| x["role"] == "inbox").unwrap()["unseen"], serde_json::json!(0));
+    s.post(r.addr, "/api/v1/messages/actions", serde_json::json!({ "ids": [ids[0]], "action": "unread" })).await;
+    s.post(r.addr, "/api/v1/messages/actions", serde_json::json!({ "ids": [ids[0]], "action": "flag" })).await;
+    let m = s.get(r.addr, &format!("/api/v1/messages/{}", ids[0])).await;
+    assert_eq!((m["flags"]["seen"].clone(), m["flags"]["flagged"].clone()), (serde_json::json!(false), serde_json::json!(true)));
+    s.post(r.addr, "/api/v1/messages/actions", serde_json::json!({ "ids": [ids[0]], "action": "unflag" })).await;
+
+    // A new folder, a copy and a move into it.
+    let created = s.post(r.addr, "/api/v1/folders", serde_json::json!({ "name": "Receipts" })).await;
+    assert_eq!(created.status, 200, "{}", created.text());
+    let receipts = created.json()["id"].as_i64().unwrap();
+    let copy = s.post(r.addr, "/api/v1/messages/actions", serde_json::json!({ "ids": [ids[1]], "action": "copy", "folder": receipts })).await;
+    assert_eq!((copy.status, copy.json()["applied"].clone()), (200, serde_json::json!(1)), "{}", copy.text());
+    let mv = s.post(r.addr, "/api/v1/messages/actions", serde_json::json!({ "ids": [ids[2]], "action": "move", "folder": receipts })).await;
+    assert_eq!(mv.json()["applied"], serde_json::json!(1));
+    assert_eq!(s.get(r.addr, &format!("/api/v1/folders/{receipts}/messages")).await["items"].as_array().unwrap().len(), 2);
+    assert_eq!(s.get(r.addr, &format!("/api/v1/folders/{inbox}/messages")).await["items"].as_array().unwrap().len(), 2);
+
+    // Delete goes to the Trash first, and removes for good from there.
+    let del = s.post(r.addr, "/api/v1/messages/actions", serde_json::json!({ "ids": [ids[0]], "action": "delete" })).await;
+    assert_eq!((del.status, del.json()["applied"].clone()), (200, serde_json::json!(1)), "{}", del.text());
+    assert_eq!(s.get(r.addr, &format!("/api/v1/folders/{trash}/messages")).await["items"].as_array().unwrap().len(), 1);
+    let again = s.post(r.addr, "/api/v1/messages/actions", serde_json::json!({ "ids": [ids[0]], "action": "delete" })).await;
+    assert_eq!(again.json()["applied"], serde_json::json!(1));
+    assert_eq!(s.get(r.addr, &format!("/api/v1/folders/{trash}/messages")).await["items"].as_array().unwrap().len(), 0);
+    assert_eq!(call(r.addr, "GET", &format!("/api/v1/messages/{}", ids[0]), &[("Cookie", &s.cookie)], None).await.status, 404);
+
+    // Emptying works for the Trash and Junk only.
+    s.post(r.addr, "/api/v1/messages/actions", serde_json::json!({ "ids": [ids[1]], "action": "delete" })).await;
+    assert_eq!(s.post(r.addr, &format!("/api/v1/folders/{inbox}/empty"), serde_json::json!({})).await.status, 400);
+    let e = s.post(r.addr, &format!("/api/v1/folders/{trash}/empty"), serde_json::json!({})).await;
+    assert_eq!((e.status, e.json()["removed"].clone()), (200, serde_json::json!(1)), "{}", e.text());
+
+    // Rename and delete a folder of her own; a system folder stays.
+    assert_eq!(s.post(r.addr, &format!("/api/v1/folders/{receipts}/rename"), serde_json::json!({ "name": "Bills" })).await.status, 200);
+    let f = s.get(r.addr, "/api/v1/folders").await;
+    assert!(f["items"].as_array().unwrap().iter().any(|x| x["name"] == "Bills"));
+    assert_eq!(s.delete(r.addr, &format!("/api/v1/folders/{receipts}")).await.status, 409, "a folder with messages is not deleted");
+    let spare = s.post(r.addr, "/api/v1/folders", serde_json::json!({ "name": "Spare" })).await.json()["id"].as_i64().unwrap();
+    assert_eq!(s.delete(r.addr, &format!("/api/v1/folders/{spare}")).await.status, 200);
+    assert!(s.delete(r.addr, &format!("/api/v1/folders/{inbox}")).await.status >= 400, "a system folder is refused");
+    r.stop.cancel();
+}
+
+#[tokio::test]
+async fn a_write_needs_the_token_and_the_origin_and_never_touches_another_account() {
+    let r = rig().await;
+    let s = alice(&r).await;
+    let body = serde_json::json!({ "ids": [1], "action": "read" }).to_string();
+    let base = [("Cookie", s.cookie.as_str()), ("Content-Type", "application/json")];
+    let no_origin = call(r.addr, "POST", "/api/v1/messages/actions", &[base[0], base[1], ("X-CSRF-Token", &s.csrf)], Some(&body)).await;
+    let no_token = call(r.addr, "POST", "/api/v1/messages/actions", &[base[0], base[1], ("Origin", ORIGIN)], Some(&body)).await;
+    let wrong_token = call(r.addr, "POST", "/api/v1/messages/actions", &[base[0], base[1], ("Origin", ORIGIN), ("X-CSRF-Token", "nope")], Some(&body)).await;
+    assert_eq!((no_origin.status, no_token.status, wrong_token.status), (403, 403, 403));
+    let anon = call(r.addr, "POST", "/api/v1/messages/actions", &[("Content-Type", "application/json"), ("Origin", ORIGIN)], Some(&body)).await;
+    assert_eq!(anon.status, 401);
+    // Bad bodies.
+    for bad in [
+        serde_json::json!({ "ids": [], "action": "read" }),
+        serde_json::json!({ "ids": [0], "action": "read" }),
+        serde_json::json!({ "ids": (1..=101).collect::<Vec<i64>>(), "action": "read" }),
+        serde_json::json!({ "ids": [1], "action": "explode" }),
+        serde_json::json!({ "ids": [1], "action": "move" }),
+        serde_json::json!({ "ids": [1], "action": "read", "folder": 1 }),
+        serde_json::json!({ "ids": [1], "action": "read", "extra": 1 }),
+    ] {
+        assert_eq!(s.post(r.addr, "/api/v1/messages/actions", bad.clone()).await.status, 400, "{bad}");
+    }
+    // Bob's mail: ids that exist only in his mailbox are missing for Alice and nothing of his changes.
+    let (bob_cookie, _) = sign_in(r.addr, "bob@one.test", "another-long-password-2").await;
+    let before = call(r.addr, "GET", "/api/v1/folders/1/messages", &[("Cookie", &bob_cookie)], None).await.json();
+    let mut hit = 0;
+    for id in 1..=12 {
+        for action in ["read", "flag", "delete"] {
+            let res = s.post(r.addr, "/api/v1/messages/actions", serde_json::json!({ "ids": [id], "action": action })).await;
+            assert_eq!(res.status, 200, "{}", res.text());
+            hit += res.json()["applied"].as_i64().unwrap();
+        }
+    }
+    assert!(hit > 0, "her own messages were reached");
+    let after = call(r.addr, "GET", "/api/v1/folders/1/messages", &[("Cookie", &bob_cookie)], None).await.json();
+    assert_eq!(before, after, "Bob's mailbox is unchanged");
+    assert!(after.to_string().contains("BOB-SECRET"));
+    r.stop.cancel();
+}

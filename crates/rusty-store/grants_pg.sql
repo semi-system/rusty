@@ -140,6 +140,13 @@ BEGIN
     GRANT UPDATE (last_login_at) ON accounts TO rusty_webmail;   -- the time of the last sign-in (DirectoryRepo::record_login)
     -- The read path: the messages and their bodies (never a write: nothing of the mailbox changes by reading it) and where a body is.
     GRANT SELECT ON messages, keywords, blobs, blob_locations, blob_stores, blob_backends, deliveries TO rusty_webmail;
+    -- The write path: organising the mail (flags, move, copy, expunge, folders) like the mailbox access of rusty_imap does; a copy shares the body, so the blob rows are touched too. Never a delete of a blob: that is the collector's.
+    GRANT INSERT, UPDATE, DELETE ON messages, folders TO rusty_webmail;
+    GRANT INSERT, DELETE ON keywords TO rusty_webmail;
+    GRANT INSERT, UPDATE ON blobs, blob_locations TO rusty_webmail;
+    GRANT SELECT, INSERT ON change_log TO rusty_webmail;
+    GRANT INSERT ON deliveries TO rusty_webmail;
+    GRANT UPDATE ON mailboxes TO rusty_webmail;
   END IF;
 
   -- rusty_outbound: the delivery worker. Claims and finishes jobs, reads the message and the DKIM and relay settings, writes the DNS check state.
