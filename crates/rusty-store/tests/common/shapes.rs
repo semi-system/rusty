@@ -263,6 +263,14 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
     other!("GcRepo", "purge_deleted_batch (1 message)", true,
         Some(("SELECT DISTINCT mailbox_id FROM messages", "DELETE FROM messages")),
         Some("FROM mailboxes WHERE id = $1 FOR UPDATE"), g.purge_deleted_batch(100, 1000));
+    // A message a retention rule has made due (the global-style rule on every account, the message dated 0): the call reads what is due, then expunges it through the mailbox, lock first.
+    let aged = mb.append(INBOX, raw("gc-retention", None), Flags::default()).await.unwrap();
+    execute(b, "UPDATE messages SET internal_date = 0 WHERE id = ? AND mailbox_id = (SELECT mailbox_id FROM messages WHERE id = ? ORDER BY mailbox_id LIMIT 1)", &[Bind::I(aged.id.0), Bind::I(aged.id.0)]).await;
+    execute(b, "UPDATE accounts SET config = '{\"retention_days\": 1}'", &[]).await;
+    other!("GcRepo", "expunge_by_retention (1 message)", true,
+        Some(("SELECT m.mailbox_id, m.id FROM messages m", "UPDATE messages SET deleted_at")),
+        Some("FROM mailboxes WHERE id = $1 FOR UPDATE"), g.expunge_by_retention(1_000_000_000, 1000));
+    execute(b, "UPDATE accounts SET config = '{}'", &[]).await;
     other!("GcRepo", "purge_deliveries_batch", true,
         Some(("DELETE FROM deliveries", "DELETE FROM deliveries")), None,
         g.purge_deliveries_batch(i64::MAX, 1000));
@@ -276,7 +284,7 @@ pub async fn collect(b: &Backend, p: &stmts::Probe) -> Vec<Shape> {
     out
 }
 
-use super::backends::{insert_blob_row, set_zero_since};
+use super::backends::{execute, insert_blob_row, set_zero_since, Bind};
 
 /// The first DATA statement of the transaction (after BEGIN) must be the mailbox lock. Transaction-local
 /// configuration (`set_config('lock_timeout', .., true)`) is allowed before it: it takes no lock

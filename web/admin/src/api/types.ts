@@ -260,6 +260,8 @@ export interface Plan {
   protocols: string[] | null;
   spam_junk_score: number | null;
   spam_reject_score: number | null;
+  spam_retention_days: number | null;
+  retention_days: number | null;
 }
 
 export interface PlanList {

@@ -73,7 +73,7 @@
                 {#if fields(a.detail).length > 0}
                   <dl class="changes">
                     {#each fields(a.detail) as [name, value] (name)}
-                      <div><dt>{name}</dt><dd>{value === '(hidden)' ? t('audit.hidden') : value}</dd></div>
+                      <div><dt>{name}</dt><dd>{value === '(hidden)' ? t('audit.hidden') : value === '' ? t('audit.none') : value}</dd></div>
                     {/each}
                   </dl>
                 {/if}

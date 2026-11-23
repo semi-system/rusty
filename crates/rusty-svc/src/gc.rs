@@ -31,6 +31,8 @@ pub struct GcSummary {
     pub audit_purged: u64,
     /// Rows of the backup history past their 400 days.
     pub backup_runs_purged: u64,
+    /// Messages expunged because a retention rule made them due.
+    pub retention_expunged: u64,
     /// Rows of the vacation book-keeping older than 60 days.
     pub vacation_purged: u64,
     /// Exports and imports of mailboxes older than a day, removed with their pieces.
@@ -78,6 +80,14 @@ impl GcService {
             Ok(now) => match ctx.gc.purge_deleted(now.saturating_sub(i64::from(ctx.cfg.deleted_retention_days) * 86_400)).await {
                 Ok(n) => s.deleted_purged = n,
                 Err(e) => step_failed(&mut s, "purge deleted messages", &e),
+            },
+            Err(e) => step_failed(&mut s, "read the clock", &e),
+        }
+        // Retention rules (a plan's `retention_days`, `spam_retention_days`, docs/design-retention.md): what they made due is expunged, recoverable until `deleted_retention_days` have passed.
+        match ctx.jobs.now().await {
+            Ok(now) => match ctx.gc.expunge_by_retention(now, 20).await {
+                Ok(n) => s.retention_expunged = n,
+                Err(e) => step_failed(&mut s, "apply the retention rules", &e),
             },
             Err(e) => step_failed(&mut s, "read the clock", &e),
         }

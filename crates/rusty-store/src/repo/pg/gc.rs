@@ -154,6 +154,24 @@ impl GcRepo for PgRepo {
             .map_err(map_db_error)
     }
 
+    async fn expunge_by_retention(&self, now: i64, limit: i64) -> Result<u64> {
+        let due = self.retention_due(now, limit).await?;
+        let mut done = 0u64;
+        let mut i = 0;
+        while i < due.len() {
+            let mb = due[i].0;
+            let ids: Vec<i64> = due[i..].iter().take_while(|(m, _)| *m == mb).map(|(_, id)| *id).collect();
+            i += ids.len();
+            // One mailbox at a time, through the mailbox (the change log, so that an IMAP client sees the expunge); a busy one is left for the next pass.
+            match MailboxRepo::expunge_many(self, MailboxId(mb), &ids, Some(now)).await {
+                Ok(c) => done += u64::from(c.value.applied),
+                Err(Error::Busy(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(done)
+    }
+
     async fn purge_deleted_batch(&self, older_than: i64, limit: i64) -> Result<PurgeBatch> {
         let mut out = PurgeBatch::default();
         let mut visited = 0i64;
@@ -266,5 +284,49 @@ impl GcRepo for PgRepo {
             }
         })?;
         Ok(n)
+    }
+}
+
+/// The value of a retention key at one layer as a number of days (a text that is not a plain number is no value: a stored rule can never make the statement fail).
+macro_rules! layer_days {
+    ($l:literal, $k:literal) => {
+        concat!("(CASE WHEN CAST(", $l, ".config AS jsonb) ->> '", $k, "' ~ '^[0-9]{1,5}$' THEN CAST(CAST(", $l, ".config AS jsonb) ->> '", $k, "' AS bigint) END)")
+    };
+}
+
+/// The first layer that has the key: account, plan, domain, then the global one.
+macro_rules! effective_days {
+    ($k:literal) => {
+        concat!("COALESCE(", layer_days!("a", $k), ", ", layer_days!("p", $k), ", ", layer_days!("d", $k), ", ", layer_days!("g", $k), ")")
+    };
+}
+
+/// The messages a retention rule has made due: `spam_retention_days` for the Spam folder, `retention_days` for any folder, from the internal date. ($1 now, $2 limit, $3 the name of the global layer.)
+const RETENTION_DUE: &str = concat!(
+    "SELECT m.mailbox_id, m.id FROM messages m \
+     JOIN mailboxes mb ON mb.id = m.mailbox_id \
+     JOIN accounts a ON a.id = mb.account_id \
+     JOIN domains d ON d.id = a.domain_id \
+     LEFT JOIN plans p ON p.id = a.plan_id \
+     LEFT JOIN plans g ON g.name = $3 \
+     JOIN folders f ON f.mailbox_id = m.mailbox_id AND f.id = m.folder_id \
+     WHERE m.deleted_at IS NULL AND ( \
+       (f.role = 'spam' AND m.internal_date < $1 - 86400 * ",
+    effective_days!("spam_retention_days"),
+    ") OR m.internal_date < $1 - 86400 * ",
+    effective_days!("retention_days"),
+    ") ORDER BY m.mailbox_id, m.id LIMIT $2"
+);
+
+impl PgRepo {
+    /// The messages that a retention rule has made due: (mailbox, id), in order, at most `limit`.
+    async fn retention_due(&self, now: i64, limit: i64) -> Result<Vec<(i64, i64)>> {
+        sqlx::query_as::<_, (i64, i64)>(crate::repo::pg_lit(RETENTION_DUE))
+            .bind(now)
+            .bind(limit)
+            .bind(crate::repo::GLOBAL_PLAN)
+            .fetch_all(self.store.pool())
+            .await
+            .map_err(map_db_error)
     }
 }
