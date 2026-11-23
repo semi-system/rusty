@@ -339,7 +339,10 @@ async fn an_app_password_is_made_with_the_password_shown_once_works_for_the_prot
         assert_eq!(res.status, 200, "{}", res.text());
     }
     assert_eq!(s.post(r.addr, "/api/v1/app-passwords", serde_json::json!({ "label": "one more", "password": "correct-horse-battery-1" })).await.status, 429);
+    r.stop.cancel();
+}
 
+#[tokio::test]
 async fn a_draft_is_kept_in_the_drafts_folder_replaced_by_the_next_save_read_back_and_removed_when_sent() {
     let r = rig().await;
     let s = alice(&r).await;
