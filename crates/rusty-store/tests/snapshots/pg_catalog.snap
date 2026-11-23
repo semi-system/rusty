@@ -156,6 +156,26 @@ COLUMN folders.role text nullable=NO identity=NO/ collation= default='custom'::t
 COLUMN folders.uid_validity bigint nullable=NO identity=NO/ collation= default=
 COLUMN folders.next_uid bigint nullable=NO identity=NO/ collation= default=1
 COLUMN folders.subscribed bigint nullable=NO identity=NO/ collation= default=1
+COLUMN imap_migrations.id bigint nullable=NO identity=YES/ALWAYS collation= default=
+COLUMN imap_migrations.account_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN imap_migrations.requested_by text nullable=NO identity=NO/ collation=C default=
+COLUMN imap_migrations.host text nullable=NO identity=NO/ collation=C default=
+COLUMN imap_migrations.port integer nullable=NO identity=NO/ collation= default=
+COLUMN imap_migrations.security text nullable=NO identity=NO/ collation=C default=
+COLUMN imap_migrations.remote_user text nullable=NO identity=NO/ collation=C default=
+COLUMN imap_migrations.state text nullable=NO identity=NO/ collation=C default='preparing'::text
+COLUMN imap_migrations.cancel_requested boolean nullable=NO identity=NO/ collation= default=false
+COLUMN imap_migrations.folder text nullable=YES identity=NO/ collation=C default=
+COLUMN imap_migrations.folders_total integer nullable=NO identity=NO/ collation= default=0
+COLUMN imap_migrations.folders_done integer nullable=NO identity=NO/ collation= default=0
+COLUMN imap_migrations.messages bigint nullable=NO identity=NO/ collation= default=0
+COLUMN imap_migrations.skipped bigint nullable=NO identity=NO/ collation= default=0
+COLUMN imap_migrations.bytes bigint nullable=NO identity=NO/ collation= default=0
+COLUMN imap_migrations.error text nullable=YES identity=NO/ collation=C default=
+COLUMN imap_migrations.created_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN imap_migrations.updated_at bigint nullable=YES identity=NO/ collation= default=
+COLUMN imap_migrations.finished_at bigint nullable=YES identity=NO/ collation= default=
+COLUMN imap_migrations.expires_at bigint nullable=NO identity=NO/ collation= default=
 COLUMN job_turns.scope bigint nullable=NO identity=NO/ collation= default=
 COLUMN job_turns.kind text nullable=NO identity=NO/ collation=C default=
 COLUMN job_turns.last_claim bigint nullable=NO identity=NO/ collation= default=
@@ -551,6 +571,34 @@ CONSTRAINT folders.folders_subscribed_not_null NOT NULL subscribed
 CONSTRAINT folders.folders_subscribed_valid CHECK (subscribed = ANY (ARRAY[0::bigint, 1::bigint]))
 CONSTRAINT folders.folders_uid_validity_not_null NOT NULL uid_validity
 CONSTRAINT folders.folders_uid_validity_valid CHECK (uid_validity > 0)
+CONSTRAINT imap_migrations.imap_migrations_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+CONSTRAINT imap_migrations.imap_migrations_account_id_not_null NOT NULL account_id
+CONSTRAINT imap_migrations.imap_migrations_by_valid CHECK (length(requested_by) <= 320)
+CONSTRAINT imap_migrations.imap_migrations_bytes_not_null NOT NULL bytes
+CONSTRAINT imap_migrations.imap_migrations_cancel_requested_not_null NOT NULL cancel_requested
+CONSTRAINT imap_migrations.imap_migrations_created_at_not_null NOT NULL created_at
+CONSTRAINT imap_migrations.imap_migrations_error_valid CHECK (error IS NULL OR length(error) <= 32)
+CONSTRAINT imap_migrations.imap_migrations_expires_at_not_null NOT NULL expires_at
+CONSTRAINT imap_migrations.imap_migrations_fdone_valid CHECK (folders_done >= 0)
+CONSTRAINT imap_migrations.imap_migrations_folder_valid CHECK (folder IS NULL OR length(folder) <= 200)
+CONSTRAINT imap_migrations.imap_migrations_folders_done_not_null NOT NULL folders_done
+CONSTRAINT imap_migrations.imap_migrations_folders_total_not_null NOT NULL folders_total
+CONSTRAINT imap_migrations.imap_migrations_ftotal_valid CHECK (folders_total >= 0)
+CONSTRAINT imap_migrations.imap_migrations_host_not_null NOT NULL host
+CONSTRAINT imap_migrations.imap_migrations_host_valid CHECK (length(host) >= 1 AND length(host) <= 253)
+CONSTRAINT imap_migrations.imap_migrations_id_not_null NOT NULL id
+CONSTRAINT imap_migrations.imap_migrations_messages_not_null NOT NULL messages
+CONSTRAINT imap_migrations.imap_migrations_pkey PRIMARY KEY (id)
+CONSTRAINT imap_migrations.imap_migrations_port_not_null NOT NULL port
+CONSTRAINT imap_migrations.imap_migrations_port_valid CHECK (port >= 1 AND port <= 65535)
+CONSTRAINT imap_migrations.imap_migrations_remote_user_not_null NOT NULL remote_user
+CONSTRAINT imap_migrations.imap_migrations_requested_by_not_null NOT NULL requested_by
+CONSTRAINT imap_migrations.imap_migrations_security_not_null NOT NULL security
+CONSTRAINT imap_migrations.imap_migrations_security_valid CHECK (security = ANY (ARRAY['tls'::text, 'starttls'::text, 'plain'::text]))
+CONSTRAINT imap_migrations.imap_migrations_skipped_not_null NOT NULL skipped
+CONSTRAINT imap_migrations.imap_migrations_state_not_null NOT NULL state
+CONSTRAINT imap_migrations.imap_migrations_state_valid CHECK (state = ANY (ARRAY['preparing'::text, 'queued'::text, 'running'::text, 'done'::text, 'failed'::text, 'cancelled'::text]))
+CONSTRAINT imap_migrations.imap_migrations_user_valid CHECK (length(remote_user) >= 1 AND length(remote_user) <= 320)
 CONSTRAINT job_turns.job_turns_kind_not_null NOT NULL kind
 CONSTRAINT job_turns.job_turns_kind_valid CHECK (length(kind) >= 1 AND length(kind) <= 64)
 CONSTRAINT job_turns.job_turns_last_claim_not_null NOT NULL last_claim
@@ -807,6 +855,10 @@ INDEX domains.domains_pkey CREATE UNIQUE INDEX domains_pkey ON public.domains US
 INDEX folders.folders_pkey CREATE UNIQUE INDEX folders_pkey ON public.folders USING btree (mailbox_id, id)
 INDEX folders.folders_role CREATE UNIQUE INDEX folders_role ON public.folders USING btree (mailbox_id, role) WHERE (role <> 'custom'::text)
 INDEX folders.folders_sibling_name CREATE UNIQUE INDEX folders_sibling_name ON public.folders USING btree (mailbox_id, COALESCE(parent_id, (0)::bigint), name)
+INDEX imap_migrations.imap_migrations_account CREATE INDEX imap_migrations_account ON public.imap_migrations USING btree (account_id, id DESC)
+INDEX imap_migrations.imap_migrations_expires CREATE INDEX imap_migrations_expires ON public.imap_migrations USING btree (expires_at)
+INDEX imap_migrations.imap_migrations_pkey CREATE UNIQUE INDEX imap_migrations_pkey ON public.imap_migrations USING btree (id)
+INDEX imap_migrations.imap_migrations_queued CREATE INDEX imap_migrations_queued ON public.imap_migrations USING btree (id) WHERE (state = 'queued'::text)
 INDEX job_turns.job_turns_pkey CREATE UNIQUE INDEX job_turns_pkey ON public.job_turns USING btree (scope, kind)
 INDEX jobs.jobs_dedupe_key CREATE UNIQUE INDEX jobs_dedupe_key ON public.jobs USING btree (dedupe_key) WHERE (dedupe_key IS NOT NULL)
 INDEX jobs.jobs_domain_state CREATE INDEX jobs_domain_state ON public.jobs USING btree (domain_id, state)

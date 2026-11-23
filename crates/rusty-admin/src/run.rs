@@ -113,6 +113,7 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
         routing: repos.routing.clone(),
         queue: repos.queue.clone(),
         audit: repos.audit.clone(),
+        migrations: repos.migrations.clone(),
         searches: repos.searches.clone(),
         backups: repos.backups.clone(),
         transfers: repos.transfers.clone(),
@@ -136,6 +137,12 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
                 tokio::select! {
                     () = stop.cancelled() => break,
                     () = tokio::time::sleep(Duration::from_secs(600)) => {}
+                }
+                // The passwords of the moves of a mailbox that were removed after their two days (the garbage collector removes the rows, this service may remove the sealed secrets).
+                if let Some(s) = app.services.as_ref() {
+                    if let Err(e) = s.migrations.purge_orphan_secrets().await {
+                        tracing::warn!(error = %e, "the passwords of removed migrations could not be removed");
+                    }
                 }
                 if let (Some(s), Ok(now)) = (app.services.as_ref(), jobs.now().await) {
                     match crate::outbound::retire_due_dkim_keys(s, now).await {
@@ -164,6 +171,7 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     let router = crate::autodiscover::routes(app.clone(), router);
     let router = crate::monitor::routes(app.clone(), router);
     let router = crate::audit::routes(app.clone(), router);
+    let router = crate::imap_migration::routes(app.clone(), router);
     let router = crate::search::routes(app.clone(), router);
     let router = crate::backups::routes(app.clone(), router);
     let router = crate::certs::routes(app.clone(), router);

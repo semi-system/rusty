@@ -31,6 +31,7 @@ BEGIN
     GRANT SELECT, INSERT, UPDATE ON mailbox_transfers TO rusty_admin;   -- an export or import asked for in the admin web, and the pieces of the file (it never reads a mailbox itself)
     GRANT SELECT, INSERT ON mailbox_transfer_chunks TO rusty_admin;   -- the message trace
     GRANT SELECT, INSERT ON audit_log TO rusty_admin;   -- the audit log of the admin web (docs/design-audit.md)
+    GRANT SELECT, INSERT, UPDATE ON imap_migrations TO rusty_admin;   -- the move of a mailbox from another IMAP server: asked for, watched and stopped here, done where the mailboxes are (docs/design-imap-migration.md)
     GRANT SELECT, INSERT ON message_searches TO rusty_admin;   -- a platform administrator's search is asked for here and answered where the mailboxes are (docs/design-admin-search.md)
     GRANT SELECT ON backup_runs TO rusty_admin;   -- the Backups page of the admin web (docs/design-backup-status.md); the deployment tool writes with its own login
     GRANT SELECT, INSERT, UPDATE, DELETE ON domains, accounts, aliases, domain_aliases, lists, list_members, plans, capabilities, mailboxes,
@@ -120,6 +121,7 @@ BEGIN
     GRANT SELECT ON accounts, domains, aliases, domain_aliases, lists, list_members, plans, address_owners, mailboxes, folders, deliveries, blob_stores, blob_backends, sealed_secrets TO rusty_imap;
     GRANT UPDATE (last_login_at) ON accounts TO rusty_imap;   -- the time of the last sign-in (DirectoryRepo::record_login)
     GRANT SELECT, UPDATE ON mailbox_transfers TO rusty_imap;   -- the exports and imports of the admin web are done where the mailboxes are (docs/design-mailbox-transfers.md)
+    GRANT SELECT, UPDATE ON imap_migrations TO rusty_imap;   -- the worker of the move from another IMAP server (docs/design-imap-migration.md)
     GRANT SELECT, UPDATE ON message_searches TO rusty_imap;   -- the searches of the admin web are run where the mailboxes are (docs/design-admin-search.md)
     GRANT SELECT, INSERT ON mailbox_transfer_chunks TO rusty_imap;
     GRANT SELECT, INSERT, UPDATE, DELETE ON messages TO rusty_imap;
@@ -167,6 +169,7 @@ BEGIN
     GRANT SELECT, DELETE ON mailbox_transfers, mailbox_transfer_chunks TO rusty_gc;   -- an export or import is kept a day (docs/design-mailbox-transfers.md)
     GRANT SELECT, INSERT, UPDATE, DELETE ON message_stats TO rusty_gc;   -- the roll-up of the delivery log into days (docs/design-queue.md)   -- the log is kept 30 days
     GRANT SELECT, DELETE ON audit_log TO rusty_gc;
+    GRANT SELECT, DELETE ON imap_migrations TO rusty_gc;   -- a migration is kept two days (its sealed password is removed by the admin service)
     GRANT SELECT, DELETE ON message_searches TO rusty_gc;   -- a search is kept a day
     GRANT SELECT, DELETE ON backup_runs TO rusty_gc;   -- kept 400 days
     GRANT SELECT, DELETE ON vacation_replies TO rusty_gc;   -- the vacation book-keeping is kept 60 days (docs/design-mail-rules.md)   -- the audit log is kept 365 days

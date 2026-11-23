@@ -93,6 +93,7 @@ async fn build(with_sealing: bool) -> Rig {
         routing: repos.routing.clone(),
         queue: repos.queue.clone(),
         audit: repos.audit.clone(),
+        migrations: repos.migrations.clone(),
         searches: repos.searches.clone(),
         backups: repos.backups.clone(),
         transfers: repos.transfers.clone(),
@@ -112,6 +113,7 @@ async fn build(with_sealing: bool) -> Rig {
     let router = rusty_admin::settings::routes(app.clone(), router);
     let router = rusty_admin::autodiscover::routes(app.clone(), router);
     let router = rusty_admin::audit::routes(app.clone(), router);
+    let router = rusty_admin::imap_migration::routes(app.clone(), router);
     let router = rusty_admin::search::routes(app.clone(), router);
     let router = rusty_admin::backups::routes(app.clone(), router);
     let router = rusty_admin::certs::routes(app.clone(), router);
