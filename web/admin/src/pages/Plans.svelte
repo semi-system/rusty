@@ -24,6 +24,8 @@
   let perHour = $state('');
   let junkScore = $state('');
   let rejectScore = $state('');
+  let spamDays = $state('');
+  let allDays = $state('');
   // The protocols the plan allows; all three checked means the plan does not limit them.
   let protoImap = $state(true);
   let protoPop3 = $state(true);
@@ -38,6 +40,8 @@
     perHour = p.messages_per_hour === null ? '' : String(p.messages_per_hour);
     junkScore = p.spam_junk_score === null ? '' : String(p.spam_junk_score);
     rejectScore = p.spam_reject_score === null ? '' : String(p.spam_reject_score);
+    spamDays = p.spam_retention_days === null ? '' : String(p.spam_retention_days);
+    allDays = p.retention_days === null ? '' : String(p.retention_days);
     protoImap = p.protocols === null || p.protocols.includes('imap');
     protoPop3 = p.protocols === null || p.protocols.includes('pop3');
     protoSubmission = p.protocols === null || p.protocols.includes('submission');
@@ -52,8 +56,11 @@
     const hours = perHour.trim() === '' ? null : Number(perHour);
     const junk = junkScore.trim() === '' ? null : Number(junkScore);
     const reject = rejectScore.trim() === '' ? null : Number(rejectScore);
+    const spamKeep = spamDays.trim() === '' ? null : Number(spamDays);
+    const allKeep = allDays.trim() === '' ? null : Number(allDays);
+    const badDays = (x: number | null): boolean => x !== null && (!Number.isInteger(x) || x < 1 || x > 36500);
     const badScore = (x: number | null): boolean => x !== null && (!Number.isFinite(x) || x < 0 || x > 100);
-    invalid = Number.isNaN(q) || Number.isNaN(m) || (hours !== null && (!Number.isInteger(hours) || hours < 1)) || badScore(junk) || badScore(reject) || (junk !== null && reject !== null && junk >= reject);
+    invalid = Number.isNaN(q) || Number.isNaN(m) || (hours !== null && (!Number.isInteger(hours) || hours < 1)) || badScore(junk) || badScore(reject) || (junk !== null && reject !== null && junk >= reject) || badDays(spamKeep) || badDays(allKeep);
     if (invalid) return;
     const allowed = [protoImap ? 'imap' : '', protoPop3 ? 'pop3' : '', protoSubmission ? 'submission' : ''].filter((x) => x !== '');
     const protocols = allowed.length === 3 ? null : allowed;
@@ -61,7 +68,7 @@
     error = null;
     notice = null;
     try {
-      const saved = await app.client.putPlan(name.trim(), q, m, hours, protocols, junk, reject);
+      const saved = await app.client.putPlan(name.trim(), q, m, hours, protocols, junk, reject, spamKeep, allKeep);
       notice = t('plans.saved', { name: saved.name });
       name = '';
       quota = '';
@@ -69,6 +76,8 @@
       perHour = '';
       junkScore = '';
       rejectScore = '';
+      spamDays = '';
+      allDays = '';
       protoImap = protoPop3 = protoSubmission = true;
       await load.run();
     } catch (err) {
@@ -123,6 +132,8 @@
           <label>{t('plans.perHour')}<input bind:value={perHour} name="perhour" type="text" inputmode="numeric" /></label>
           <label>{t('plans.junkScore')}<input bind:value={junkScore} name="junk" type="text" inputmode="decimal" /></label>
           <label>{t('plans.rejectScore')}<input bind:value={rejectScore} name="reject" type="text" inputmode="decimal" /></label>
+          <label>{t('plans.spamDays')}<input bind:value={spamDays} name="spamdays" type="text" inputmode="numeric" /></label>
+          <label>{t('plans.allDays')}<input bind:value={allDays} name="alldays" type="text" inputmode="numeric" /></label>
           <button type="submit" class="primary" disabled={busy}>{busy ? t('common.saving') : t('common.save')}</button>
         </div>
         <fieldset class="checks">

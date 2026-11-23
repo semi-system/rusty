@@ -108,6 +108,10 @@ pub trait GcRepo: Send + Sync {
     /// timeout) is skipped and reported in `busy_mailboxes`; it never stops the batch (review
     /// PG5 M-e). Any other error aborts the batch.
     async fn purge_deleted_batch(&self, older_than: i64, limit: i64) -> Result<PurgeBatch>;
+    /// Expunge (soft delete: the mail stays recoverable for `deleted_retention_days`) up to `limit` messages that a retention rule has made due at `now`: `spam_retention_days` for the
+    /// Spam folder, `retention_days` for any folder, each read through the layers (account, plan, domain, global; the first that has it wins). The change goes through the mailbox, so
+    /// IMAP clients see an expunge. Returns how many were expunged.
+    async fn expunge_by_retention(&self, now: i64, limit: i64) -> Result<u64>;
     /// Delete up to `limit` `deliveries` rows with `created_at < older_than`.
     async fn purge_deliveries_batch(&self, older_than: i64, limit: i64) -> Result<u64>;
     /// Delete up to `limit` capabilities that expired or were revoked before `older_than`.

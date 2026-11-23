@@ -252,6 +252,20 @@ impl Gc {
         }
     }
 
+    /// Apply the retention rules (`spam_retention_days`, `retention_days`; the plan, domain, account or global config) at `now`: up to `max_batches` batches of 1000 messages, each
+    /// expunged through its mailbox (recoverable for `deleted_retention_days`). Returns how many were expunged.
+    pub async fn expunge_by_retention(&self, now: i64, max_batches: u32) -> Result<u64> {
+        let mut total = 0u64;
+        for _ in 0..max_batches {
+            let n = self.repo.expunge_by_retention(now, 1000).await?;
+            if n == 0 {
+                break;
+            }
+            total += n;
+        }
+        Ok(total)
+    }
+
     /// Remove the closed accounts that were closed before `older_than` (unix seconds), their messages in batches of [`PURGE_BATCH`] and then the account with its mailbox; at most `max_batches`
     /// batches in one call, so a very large mailbox is removed over several passes of the collector. Returns the messages and the accounts removed.
     pub async fn purge_closed_accounts(&self, older_than: i64, max_batches: u32) -> Result<(u64, u64)> {

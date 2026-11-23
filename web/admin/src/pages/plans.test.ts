@@ -16,13 +16,13 @@ afterEach(cleanup);
 
 describe('plans', () => {
   it('lists the plans with their limits in words and makes one from megabytes', async () => {
-    const plans: Plan[] = [{ name: 'small', quota_bytes: 1_073_741_824, max_message_bytes: null, messages_per_hour: null, protocols: null, spam_junk_score: null, spam_reject_score: null }];
+    const plans: Plan[] = [{ name: 'small', quota_bytes: 1_073_741_824, max_message_bytes: null, messages_per_hour: null, protocols: null, spam_junk_score: null, spam_reject_score: null, spam_retention_days: null, retention_days: null }];
     const s = fakeServer(
       signedIn(PLATFORM, {
         'GET /api/v1/plans': () => ok({ items: plans }),
         'PUT /api/v1/plans': (body) => {
           const b = body as { name: string; quota_bytes: number | null; max_message_bytes: number | null };
-          plans.push({ name: b.name, quota_bytes: b.quota_bytes, max_message_bytes: b.max_message_bytes, messages_per_hour: null, protocols: null, spam_junk_score: null, spam_reject_score: null });
+          plans.push({ name: b.name, quota_bytes: b.quota_bytes, max_message_bytes: b.max_message_bytes, messages_per_hour: null, protocols: null, spam_junk_score: null, spam_reject_score: null, spam_retention_days: null, retention_days: null });
           return ok(plans[plans.length - 1]);
         },
       }),
@@ -34,7 +34,7 @@ describe('plans', () => {
     await fireEvent.input(screen.getByLabelText(t('plans.quotaMb')), { target: { value: '5120' } });
     await fireEvent.click(screen.getByRole('button', { name: t('common.save') }));
     expect(await screen.findByText(t('plans.saved', { name: 'big' }))).toBeTruthy();
-    expect(s.last('PUT /api/v1/plans')?.body).toEqual({ name: 'big', quota_bytes: 5_368_709_120, max_message_bytes: null, messages_per_hour: null, protocols: null, spam_junk_score: null, spam_reject_score: null });
+    expect(s.last('PUT /api/v1/plans')?.body).toEqual({ name: 'big', quota_bytes: 5_368_709_120, max_message_bytes: null, messages_per_hour: null, protocols: null, spam_junk_score: null, spam_reject_score: null, spam_retention_days: null, retention_days: null });
   });
 
   it('is for platform administrators: a domain administrator gets no such page', async () => {

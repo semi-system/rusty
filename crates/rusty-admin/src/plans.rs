@@ -30,6 +30,9 @@ struct PlanJson {
     /// The spam score from which mail goes to the Spam folder, and from which it is refused; `null`: rspamd's own actions decide.
     spam_junk_score: Option<f64>,
     spam_reject_score: Option<f64>,
+    /// Retention (docs/design-retention.md): the days after which mail in the Spam folder, and mail in any folder, is expunged (recoverable until `deleted_retention_days` have passed); `null`: never.
+    spam_retention_days: Option<u64>,
+    retention_days: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -47,6 +50,8 @@ fn plan_json(name: &str, config: &str) -> PlanJson {
         protocols: v.get("protocols").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect()),
         spam_junk_score: v.get("spam_junk_score").and_then(Value::as_f64),
         spam_reject_score: v.get("spam_reject_score").and_then(Value::as_f64),
+        spam_retention_days: v.get("spam_retention_days").and_then(Value::as_u64),
+        retention_days: v.get("retention_days").and_then(Value::as_u64),
     }
 }
 
@@ -64,6 +69,10 @@ struct PutPlan {
     spam_junk_score: Option<f64>,
     #[serde(default)]
     spam_reject_score: Option<f64>,
+    #[serde(default)]
+    spam_retention_days: Option<u64>,
+    #[serde(default)]
+    retention_days: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -110,6 +119,8 @@ async fn put(app: &AdminApp, req: Request) -> Response {
         || b.messages_per_hour.is_some_and(|m| m == 0 || m > 1_000_000)
         || !protocols_ok
         || !spam_scores_ok(b.spam_junk_score, b.spam_reject_score)
+        || b.spam_retention_days.is_some_and(|d| !(1..=36_500).contains(&d))
+        || b.retention_days.is_some_and(|d| !(1..=36_500).contains(&d))
     {
         return err(400, "invalid");
     }
@@ -120,6 +131,16 @@ async fn put(app: &AdminApp, req: Request) -> Response {
     };
     let mut config: Map<String, Value> = existing.as_ref().and_then(|r| serde_json::from_str(&r.config).ok()).unwrap_or_default();
     for (key, value) in [("quota_bytes", b.quota_bytes), ("max_message_bytes", b.max_message_bytes), ("messages_per_hour", b.messages_per_hour)] {
+        match value {
+            Some(v) => {
+                config.insert(key.to_owned(), json!(v));
+            }
+            None => {
+                config.remove(key);
+            }
+        }
+    }
+    for (key, value) in [("spam_retention_days", b.spam_retention_days), ("retention_days", b.retention_days)] {
         match value {
             Some(v) => {
                 config.insert(key.to_owned(), json!(v));

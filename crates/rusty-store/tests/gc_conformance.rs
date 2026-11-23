@@ -488,3 +488,39 @@ async fn a_search_finds_by_text_account_and_date_and_never_the_deleted() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn retention_rules_expunge_what_they_make_due_through_the_layers_and_nothing_else() {
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let spam = rusty_core::FolderId(5);
+        let now = 100_000_000i64;
+        let day = 86_400i64;
+        let (dom, acc, mb) = acct(&b, "rt").await;
+        // Four messages, aged: the rules are the domain's `retention_days` (a year, any folder) and the account's own `spam_retention_days` (30 days, the Spam folder).
+        let mut ids = Vec::new();
+        for (folder, name, age_days) in [(INBOX, "inbox-old", 400), (INBOX, "inbox-mid", 100), (spam, "spam-old", 40), (spam, "spam-new", 10)] {
+            let r = mb.append(folder, common::raw(name, None), Flags::default()).await.unwrap();
+            execute(&b, "UPDATE messages SET internal_date = ? WHERE id = ?", &[Bind::I(now - age_days * day), Bind::I(r.id.0)]).await;
+            ids.push(r.id.0);
+        }
+        execute(&b, "UPDATE domains SET config = '{\"retention_days\": 365}' WHERE id = ?", &[Bind::I(dom.0)]).await;
+        execute(&b, "UPDATE accounts SET config = '{\"spam_retention_days\": 30}' WHERE id = ?", &[Bind::I(acc.0)]).await;
+        // Another account of the domain with no rule of its own, and one whose rule is not a number: neither may lose a message to the account above, and the second must not break the pass.
+        let other = acct_in(&b, dom, "plain").await;
+        let r = other.append(INBOX, common::raw("plain-old", None), Flags::default()).await.unwrap();
+        execute(&b, "UPDATE messages SET internal_date = ? WHERE id = ?", &[Bind::I(now - 500 * day), Bind::I(r.id.0)]).await;
+        let gc = b.gc();
+        assert_eq!(gc.expunge_by_retention(now, 5).await.unwrap(), 3, "{n}: the old inbox message, the old spam, and the other account's message past the domain's year");
+        let gone = scalars(&b, &format!("SELECT id FROM messages WHERE deleted_at IS NOT NULL AND mailbox_id = (SELECT id FROM mailboxes WHERE account_id = {}) ORDER BY id", acc.0)).await;
+        assert_eq!(gone, vec![ids[0], ids[2]], "{n}: only what a rule made due");
+        assert_eq!(scalar(&b, "SELECT count(*) FROM messages WHERE deleted_at IS NOT NULL").await, 3, "{n}: and the other account's message past the domain's year");
+        // A second pass has nothing left to do, and a message that is not due stays.
+        assert_eq!(gc.expunge_by_retention(now, 5).await.unwrap(), 0, "{n}");
+        // A rule that is not a number is no rule.
+        execute(&b, "UPDATE accounts SET config = '{\"retention_days\": \"abc\", \"spam_retention_days\": \"x\"}' WHERE id = ?", &[Bind::I(acc.0)]).await;
+        execute(&b, "UPDATE domains SET config = '{}' WHERE id = ?", &[Bind::I(dom.0)]).await;
+        assert_eq!(gc.expunge_by_retention(now, 5).await.unwrap(), 0, "{n}: no rule, nothing due");
+    })
+    .await;
+}
