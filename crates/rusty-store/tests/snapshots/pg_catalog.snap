@@ -35,6 +35,12 @@ COLUMN audit_log.route text nullable=NO identity=NO/ collation=C default=
 COLUMN audit_log.path text nullable=NO identity=NO/ collation=C default=
 COLUMN audit_log.status integer nullable=NO identity=NO/ collation= default=
 COLUMN audit_log.detail text nullable=YES identity=NO/ collation=C default=
+COLUMN backup_runs.id bigint nullable=NO identity=YES/ALWAYS collation= default=
+COLUMN backup_runs.at bigint nullable=NO identity=NO/ collation= default=rs_now()
+COLUMN backup_runs.kind text nullable=NO identity=NO/ collation=C default=
+COLUMN backup_runs.ok boolean nullable=NO identity=NO/ collation= default=
+COLUMN backup_runs.bytes bigint nullable=YES identity=NO/ collation= default=
+COLUMN backup_runs.detail text nullable=NO identity=NO/ collation=C default=''::text
 COLUMN blob_backends.id bigint nullable=NO identity=YES/ALWAYS collation= default=
 COLUMN blob_backends.store_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN blob_backends.name text nullable=NO identity=NO/ collation=C default=
@@ -318,6 +324,16 @@ CONSTRAINT audit_log.audit_log_pkey PRIMARY KEY (id)
 CONSTRAINT audit_log.audit_log_route_not_null NOT NULL route
 CONSTRAINT audit_log.audit_log_route_valid CHECK (length(route) <= 200)
 CONSTRAINT audit_log.audit_log_status_not_null NOT NULL status
+CONSTRAINT backup_runs.backup_runs_at_not_null NOT NULL at
+CONSTRAINT backup_runs.backup_runs_at_valid CHECK (at >= 0)
+CONSTRAINT backup_runs.backup_runs_bytes_valid CHECK (bytes IS NULL OR bytes >= 0)
+CONSTRAINT backup_runs.backup_runs_detail_not_null NOT NULL detail
+CONSTRAINT backup_runs.backup_runs_detail_valid CHECK (length(detail) <= 500)
+CONSTRAINT backup_runs.backup_runs_id_not_null NOT NULL id
+CONSTRAINT backup_runs.backup_runs_kind_not_null NOT NULL kind
+CONSTRAINT backup_runs.backup_runs_kind_valid CHECK (kind = ANY (ARRAY['backup'::text, 'verify'::text, 'restore'::text]))
+CONSTRAINT backup_runs.backup_runs_ok_not_null NOT NULL ok
+CONSTRAINT backup_runs.backup_runs_pkey PRIMARY KEY (id)
 CONSTRAINT blob_backends.blob_backends_check_status_not_null NOT NULL check_status
 CONSTRAINT blob_backends.blob_backends_check_valid CHECK (length(check_status) >= 1 AND length(check_status) <= 64)
 CONSTRAINT blob_backends.blob_backends_config_not_null NOT NULL config
@@ -722,6 +738,8 @@ INDEX aliases.aliases_pkey CREATE UNIQUE INDEX aliases_pkey ON public.aliases US
 INDEX audit_log.audit_log_at CREATE INDEX audit_log_at ON public.audit_log USING btree (at)
 INDEX audit_log.audit_log_domain CREATE INDEX audit_log_domain ON public.audit_log USING btree (domain_id, id DESC)
 INDEX audit_log.audit_log_pkey CREATE UNIQUE INDEX audit_log_pkey ON public.audit_log USING btree (id)
+INDEX backup_runs.backup_runs_at CREATE INDEX backup_runs_at ON public.backup_runs USING btree (at)
+INDEX backup_runs.backup_runs_pkey CREATE UNIQUE INDEX backup_runs_pkey ON public.backup_runs USING btree (id)
 INDEX blob_backends.blob_backends_name_unique CREATE UNIQUE INDEX blob_backends_name_unique ON public.blob_backends USING btree (store_id, name)
 INDEX blob_backends.blob_backends_pkey CREATE UNIQUE INDEX blob_backends_pkey ON public.blob_backends USING btree (id)
 INDEX blob_locations.blob_locations_backend CREATE INDEX blob_locations_backend ON public.blob_locations USING btree (backend_id, state)

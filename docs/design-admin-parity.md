@@ -68,7 +68,7 @@ The reference is the Zimbra Open Source Edition admin console (Zimbra 10: Home, 
 | Certificates: view, install, CSR | the edge's ACME; `certs sync` | **P2** the certificates page: hosts, expiry, issuer, the next renewal; manual upload for a deployment without ACME |
 | Servers and services | deployment (`rusty-swarm`) | no: the tool and the Monitor page |
 | Retention and archiving, legal hold *(NE)* | none | **P3** a retention rule per plan; archiving and legal hold are D4 |
-| Backup and restore *(NE)* | `backup`, `restore` in the deploy tools | **P3** a status page (the last backup, its size, its age) from the tool's report; the action stays in the tool |
+| Backup and restore *(NE)* | `backup`, `restore` in the deploy tools | **done** (`design-backup-status.md`): the tool records each backup and drill, the Backups page shows the last good backup, its age and the last drill; the action stays in the tool |
 | Software updates | `rusty-swarm upgrade` | no in the web; the Monitor shows the versions that run |
 | Zimlets, admin extensions | no | no: Zimlets are a Zimbra web-client technology |
 
