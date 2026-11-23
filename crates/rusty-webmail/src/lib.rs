@@ -12,6 +12,8 @@ pub mod health;
 pub mod mail;
 pub mod read;
 pub mod run;
+pub mod second;
+pub mod second_factor;
 pub mod settings;
 pub mod send;
 pub mod compose;

@@ -7,7 +7,7 @@ mod caps;
 mod config;
 mod dir;
 
-pub use auth::{hash_app_password, Authenticator, LocalAuthenticator};
+pub use auth::{hash_app_password, verify_app_password, Authenticator, LocalAuthenticator};
 pub use caps::{
     Capability, CapabilityInfo, CapabilityRole, MAX_ACTIVE_CAPABILITIES_PER_ACCOUNT,
     MAX_CAPABILITY_TTL_SECS,

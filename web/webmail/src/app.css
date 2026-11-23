@@ -366,3 +366,15 @@ dd {
   padding: 0.5rem 0;
   border-bottom: 1px solid var(--line);
 }
+.secretline {
+  display: block;
+  margin: 0.5rem 0;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.secretline {
+  display: block;
+  margin: 0.5rem 0;
+  overflow-wrap: anywhere;
+  user-select: all;
+}

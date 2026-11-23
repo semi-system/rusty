@@ -31,6 +31,9 @@ pub struct WebmailConfig {
     /// More origins the webmail is reached by (another port, a tenant's own host name). At most 4, each as `public_origin`.
     #[serde(default)]
     pub extra_origins: Vec<String>,
+    /// The key file of the second factor of the sign-in (an unsealing key of `rusty-seal`, the webmail's own: docs/design-2fa.md). Without it the second factor is not offered.
+    #[serde(default)]
+    pub totp_key_file: Option<std::path::PathBuf>,
 }
 
 impl WebmailConfig {

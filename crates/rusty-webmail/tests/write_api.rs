@@ -97,11 +97,16 @@ async fn rig() -> Rig {
     alice.append_dated(INBOX, Bytes::from_static(b"From: d@x.test\r\nSubject: with a file\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nSee the file.\r\n--b\r\nContent-Type: application/pdf; name=\"a.pdf\"\r\nContent-Disposition: attachment; filename=\"a.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\nSGVsbG8gd29ybGQh\r\n--b--\r\n"), rusty_core::Flags::empty(), 1_700_000_200).await.unwrap();
     alice.append_dated(FolderId(2), Bytes::from_static(b"Subject: sent one\r\n\r\nsent\r\n"), seen, 1_700_000_300).await.unwrap();
     bob.append_dated(INBOX, Bytes::from_static(b"Subject: BOB-SECRET\r\n\r\nBOB-SECRET body\r\n"), rusty_core::Flags::empty(), 1_700_000_050).await.unwrap();
+    // The webmail's own key for the second factor.
+    let key_file = tmp.path().join("totp.key");
+    std::fs::write(&key_file, rusty_seal::generate().0.to_text().as_str()).unwrap();
+    std::fs::set_permissions(&key_file, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
     let cfg = StartupConfig::from_toml_str_for(
         Role::Webmail,
         &format!(
-            "blob_dir = \"{}\"\nhostname = \"webmail.example.org\"\n[store]\nurl = \"postgres://rusty_app@db.internal:5432/rusty\"\npassword_file = \"/run/secrets/pg\"\n[webmail]\nlisten = \"127.0.0.1:0\"\npublic_origin = \"{ORIGIN}\"\n",
-            blob_dir.display()
+            "blob_dir = \"{}\"\nhostname = \"webmail.example.org\"\n[store]\nurl = \"postgres://rusty_app@db.internal:5432/rusty\"\npassword_file = \"/run/secrets/pg\"\n[webmail]\nlisten = \"127.0.0.1:0\"\npublic_origin = \"{ORIGIN}\"\ntotp_key_file = \"{}\"\n",
+            blob_dir.display(),
+            key_file.display()
         ),
     )
     .unwrap();
@@ -398,5 +403,70 @@ async fn the_signature_is_kept_per_account_read_back_and_refused_when_it_is_mark
     assert_eq!(call(r.addr, "GET", "/api/v1/settings", &[("Cookie", &bob_cookie)], None).await.json()["signature"], serde_json::json!(""));
     let body = serde_json::json!({ "signature": "x" }).to_string();
     assert_eq!(call(r.addr, "PUT", "/api/v1/settings", &[("Cookie", &s.cookie), ("Content-Type", "application/json"), ("Origin", ORIGIN)], Some(&body)).await.status, 403);
+    r.stop.cancel();
+}
+
+#[tokio::test]
+async fn the_second_factor_is_begun_confirmed_asked_at_sign_in_once_per_code_and_turned_off() {
+    use rusty_directory::{Authenticator, LocalAuthenticator};
+    use rusty_webmail::totp;
+    let r = rig().await;
+    let s = alice(&r).await;
+    let status = s.get(r.addr, "/api/v1/totp").await;
+    assert_eq!((status["available"].clone(), status["enabled"].clone()), (serde_json::json!(true), serde_json::json!(false)));
+    // Begin needs the password again.
+    assert_eq!(s.post(r.addr, "/api/v1/totp/begin", serde_json::json!({ "password": "wrong-password-xx" })).await.status, 401);
+    let begun = s.post(r.addr, "/api/v1/totp/begin", serde_json::json!({ "password": "correct-horse-battery-1" })).await;
+    assert_eq!(begun.status, 200, "{}", begun.text());
+    let secret = totp::base32_decode(begun.json()["secret"].as_str().unwrap()).unwrap();
+    assert!(begun.json()["uri"].as_str().unwrap().starts_with("otpauth://totp/Rusty%20mail:alice%40one.test?secret="));
+    assert_eq!(s.get(r.addr, "/api/v1/totp").await["pending"], serde_json::json!(true));
+    // A wrong code does not turn it on; the right one does and gives ten recovery codes, once.
+    let now = rusty_webmail::compose::now() as u64;
+    let step = totp::step_of(now);
+    assert_eq!(s.post(r.addr, "/api/v1/totp/confirm", serde_json::json!({ "code": "000000" })).await.status, 401);
+    let ok = s.post(r.addr, "/api/v1/totp/confirm", serde_json::json!({ "code": format!("{:06}", totp::code(&secret, step)) })).await;
+    assert_eq!(ok.status, 200, "{}", ok.text());
+    let recovery: Vec<String> = ok.json()["recovery"].as_array().unwrap().iter().map(|c| c.as_str().unwrap().to_owned()).collect();
+    assert_eq!(recovery.len(), 10);
+    assert_eq!(s.get(r.addr, "/api/v1/totp").await["enabled"], serde_json::json!(true));
+    // Sign-in now wants a code: none, a wrong one, then a right one of the next step (the step of the confirmation is used).
+    let attempt = |code: Option<String>| {
+        let mut body = serde_json::json!({ "address": "alice@one.test", "password": "correct-horse-battery-1" });
+        if let Some(c) = code {
+            body["code"] = serde_json::json!(c);
+        }
+        let b = body.to_string();
+        let addr = r.addr;
+        async move { call(addr, "POST", "/api/v1/session", &[("Content-Type", "application/json"), ("Origin", ORIGIN)], Some(&b)).await }
+    };
+    let none = attempt(None).await;
+    assert_eq!((none.status, none.json()["error"].clone()), (401, serde_json::json!("second_factor")));
+    assert_eq!(attempt(Some("000000".into())).await.json()["error"], serde_json::json!("second_factor"));
+    assert_eq!(attempt(Some(format!("{:06}", totp::code(&secret, step)))).await.status, 401, "the step of the confirmation cannot be used again");
+    let next = attempt(Some(format!("{:06}", totp::code(&secret, step + 1)))).await;
+    assert_eq!(next.status, 200, "{}", next.text());
+    assert_eq!(attempt(Some(format!("{:06}", totp::code(&secret, step + 1)))).await.status, 401, "a code works once");
+    // A wrong password is still the plain 401, whatever the code.
+    let bad = serde_json::json!({ "address": "alice@one.test", "password": "nope-nope-nope-1", "code": "123456" }).to_string();
+    assert_eq!(call(r.addr, "POST", "/api/v1/session", &[("Content-Type", "application/json"), ("Origin", ORIGIN)], Some(&bad)).await.json()["error"], serde_json::json!("unauthorized"));
+    // A recovery code stands in for a code, once.
+    let by_recovery = attempt(Some(recovery[0].clone())).await;
+    assert_eq!(by_recovery.status, 200, "{}", by_recovery.text());
+    assert_eq!(attempt(Some(recovery[0].clone())).await.status, 401);
+    // The mail protocols refuse the own password of this account now, and accept an app password.
+    let operator = Store::open(StoreConfig::postgres(r._db.role_url("rusty_app"))).await.unwrap();
+    let dir = Directory::with_repo(operator.repos().directory.clone());
+    let protocols = LocalAuthenticator::new(dir).await.unwrap().with_app_passwords(operator.repos().app_passwords.clone()).with_second_factor_check(operator.repos().totp.clone());
+    assert!(protocols.verify("alice@one.test", "correct-horse-battery-1").await.unwrap().is_none(), "the own password is refused on the protocols");
+    assert!(protocols.verify("bob@one.test", "another-long-password-2").await.unwrap().is_some(), "another account is not affected");
+    let made = s.post(r.addr, "/api/v1/app-passwords", serde_json::json!({ "label": "Phone", "password": "correct-horse-battery-1" })).await.json();
+    assert!(protocols.verify("alice@one.test", made["secret"].as_str().unwrap()).await.unwrap().is_some());
+    // Turning it off needs the password and a code; then everything is as before.
+    assert_eq!(s.post(r.addr, "/api/v1/totp/disable", serde_json::json!({ "password": "correct-horse-battery-1", "code": "000000" })).await.status, 401);
+    let off = s.post(r.addr, "/api/v1/totp/disable", serde_json::json!({ "password": "correct-horse-battery-1", "code": recovery[1].clone() })).await;
+    assert_eq!(off.status, 200, "{}", off.text());
+    assert_eq!(attempt(None).await.status, 200);
+    assert!(protocols.verify("alice@one.test", "correct-horse-battery-1").await.unwrap().is_some());
     r.stop.cancel();
 }

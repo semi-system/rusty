@@ -6,7 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use rusty_core::{AccountId, Error, Result};
 use rusty_store::repo::AuthRow;
-use rusty_store::AppPasswordRepo;
+use rusty_store::{AppPasswordRepo, TotpRepo};
 
 use crate::dir::{Directory, Resolved};
 
@@ -49,6 +49,11 @@ pub async fn hash_app_password(secret: &str) -> Result<String> {
     hash_password(secret).await
 }
 
+/// Check a secret against a hash made by [`hash_app_password`] (recovery codes use this too).
+pub async fn verify_app_password(hash: &str, secret: &str) -> Result<bool> {
+    LocalAuthenticator::run_verify(hash.to_owned(), secret).await
+}
+
 impl Directory {
     pub async fn set_password(&self, account: AccountId, password: &str) -> Result<()> {
         let hash = hash_password(password).await?;
@@ -70,6 +75,8 @@ pub struct LocalAuthenticator {
     dummy_hash: String,
     /// When set, a password that is not the account's own is also checked against its app passwords (the protocol services do; the webmail and the admin web do not).
     app_passwords: Option<Arc<dyn AppPasswordRepo>>,
+    /// When set, an account with the second factor on does not get in with its own password (the mail protocols cannot ask for a code: it uses an app password there).
+    totp: Option<Arc<dyn TotpRepo>>,
 }
 
 impl std::fmt::Debug for LocalAuthenticator {
@@ -86,10 +93,17 @@ impl LocalAuthenticator {
             directory,
             dummy_hash,
             app_passwords: None,
+            totp: None,
         })
     }
 
     /// Accept the app passwords of an account as well (for the mail protocols).
+    /// Refuse the own password of an account that has the second factor on (for the mail protocols).
+    pub fn with_second_factor_check(mut self, repo: Arc<dyn TotpRepo>) -> LocalAuthenticator {
+        self.totp = Some(repo);
+        self
+    }
+
     pub fn with_app_passwords(mut self, repo: Arc<dyn AppPasswordRepo>) -> LocalAuthenticator {
         self.app_passwords = Some(repo);
         self
@@ -120,7 +134,15 @@ impl Authenticator for LocalAuthenticator {
         };
         match (account, row) {
             (Some(id), Some(AuthRow { status, password_hash: Some(hash) })) => {
-                let own = Self::run_verify(hash, password).await?;
+                let mut own = Self::run_verify(hash, password).await?;
+                // With the second factor on, the own password is not enough here: an app password is.
+                if own && status == "active" {
+                    if let Some(t) = &self.totp {
+                        if t.enabled(id).await? {
+                            own = false;
+                        }
+                    }
+                }
                 let mut granted = own && status == "active";
                 if !own && status == "active" {
                     if let Some(apps) = &self.app_passwords {

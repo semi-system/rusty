@@ -48,6 +48,22 @@ pub fn verify(secret: &[u8], typed: &str, now: u64, after: Option<u64>) -> Optio
 }
 
 /// The secret as unpadded base32, the text an authenticator app is given.
+/// The bytes of a base32 text (upper or lower case, no padding); `None` when a character does not belong.
+pub fn base32_decode(text: &str) -> Option<Vec<u8>> {
+    let (mut acc, mut bits) = (0u32, 0u32);
+    let mut out = Vec::new();
+    for c in text.bytes() {
+        let v = BASE32.iter().position(|b| *b == c.to_ascii_uppercase())?;
+        acc = (acc << 5) | u32::try_from(v).ok()?;
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(u8::try_from((acc >> bits) & 0xff).ok()?);
+        }
+    }
+    Some(out)
+}
+
 pub fn base32(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 8 / 5 + 1);
     let (mut acc, mut bits) = (0u32, 0u32);
@@ -116,6 +132,9 @@ mod tests {
         assert_eq!(base32(b"foobar"), "MZXW6YTBOI");
         assert_eq!(base32(b"fooba"), "MZXW6YTB");
         assert_eq!(base32(b"f"), "MY");
+        assert_eq!(base32_decode("MZXW6YTBOI").as_deref(), Some(b"foobar".as_slice()));
+        assert_eq!(base32_decode("mzxw6ytb").as_deref(), Some(b"fooba".as_slice()));
+        assert!(base32_decode("MZ1").is_none());
         let u = uri("Rusty mail", "alice@one.test", b"fooba");
         assert_eq!(u, "otpauth://totp/Rusty%20mail:alice%40one.test?secret=MZXW6YTB&issuer=Rusty%20mail&algorithm=SHA1&digits=6&period=30");
     }

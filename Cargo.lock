@@ -2470,6 +2470,7 @@ dependencies = [
  "rusty-http",
  "rusty-runtime",
  "rusty-s3",
+ "rusty-seal",
  "rusty-store",
  "rusty-svc",
  "rusty-valkey",
@@ -2481,6 +2482,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]

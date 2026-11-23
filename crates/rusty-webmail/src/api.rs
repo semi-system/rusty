@@ -32,6 +32,8 @@ pub enum SignInError {
     Throttled { retry_after_secs: u64 },
     /// Wrong credentials, or an account that is not active. Always the same.
     Invalid,
+    /// The password was right but the account has a second factor and no right code came with it. Said only to someone who knew the password.
+    SecondFactor,
     /// Too many sign-ins are being checked at once (password hashing is expensive).
     Busy,
     /// The database or the session store could not answer.
@@ -45,11 +47,16 @@ pub struct WebmailAuth {
     directory: Directory,
     sessions: SessionStore,
     throttle: Arc<dyn RateLimiter>,
+    second: crate::second_factor::SecondFactor,
 }
 
 impl WebmailAuth {
-    pub fn new(authenticator: Arc<dyn Authenticator>, directory: Directory, sessions: SessionStore, throttle: Arc<dyn RateLimiter>) -> WebmailAuth {
-        WebmailAuth { authenticator, directory, sessions, throttle }
+    pub fn new(authenticator: Arc<dyn Authenticator>, directory: Directory, sessions: SessionStore, throttle: Arc<dyn RateLimiter>, second: crate::second_factor::SecondFactor) -> WebmailAuth {
+        WebmailAuth { authenticator, directory, sessions, throttle, second }
+    }
+
+    pub fn second(&self) -> &crate::second_factor::SecondFactor {
+        &self.second
     }
 
     pub fn sessions(&self) -> &SessionStore {
@@ -95,8 +102,26 @@ impl WebmailAuth {
     }
 
     /// Check the credentials and open a session. Returns the session id (for the cookie) and the session.
-    pub async fn sign_in(&self, peer: IpAddr, address: &str, password: &str) -> std::result::Result<(String, Session), SignInError> {
+    pub async fn sign_in(&self, peer: IpAddr, address: &str, password: &str, code: Option<&str>) -> std::result::Result<(String, Session), SignInError> {
         let (account, keys) = self.check(peer, address, password).await?;
+        // The second factor, when the account has it on: a missing code is the next step (not a failure), a wrong one counts like a wrong password.
+        match self.second.enabled(account).await {
+            Ok(false) => {}
+            Ok(true) => {
+                let Some(code) = code.filter(|c| !c.trim().is_empty()) else { return Err(SignInError::SecondFactor) };
+                match self.second.check(account, code, crate::compose::now().max(0) as u64).await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        for k in &keys {
+                            self.throttle.record_failure(peer, k).await;
+                        }
+                        return Err(SignInError::SecondFactor);
+                    }
+                    Err(_) => return Err(SignInError::Unavailable),
+                }
+            }
+            Err(_) => return Err(SignInError::Unavailable),
+        }
         let label = parse_address(address).map_or_else(|_| address.trim().to_ascii_lowercase(), |(l, d)| format!("{l}@{d}"));
         let opened = self.sessions.create(account, &label).await.map_err(|_| SignInError::Unavailable)?;
         for k in &keys {
@@ -187,6 +212,9 @@ fn json<T: Serialize>(status: u16, v: &T) -> Response {
 struct SignInBody {
     address: String,
     password: String,
+    /// The code of the second factor (or a recovery code), when the account has one.
+    #[serde(default)]
+    code: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -214,16 +242,17 @@ async fn sign_in(app: &WebmailApp, req: Request) -> Response {
         return r;
     }
     let Ok(b) = serde_json::from_slice::<SignInBody>(&req.body) else { return error(400, "invalid") };
-    if b.address.len() > MAX_ADDRESS || b.password.len() > MAX_PASSWORD {
+    if b.address.len() > MAX_ADDRESS || b.password.len() > MAX_PASSWORD || b.code.as_ref().is_some_and(|c| c.len() > 64) {
         return error(400, "invalid");
     }
-    match app.auth.sign_in(req.peer.addr.ip(), &b.address, &b.password).await {
+    match app.auth.sign_in(req.peer.addr.ip(), &b.address, &b.password, b.code.as_deref()).await {
         Ok((id, s)) => match session_cookie(COOKIE, &id, app.auth.sessions().config().absolute) {
             Some(c) => json(200, &me(&s)).with_header("set-cookie", c),
             None => error(500, "internal"),
         },
         Err(SignInError::Throttled { retry_after_secs }) => error(429, "throttled").with_header("retry-after", retry_after_secs.max(1).to_string()),
         Err(SignInError::Invalid) => error(401, "unauthorized"),
+        Err(SignInError::SecondFactor) => error(401, "second_factor"),
         Err(SignInError::Busy | SignInError::Unavailable) => error(503, "busy"),
     }
 }
