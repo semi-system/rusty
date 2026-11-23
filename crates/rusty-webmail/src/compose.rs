@@ -144,9 +144,14 @@ fn compose(from: &str, draft: &Draft, now: i64, saving: bool) -> Result<Composed
     OsRng.fill_bytes(&mut id);
     let mut h = String::new();
     h.push_str(&format!("From: {from}\r\n"));
-    h.push_str(&format!("To: {}\r\n", to.join(", ")));
+    if !to.is_empty() {
+        h.push_str(&format!("To: {}\r\n", to.join(", ")));
+    }
     if !cc.is_empty() {
         h.push_str(&format!("Cc: {}\r\n", cc.join(", ")));
+    }
+    if saving && !bcc.is_empty() {
+        h.push_str(&format!("Bcc: {}\r\n", bcc.join(", ")));
     }
     h.push_str(&format!("Subject: {subject}\r\n"));
     h.push_str(&format!("Date: {}\r\n", rfc5322_date(now)));
