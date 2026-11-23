@@ -294,6 +294,8 @@ async fn build(
     // The exports and imports of mailboxes asked for in the admin web are done where the mailboxes are.
     if runs(Role::Imap) {
         services.push(Box::new(rusty_svc::TransferService::new()));
+        // So are the searches of the mail that a platform administrator asks for (off unless the platform setting is on).
+        services.push(Box::new(rusty_svc::SearchService::new()));
     }
     let outbound_dns = if runs(Role::Outbound) { dns } else { None };
     if let Some(dns) = outbound_dns {

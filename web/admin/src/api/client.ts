@@ -1,7 +1,7 @@
 // The API client: the contract's endpoints as typed calls. It knows the three rules of a state-changing request (design section 5): the JSON content type,
 // the CSRF token of the session (the browser adds `Origin` itself) and that a failure is a fixed code, never text to show.
 
-import type { Account, Transfer, TransferList, MailRules, CertificateList, Stats, PlatformSettings, Audit, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, DomainSettings, ImportResult, MailList, Member, Members, Monitor, Plan, PlanList, QueueList, Routing, Trace, Protocols, Queue, Relay, SetupState, Storage } from './types';
+import type { Account, Transfer, TransferList, MailRules, Search, SearchQueued, CertificateList, Stats, PlatformSettings, Audit, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, DomainSettings, ImportResult, MailList, Member, Members, Monitor, Plan, PlanList, QueueList, Routing, Trace, Protocols, Queue, Relay, SetupState, Storage } from './types';
 import type { MessageKey } from '../i18n';
 
 /** A page of a list, the cursor of the next one and how many rows match in all. */
@@ -300,6 +300,16 @@ export class Client {
 
   setMailRules(address: string, rules: Partial<MailRules>): Promise<MailRules> {
     return this.call('PUT', `/api/v1/accounts/${seg(address)}/mail-rules`, rules);
+  }
+
+  /** Ask for a search of the mail of every mailbox (platform administrators, when the platform setting is on): what it asks is audited. */
+  askSearch(q: { domain?: string; account?: string; from?: string; to?: string; subject?: string; since?: number; until?: number }): Promise<SearchQueued> {
+    return this.call('POST', '/api/v1/search', q);
+  }
+
+  /** What a search found so far. */
+  searchResult(id: number): Promise<Search> {
+    return this.call('GET', `/api/v1/search/${id}`);
   }
 
   /** What the public names of this server present as their certificates. */

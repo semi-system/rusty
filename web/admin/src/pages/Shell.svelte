@@ -17,6 +17,7 @@
   import ProtocolsPage from './Protocols.svelte';
   import AuditPage from './Audit.svelte';
   import CertificatesPage from './Certificates.svelte';
+  import SearchPage from './Search.svelte';
   import PlatformSettingsPage from './PlatformSettings.svelte';
   import PlansPage from './Plans.svelte';
   import RoutingPage from './Routing.svelte';
@@ -30,7 +31,7 @@
   let { app, me }: { app: App; me: Me } = $props();
 
   // A route never ends in a domain name: the server answers a path that looks like a file with 404 (see docs/admin-web-frontend.md).
-  type Page = 'certificates' | 'stats' | 'platform' | 'audit' | 'domains' | 'overview' | 'accounts' | 'aliases' | 'dkim' | 'dns' | 'relay' | 'storage' | 'routing' | 'queue' | 'settings' | 'monitor' | 'protocols' | 'plans' | 'administrators';
+  type Page = 'search' | 'certificates' | 'stats' | 'platform' | 'audit' | 'domains' | 'overview' | 'accounts' | 'aliases' | 'dkim' | 'dns' | 'relay' | 'storage' | 'routing' | 'queue' | 'settings' | 'monitor' | 'protocols' | 'plans' | 'administrators';
   const routes: Route<Page>[] = [
     { pattern: '/', value: 'domains' },
     { pattern: '/monitor', value: 'monitor' },
@@ -38,6 +39,7 @@
     { pattern: '/plans', value: 'plans' },
     { pattern: '/audit', value: 'audit' },
     { pattern: '/certificates', value: 'certificates' },
+    { pattern: '/search', value: 'search' },
     { pattern: '/platform', value: 'platform' },
     { pattern: '/administrators', value: 'administrators' },
     { pattern: '/domains/{name}/overview', value: 'overview' },
@@ -78,6 +80,7 @@
     if (match.value === 'plans') return [{ label: t('nav.plans') }];
     if (match.value === 'audit') return [{ label: t('nav.audit') }];
     if (match.value === 'certificates') return [{ label: t('nav.certificates') }];
+    if (match.value === 'search') return [{ label: t('nav.search') }];
     if (match.value === 'platform') return [{ label: t('nav.platform') }];
     if (match.value === 'administrators') return [{ label: t('nav.administrators') }];
     const key = pageLabel[match.value];
@@ -124,6 +127,7 @@
           <Link class="nav-link" href="/protocols" current={nav.path === '/protocols'}>{t('nav.protocols')}</Link>
           <Link class="nav-link" href="/platform" current={nav.path === '/platform'}>{t('nav.platform')}</Link>
           <Link class="nav-link" href="/certificates" current={nav.path === '/certificates'}>{t('nav.certificates')}</Link>
+          <Link class="nav-link" href="/search" current={nav.path === '/search'}>{t('nav.search')}</Link>
         </div>
       {/if}
     </nav>
@@ -170,6 +174,8 @@
       {#if me.scope === 'platform'}<PlatformSettingsPage {app} />{:else}<NotFound />{/if}
     {:else if match.value === 'certificates'}
       {#if me.scope === 'platform'}<CertificatesPage {app} />{:else}<NotFound />{/if}
+    {:else if match.value === 'search'}
+      {#if me.scope === 'platform'}<SearchPage {app} />{:else}<NotFound />{/if}
     {:else if match.value === 'audit'}
       <AuditPage {app} />
     {:else if match.value === 'plans'}

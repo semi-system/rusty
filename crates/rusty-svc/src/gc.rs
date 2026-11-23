@@ -27,6 +27,8 @@ pub struct GcSummary {
     pub log_purged: u64,
     /// Rows of the audit log past their 365 days.
     pub audit_purged: u64,
+    /// Searches of the mail past their day.
+    pub searches_purged: u64,
     /// Rows of the vacation book-keeping older than 60 days.
     pub vacation_purged: u64,
     /// Exports and imports of mailboxes older than a day, removed with their pieces.
@@ -106,6 +108,10 @@ impl GcService {
                 Err(e) => step_failed(&mut s, "purge the audit log", &e),
             },
             Err(e) => step_failed(&mut s, "read the clock", &e),
+        }
+        match ctx.searches.purge_expired(500).await {
+            Ok(n) => s.searches_purged = n,
+            Err(e) => step_failed(&mut s, "purge the searches", &e),
         }
         match ctx.jobs.now().await {
             Ok(now) => match ctx.rules.purge_vacation_replies(now.saturating_sub(60 * 86_400), 5000).await {

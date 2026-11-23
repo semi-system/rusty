@@ -76,7 +76,7 @@ The reference is the Zimbra Open Source Edition admin console (Zimbra 10: Home, 
 
 | Zimbra | Rusty today | Plan |
 |---|---|---|
-| Search mail across mailboxes (admin) | none | **P3**, platform administrators only, every search written to the audit log, off by default (a privacy risk: D5) |
+| Search mail across mailboxes (admin) | none | **done** (`design-admin-search.md`): platform administrators only, every search audited with what it asked for, off by default (a privacy risk: D5), metadata only |
 | Migration wizard | none | **P3** an IMAP pull job (host, login, folder map) per account, with progress; until then `imapsync` is documented |
 | Audit of admin actions | none | **P2** who, what, when, from which address; kept 365 days; domain administrators see their domain's |
 | Download client tools | no | no |

@@ -60,6 +60,8 @@ pub struct Services {
     pub queue: Arc<dyn rusty_store::QueueRepo>,
     /// The audit log (docs/design-audit.md).
     pub audit: Arc<dyn rusty_store::AuditRepo>,
+    /// Searches of the mail for platform administrators (docs/design-admin-search.md).
+    pub searches: Arc<dyn rusty_store::SearchRepo>,
     /// The exports and imports of mailboxes (docs/design-mailbox-transfers.md).
     pub transfers: Arc<dyn rusty_store::TransferRepo>,
     /// `[sealing] public_key`: what secrets are sealed to. `None`: nothing can be sealed, the endpoints that need it answer `503 unavailable`.
