@@ -112,9 +112,11 @@ impl SecondFactor {
         let secret = self.secret(account, &row.sealed).await?;
         let Some(step) = totp::verify(&secret, code, now, None) else { return Ok(None) };
         let codes: Vec<String> = (0..RECOVERY_CODES).map(|_| recovery_code()).collect();
+        // The hashes are made side by side (each is a slow, memory-hard computation on its own thread): ten in a row would make the person wait ten times as long.
+        let tasks: Vec<_> = codes.iter().cloned().map(|c| tokio::spawn(async move { hash_app_password(&c).await })).collect();
         let mut hashes = Vec::with_capacity(codes.len());
-        for c in &codes {
-            hashes.push(hash_app_password(c).await?);
+        for t in tasks {
+            hashes.push(t.await.map_err(|_| Error::Invalid("hashing was interrupted".into()))??);
         }
         self.repo.confirm(account, i64::try_from(step).unwrap_or(i64::MAX), &hashes).await?;
         Ok(Some(codes))

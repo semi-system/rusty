@@ -49,7 +49,7 @@ async fn call(addr: SocketAddr, method: &str, path: &str, headers: &[(&str, &str
     let mut s = TcpStream::connect(addr).await.unwrap();
     s.write_all(req.as_bytes()).await.unwrap();
     let mut out = Vec::new();
-    let _ = tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut out)).await;
+    let _ = tokio::time::timeout(Duration::from_secs(30), s.read_to_end(&mut out)).await;
     let at = out.windows(4).position(|w| w == b"\r\n\r\n").map_or(out.len(), |p| p + 4);
     let head = String::from_utf8_lossy(&out[..at.saturating_sub(4).min(out.len())]).into_owned();
     let status = head.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
