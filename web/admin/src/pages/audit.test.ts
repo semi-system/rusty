@@ -13,7 +13,7 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-const entry = (id: number, path: string) => ({ id, at: 1700000000 + id, actor: 'root@home.test', domain_id: null, ip: '203.0.113.9', method: 'POST', route: path, path, status: 201, detail: id === 3 ? '{"virus_action":"reject","password":"(hidden)"}' : null });
+const entry = (id: number, path: string) => ({ id, at: 1700000000 + id, actor: 'root@home.test', domain_id: null, ip: '203.0.113.9', method: 'POST', route: path, path, status: 201, detail: id === 3 ? '{"virus_action":"reject","password":"(hidden)","blocked_extensions":""}' : null });
 
 describe('audit', () => {
   it('lists the changes newest first, pages on and filters by domain', async () => {
@@ -30,6 +30,7 @@ describe('audit', () => {
     expect(within(table).getByText('virus_action')).toBeTruthy();
     expect(within(table).getByText('reject')).toBeTruthy();
     expect(within(table).getByText(t('audit.hidden'))).toBeTruthy();
+    expect(within(table).getByText(t('audit.none'))).toBeTruthy();
     await fireEvent.click(screen.getByRole('button', { name: t('audit.more') }));
     expect(await within(table).findByText('POST /api/v1/protocols')).toBeTruthy();
     expect(screen.queryByRole('button', { name: t('audit.more') })).toBeNull();
