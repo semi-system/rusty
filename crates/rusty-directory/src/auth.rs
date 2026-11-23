@@ -1,9 +1,12 @@
 use argon2::password_hash::phc::PasswordHash;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use argon2::Argon2;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use rusty_core::{AccountId, Error, Result};
 use rusty_store::repo::AuthRow;
+use rusty_store::AppPasswordRepo;
 
 use crate::dir::{Directory, Resolved};
 
@@ -41,6 +44,11 @@ fn verify_blocking(hash: &str, password: &str) -> bool {
     }
 }
 
+/// Hash an app password the way a password is hashed (argon2id), for the webmail to store.
+pub async fn hash_app_password(secret: &str) -> Result<String> {
+    hash_password(secret).await
+}
+
 impl Directory {
     pub async fn set_password(&self, account: AccountId, password: &str) -> Result<()> {
         let hash = hash_password(password).await?;
@@ -60,6 +68,8 @@ pub trait Authenticator: Send + Sync {
 pub struct LocalAuthenticator {
     directory: Directory,
     dummy_hash: String,
+    /// When set, a password that is not the account's own is also checked against its app passwords (the protocol services do; the webmail and the admin web do not).
+    app_passwords: Option<Arc<dyn AppPasswordRepo>>,
 }
 
 impl std::fmt::Debug for LocalAuthenticator {
@@ -75,7 +85,14 @@ impl LocalAuthenticator {
         Ok(LocalAuthenticator {
             directory,
             dummy_hash,
+            app_passwords: None,
         })
+    }
+
+    /// Accept the app passwords of an account as well (for the mail protocols).
+    pub fn with_app_passwords(mut self, repo: Arc<dyn AppPasswordRepo>) -> LocalAuthenticator {
+        self.app_passwords = Some(repo);
+        self
     }
 
     async fn run_verify(hash: String, password: &str) -> Result<bool> {
@@ -103,8 +120,22 @@ impl Authenticator for LocalAuthenticator {
         };
         match (account, row) {
             (Some(id), Some(AuthRow { status, password_hash: Some(hash) })) => {
-                let ok = Self::run_verify(hash, password).await?;
-                let granted = ok && status == "active";
+                let own = Self::run_verify(hash, password).await?;
+                let mut granted = own && status == "active";
+                if !own && status == "active" {
+                    if let Some(apps) = &self.app_passwords {
+                        for (app, stored) in apps.hashes(id).await? {
+                            if Self::run_verify(stored, password).await? {
+                                granted = true;
+                                let apps = apps.clone();
+                                tokio::spawn(async move {
+                                    let _ = apps.touch(app).await;
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
                 if granted {
                     // The time of the last sign-in, for the console: a write that fails or is slow never stops or delays the sign-in.
                     let directory = self.directory.clone();

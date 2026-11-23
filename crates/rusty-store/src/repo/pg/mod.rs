@@ -21,6 +21,7 @@ mod audit;
 mod imap_migrations;
 mod searches;
 mod outbox;
+mod app_passwords;
 mod backups;
 mod admin;
 pub mod tx;

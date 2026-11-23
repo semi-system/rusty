@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod api;
+pub mod apppw;
 pub mod health;
 pub mod mail;
 pub mod read;

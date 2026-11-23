@@ -298,3 +298,46 @@ async fn a_send_needs_the_token_and_refuses_what_could_add_a_header_or_has_no_re
     assert_eq!(s.post(r.addr, "/api/v1/send", serde_json::json!({ "to": ["bob@one.test"], "text": "y" })).await.status, 429);
     r.stop.cancel();
 }
+
+#[tokio::test]
+async fn an_app_password_is_made_with_the_password_shown_once_works_for_the_protocols_only_and_is_revoked() {
+    use rusty_directory::{Authenticator, LocalAuthenticator};
+    let r = rig().await;
+    let s = alice(&r).await;
+    // Making one needs the account's password again.
+    let no = s.post(r.addr, "/api/v1/app-passwords", serde_json::json!({ "label": "Phone", "password": "wrong-password-xx" })).await;
+    assert_eq!(no.status, 401, "{}", no.text());
+    assert_eq!(s.post(r.addr, "/api/v1/app-passwords", serde_json::json!({ "label": "", "password": "correct-horse-battery-1" })).await.status, 400);
+    let made = s.post(r.addr, "/api/v1/app-passwords", serde_json::json!({ "label": "Phone", "password": "correct-horse-battery-1" })).await;
+    assert_eq!(made.status, 200, "{}", made.text());
+    let (id, secret) = (made.json()["id"].as_i64().unwrap(), made.json()["secret"].as_str().unwrap().to_owned());
+    assert_eq!(secret.len(), 19);
+    // The list never has the secret.
+    let list = s.get(r.addr, "/api/v1/app-passwords").await;
+    assert_eq!(list["items"][0]["label"], serde_json::json!("Phone"));
+    assert!(!list.to_string().contains(&secret));
+    // The mail protocols accept it, the webmail does not, and Bob has none.
+    let operator = Store::open(StoreConfig::postgres(r._db.role_url("rusty_app"))).await.unwrap();
+    let dir = Directory::with_repo(operator.repos().directory.clone());
+    let protocols = LocalAuthenticator::new(dir.clone()).await.unwrap().with_app_passwords(operator.repos().app_passwords.clone());
+    let own = LocalAuthenticator::new(dir).await.unwrap();
+    assert!(protocols.verify("alice@one.test", &secret).await.unwrap().is_some());
+    assert!(protocols.verify("bob@one.test", &secret).await.unwrap().is_none());
+    assert!(own.verify("alice@one.test", &secret).await.unwrap().is_none(), "the webmail does not accept it");
+    let body = serde_json::json!({ "address": "alice@one.test", "password": secret }).to_string();
+    let attempt = call(r.addr, "POST", "/api/v1/session", &[("Content-Type", "application/json"), ("Origin", ORIGIN)], Some(&body)).await;
+    assert_eq!(attempt.status, 401);
+    // Its use is noted, and revoking it ends it; another account cannot revoke it.
+    let (bob_cookie, bob_csrf) = sign_in(r.addr, "bob@one.test", "another-long-password-2").await;
+    let bob = Session { cookie: bob_cookie, csrf: bob_csrf };
+    assert_eq!(bob.delete(r.addr, &format!("/api/v1/app-passwords/{id}")).await.status, 404);
+    assert_eq!(s.delete(r.addr, &format!("/api/v1/app-passwords/{id}")).await.status, 200);
+    assert!(protocols.verify("alice@one.test", &secret).await.unwrap().is_none());
+    // At most ten.
+    for i in 0..10 {
+        let res = s.post(r.addr, "/api/v1/app-passwords", serde_json::json!({ "label": format!("d{i}"), "password": "correct-horse-battery-1" })).await;
+        assert_eq!(res.status, 200, "{}", res.text());
+    }
+    assert_eq!(s.post(r.addr, "/api/v1/app-passwords", serde_json::json!({ "label": "one more", "password": "correct-horse-battery-1" })).await.status, 429);
+    r.stop.cancel();
+}

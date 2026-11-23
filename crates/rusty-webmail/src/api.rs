@@ -56,8 +56,8 @@ impl WebmailAuth {
         &self.sessions
     }
 
-    /// Check the credentials and open a session. Returns the session id (for the cookie) and the session.
-    pub async fn sign_in(&self, peer: IpAddr, address: &str, password: &str) -> std::result::Result<(String, Session), SignInError> {
+    /// Check the credentials (throttled, and only for an active account): the account, and the throttle keys to record the success under.
+    async fn check(&self, peer: IpAddr, address: &str, password: &str) -> std::result::Result<(AccountId, Vec<String>), SignInError> {
         let keys = throttle_keys(&self.directory, address).await;
         for k in &keys {
             if let Verdict::Blocked { retry_after_secs } = self.throttle.check(peer, k).await {
@@ -91,12 +91,27 @@ impl WebmailAuth {
             }
             Err(_) => return Err(SignInError::Unavailable),
         }
+        Ok((account, keys))
+    }
+
+    /// Check the credentials and open a session. Returns the session id (for the cookie) and the session.
+    pub async fn sign_in(&self, peer: IpAddr, address: &str, password: &str) -> std::result::Result<(String, Session), SignInError> {
+        let (account, keys) = self.check(peer, address, password).await?;
         let label = parse_address(address).map_or_else(|_| address.trim().to_ascii_lowercase(), |(l, d)| format!("{l}@{d}"));
         let opened = self.sessions.create(account, &label).await.map_err(|_| SignInError::Unavailable)?;
         for k in &keys {
             self.throttle.record_success(peer, k).await;
         }
         Ok(opened)
+    }
+
+    /// The signed-in person proves it is them again (before something a stolen session must not be able to do): the same checks and the same throttle as a sign-in, without a new session.
+    pub async fn confirm(&self, peer: IpAddr, address: &str, password: &str) -> std::result::Result<AccountId, SignInError> {
+        let (account, keys) = self.check(peer, address, password).await?;
+        for k in &keys {
+            self.throttle.record_success(peer, k).await;
+        }
+        Ok(account)
     }
 
     /// The signed-in account behind a session id **now**: the session must be live and the account active. `None` is "not signed in" (a session whose account has gone is also ended). `Err`: a store could
@@ -129,6 +144,7 @@ pub struct WebmailApp {
     /// The platform blob store, where a composed message is put before it is queued.
     pub blobs: Arc<dyn rusty_store::BlobStore>,
     pub outbox: Arc<dyn rusty_store::OutboxRepo>,
+    pub app_passwords: Arc<dyn rusty_store::AppPasswordRepo>,
     /// The most bytes of a message the person may send.
     pub max_message_bytes: usize,
     /// `https://host[:port]` of the webmail host name, as the browser sends it in `Origin`.

@@ -91,7 +91,7 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     let limits = MailboxLimits { max_message_bytes: usize::try_from(cfg.max_message_bytes).unwrap_or(usize::MAX), quota_bytes: None };
     let limits_max = limits.max_message_bytes;
     let hub = MailboxHub::new(repos.mailbox.clone(), stores, limits).with_directory(directory.clone());
-    let app = Arc::new(WebmailApp { auth, hub, blobs, outbox: repos.outbox.clone(), max_message_bytes: limits_max, public_origin: webmail.public_origin.clone(), extra_origins: webmail.extra_origins.clone() });
+    let app = Arc::new(WebmailApp { auth, hub, blobs, outbox: repos.outbox.clone(), app_passwords: repos.app_passwords.clone(), max_message_bytes: limits_max, public_origin: webmail.public_origin.clone(), extra_origins: webmail.extra_origins.clone() });
 
     // The heartbeat of the webmail itself, for the Monitor page of the admin web.
     {
@@ -102,7 +102,8 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     let router = routes(app.clone(), Router::new());
     let router = crate::read::routes(app.clone(), router);
     let router = crate::write::routes(app.clone(), router);
-    let router = crate::send::routes(app, router);
+    let router = crate::send::routes(app.clone(), router);
+    let router = crate::apppw::routes(app, router);
     let handler = Arc::new(HttpHandler::new(router, HttpConfig::default()));
 
     let (accept, tls): (Arc<dyn Accept>, Option<TlsProvider>) = if cfg.tls.has_cert() {
