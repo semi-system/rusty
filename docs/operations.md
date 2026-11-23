@@ -92,3 +92,21 @@ that is started while the store is unreachable does not start: bring the store u
 container such as `docker run --rm --user 0 -v STATE/secrets:/s --entrypoint rm IMAGE -f /s/pg_imap`), run `./setup.sh ...` (it makes the missing secret and keeps the others), `docker rm -f rusty-db-init-1;
 docker compose run --rm --name rusty-db-init-1 db-init` (it sets the roles' passwords from the secrets), then `docker compose up -d --force-recreate imap`. The drill: the new secret took effect, the service was
 healthy again 25 seconds later, logins worked, and the database logged no failed authentication.
+
+## Alerts in the swarm (`MONITORING=1`)
+
+`MONITORING=1` in `swarm.env` adds Prometheus and Alertmanager to the stack (on the Manager; the images are pinned in `deploy/images.lock`). Prometheus loads `deploy/monitoring/rusty.rules.yml`, scrapes the one central
+endpoint of the admin web (`tasks.admin:9100`, which serves the samples of every service) every 30 seconds and keeps them `PROM_RETENTION` (default 30 days) in the volume `prom_data`. Nothing is published to the
+network. Alertmanager posts what fires to the URL in the file named by `ALERT_URL_FILE` (a Docker secret: a chat webhook URL carries a token) and tells when it resolves; a firing alert is repeated every `ALERT_REPEAT`
+(default 4 hours). `ALERT_KIND=webhook` posts Alertmanager's JSON (ntfy, Gotify, a bridge of yours); `ALERT_KIND=slack` posts what Slack and the chats that take a Slack incoming webhook understand (Mattermost,
+Discord's `/slack` URL, Rocket.Chat).
+
+```sh
+# swarm.env:  MONITORING=1  ALERT_URL_FILE=/path/to/alert-url  ALERT_KIND=slack
+./rusty-swarm prepare secrets && ./rusty-swarm prepare configs && ./rusty-swarm deploy
+```
+
+Check it end to end: `docker exec $(docker ps -q -f name=rusty_alertmanager) wget -qO- --header='Content-Type: application/json' --post-data='[{"labels":{"alertname":"Test"}}]' http://127.0.0.1:9093/api/v2/alerts`
+posts a test alert to your webhook after about 30 seconds (and a "resolved" five minutes later). The alerts that exist are the rules of `rusty.rules.yml` (a service or replica down, the queue stuck or growing,
+dead outbound jobs, a failing scanner or storage check, DNS problems, a certificate about to expire, a filling disk, the database down). Sending by e-mail needs an SMTP server that accepts the alerts: use
+a chat or push webhook, or give Alertmanager your own `alertmanager.yml` for e-mail.
