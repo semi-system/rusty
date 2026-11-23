@@ -60,6 +60,8 @@ pub struct Services {
     pub queue: Arc<dyn rusty_store::QueueRepo>,
     /// The audit log (docs/design-audit.md).
     pub audit: Arc<dyn rusty_store::AuditRepo>,
+    /// The moves of a mailbox from another IMAP server (docs/design-imap-migration.md).
+    pub migrations: Arc<dyn rusty_store::MigrationRepo>,
     /// Searches of the mail for platform administrators (docs/design-admin-search.md).
     pub searches: Arc<dyn rusty_store::SearchRepo>,
     /// The backup history the deployment tool writes (docs/design-backup-status.md).

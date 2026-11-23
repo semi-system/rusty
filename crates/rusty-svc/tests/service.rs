@@ -343,3 +343,149 @@ async fn a_queued_search_is_run_where_the_mail_is_and_leaves_at_most_a_hundred_r
     let refused = repo.get(empty).await.unwrap().unwrap();
     assert_eq!((refused.state.as_str(), refused.error.as_deref()), ("failed", Some("no_criteria")));
 }
+
+/// A server that says what an IMAP server says, from a script: the commands it is sent are kept for the test to look at.
+type Scripted = Vec<(&'static str, Vec<(u32, &'static str, &'static str, &'static [u8])>)>;
+
+async fn fake_imap(good_password: &'static str, mail: Scripted) -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    tokio::spawn(async move {
+        let Ok((sock, _)) = listener.accept().await else { return };
+        let (r, mut w) = sock.into_split();
+        let mut r = BufReader::new(r);
+        w.write_all(b"* OK fake ready\r\n").await.unwrap();
+        let mut open: Option<usize> = None;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if r.read_line(&mut line).await.unwrap_or(0) == 0 {
+                return;
+            }
+            let cmd = line.trim_end().to_owned();
+            log.lock().unwrap().push(cmd.clone());
+            let (tag, rest) = cmd.split_once(' ').unwrap_or((&cmd, ""));
+            let upper = rest.to_ascii_uppercase();
+            let out: Vec<u8> = if upper.starts_with("LOGIN") {
+                if rest.contains(&format!("\"{good_password}\"")) {
+                    format!("{tag} OK logged in\r\n").into_bytes()
+                } else {
+                    format!("{tag} NO [AUTHENTICATIONFAILED] nope\r\n").into_bytes()
+                }
+            } else if upper.starts_with("LIST") {
+                let mut s = String::new();
+                for (name, _) in &mail {
+                    let attr = if *name == "Sent Items" { "\\Sent" } else { "\\HasNoChildren" };
+                    s.push_str(&format!("* LIST ({attr}) \"/\" \"{name}\"\r\n"));
+                }
+                s.push_str("* LIST (\\Noselect) \"/\" \"[Gmail]\"\r\n");
+                s.push_str(&format!("{tag} OK done\r\n"));
+                s.into_bytes()
+            } else if upper.starts_with("EXAMINE") {
+                open = mail.iter().position(|(n, _)| rest.contains(&format!("\"{n}\"")));
+                format!("* {} EXISTS\r\n{tag} OK [READ-ONLY] ok\r\n", open.map_or(0, |i| mail[i].1.len())).into_bytes()
+            } else if upper.starts_with("UID SEARCH") {
+                let ids: Vec<String> = open.map(|i| mail[i].1.iter().map(|m| m.0.to_string()).collect()).unwrap_or_default();
+                format!("* SEARCH {}\r\n{tag} OK done\r\n", ids.join(" ")).into_bytes()
+            } else if upper.starts_with("UID FETCH") {
+                let uid: u32 = rest.split_whitespace().nth(2).and_then(|n| n.parse().ok()).unwrap_or(0);
+                match open.and_then(|i| mail[i].1.iter().find(|m| m.0 == uid)) {
+                    Some((uid, flags, date, body)) => {
+                        let mut b = format!("* 1 FETCH (UID {uid} FLAGS ({flags}) INTERNALDATE \"{date}\" BODY[] {{{}}}\r\n", body.len()).into_bytes();
+                        b.extend_from_slice(body);
+                        b.extend_from_slice(format!(")\r\n{tag} OK done\r\n").as_bytes());
+                        b
+                    }
+                    None => format!("{tag} NO no such message\r\n").into_bytes(),
+                }
+            } else if upper.starts_with("LOGOUT") {
+                w.write_all(format!("* BYE bye\r\n{tag} OK done\r\n").as_bytes()).await.unwrap();
+                return;
+            } else {
+                format!("{tag} BAD what\r\n").into_bytes()
+            };
+            w.write_all(&out).await.unwrap();
+        }
+    });
+    (port, seen)
+}
+
+#[tokio::test]
+async fn a_mailbox_is_pulled_from_another_imap_server_with_its_folders_dates_and_flags_and_nothing_there_is_changed() {
+    use rusty_store::{Mailbox, NewMigration};
+    let p = parts().await;
+    let (unseal_key, seal_key) = rusty_seal::generate();
+    let c = ctx(&p).await.with_unsealer(Some(std::sync::Arc::new(rusty_seal::Unsealer::new(vec![unseal_key]).unwrap())));
+    let dir = Directory::with_repo(p.seed_store.repos().directory.clone());
+    let d = dir.create_domain("pull.test").await.unwrap();
+    let carol = dir.create_account("carol", d, None, None).await.unwrap();
+
+    let (port, seen) = fake_imap(
+        "hunter2",
+        vec![
+            ("INBOX", vec![(1, "\\Seen", "17-Jul-1996 02:44:25 -0700", b"Subject: one\r\nMessage-ID: <1@x>\r\n\r\nfirst\r\n"), (2, "\\Deleted", "18-Jul-1996 02:44:25 +0000", b"Subject: gone\r\n\r\nx\r\n")]),
+            ("Sent Items", vec![(7, "\\Seen \\Answered", "01-Jan-2020 10:00:00 +0000", b"Subject: sent one\r\nMessage-ID: <7@x>\r\n\r\nsent\r\n")]),
+            ("Archive/Old", vec![(3, "", "29-Feb-2024 12:00:00 +0100", b"Subject: old\r\nMessage-ID: <3@x>\r\n\r\nold\r\n")]),
+        ],
+    )
+    .await;
+
+    let repo = p.seed_store.repos().migrations.clone();
+    let id = repo.create(&NewMigration { account: carol.0, requested_by: "root@home.test".into(), host: "127.0.0.1".into(), port: i32::from(port), security: "plain".into(), remote_user: "carol@old.test".into() }).await.unwrap();
+    let sealed = seal_key.seal(&rusty_seal::Context::new("migration", id, "password").unwrap(), b"hunter2").unwrap();
+    p.seed_store.repos().sealed.put("migration", id, "password", &seal_key.id().to_hex(), &sealed, None).await.unwrap();
+    assert!(repo.queue(id).await.unwrap());
+
+    let worker = rusty_svc::MigrationService::new();
+    assert!(worker.run_once(&c).await.unwrap(), "the migration was waiting");
+    let done = repo.get(id).await.unwrap().unwrap();
+    assert_eq!((done.state.as_str(), done.messages, done.skipped, done.error.clone()), ("done", 3, 1, None), "{done:?}");
+    assert_eq!((done.folders_total, done.folders_done), (3, 3));
+
+    let mb = Mailbox::open_with(p.seed_store.repos().mailbox.clone(), c.stores.clone(), carol).await.unwrap();
+    let folders = mb.list_folders().await.unwrap();
+    let in_folder = |name: &str| folders.iter().find(|f| f.name == name || f.role == name).map(|f| f.id).unwrap_or_else(|| panic!("no folder {name}: {folders:?}"));
+    let inbox = mb.list_folder(in_folder("inbox"), 0, 50).await.unwrap();
+    assert_eq!(inbox.len(), 1, "the message marked deleted was not copied");
+    assert_eq!((inbox[0].flags, inbox[0].internal_date), (rusty_core::Flags::SEEN, 837_596_665));
+    let sent = mb.list_folder(in_folder("sent"), 0, 50).await.unwrap();
+    assert_eq!(sent.len(), 1, "the Sent Items folder went to the Sent folder");
+    assert_eq!(sent[0].flags, rusty_core::Flags::SEEN | rusty_core::Flags::ANSWERED);
+    let old = mb.list_folder(in_folder("Archive.Old"), 0, 50).await.unwrap();
+    assert_eq!((old.len(), old[0].internal_date), (1, 1_709_204_400), "a name with a slash is flattened, the date is kept");
+
+    // Nothing was changed over there: it was only read.
+    let commands = seen.lock().unwrap().join("\n");
+    assert!(commands.contains("BODY.PEEK[]") && commands.contains("EXAMINE"), "{commands}");
+    assert!(!commands.contains("STORE") && !commands.contains("SELECT") && !commands.contains("EXPUNGE") && !commands.contains("COPY"), "{commands}");
+    assert!(!worker.run_once(&c).await.unwrap(), "nothing else waits");
+}
+
+#[tokio::test]
+async fn a_refused_login_ends_the_migration_with_a_fixed_word_and_copies_nothing() {
+    use rusty_store::NewMigration;
+    let p = parts().await;
+    let (unseal_key, seal_key) = rusty_seal::generate();
+    let c = ctx(&p).await.with_unsealer(Some(std::sync::Arc::new(rusty_seal::Unsealer::new(vec![unseal_key]).unwrap())));
+    let dir = Directory::with_repo(p.seed_store.repos().directory.clone());
+    let d = dir.create_domain("pull2.test").await.unwrap();
+    let dave = dir.create_account("dave", d, None, None).await.unwrap();
+    let (port, _) = fake_imap("right-one", vec![("INBOX", vec![(1, "", "01-Jan-2020 10:00:00 +0000", b"Subject: x\r\n\r\nx\r\n")])]).await;
+    let repo = p.seed_store.repos().migrations.clone();
+    let id = repo.create(&NewMigration { account: dave.0, requested_by: "root@home.test".into(), host: "127.0.0.1".into(), port: i32::from(port), security: "plain".into(), remote_user: "dave".into() }).await.unwrap();
+    let sealed = seal_key.seal(&rusty_seal::Context::new("migration", id, "password").unwrap(), b"wrong-one").unwrap();
+    p.seed_store.repos().sealed.put("migration", id, "password", &seal_key.id().to_hex(), &sealed, None).await.unwrap();
+    assert!(repo.queue(id).await.unwrap());
+    assert!(rusty_svc::MigrationService::new().run_once(&c).await.unwrap());
+    let done = repo.get(id).await.unwrap().unwrap();
+    assert_eq!((done.state.as_str(), done.error.as_deref(), done.messages), ("failed", Some("auth"), 0), "{done:?}");
+
+    // One that is finished cannot be cancelled; one still queued is cancelled at once.
+    assert!(!repo.request_cancel(id).await.unwrap());
+    let queued = repo.create(&NewMigration { account: dave.0, requested_by: "root@home.test".into(), host: "127.0.0.1".into(), port: 1, security: "plain".into(), remote_user: "dave".into() }).await.unwrap();
+    assert!(repo.request_cancel(queued).await.unwrap());
+    assert_eq!(repo.get(queued).await.unwrap().unwrap().state, "cancelled");
+}

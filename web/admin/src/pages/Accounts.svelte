@@ -7,6 +7,7 @@
   import DomainShell from '../lib/DomainShell.svelte';
   import MailRulesForm from '../lib/MailRules.svelte';
   import MailboxTransfers from '../lib/MailboxTransfers.svelte';
+  import ImapMigration from '../lib/ImapMigration.svelte';
   import ErrorNote from '../lib/ErrorNote.svelte';
   import { labelled } from '../lib/stack';
   import ListBar from '../lib/ListBar.svelte';
@@ -75,6 +76,8 @@
   let rulesFor = $state<string | null>(null);
   // The account whose mailbox is being exported or imported (platform administrators).
   let transfersFor = $state<string | null>(null);
+  // The account that mail is being moved into from another IMAP server (platform administrators).
+  let migrationFor = $state<string | null>(null);
 
   async function load(after?: number, quiet = false): Promise<void> {
     try {
@@ -223,12 +226,16 @@
                     {/if}
                     {#if me.scope === 'platform'}
                       <button type="button" aria-label={t('transfers.open', { address: a.address })} onclick={() => (transfersFor = transfersFor === a.address ? null : a.address)}>{t('transfers.openShort')}</button>
+                      <button type="button" aria-label={t('migrate.open', { address: a.address })} onclick={() => (migrationFor = migrationFor === a.address ? null : a.address)}>{t('migrate.openShort')}</button>
                     {/if}
                     <button type="button" aria-label={t('rules.open', { address: a.address })} onclick={() => (rulesFor = rulesFor === a.address ? null : a.address)}>{t('rules.openShort')}</button>
                     <button type="button" aria-label={t('accounts.setPassword', { address: a.address })} onclick={() => { editing = editing === a.address ? null : a.address; fresh = ''; tooShort = false; }}>{t('accounts.setPasswordShort')}</button>
                   </div>
                   {#if transfersFor === a.address}
                     <MailboxTransfers {app} address={a.address} onclose={() => (transfersFor = null)} />
+                  {/if}
+                  {#if migrationFor === a.address}
+                    <ImapMigration {app} address={a.address} onclose={() => (migrationFor = null)} />
                   {/if}
                   {#if rulesFor === a.address}
                     <MailRulesForm {app} address={a.address} onclose={() => (rulesFor = null)} />

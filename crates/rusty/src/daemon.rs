@@ -153,6 +153,8 @@ async fn build(
     let cfg = Arc::new(cfg.clone());
     let (opener, s3_opener, backend_opener) = tenant_store_opener(&cfg, store)?;
     let mut ctx = Context::new_with_opener(store.repos(), blobs, cfg.clone(), tls.clone(), opener).await?;
+    // The key that opens the sealed secrets this service reads (the password of the other server of a migration), where `[unsealing]` is set.
+    ctx = ctx.with_unsealer(unsealer_of(&cfg, &FileSecretSource::new())?.map(Arc::new));
     // The services that check passwords count failures in the shared store (every replica, and submission with IMAP, against one counter); the in-memory throttle stays under it.
     let auth_kv = rusty_runtime::kv::connect_kv(&cfg, "auth").await?;
     if let Some(kv) = &auth_kv {
@@ -296,6 +298,8 @@ async fn build(
         services.push(Box::new(rusty_svc::TransferService::new()));
         // So are the searches of the mail that a platform administrator asks for (off unless the platform setting is on).
         services.push(Box::new(rusty_svc::SearchService::new()));
+        // And the moves of a mailbox from another IMAP server (they need `[unsealing]`: the password of the other server is a sealed secret).
+        services.push(Box::new(rusty_svc::MigrationService::new()));
     }
     let outbound_dns = if runs(Role::Outbound) { dns } else { None };
     if let Some(dns) = outbound_dns {

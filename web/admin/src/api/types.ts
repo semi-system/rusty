@@ -495,6 +495,30 @@ export interface Backups {
   items: BackupRun[];
 }
 
+export interface Migration {
+  id: number;
+  host: string;
+  port: number;
+  security: string;
+  user: string;
+  requested_by: string;
+  state: string;
+  stopping: boolean;
+  folder: string | null;
+  folders_total: number;
+  folders_done: number;
+  messages: number;
+  skipped: number;
+  bytes: number;
+  error: string | null;
+  created_at: number;
+  finished_at: number | null;
+}
+
+export interface MigrationList {
+  items: Migration[];
+}
+
 export interface Audit {
   items: AuditEntry[];
   next: number | null;
