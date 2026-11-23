@@ -94,7 +94,7 @@ DO $services$
 DECLARE
   r text;
 BEGIN
-  FOREACH r IN ARRAY ARRAY['rusty_smtp_in', 'rusty_submission', 'rusty_imap', 'rusty_outbound', 'rusty_gc'] LOOP
+  FOREACH r IN ARRAY ARRAY['rusty_smtp_in', 'rusty_submission', 'rusty_imap', 'rusty_outbound', 'rusty_gc', 'rusty_webmail'] LOOP
     IF to_regrole(r) IS NULL THEN
       BEGIN
         EXECUTE format('CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT', r);

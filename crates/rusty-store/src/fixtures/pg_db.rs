@@ -23,12 +23,13 @@ pub const TEST_RO_PASSWORD: &str = "rusty-test-ro";
 pub const TEST_ADMIN_PASSWORD: &str = "rusty-test-admin";
 
 /// The roles of the services (deploy/db/roles.sql) and their test passwords.
-pub const SERVICE_ROLES: [(&str, &str); 5] = [
+pub const SERVICE_ROLES: [(&str, &str); 6] = [
     ("rusty_smtp_in", "rusty-test-smtp-in"),
     ("rusty_submission", "rusty-test-submission"),
     ("rusty_imap", "rusty-test-imap"),
     ("rusty_outbound", "rusty-test-outbound"),
     ("rusty_gc", "rusty-test-gc"),
+    ("rusty_webmail", "rusty-test-webmail"),
 ];
 
 /// `RUSTY_TEST_PG_ROLE=rusty_imap` (with `RUSTY_TEST_PG_ROLES=1`): `url()` logs in as that service role instead of `rusty_app`, so a suite shows what the service really needs.

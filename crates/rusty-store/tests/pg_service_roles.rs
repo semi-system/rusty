@@ -9,7 +9,7 @@ use common::pg::{pg_admin_url, PgTestDb};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
-const SERVICES: [&str; 5] = ["rusty_smtp_in", "rusty_submission", "rusty_imap", "rusty_outbound", "rusty_gc"];
+const SERVICES: [&str; 6] = ["rusty_smtp_in", "rusty_submission", "rusty_imap", "rusty_outbound", "rusty_gc", "rusty_webmail"];
 
 async fn admin_pool(db: &PgTestDb) -> PgPool {
     PgPoolOptions::new().max_connections(2).connect(db.admin_db_url()).await.unwrap()
@@ -73,7 +73,7 @@ async fn only_the_services_that_check_a_password_can_read_the_hashes() {
     let db = PgTestDb::create_with_roles(&url).await;
     let admin = admin_pool(&db).await;
     for role in SERVICES {
-        let may = matches!(role, "rusty_submission" | "rusty_imap");
+        let may = matches!(role, "rusty_submission" | "rusty_imap" | "rusty_webmail");
         assert_eq!(column_priv(&admin, role, "accounts", "password_hash", "SELECT").await, may, "{role} and accounts.password_hash");
         assert!(!column_priv(&admin, role, "accounts", "password_hash", "UPDATE").await, "{role} can change a password hash");
         // `password_set` is what the others read to know that an account has a password.

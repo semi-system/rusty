@@ -84,7 +84,7 @@ BEGIN
   SELECT string_agg(quote_ident(column_name), ', ' ORDER BY ordinal_position) INTO cols
     FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = 'accounts' AND column_name <> 'password_hash';
-  FOREACH r IN ARRAY ARRAY['rusty_smtp_in', 'rusty_submission', 'rusty_imap', 'rusty_outbound', 'rusty_gc'] LOOP
+  FOREACH r IN ARRAY ARRAY['rusty_smtp_in', 'rusty_submission', 'rusty_imap', 'rusty_outbound', 'rusty_gc', 'rusty_webmail'] LOOP
     IF to_regrole(r) IS NOT NULL THEN
       EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA public FROM %I', r);
       EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM %I', r);
@@ -131,6 +131,13 @@ BEGIN
     GRANT INSERT, UPDATE, DELETE ON folders TO rusty_imap;
     GRANT UPDATE ON mailboxes TO rusty_imap;
     GRANT INSERT ON deliveries TO rusty_imap;
+  END IF;
+
+  -- rusty_webmail: the people who own a mailbox read and write mail in a browser (docs/design-webmail.md). In the first step it signs people in and nothing else: the directory (with the password hashes it checks) and the time of the last
+  -- sign-in. What it needs to read and write mail is granted with the read path and the write path.
+  IF to_regrole('rusty_webmail') IS NOT NULL THEN
+    GRANT SELECT ON accounts, domains, aliases, domain_aliases, lists, list_members, plans, address_owners, mailboxes, folders TO rusty_webmail;
+    GRANT UPDATE (last_login_at) ON accounts TO rusty_webmail;   -- the time of the last sign-in (DirectoryRepo::record_login)
   END IF;
 
   -- rusty_outbound: the delivery worker. Claims and finishes jobs, reads the message and the DKIM and relay settings, writes the DNS check state.

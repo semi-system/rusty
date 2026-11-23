@@ -55,7 +55,7 @@ jobs:
             if [ "$REF_TYPE" = tag ]; then echo "version=${REF_NAME#v}"; else echo "version=0.0.0-dev+${SHA::12}"; fi
             echo "image=ghcr.io/${REPO,,}"
             # One image per service (the Dockerfile's SERVICE build argument picks the stage); the suffix makes the package name.
-            echo 'services=[{"service":"rusty","suffix":""},{"service":"rusty-smtp-in","suffix":"-smtp-in"},{"service":"rusty-submission","suffix":"-submission"},{"service":"rusty-imap","suffix":"-imap"},{"service":"rusty-outbound","suffix":"-outbound"},{"service":"rusty-gc","suffix":"-gc"},{"service":"admin","suffix":"-admin"}]'
+            echo 'services=[{"service":"rusty","suffix":""},{"service":"rusty-smtp-in","suffix":"-smtp-in"},{"service":"rusty-submission","suffix":"-submission"},{"service":"rusty-imap","suffix":"-imap"},{"service":"rusty-outbound","suffix":"-outbound"},{"service":"rusty-gc","suffix":"-gc"},{"service":"admin","suffix":"-admin"},{"service":"webmail","suffix":"-webmail"}]'
           } >> "$GITHUB_OUTPUT"
       - name: Which inputs changed (pull requests only; pushes and tags build everything)
         id: c
@@ -93,6 +93,8 @@ jobs:
           bash scripts/check-image.sh rusty:smoke
           docker build --target admin -f deploy/docker/Dockerfile --build-arg "SOURCE_DATE_EPOCH=$SDE" -t rusty-admin:smoke .
           bash scripts/check-admin-image.sh rusty-admin:smoke
+          docker build --target webmail -f deploy/docker/Dockerfile --build-arg "SOURCE_DATE_EPOCH=$SDE" -t rusty-webmail:smoke .
+          bash scripts/check-webmail-image.sh rusty-webmail:smoke
           for svc in smtp-in submission imap outbound gc; do
             docker build --target "rusty-$svc" -f deploy/docker/Dockerfile --build-arg "SOURCE_DATE_EPOCH=$SDE" -t "rusty-$svc:smoke" .
             bash scripts/check-service-image.sh "$svc" "rusty-$svc:smoke"
