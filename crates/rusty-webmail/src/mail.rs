@@ -12,6 +12,8 @@ const MAX_DEPTH: usize = 6;
 const MAX_PARTS: usize = 200;
 /// The most text shown.
 pub const MAX_TEXT: usize = 256 * 1024;
+/// The most bytes of the HTML part the reader keeps.
+pub const MAX_HTML: usize = 512 * 1024;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Headers {
@@ -39,6 +41,8 @@ pub struct View {
     pub text_truncated: bool,
     /// The message has a body, but only as HTML: the reader says so.
     pub html_only: bool,
+    /// The first `text/html` part that is not an attachment, as UTF-8 and cut at [`MAX_HTML`]; the reader shows it only inside a sandbox (it is hostile content).
+    pub html: Option<String>,
     pub attachments: Vec<Attachment>,
 }
 
@@ -232,7 +236,11 @@ struct Walk {
     text: Option<String>,
     truncated: bool,
     html_seen: bool,
+    html: Option<String>,
     attachments: Vec<Attachment>,
+    /// The attachment whose bytes are wanted (its index in the list), and them once found.
+    want: Option<usize>,
+    picked: Option<Vec<u8>>,
 }
 
 /// The parts of a multipart body, between the `--boundary` lines.
@@ -309,7 +317,22 @@ fn walk(entity: &[u8], depth: usize, w: &mut Walk) {
     }
     if kind == "text/html" && !is_attachment {
         w.html_seen = true;
+        if w.html.is_none() {
+            let bytes = decode_body(body, cte);
+            let mut html = to_text(&bytes, &param(ctype, "charset").unwrap_or_else(|| "utf-8".to_owned()));
+            if html.len() > MAX_HTML {
+                let mut cut = MAX_HTML;
+                while !html.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                html.truncate(cut);
+            }
+            w.html = Some(html);
+        }
         return;
+    }
+    if w.want == Some(w.attachments.len()) {
+        w.picked = Some(decode_body(body, cte));
     }
     let size = if cte.trim().eq_ignore_ascii_case("base64") { body.iter().filter(|b| b.is_ascii_alphanumeric() || **b == b'+' || **b == b'/').count() / 4 * 3 } else { body.len() };
     w.attachments.push(Attachment { name, content_type: kind, size });
@@ -321,9 +344,18 @@ pub fn view(raw: &[u8]) -> View {
     let h = parse_headers(head);
     let get = |n: &str| decode_words(header(&h, n).unwrap_or(""));
     let headers = Headers { from: get("from"), to: get("to"), cc: get("cc"), subject: get("subject"), date: header(&h, "date").unwrap_or("").to_owned(), message_id: header(&h, "message-id").unwrap_or("").to_owned() };
-    let mut w = Walk { parts: 0, text: None, truncated: false, html_seen: false, attachments: Vec::new() };
+    let mut w = Walk { parts: 0, text: None, truncated: false, html_seen: false, html: None, attachments: Vec::new(), want: None, picked: None };
     walk(raw, 0, &mut w);
-    View { headers, html_only: w.text.is_none() && w.html_seen, text_truncated: w.truncated, text: w.text.unwrap_or_default(), attachments: w.attachments }
+    View { headers, html_only: w.text.is_none() && w.html_seen, text_truncated: w.truncated, text: w.text.unwrap_or_default(), html: w.html, attachments: w.attachments }
+}
+
+/// The `n`th attachment of a message (the order of [`View::attachments`]), decoded: its description and its bytes.
+pub fn attachment(raw: &[u8], n: usize) -> Option<(Attachment, Vec<u8>)> {
+    let mut w = Walk { parts: 0, text: None, truncated: false, html_seen: false, html: None, attachments: Vec::new(), want: Some(n), picked: None };
+    walk(raw, 0, &mut w);
+    let bytes = w.picked?;
+    let a = w.attachments.into_iter().nth(n)?;
+    Some((a, bytes))
 }
 
 #[cfg(test)]
@@ -347,6 +379,27 @@ mod tests {
         assert_eq!(v.text, "Café open");
         assert_eq!(v.attachments, vec![Attachment { name: Some("bé.pdf".into()), content_type: "application/pdf".into(), size: 12 }]);
         assert!(!v.html_only);
+    }
+
+    #[test]
+    fn an_attachment_is_decoded_by_its_place_in_the_list_and_a_missing_one_is_none() {
+        let raw = b"Content-Type: multipart/mixed; boundary=B
+
+--B
+Content-Type: text/plain
+
+hi
+--B
+Content-Type: application/pdf; name=a.pdf
+Content-Disposition: attachment; filename=a.pdf
+Content-Transfer-Encoding: base64
+
+SGVsbG8gd29ybGQh
+--B--
+";
+        let (a, bytes) = attachment(raw, 0).unwrap();
+        assert_eq!((a.name.as_deref(), bytes.as_slice()), (Some("a.pdf"), b"Hello world!".as_slice()));
+        assert!(attachment(raw, 1).is_none());
     }
 
     #[test]

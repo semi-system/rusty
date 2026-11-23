@@ -5,9 +5,12 @@ import { errorText } from './errors';
 import { size, when } from './format';
 import { t, type MessageKey } from './i18n';
 import { Outbox } from './Outbox';
+import { Settings } from './Settings';
 
 /** The outbox is not a folder of the server; it is listed next to them. */
 const OUTBOX = -1;
+/** Likewise the settings page. */
+const SETTINGS = -2;
 
 const ROLE_NAMES: Record<string, MessageKey> = { inbox: 'folder.inbox', sent: 'folder.sent', drafts: 'folder.drafts', trash: 'folder.trash', spam: 'folder.spam', archive: 'folder.archive' };
 
@@ -27,6 +30,8 @@ export const Mailbox: Component<{ api: Api; address: string; onSignOut: () => vo
   const [composing, setComposing] = createSignal<Start | null>(null);
   const [notice, setNotice] = createSignal('');
   const [error, setError] = createSignal('');
+  // Whether the formatted (HTML) version of the open message is shown; a message with no plain text starts with it.
+  const [formatted, setFormatted] = createSignal(false);
 
   const guard = async (work: () => Promise<void>) => {
     setError('');
@@ -41,7 +46,7 @@ export const Mailbox: Component<{ api: Api; address: string; onSignOut: () => vo
     guard(async () => {
       setCurrent(folder);
       setOpened(null);
-      if (folder === OUTBOX) return;
+      if (folder === OUTBOX || folder === SETTINGS) return;
       const page = await props.api.messages(folder);
       setItems(page.items);
       setNext(page.next);
@@ -59,6 +64,7 @@ export const Mailbox: Component<{ api: Api; address: string; onSignOut: () => vo
     guard(async () => {
       const m = await props.api.message(id);
       setOpened(m);
+      setFormatted(m.has_html && m.text === '');
       if (!m.flags.seen) {
         await props.api.actions([id], 'read');
         setItems(items().map((i) => (i.id === id ? { ...i, flags: { ...i.flags, seen: true } } : i)));
@@ -143,13 +149,16 @@ export const Mailbox: Component<{ api: Api; address: string; onSignOut: () => vo
         <button type="button" class="folder" classList={{ active: current() === OUTBOX }} aria-current={current() === OUTBOX ? 'page' : undefined} onClick={() => void open(OUTBOX)}>
           <span>{t('folder.outbox')}</span>
         </button>
+        <button type="button" class="folder" classList={{ active: current() === SETTINGS }} aria-current={current() === SETTINGS ? 'page' : undefined} onClick={() => void open(SETTINGS)}>
+          <span>{t('folder.settings')}</span>
+        </button>
         <Show when={trash() !== undefined}>
           <button type="button" class="quiet" onClick={() => void emptyTrash()}>
             {t('action.emptyTrash')}
           </button>
         </Show>
       </nav>
-      <Show when={current() !== OUTBOX} fallback={<Outbox api={props.api} />}>
+      <Show when={current() !== OUTBOX && current() !== SETTINGS} fallback={current() === SETTINGS ? <Settings api={props.api} /> : <Outbox api={props.api} />}>
         <section class="list" aria-label={t('folders')}>
           <Show when={items().length > 0} fallback={<p class="empty">{t('list.empty')}</p>}>
             <ul>
@@ -213,10 +222,15 @@ export const Mailbox: Component<{ api: Api; address: string; onSignOut: () => vo
                     {t('message.original')}
                   </a>
                 </div>
-                <Show when={m().html_only}>
-                  <p class="note">{t('message.htmlOnly')}</p>
+                <Show when={m().has_html}>
+                  <button type="button" class="quiet" onClick={() => setFormatted(!formatted())}>
+                    {formatted() ? t('message.showText') : t('message.showHtml')}
+                  </button>
                 </Show>
-                <pre class="text">{m().text}</pre>
+                <Show when={formatted() && m().has_html} fallback={<pre class="text">{m().text}</pre>}>
+                  <p class="note">{t('message.remoteBlocked')}</p>
+                  <iframe class="formatted" title={t('message.htmlTitle')} sandbox="allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" src={props.api.htmlUrl(m().id)} />
+                </Show>
                 <Show when={m().text_truncated}>
                   <p class="note">{t('message.truncated')}</p>
                 </Show>
@@ -224,9 +238,12 @@ export const Mailbox: Component<{ api: Api; address: string; onSignOut: () => vo
                   <h3>{t('message.attachments')}</h3>
                   <ul class="attachments">
                     <For each={m().attachments}>
-                      {(a) => (
+                      {(a, n) => (
                         <li>
-                          {a.name ?? a.content_type} <span class="when">{size(a.size)}</span>
+                          <a href={props.api.attachmentUrl(m().id, n())} download="">
+                            {a.name ?? a.content_type}
+                          </a>{' '}
+                          <span class="when">{size(a.size)}</span>
                         </li>
                       )}
                     </For>

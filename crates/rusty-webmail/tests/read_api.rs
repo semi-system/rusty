@@ -97,6 +97,12 @@ async fn rig() -> Rig {
     alice.append_dated(INBOX, Bytes::from_static(b"From: =?utf-8?Q?Caf=C3=A9?= <c@x.test>\r\nSubject: =?utf-8?Q?Caf=C3=A9_menu?=\r\nMessage-ID: <2@x>\r\n\r\ntwo\r\n"), rusty_core::Flags::empty(), 1_700_000_100).await.unwrap();
     alice.append_dated(INBOX, Bytes::from_static(b"From: d@x.test\r\nSubject: with a file\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nSee the file.\r\n--b\r\nContent-Type: application/pdf; name=\"a.pdf\"\r\nContent-Disposition: attachment; filename=\"a.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\nSGVsbG8gd29ybGQh\r\n--b--\r\n"), rusty_core::Flags::empty(), 1_700_000_200).await.unwrap();
     alice.append_dated(FolderId(2), Bytes::from_static(b"Subject: sent one\r\n\r\nsent\r\n"), seen, 1_700_000_300).await.unwrap();
+    alice.append_dated(FolderId(3), Bytes::from_static(b"From: n@x.test
+Subject: newsletter
+Content-Type: text/html; charset=utf-8
+
+<p>Hello <b>there</b></p><script>alert(1)</script><img src=\"https://track.example/p.gif\">
+"), rusty_core::Flags::empty(), 1_700_000_400).await.unwrap();
     bob.append_dated(INBOX, Bytes::from_static(b"Subject: BOB-SECRET\r\n\r\nBOB-SECRET body\r\n"), rusty_core::Flags::empty(), 1_700_000_050).await.unwrap();
     let cfg = StartupConfig::from_toml_str_for(
         Role::Webmail,
@@ -195,5 +201,39 @@ async fn a_person_reaches_the_mail_of_their_own_account_and_no_other_whatever_th
     // A message the owner deleted is gone from the reader.
     r.alice.expunge(MessageId(1)).await.unwrap();
     assert_eq!(call(r.addr, "GET", "/api/v1/messages/1", &c, None).await.status, 404);
+    r.stop.cancel();
+}
+
+#[tokio::test]
+async fn the_html_of_a_message_is_served_only_for_a_sandboxed_frame_and_a_message_without_html_has_none() {
+    let r = rig().await;
+    let cookie = sign_in(r.addr, "alice@one.test", "correct-horse-battery-1").await;
+    let c = [("Cookie", cookie.as_str())];
+    let page = call(r.addr, "GET", "/api/v1/folders/3/messages", &c, None).await.json();
+    let id = page["items"][0]["id"].as_i64().expect("the newsletter");
+    // The reader is told there is HTML, and that there is no plain text.
+    let m = call(r.addr, "GET", &format!("/api/v1/messages/{id}"), &c, None).await.json();
+    assert_eq!((m["has_html"].clone(), m["html_only"].clone(), m["text"].clone()), (serde_json::json!(true), serde_json::json!(true), serde_json::json!("")));
+    // The HTML itself carries the policy that makes it harmless: no script, nothing loaded, only this origin may frame it.
+    let h = call(r.addr, "GET", &format!("/api/v1/messages/{id}/html"), &c, None).await;
+    assert_eq!(h.status, 200);
+    assert!(h.header("content-type").unwrap().starts_with("text/html"));
+    let csp = h.header("content-security-policy").unwrap();
+    assert!(csp.starts_with("sandbox ") && !csp.contains("allow-scripts") && csp.contains("default-src 'none'") && csp.contains("img-src data:") && csp.contains("frame-ancestors 'self'"), "{csp}");
+    assert_eq!(h.header("x-content-type-options").as_deref(), Some("nosniff"));
+    assert!(h.text().contains("<b>there</b>"));
+    // An attachment is a download of unknown type, with a safe file name.
+    let with_file = call(r.addr, "GET", "/api/v1/folders/1/messages?limit=1", &c, None).await.json()["items"][0]["id"].as_i64().unwrap();
+    let file = call(r.addr, "GET", &format!("/api/v1/messages/{with_file}/attachments/0"), &c, None).await;
+    assert_eq!(file.status, 200);
+    assert_eq!((file.header("content-type").as_deref(), file.text().as_str()), (Some("application/octet-stream"), "Hello world!"));
+    assert_eq!(file.header("content-disposition").as_deref(), Some("attachment; filename=\"a.pdf\"; filename*=UTF-8''a.pdf"));
+    assert_eq!(file.header("x-content-type-options").as_deref(), Some("nosniff"));
+    assert_eq!(call(r.addr, "GET", &format!("/api/v1/messages/{with_file}/attachments/1"), &c, None).await.status, 404);
+    assert_eq!(call(r.addr, "GET", &format!("/api/v1/messages/{with_file}/attachments/x"), &c, None).await.status, 404);
+    // A message with plain text only has no HTML to show, and nothing is served without a session.
+    let plain = call(r.addr, "GET", "/api/v1/folders/1/messages", &c, None).await.json()["items"][0]["id"].as_i64().unwrap();
+    assert_eq!(call(r.addr, "GET", &format!("/api/v1/messages/{plain}/html"), &c, None).await.status, 404);
+    assert_eq!(call(r.addr, "GET", &format!("/api/v1/messages/{id}/html"), &[], None).await.status, 401);
     r.stop.cancel();
 }

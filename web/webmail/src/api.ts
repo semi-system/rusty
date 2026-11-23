@@ -59,6 +59,7 @@ export interface Message {
   text: string;
   text_truncated: boolean;
   html_only: boolean;
+  has_html: boolean;
   attachments: Attachment[];
 }
 export interface OutboxItem {
@@ -78,6 +79,12 @@ export interface Draft {
   text: string;
   in_reply_to?: string;
 }
+export interface AppPassword {
+  id: number;
+  label: string;
+  created: number;
+  last_used: number | null;
+}
 export type Action = 'read' | 'unread' | 'flag' | 'unflag' | 'move' | 'copy' | 'delete';
 
 export interface Api {
@@ -93,6 +100,11 @@ export interface Api {
   outbox(): Promise<OutboxItem[]>;
   withdraw(id: number): Promise<void>;
   rawUrl(id: number): string;
+  htmlUrl(id: number): string;
+  attachmentUrl(id: number, n: number): string;
+  appPasswords(): Promise<AppPassword[]>;
+  createAppPassword(label: string, password: string): Promise<{ id: number; label: string; secret: string }>;
+  revokeAppPassword(id: number): Promise<void>;
 }
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
@@ -152,6 +164,13 @@ export function createApi(doFetch: Fetch = (i, init) => fetch(i, init)): Api {
       await call('DELETE', `/api/v1/outbox/${id}`);
     },
     rawUrl: (id) => `/api/v1/messages/${id}/raw`,
+    htmlUrl: (id) => `/api/v1/messages/${id}/html`,
+    attachmentUrl: (id, n) => `/api/v1/messages/${id}/attachments/${n}`,
+    appPasswords: async () => (await call<{ items: AppPassword[] }>('GET', '/api/v1/app-passwords')).items,
+    createAppPassword: (label, password) => call('POST', '/api/v1/app-passwords', { label, password }),
+    revokeAppPassword: async (id) => {
+      await call('DELETE', `/api/v1/app-passwords/${id}`);
+    },
   };
 }
 

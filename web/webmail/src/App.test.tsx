@@ -30,6 +30,7 @@ const message: Message = {
   text: 'Noon?\nBring cash.',
   text_truncated: false,
   html_only: false,
+  has_html: false,
   attachments: [],
 };
 
@@ -47,6 +48,11 @@ function api(over: Partial<Api> = {}): Api {
     outbox: vi.fn().mockResolvedValue([]),
     withdraw: vi.fn().mockResolvedValue(undefined),
     rawUrl: (id: number) => `/api/v1/messages/${id}/raw`,
+    htmlUrl: (id: number) => `/api/v1/messages/${id}/html`,
+    attachmentUrl: (id: number, n: number) => `/api/v1/messages/${id}/attachments/${n}`,
+    appPasswords: vi.fn().mockResolvedValue([]),
+    createAppPassword: vi.fn().mockResolvedValue({ id: 1, label: 'Phone', secret: 'abcd-efgh-jkmn-pqrs' }),
+    revokeAppPassword: vi.fn().mockResolvedValue(undefined),
     ...over,
   };
 }
@@ -95,6 +101,30 @@ describe('the webmail page', () => {
     fireEvent.click(await screen.findByText(en['compose.send']));
     expect((await screen.findByRole('alert')).textContent).toBe(en['error.bad_address']);
     expect(screen.getByLabelText(en['compose.to'])).toBeTruthy();
+  });
+
+  it('a message with only HTML is shown in a frame that cannot run script, and can be switched to plain text when it has some', async () => {
+    const html = { ...message, text: '', html_only: true, has_html: true };
+    const a = api({ me: vi.fn().mockResolvedValue({ address: 'alice@one.test', csrf: 'tok' }), message: vi.fn().mockResolvedValue(html) });
+    render(() => <App api={a} />);
+    fireEvent.click(await screen.findByText('Lunch'));
+    const frame = (await screen.findByTitle(en['message.htmlTitle'])) as HTMLIFrameElement;
+    expect(frame.getAttribute('sandbox')).toBe('allow-popups allow-popups-to-escape-sandbox');
+    expect(frame.getAttribute('src')).toBe('/api/v1/messages/2/html');
+    expect(frame.getAttribute('referrerpolicy')).toBe('no-referrer');
+  });
+
+  it('makes an app password after confirming the password and shows the secret once', async () => {
+    const a = api({ me: vi.fn().mockResolvedValue({ address: 'alice@one.test', csrf: 'tok' }) });
+    render(() => <App api={a} />);
+    fireEvent.click(await screen.findByText(en['folder.settings']));
+    fireEvent.input(await screen.findByLabelText(en['settings.apppw.label']), { target: { value: 'Phone' } });
+    fireEvent.input(screen.getByLabelText(en['settings.apppw.confirm']), { target: { value: 'my-password-1' } });
+    fireEvent.submit(screen.getByLabelText(en['settings.apppw.label']).closest('form') as HTMLFormElement);
+    expect(await screen.findByText('abcd-efgh-jkmn-pqrs')).toBeTruthy();
+    expect(a.createAppPassword).toHaveBeenCalledWith('Phone', 'my-password-1');
+    fireEvent.click(screen.getByText(en['settings.apppw.done']));
+    await waitFor(() => expect(screen.queryByText('abcd-efgh-jkmn-pqrs')).toBeNull());
   });
 
   it('deleting removes the message from the list', async () => {
