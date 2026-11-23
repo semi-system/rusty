@@ -341,3 +341,35 @@ async fn an_app_password_is_made_with_the_password_shown_once_works_for_the_prot
     assert_eq!(s.post(r.addr, "/api/v1/app-passwords", serde_json::json!({ "label": "one more", "password": "correct-horse-battery-1" })).await.status, 429);
     r.stop.cancel();
 }
+
+#[tokio::test]
+async fn a_draft_is_kept_in_the_drafts_folder_replaced_by_the_next_save_read_back_and_removed_when_sent() {
+    let r = rig().await;
+    let s = alice(&r).await;
+    let folders = s.get(r.addr, "/api/v1/folders").await;
+    let drafts = folder(&folders, "drafts");
+    let first = s.post(r.addr, "/api/v1/drafts", serde_json::json!({ "to": ["bob@one.test"], "bcc": ["quiet@one.test"], "subject": "Plan", "text": "half a thought" })).await;
+    assert_eq!(first.status, 200, "{}", first.text());
+    let id1 = first.json()["id"].as_i64().unwrap();
+    // A draft may have no recipient yet; saving again replaces it.
+    let second = s.post(r.addr, "/api/v1/drafts", serde_json::json!({ "id": id1, "subject": "Plan", "text": "a whole thought" })).await;
+    let id2 = second.json()["id"].as_i64().unwrap();
+    assert_ne!(id1, id2);
+    let page = s.get(r.addr, &format!("/api/v1/folders/{drafts}/messages")).await;
+    assert_eq!(page["items"].as_array().unwrap().len(), 1, "the first draft was replaced");
+    assert_eq!(page["items"][0]["flags"]["draft"], serde_json::json!(true));
+    let m = s.get(r.addr, &format!("/api/v1/messages/{id2}")).await;
+    assert_eq!((m["subject"].clone(), m["text"].clone(), m["folder"].clone()), (serde_json::json!("Plan"), serde_json::json!("a whole thought"), serde_json::json!(drafts)));
+    // Sending from the draft queues the message and removes the draft; an id that is not a draft is never removed.
+    let inbox_msg = s.get(r.addr, "/api/v1/folders/1/messages").await["items"][0]["id"].as_i64().unwrap();
+    let sent = s.post(r.addr, "/api/v1/send", serde_json::json!({ "to": ["bob@one.test"], "subject": "Plan", "text": "x", "draft_id": inbox_msg })).await;
+    assert_eq!(sent.status, 202);
+    assert_eq!(call(r.addr, "GET", &format!("/api/v1/messages/{inbox_msg}"), &[("Cookie", &s.cookie)], None).await.status, 200, "a message outside Drafts stays");
+    let sent = s.post(r.addr, "/api/v1/send", serde_json::json!({ "to": ["bob@one.test"], "subject": "Plan", "text": "a whole thought", "draft_id": id2 })).await;
+    assert_eq!(sent.status, 202);
+    assert_eq!(s.get(r.addr, &format!("/api/v1/folders/{drafts}/messages")).await["items"].as_array().unwrap().len(), 0);
+    // Bad input is refused like a send, and nothing is needed to save but a session and the token.
+    assert_eq!(s.post(r.addr, "/api/v1/drafts", serde_json::json!({ "to": ["no at sign"] })).await.status, 400);
+    assert_eq!(call(r.addr, "POST", "/api/v1/drafts", &[("Content-Type", "application/json"), ("Origin", ORIGIN)], Some("{}")).await.status, 401);
+    r.stop.cancel();
+}

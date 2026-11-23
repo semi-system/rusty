@@ -109,6 +109,16 @@ pub struct Composed {
 
 /// Build the message of `draft` sent from `from` (the signed-in address) at `now` (unix seconds).
 pub fn build(from: &str, draft: &Draft, now: i64) -> Result<Composed, Invalid> {
+    compose(from, draft, now, false)
+}
+
+/// Build the message to keep in the Drafts folder: the same, but it may have no recipient yet, and the blind copies are written down so that the draft can be opened again as it was. A draft is never sent as it
+/// is: sending builds the message again from the form.
+pub fn build_draft(from: &str, draft: &Draft, now: i64) -> Result<Composed, Invalid> {
+    compose(from, draft, now, true)
+}
+
+fn compose(from: &str, draft: &Draft, now: i64, saving: bool) -> Result<Composed, Invalid> {
     let from = address(from).ok_or(Invalid::Address)?;
     let (to, cc, bcc) = (addresses(&draft.to)?, addresses(&draft.cc)?, addresses(&draft.bcc)?);
     let mut all: Vec<String> = Vec::new();
@@ -117,7 +127,7 @@ pub fn build(from: &str, draft: &Draft, now: i64) -> Result<Composed, Invalid> {
             all.push(a.clone());
         }
     }
-    if all.is_empty() {
+    if all.is_empty() && !saving {
         return Err(Invalid::NoRecipient);
     }
     if all.len() > MAX_RECIPIENTS {
@@ -134,9 +144,14 @@ pub fn build(from: &str, draft: &Draft, now: i64) -> Result<Composed, Invalid> {
     OsRng.fill_bytes(&mut id);
     let mut h = String::new();
     h.push_str(&format!("From: {from}\r\n"));
-    h.push_str(&format!("To: {}\r\n", to.join(", ")));
+    if !to.is_empty() {
+        h.push_str(&format!("To: {}\r\n", to.join(", ")));
+    }
     if !cc.is_empty() {
         h.push_str(&format!("Cc: {}\r\n", cc.join(", ")));
+    }
+    if saving && !bcc.is_empty() {
+        h.push_str(&format!("Bcc: {}\r\n", bcc.join(", ")));
     }
     h.push_str(&format!("Subject: {subject}\r\n"));
     h.push_str(&format!("Date: {}\r\n", rfc5322_date(now)));
@@ -225,6 +240,18 @@ mod tests {
         let subject = t.split("\r\nDate:").next().unwrap().split("Subject: ").nth(1).unwrap();
         assert!(subject.starts_with("=?UTF-8?B?") && subject.split("\r\n ").count() > 1);
         assert!(subject.split("\r\n ").all(|w| w.len() <= 76));
+    }
+
+    #[test]
+    fn a_draft_may_have_no_recipient_and_keeps_its_blind_copies_but_a_message_does_not() {
+        let mut d = draft();
+        d.to.clear();
+        d.bcc = vec!["quiet@one.test".into()];
+        let t = text(&build_draft("alice@one.test", &d, 0).unwrap());
+        assert!(!t.contains("\r\nTo:") && t.contains("Bcc: quiet@one.test\r\n"));
+        d.bcc.clear();
+        assert!(build_draft("alice@one.test", &d, 0).unwrap().recipients.is_empty());
+        assert_eq!(build("alice@one.test", &d, 0).err(), Some(Invalid::NoRecipient));
     }
 
     #[test]

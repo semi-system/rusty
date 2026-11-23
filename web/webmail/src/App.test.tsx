@@ -25,6 +25,7 @@ const message: Message = {
   from: 'bob@one.test',
   to: 'alice@one.test',
   cc: '',
+  bcc: '',
   subject: 'Lunch',
   message_id: '<m1@one.test>',
   text: 'Noon?\nBring cash.',
@@ -50,6 +51,7 @@ function api(over: Partial<Api> = {}): Api {
     rawUrl: (id: number) => `/api/v1/messages/${id}/raw`,
     htmlUrl: (id: number) => `/api/v1/messages/${id}/html`,
     attachmentUrl: (id: number, n: number) => `/api/v1/messages/${id}/attachments/${n}`,
+    saveDraft: vi.fn().mockResolvedValue({ id: 77 }),
     appPasswords: vi.fn().mockResolvedValue([]),
     createAppPassword: vi.fn().mockResolvedValue({ id: 1, label: 'Phone', secret: 'abcd-efgh-jkmn-pqrs' }),
     revokeAppPassword: vi.fn().mockResolvedValue(undefined),
@@ -125,6 +127,18 @@ describe('the webmail page', () => {
     expect(a.createAppPassword).toHaveBeenCalledWith('Phone', 'my-password-1');
     fireEvent.click(screen.getByText(en['settings.apppw.done']));
     await waitFor(() => expect(screen.queryByText('abcd-efgh-jkmn-pqrs')).toBeNull());
+  });
+
+  it('saves a draft, and sends from it with the draft named so that it is removed', async () => {
+    const a = api({ me: vi.fn().mockResolvedValue({ address: 'alice@one.test', csrf: 'tok' }) });
+    render(() => <App api={a} />);
+    fireEvent.click(await screen.findByText(en['compose.new']));
+    fireEvent.input(await screen.findByLabelText(en['compose.to']), { target: { value: 'bob@one.test' } });
+    fireEvent.click(screen.getByText(en['compose.save']));
+    expect((await screen.findByText(en['compose.saved']))).toBeTruthy();
+    expect(a.saveDraft).toHaveBeenCalledWith(expect.objectContaining({ to: ['bob@one.test'] }), undefined);
+    fireEvent.click(screen.getByText(en['compose.send']));
+    await waitFor(() => expect(a.send).toHaveBeenCalledWith(expect.objectContaining({ draft_id: 77 })));
   });
 
   it('deleting removes the message from the list', async () => {

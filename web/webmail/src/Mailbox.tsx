@@ -94,6 +94,13 @@ export const Mailbox: Component<{ api: Api; address: string; onSignOut: () => vo
       .join('\n');
     setComposing({ to: m.from, subject: m.subject.toLowerCase().startsWith('re:') ? m.subject : t('compose.replyPrefix') + m.subject, text: `\n\n${t('compose.quote', { from: m.from })}\n${quoted}\n`, inReplyTo: m.message_id });
   };
+  /** A message of the Drafts folder opens in the composer as it was saved. */
+  const edit = () => {
+    const m = opened();
+    if (m === null) return;
+    setComposing({ to: m.to, cc: m.cc, bcc: m.bcc, subject: m.subject, text: m.text, draftId: m.id });
+  };
+  const inDrafts = () => (folders() ?? []).some((f) => f.role === 'drafts' && f.id === opened()?.folder);
   const trash = () => (folders() ?? []).find((f) => f.role === 'trash');
   const emptyTrash = () =>
     guard(async () => {
@@ -202,6 +209,11 @@ export const Mailbox: Component<{ api: Api; address: string; onSignOut: () => vo
                   </Show>
                 </dl>
                 <div class="actions">
+                  <Show when={inDrafts()}>
+                    <button type="button" class="primary" onClick={edit}>
+                      {t('action.edit')}
+                    </button>
+                  </Show>
                   <button type="button" onClick={reply}>
                     {t('action.reply')}
                   </button>
