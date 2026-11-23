@@ -101,6 +101,14 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     let router = routes(app.clone(), Router::new());
     let router = crate::read::routes(app.clone(), router);
     let router = crate::write::routes(app, router);
+    // The front end embedded at build time answers every other path; without one this is an API server only.
+    let router = match crate::web::handler() {
+        Some(h) => router.fallback(h),
+        None => {
+            tracing::warn!("no front end is built into this binary (build web/webmail first): only the API is served");
+            router
+        }
+    };
     let handler = Arc::new(HttpHandler::new(router, HttpConfig::default()));
 
     let (accept, tls): (Arc<dyn Accept>, Option<TlsProvider>) = if cfg.tls.has_cert() {

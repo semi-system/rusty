@@ -66,6 +66,22 @@ jobs:
       - name: Front end gates (scripts/ci-web.sh in the pinned Node image)
         run: bash scripts/ci-web-docker.sh
 
+  # The webmail front end (docs/design-webmail.md section 5): the same gates with its own lockfile and allow-list.
+  web-webmail:
+    name: front end (web/webmail)
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Front end gates (scripts/ci-webmail.sh in the pinned Node image)
+        run: bash scripts/ci-webmail-docker.sh
+
   workflows-lint:
     name: actionlint and shellcheck
     needs: changes
@@ -705,7 +721,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: ${{ always() }}
-    needs: [changes, workflows-lint, web, gates, test-glibc, test-postgres, test-pgbouncer, supply-chain, musl-test, musl-release, fuzz-smoke, edge-suite]
+    needs: [changes, workflows-lint, web, web-webmail, gates, test-glibc, test-postgres, test-pgbouncer, supply-chain, musl-test, musl-release, fuzz-smoke, edge-suite]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}

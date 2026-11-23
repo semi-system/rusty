@@ -31,6 +31,14 @@ COPY web/admin/ ./
 COPY crates/rusty-admin/contract /src/crates/rusty-admin/contract
 RUN node scripts/check-deps.mjs && node scripts/gen-types.mjs --check && npx vite build && node scripts/check-bundle.mjs
 
+# The webmail (web/webmail): the same gates, its own lockfile and allow-list.
+FROM --platform=$BUILDPLATFORM node:22-alpine3.22@sha256:cd7807368cf24826297cbad5dca1a44972ccfd770647db52a8c7589eb4599ac8 AS webmail-web
+WORKDIR /src/web/webmail
+COPY web/webmail/package.json web/webmail/package-lock.json web/webmail/.npmrc ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY web/webmail/ ./
+RUN node scripts/check-deps.mjs && npx vite build && node scripts/check-bundle.mjs
+
 # ---- compile stage ---------------------------------------------------------------------------
 # Rust version = rust-toolchain.toml `channel` (checked by scripts/check-docker-pins.sh).
 FROM --platform=$BUILDPLATFORM rust:1.99.1-alpine3.22@sha256:9a744dc47d1ac2a7d17fc3cedfc8b4928b1696dfcba3274ab25bfb40988a9ff0 AS build
@@ -91,6 +99,7 @@ WORKDIR /src
 COPY . .
 # The admin service embeds the built front end (rusty-admin/build.rs); RUSTY_ADMIN_WEB_REQUIRED=1 below makes a build without it an error.
 COPY --from=web /src/web/admin/dist /src/web/admin/dist
+COPY --from=webmail-web /src/web/webmail/dist /src/web/webmail/dist
 # The toolchain is the one in the base image tag; do not let rustup fetch another.
 RUN rm -f rust-toolchain.toml
 
@@ -105,7 +114,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
     export "CARGO_TARGET_${tu}_LINKER=/usr/local/bin/zigld" "CC_${tl}=/usr/local/bin/zigcc" "AR_${tl}=/usr/local/bin/zigar" \
            "CFLAGS_${tl}=-O2" "RUSTFLAGS=-C target-feature=+crt-static --remap-path-prefix=/src=/build --remap-path-prefix=/usr/local/cargo=/cargo"; \
     if [ "$DEV_CERT" = 1 ]; then feat=""; else feat="--no-default-features"; fi; \
-    RUSTY_ADMIN_WEB_REQUIRED=1 cargo build --release --locked --target "$triple" -p rusty $feat -p rusty-admin -p rusty-webmail --target-dir /out; \
+    RUSTY_ADMIN_WEB_REQUIRED=1 RUSTY_WEBMAIL_WEB_REQUIRED=1 cargo build --release --locked --target "$triple" -p rusty $feat -p rusty-admin -p rusty-webmail --target-dir /out; \
     install -D "/out/$triple/release/rusty" /rootfs/usr/local/bin/rusty; \
     ln -s rusty /rootfs/usr/local/bin/rustyd; ln -s rusty /rootfs/usr/local/bin/rustyctl; \
     mkdir -p /rootfs/var/lib/rusty /rootfs/etc/rusty; \

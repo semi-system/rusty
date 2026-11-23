@@ -12,4 +12,5 @@ pub mod mail;
 pub mod read;
 pub mod run;
 pub mod session;
+pub mod web;
 pub mod write;
