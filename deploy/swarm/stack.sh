@@ -788,6 +788,8 @@ cmd_upgrade() {
   while [ $# -gt 0 ]; do case "$1" in --no-backup) backup=0; shift ;; *) die "upgrade: unknown argument $1 (only --no-backup)" ;; esac; done
   [ "$backup" = 0 ] || cmd_backup
   cmd_prepare_secrets
+  # A release that adds a service adds its database role: the roles are made (and the password of each one that logs in is set again to the same value) before the migration, as `init` does.
+  cmd_prepare_db
   cmd_prepare_configs
   cmd_migrate
   cmd_deploy
