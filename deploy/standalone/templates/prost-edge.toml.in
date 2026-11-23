@@ -28,9 +28,17 @@ idle_timeout_ms = 300000
 write_timeout_ms = 30000
 half_close_timeout_ms = 5000
 health_interval_ms = 5000
+# The probes: three failed ones in a row (15 s) take a task out, two good ones bring it back; the default of Prost is ONE failed probe, which under load (a busy task slow to accept) took the only admin task out and
+# answered every request with 503.
+# A refused or lost connection under load must not take a service out for good: without this block ONE failed forward ejects the endpoint until the next probe (a single admin task then answers 503 to everyone).
+[upstreams.smtp.passive_health]
+max_fails = @PASSIVE_FAILS@
+fail_timeout_ms = 5000
 [upstreams.smtp.dns]
 authoritative_ttl = true
 [upstreams.smtp.health_check]
+fall = 3
+rise = 2
 protocol = "connect"
 proxy_v2_command = "local"
 [[upstreams.smtp.endpoints]]
@@ -44,9 +52,14 @@ idle_timeout_ms = 300000
 write_timeout_ms = 30000
 half_close_timeout_ms = 5000
 health_interval_ms = 5000
+[upstreams.submission.passive_health]
+max_fails = @PASSIVE_FAILS@
+fail_timeout_ms = 5000
 [upstreams.submission.dns]
 authoritative_ttl = true
 [upstreams.submission.health_check]
+fall = 3
+rise = 2
 protocol = "connect"
 proxy_v2_command = "local"
 [[upstreams.submission.endpoints]]
@@ -60,9 +73,14 @@ idle_timeout_ms = 300000
 write_timeout_ms = 30000
 half_close_timeout_ms = 5000
 health_interval_ms = 5000
+[upstreams.smtps.passive_health]
+max_fails = @PASSIVE_FAILS@
+fail_timeout_ms = 5000
 [upstreams.smtps.dns]
 authoritative_ttl = true
 [upstreams.smtps.health_check]
+fall = 3
+rise = 2
 protocol = "connect"
 proxy_v2_command = "local"
 [[upstreams.smtps.endpoints]]
@@ -77,9 +95,14 @@ idle_timeout_ms = 0
 write_timeout_ms = 30000
 half_close_timeout_ms = 5000
 health_interval_ms = 5000
+[upstreams.imap.passive_health]
+max_fails = @PASSIVE_FAILS@
+fail_timeout_ms = 5000
 [upstreams.imap.dns]
 authoritative_ttl = true
 [upstreams.imap.health_check]
+fall = 3
+rise = 2
 protocol = "connect"
 proxy_v2_command = "local"
 [[upstreams.imap.endpoints]]
@@ -93,9 +116,14 @@ idle_timeout_ms = 0
 write_timeout_ms = 30000
 half_close_timeout_ms = 5000
 health_interval_ms = 5000
+[upstreams.imaps.passive_health]
+max_fails = @PASSIVE_FAILS@
+fail_timeout_ms = 5000
 [upstreams.imaps.dns]
 authoritative_ttl = true
 [upstreams.imaps.health_check]
+fall = 3
+rise = 2
 protocol = "connect"
 proxy_v2_command = "local"
 [[upstreams.imaps.endpoints]]
@@ -110,9 +138,14 @@ idle_timeout_ms = 600000
 write_timeout_ms = 30000
 half_close_timeout_ms = 5000
 health_interval_ms = 5000
+[upstreams.pop3.passive_health]
+max_fails = @PASSIVE_FAILS@
+fail_timeout_ms = 5000
 [upstreams.pop3.dns]
 authoritative_ttl = true
 [upstreams.pop3.health_check]
+fall = 3
+rise = 2
 protocol = "connect"
 proxy_v2_command = "local"
 [[upstreams.pop3.endpoints]]
@@ -126,9 +159,14 @@ idle_timeout_ms = 600000
 write_timeout_ms = 30000
 half_close_timeout_ms = 5000
 health_interval_ms = 5000
+[upstreams.pop3s.passive_health]
+max_fails = @PASSIVE_FAILS@
+fail_timeout_ms = 5000
 [upstreams.pop3s.dns]
 authoritative_ttl = true
 [upstreams.pop3s.health_check]
+fall = 3
+rise = 2
 protocol = "connect"
 proxy_v2_command = "local"
 [[upstreams.pop3s.endpoints]]
@@ -140,9 +178,14 @@ address = "tasks.imap:1995"
 #ADMINPROXY send_proxy_v2 = true
 connect_timeout_ms = 3000
 health_interval_ms = 5000
+[upstreams.web.passive_health]
+max_fails = @PASSIVE_FAILS@
+fail_timeout_ms = 5000
 [upstreams.web.dns]
 authoritative_ttl = true
 [upstreams.web.health_check]
+fall = 3
+rise = 2
 protocol = "connect"
 #ADMINPROXY proxy_v2_command = "local"
 [[upstreams.web.endpoints]]

@@ -19,6 +19,8 @@ ADMIN_PROXY="${ADMIN_PROXY:-0}"
 PROST_MAX_PER_IP="${PROST_MAX_PER_IP:-50}"
 PROST_CONN_RATE="${PROST_CONN_RATE:-10}"
 PROST_CONN_BURST="${PROST_CONN_BURST:-100}"
+# Failures (a connection that could not be made or was lost) of one service task within 5 s before the edge stops using it until a health probe passes.
+PROST_MAX_FAILS="${PROST_MAX_FAILS:-20}"
 PROST_PILOT_OFFSET="${PROST_PILOT_OFFSET:-20000}"
 CERT_S3="${CERT_S3:-0}"
 CERT_S3_BUCKET="${CERT_S3_BUCKET:-certs}"
@@ -62,7 +64,7 @@ check_edge_inputs() {
   case "$CERT_S3" in 0|1) ;; *) die "CERT_S3 is 0 or 1" ;; esac
   case "$ADMIN_PROXY" in 0|1) ;; *) die "ADMIN_PROXY is 0 or 1" ;; esac
   local v
-  for v in PROST_MAX_PER_IP PROST_CONN_RATE PROST_CONN_BURST; do [[ "${!v}" =~ ^[0-9]{1,6}$ ]] && [ "${!v}" -ge 1 ] || die "$v is a number from 1 to 999999"; done
+  for v in PROST_MAX_PER_IP PROST_CONN_RATE PROST_CONN_BURST PROST_MAX_FAILS; do [[ "${!v}" =~ ^[0-9]{1,6}$ ]] && [ "${!v}" -ge 1 ] || die "$v is a number from 1 to 999999"; done
   [[ "$PROST_PILOT_OFFSET" =~ ^[0-9]{4,5}$ ]] && [ "$PROST_PILOT_OFFSET" -ge 10000 ] && [ "$PROST_PILOT_OFFSET" -le 60000 ] || die "PROST_PILOT_OFFSET is a number from 10000 to 60000 (so that every port stays below 65536)"
   [ -z "$PROST_IMAGE" ] || [[ "$PROST_IMAGE" =~ ^[a-z0-9][a-z0-9./_-]*(:[A-Za-z0-9._-]+|@sha256:[0-9a-f]{64})$ ]] || die "PROST_IMAGE is an image name with a tag or a digest"
   if [ "$EDGE" = prost-pilot ] && [ "$TLS_MODE" = acme ] && [ "$CERT_S3" != 1 ]; then
@@ -114,7 +116,7 @@ conf_prost_edge() {
           -e "$(if prost_has_certd; then echo "s|$certd_re||"; else echo "/$certd_re/d"; fi)" \
           -e "$(if [ "$CERT_S3" = 1 ] && prost_certs_from_s3; then echo "s|$s3_re||"; else echo "/$s3_re/d"; fi)" \
           -e "s|@MAIL_CERT@|$MAIL_CERT|g" -e "s|@MAIL_KEY@|$MAIL_KEY|g" -e "s|@ADMIN_CERT@|$ADMIN_CERT|g" -e "s|@ADMIN_KEY@|$ADMIN_KEY|g" \
-          -e "s|@MAX_PER_IP@|$PROST_MAX_PER_IP|g" -e "s|@CONN_RATE@|$PROST_CONN_RATE|g" -e "s|@CONN_BURST@|$PROST_CONN_BURST|g" \
+          -e "s|@MAX_PER_IP@|$PROST_MAX_PER_IP|g" -e "s|@CONN_RATE@|$PROST_CONN_RATE|g" -e "s|@CONN_BURST@|$PROST_CONN_BURST|g" -e "s|@PASSIVE_FAILS@|$PROST_MAX_FAILS|g" \
           -e "s|@MAIL_HOST@|$MAIL_HOST|g" -e "s|@ADMIN_HOST@|$ADMIN_HOST|g" -e "s|@ADMIN_ALLOW_TOML@|$(prost_allow_toml)|g" \
           -e "s|@CERT_S3_REGION@|${CERT_S3_REGION}|g" -e "s|@CERT_S3_ENDPOINT@|${CERT_S3_ENDPOINT}|g"
 }
