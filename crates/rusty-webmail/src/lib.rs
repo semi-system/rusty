@@ -16,5 +16,6 @@ pub mod settings;
 pub mod send;
 pub mod compose;
 pub mod session;
+pub mod totp;
 pub mod web;
 pub mod write;
