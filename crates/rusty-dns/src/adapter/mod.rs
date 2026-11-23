@@ -313,3 +313,46 @@ mod tests {
         }
     }
 }
+
+/// What the tests of the listeners need of the codec, so that the library is named here and nowhere else.
+#[cfg(test)]
+pub(crate) mod testkit {
+    use super::*;
+    use hickory_proto::rr::RecordType;
+
+    /// A question as bytes (`qtype` is the type number).
+    pub fn question(id: u16, name: &str, qtype: u16) -> Vec<u8> {
+        let mut m = Message::query();
+        m.metadata.id = id;
+        m.add_query(WireQuery::query(Name::from_ascii(name).unwrap(), RecordType::from(qtype)));
+        m.to_vec().unwrap()
+    }
+
+    /// The parts of an answer the tests look at.
+    #[derive(Debug)]
+    pub struct Reply {
+        pub id: u16,
+        pub is_response: bool,
+        pub authoritative: bool,
+        pub truncated: bool,
+        pub answers: usize,
+        pub rcode: u8,
+        pub size: usize,
+    }
+
+    pub fn reply(bytes: &[u8]) -> Reply {
+        let m = Message::from_vec(bytes).unwrap();
+        Reply {
+            id: m.metadata.id,
+            is_response: m.metadata.message_type == MessageType::Response,
+            authoritative: m.metadata.authoritative,
+            truncated: m.metadata.truncation,
+            answers: m.answers.len(),
+            rcode: u8::try_from(u16::from(m.metadata.response_code)).unwrap_or(255),
+            size: bytes.len(),
+        }
+    }
+
+    pub const FORMERR: u8 = 1;
+    pub const REFUSED: u8 = 5;
+}

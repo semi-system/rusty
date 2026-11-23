@@ -192,8 +192,7 @@ mod tests {
     use super::*;
     use crate::adapter::MAX_UDP_PAYLOAD;
     use crate::zone::{Rdata, Soa, Zone};
-    use hickory_proto::op::{Message, MessageType, Query as WireQuery, ResponseCode};
-    use hickory_proto::rr::{Name, RecordType};
+    use crate::adapter::testkit::{question as q_bytes, reply, Reply, FORMERR, REFUSED};
     use std::net::Ipv4Addr;
 
     fn zones() -> Zones {
@@ -208,24 +207,21 @@ mod tests {
         zs
     }
 
-    fn question(id: u16, name: &str, t: RecordType) -> Vec<u8> {
-        let mut m = Message::query();
-        m.metadata.id = id;
-        m.add_query(WireQuery::query(Name::from_ascii(name).unwrap(), t));
-        m.to_vec().unwrap()
+    fn question(id: u16, name: &str, t: u16) -> Vec<u8> {
+        q_bytes(id, name, t)
     }
 
-    async fn udp_ask(addr: SocketAddr, packet: &[u8]) -> Option<Message> {
+    async fn udp_ask(addr: SocketAddr, packet: &[u8]) -> Option<Reply> {
         let s = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         s.send_to(packet, addr).await.unwrap();
         let mut buf = vec![0u8; 4096];
         match tokio::time::timeout(Duration::from_millis(500), s.recv_from(&mut buf)).await {
-            Ok(Ok((n, _))) => Some(Message::from_vec(&buf[..n]).unwrap()),
+            Ok(Ok((n, _))) => Some(reply(&buf[..n])),
             _ => None,
         }
     }
 
-    async fn tcp_ask(addr: SocketAddr, packet: &[u8]) -> Message {
+    async fn tcp_ask(addr: SocketAddr, packet: &[u8]) -> Reply {
         let mut s = TcpStream::connect(addr).await.unwrap();
         let mut out = (packet.len() as u16).to_be_bytes().to_vec();
         out.extend_from_slice(packet);
@@ -234,7 +230,7 @@ mod tests {
         s.read_exact(&mut len).await.unwrap();
         let mut body = vec![0u8; usize::from(u16::from_be_bytes(len))];
         s.read_exact(&mut body).await.unwrap();
-        Message::from_vec(&body).unwrap()
+        reply(&body)
     }
 
     #[tokio::test]
@@ -242,26 +238,26 @@ mod tests {
         let stop = CancellationToken::new();
         let handle = ZoneHandle::new(zones());
         let (ua, ta, u, t) = start("127.0.0.1:0".parse().unwrap(), handle.clone(), Config::default(), stop.clone()).await.unwrap();
-        let m = udp_ask(ua, &question(11, "mail.example.org.", RecordType::A)).await.expect("an answer");
-        assert_eq!((m.metadata.id, m.metadata.message_type, m.answers.len()), (11, MessageType::Response, 1));
-        let m = tcp_ask(ta, &question(12, "mail.example.org.", RecordType::A)).await;
-        assert_eq!((m.metadata.id, m.answers.len(), m.metadata.authoritative), (12, 1, true));
-        let cut = udp_ask(ua, &question(13, "big.example.org.", RecordType::TXT)).await.unwrap();
-        assert!(cut.metadata.truncation && cut.answers.is_empty());
-        assert!(cut.to_vec().unwrap().len() <= usize::from(MAX_UDP_PAYLOAD));
-        let whole = tcp_ask(ta, &question(14, "big.example.org.", RecordType::TXT)).await;
-        assert_eq!((whole.metadata.truncation, whole.answers.len()), (false, 40));
+        let m = udp_ask(ua, &question(11, "mail.example.org.", 1)).await.expect("an answer");
+        assert_eq!((m.id, m.is_response, m.answers), (11, true, 1));
+        let m = tcp_ask(ta, &question(12, "mail.example.org.", 1)).await;
+        assert_eq!((m.id, m.answers, m.authoritative), (12, 1, true));
+        let cut = udp_ask(ua, &question(13, "big.example.org.", 16)).await.unwrap();
+        assert!(cut.truncated && cut.answers == 0);
+        assert!(cut.size <= usize::from(MAX_UDP_PAYLOAD));
+        let whole = tcp_ask(ta, &question(14, "big.example.org.", 16)).await;
+        assert_eq!((whole.truncated, whole.answers), (false, 40));
         // The zones are swapped as a whole: the next question sees the new data.
         let mut next = zones();
         let mut z = next.find("example.org").unwrap().clone();
         z.add("new.example.org", 60, Rdata::A(Ipv4Addr::new(192, 0, 2, 99)));
         next.insert(z);
         handle.set(next);
-        let m = udp_ask(ua, &question(15, "new.example.org.", RecordType::A)).await.unwrap();
-        assert_eq!(m.answers.len(), 1);
+        let m = udp_ask(ua, &question(15, "new.example.org.", 1)).await.unwrap();
+        assert_eq!(m.answers, 1);
         // Never recursive: a name that is not ours is refused.
-        let m = udp_ask(ua, &question(16, "example.net.", RecordType::A)).await.unwrap();
-        assert_eq!(m.metadata.response_code, ResponseCode::Refused);
+        let m = udp_ask(ua, &question(16, "example.net.", 1)).await.unwrap();
+        assert_eq!(m.rcode, REFUSED);
         stop.cancel();
         let _ = tokio::join!(u, t);
     }
@@ -275,16 +271,16 @@ mod tests {
         let mut slipped = 0;
         let mut silent = 0;
         for i in 0..12 {
-            match udp_ask(ua, &question(100 + i, "mail.example.org.", RecordType::A)).await {
-                Some(m) if m.metadata.truncation => slipped += 1,
+            match udp_ask(ua, &question(100 + i, "mail.example.org.", 1)).await {
+                Some(m) if m.truncated => slipped += 1,
                 Some(_) => answered += 1,
                 None => silent += 1,
             }
         }
         assert_eq!(answered, 3, "the burst");
         assert!(slipped >= 3 && silent >= 3, "{slipped} slipped, {silent} silent");
-        let m = tcp_ask(ta, &question(7, "mail.example.org.", RecordType::A)).await;
-        assert_eq!(m.answers.len(), 1, "the client that was limited over UDP is served over TCP");
+        let m = tcp_ask(ta, &question(7, "mail.example.org.", 1)).await;
+        assert_eq!(m.answers, 1, "the client that was limited over UDP is served over TCP");
         stop.cancel();
         let _ = tokio::join!(u, t);
     }
@@ -299,7 +295,7 @@ mod tests {
         assert_eq!(tokio::time::timeout(Duration::from_secs(2), s.read(&mut b)).await.unwrap().unwrap(), 0, "closed by the server after the idle time");
         assert!(udp_ask(ua, &[1]).await.is_none(), "a packet too short for an id: no answer");
         let m = udp_ask(ua, &[0xab, 0xcd, 0x01, 0x00, 0xff, 0xff, 0, 0, 0, 0, 0, 0]).await.unwrap();
-        assert_eq!((m.metadata.id, m.metadata.response_code), (0xabcd, ResponseCode::FormErr));
+        assert_eq!((m.id, m.rcode), (0xabcd, FORMERR));
         stop.cancel();
         let _ = tokio::join!(u, t);
     }
