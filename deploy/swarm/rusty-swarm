@@ -46,7 +46,7 @@ case "${1:-}" in -h|--help|help|"") usage; exit 0 ;; esac
 if [ "${1:-}" = "--env" ]; then ENV_FILE="${2:?--env needs a file}"; shift 2; fi
 NODES=(); ENCRYPTED=0; MIN_DOCKER_MAJOR=25
 DB_HOST=""; DB_PORT=5432; DB_NAME=rusty; DB_ADMIN_USER=""; DB_ADMIN_PASSWORD_FILE=""; DB_CA=""; DB_TLS=1; DB_HOSTADDR=""; STATE_DIR="$HOME/.rusty-swarm"
-MAIL_HOST=""; ADMIN_HOST=""; CONTACT=""; ADMIN_ALLOW=""
+MAIL_HOST=""; ADMIN_HOST=""; WEBMAIL_HOST=""; CONTACT=""; ADMIN_ALLOW=""
 S3_ENDPOINT=""; S3_REGION=us-east-1; S3_BUCKET=rusty-mail; S3_ACCESS_KEY=""; S3_SECRET_KEY_FILE=""
 if [ ! -r "$ENV_FILE" ]; then
   # No inventory: `init` asks for what it needs (a dialog, or plain prompts) and writes it; every other command needs the file.
@@ -279,7 +279,7 @@ probe_clean() { # the network cannot go while the last task is still shutting do
 }
 
 # ---- prepare db ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-SERVICE_ROLES=(app admin migrator smtp_in submission imap outbound gc)
+SERVICE_ROLES=(app admin migrator smtp_in submission imap outbound gc webmail)
 POSTGRES_IMAGE="$(awk '$1 == "postgres:18" { print $2 }' "$HERE/../images.lock")"
 
 secret_file() { printf '%s/secrets/pg_%s\n' "$STATE_DIR" "$1"; }

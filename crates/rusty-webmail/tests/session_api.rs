@@ -68,9 +68,11 @@ fn cookie_of(r: &Reply) -> String {
 
 async fn running() -> (Store, pg::PgTestDb, rusty_webmail::run::Running, CancellationToken, Directory) {
     let url = pg::pg_admin_url().expect("RUSTY_TEST_PG_URL");
-    let db = pg::PgTestDb::create(&url).await;
-    let store = Store::open(StoreConfig::postgres(db.url())).await.unwrap();
-    let dir = Directory::with_repo(store.repos().directory.clone());
+    // The service runs as its own database role (deploy/db/roles.sql, grants_pg.sql): a query that needs more than that role has fails here. The fixtures (accounts) are made as the operator's role.
+    let db = pg::PgTestDb::create_with_roles(&url).await;
+    let store = Store::open(StoreConfig::postgres(db.role_url("rusty_webmail"))).await.unwrap();
+    let operator = Store::open(StoreConfig::postgres(db.role_url("rusty_app"))).await.unwrap();
+    let dir = Directory::with_repo(operator.repos().directory.clone());
     let stop = CancellationToken::new();
     let r = start(&config(), &store, stop.clone()).await.unwrap();
     (store, db, r, stop, dir)
@@ -178,8 +180,8 @@ async fn the_service_answers_its_own_health_check_and_refuses_to_start_without_i
     stop.cancel();
 
     let url = pg::pg_admin_url().expect("RUSTY_TEST_PG_URL");
-    let db = pg::PgTestDb::create(&url).await;
-    let store = Store::open(StoreConfig::postgres(db.url())).await.unwrap();
+    let db = pg::PgTestDb::create_with_roles(&url).await;
+    let store = Store::open(StoreConfig::postgres(db.role_url("rusty_webmail"))).await.unwrap();
     let none = StartupConfig::from_toml_str_for(Role::Webmail, BASE).unwrap();
     assert!(start(&none, &store, CancellationToken::new()).await.is_err(), "no [webmail] section");
 }

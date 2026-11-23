@@ -15,6 +15,14 @@ check_inputs() {
   local c n=0
   valid_host "$MAIL_HOST" || die "MAIL_HOST is not a host name"
   valid_host "$ADMIN_HOST" || die "ADMIN_HOST is not a host name"
+  if [ -n "$WEBMAIL_HOST" ]; then
+    valid_host "$WEBMAIL_HOST" || die "WEBMAIL_HOST is not a host name"
+    { [ "$WEBMAIL_HOST" != "$MAIL_HOST" ] && [ "$WEBMAIL_HOST" != "$ADMIN_HOST" ]; } || die "WEBMAIL_HOST is a host name of its own: not MAIL_HOST and not ADMIN_HOST"
+  fi
+  if [ -n "$WEBMAIL_HOST" ]; then
+    valid_host "$WEBMAIL_HOST" || die "WEBMAIL_HOST is not a host name"
+    [ "$WEBMAIL_HOST" != "$MAIL_HOST" ] && [ "$WEBMAIL_HOST" != "$ADMIN_HOST" ] || die "WEBMAIL_HOST is a host name of its own: not MAIL_HOST and not ADMIN_HOST"
+  fi
   for c in $ADMIN_ALLOW; do
     n=$((n + 1)); valid_cidr "$c" || die "ADMIN_ALLOW: '$c' is not an IPv4 address or block (and /0 would open the admin web to everyone)"
   done
