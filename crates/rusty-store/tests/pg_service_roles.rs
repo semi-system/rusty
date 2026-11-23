@@ -110,6 +110,9 @@ async fn each_service_keeps_to_its_own_writes() {
         ("rusty_outbound", "messages", "INSERT", true),
         // expunge belongs to the mailbox access; delivery never deletes
         ("rusty_imap", "messages", "DELETE", true),
+        ("rusty_webmail", "messages", "DELETE", true),
+        ("rusty_webmail", "blobs", "DELETE", false),
+        ("rusty_webmail", "jobs", "INSERT", false),
         ("rusty_smtp_in", "messages", "DELETE", false),
         ("rusty_submission", "messages", "DELETE", false),
         ("rusty_outbound", "messages", "DELETE", false),

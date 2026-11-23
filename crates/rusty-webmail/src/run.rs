@@ -99,7 +99,8 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
         tokio::spawn(async move { beat.run_until(stop).await });
     }
     let router = routes(app.clone(), Router::new());
-    let router = crate::read::routes(app, router);
+    let router = crate::read::routes(app.clone(), router);
+    let router = crate::write::routes(app, router);
     let handler = Arc::new(HttpHandler::new(router, HttpConfig::default()));
 
     let (accept, tls): (Arc<dyn Accept>, Option<TlsProvider>) = if cfg.tls.has_cert() {
