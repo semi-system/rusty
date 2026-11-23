@@ -187,7 +187,7 @@ pub fn in_zone(name: &str, origin: &str) -> bool {
 }
 
 /// All the hosted zones.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Zones {
     zones: BTreeMap<String, Zone>,
 }

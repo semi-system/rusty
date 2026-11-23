@@ -158,6 +158,16 @@ pub fn encode(q: &Question, a: &Answer, limit: Option<usize>) -> Vec<u8> {
     }
 }
 
+/// A question for the health check of the service: it asks for a name no zone holds, so any reply at all (the answer is `REFUSED`) shows that the server is up and reading packets.
+pub fn probe_question() -> Vec<u8> {
+    let mut m = Message::query();
+    m.metadata.id = 0x5eed;
+    if let Ok(n) = Name::from_ascii("health.invalid.") {
+        m.add_query(WireQuery::query(n, hickory_proto::rr::RecordType::A));
+    }
+    m.to_vec().unwrap_or_default()
+}
+
 /// The bytes of an error answer to a packet.
 pub fn encode_error(id: u16, e: Error) -> Vec<u8> {
     let rc = match e {
@@ -314,9 +324,8 @@ mod tests {
     }
 }
 
-/// What the tests of the listeners need of the codec, so that the library is named here and nowhere else.
-#[cfg(test)]
-pub(crate) mod testkit {
+/// What the tests of the listeners need of the codec, so that the library is named here and nowhere else (public so that the integration tests can use it too).
+pub mod testkit {
     use super::*;
     use hickory_proto::rr::RecordType;
 
