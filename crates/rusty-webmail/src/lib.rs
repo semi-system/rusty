@@ -11,5 +11,7 @@ pub mod health;
 pub mod mail;
 pub mod read;
 pub mod run;
+pub mod send;
+pub mod compose;
 pub mod session;
 pub mod write;

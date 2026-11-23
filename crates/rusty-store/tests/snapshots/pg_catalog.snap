@@ -305,6 +305,17 @@ COLUMN service_heartbeats.detail text nullable=NO identity=NO/ collation=C defau
 COLUMN vacation_replies.account_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN vacation_replies.sender text nullable=NO identity=NO/ collation=C default=
 COLUMN vacation_replies.at bigint nullable=NO identity=NO/ collation= default=
+COLUMN webmail_outbox.id bigint nullable=NO identity=YES/ALWAYS collation= default=
+COLUMN webmail_outbox.account_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN webmail_outbox.sender text nullable=NO identity=NO/ collation=C default=
+COLUMN webmail_outbox.blob_hash text nullable=NO identity=NO/ collation=C default=
+COLUMN webmail_outbox.size bigint nullable=NO identity=NO/ collation= default=
+COLUMN webmail_outbox.recipients text nullable=NO identity=NO/ collation=C default=
+COLUMN webmail_outbox.subject text nullable=NO identity=NO/ collation=C default=''::text
+COLUMN webmail_outbox.state text nullable=NO identity=NO/ collation=C default='queued'::text
+COLUMN webmail_outbox.error text nullable=YES identity=NO/ collation=C default=
+COLUMN webmail_outbox.created_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN webmail_outbox.finished_at bigint nullable=YES identity=NO/ collation= default=
 CONSTRAINT accounts.accounts_closed_at_valid CHECK (closed_at IS NULL OR closed_at >= 0)
 CONSTRAINT accounts.accounts_config_not_null NOT NULL config
 CONSTRAINT accounts.accounts_created_at_not_null NOT NULL created_at
@@ -810,6 +821,24 @@ CONSTRAINT vacation_replies.vacation_replies_at_valid CHECK (at >= 0)
 CONSTRAINT vacation_replies.vacation_replies_pkey PRIMARY KEY (account_id, sender)
 CONSTRAINT vacation_replies.vacation_replies_sender_not_null NOT NULL sender
 CONSTRAINT vacation_replies.vacation_replies_sender_valid CHECK (length(sender) >= 1 AND length(sender) <= 320)
+CONSTRAINT webmail_outbox.webmail_outbox_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+CONSTRAINT webmail_outbox.webmail_outbox_account_id_not_null NOT NULL account_id
+CONSTRAINT webmail_outbox.webmail_outbox_blob_hash_not_null NOT NULL blob_hash
+CONSTRAINT webmail_outbox.webmail_outbox_blob_valid CHECK (length(blob_hash) = 64)
+CONSTRAINT webmail_outbox.webmail_outbox_created_at_not_null NOT NULL created_at
+CONSTRAINT webmail_outbox.webmail_outbox_error_valid CHECK (error IS NULL OR length(error) <= 32)
+CONSTRAINT webmail_outbox.webmail_outbox_id_not_null NOT NULL id
+CONSTRAINT webmail_outbox.webmail_outbox_pkey PRIMARY KEY (id)
+CONSTRAINT webmail_outbox.webmail_outbox_rcpts_valid CHECK (length(recipients) <= 40000)
+CONSTRAINT webmail_outbox.webmail_outbox_recipients_not_null NOT NULL recipients
+CONSTRAINT webmail_outbox.webmail_outbox_sender_not_null NOT NULL sender
+CONSTRAINT webmail_outbox.webmail_outbox_sender_valid CHECK (length(sender) <= 320)
+CONSTRAINT webmail_outbox.webmail_outbox_size_not_null NOT NULL size
+CONSTRAINT webmail_outbox.webmail_outbox_size_valid CHECK (size > 0)
+CONSTRAINT webmail_outbox.webmail_outbox_state_not_null NOT NULL state
+CONSTRAINT webmail_outbox.webmail_outbox_state_valid CHECK (state = ANY (ARRAY['queued'::text, 'sending'::text, 'sent'::text, 'failed'::text]))
+CONSTRAINT webmail_outbox.webmail_outbox_subject_not_null NOT NULL subject
+CONSTRAINT webmail_outbox.webmail_outbox_subject_valid CHECK (length(subject) <= 200)
 INDEX accounts.accounts_id_domain CREATE UNIQUE INDEX accounts_id_domain ON public.accounts USING btree (id, domain_id)
 INDEX accounts.accounts_local_part_domain_id_key CREATE UNIQUE INDEX accounts_local_part_domain_id_key ON public.accounts USING btree (local_part, domain_id)
 INDEX accounts.accounts_pkey CREATE UNIQUE INDEX accounts_pkey ON public.accounts USING btree (id)
@@ -903,6 +932,9 @@ INDEX service_heartbeats.service_heartbeats_pkey CREATE UNIQUE INDEX service_hea
 INDEX service_heartbeats.service_heartbeats_seen CREATE INDEX service_heartbeats_seen ON public.service_heartbeats USING btree (last_seen)
 INDEX vacation_replies.vacation_replies_at CREATE INDEX vacation_replies_at ON public.vacation_replies USING btree (at)
 INDEX vacation_replies.vacation_replies_pkey CREATE UNIQUE INDEX vacation_replies_pkey ON public.vacation_replies USING btree (account_id, sender)
+INDEX webmail_outbox.webmail_outbox_account CREATE INDEX webmail_outbox_account ON public.webmail_outbox USING btree (account_id, id DESC)
+INDEX webmail_outbox.webmail_outbox_pkey CREATE UNIQUE INDEX webmail_outbox_pkey ON public.webmail_outbox USING btree (id)
+INDEX webmail_outbox.webmail_outbox_queued CREATE INDEX webmail_outbox_queued ON public.webmail_outbox USING btree (id) WHERE (state = 'queued'::text)
 TRIGGER accounts.accounts_addr_truncate CREATE TRIGGER accounts_addr_truncate AFTER TRUNCATE ON accounts FOR EACH STATEMENT EXECUTE FUNCTION rs_address_truncate()
 TRIGGER accounts.accounts_addr_unique_del CREATE TRIGGER accounts_addr_unique_del BEFORE DELETE ON accounts FOR EACH ROW EXECUTE FUNCTION rs_address_unique()
 TRIGGER accounts.accounts_addr_unique_ins CREATE TRIGGER accounts_addr_unique_ins BEFORE INSERT ON accounts FOR EACH ROW EXECUTE FUNCTION rs_address_unique()

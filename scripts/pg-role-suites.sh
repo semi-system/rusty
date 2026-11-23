@@ -7,7 +7,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 CARGO="${CARGO:-cargo}"
 declare -A SUITES=(
   [rusty_smtp_in]="-p rusty-smtp --test inbound --test message --test scan --test session --test busy_e2e"
-  [rusty_submission]="-p rusty-smtp --test submission --test session_auth"
+  [rusty_submission]="-p rusty-smtp --test submission --test session_auth --test webmail_send"
   [rusty_imap]="-p rusty-imap"
   [rusty_outbound]="-p rusty-smtp --test outbound_worker --test outbound_crash --test outbound_dns --test dns_job --test dkim_sealed --test relay_check"
   [rusty_gc]="-p rusty-smtp --test outbound_gc -p rusty-svc --test service"

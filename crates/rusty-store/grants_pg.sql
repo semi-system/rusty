@@ -109,6 +109,7 @@ BEGIN
   -- rusty_submission: authenticated submission. Checks a password, stores the copy and queues the outbound job.
   IF to_regrole('rusty_submission') IS NOT NULL THEN
     GRANT SELECT ON accounts, domains, aliases, domain_aliases, lists, list_members, plans, address_owners, mailboxes, folders, deliveries, blob_stores, blob_backends, sealed_secrets TO rusty_submission;
+    GRANT SELECT, UPDATE ON webmail_outbox TO rusty_submission;   -- what a person sent from the webmail is sent here, like a submission (docs/design-webmail.md)
     GRANT SELECT, INSERT, UPDATE ON messages, blobs, blob_locations, jobs TO rusty_submission;
     GRANT INSERT ON keywords, change_log, deliveries TO rusty_submission;
     GRANT UPDATE ON mailboxes, folders TO rusty_submission;
@@ -147,6 +148,7 @@ BEGIN
     GRANT SELECT, INSERT ON change_log TO rusty_webmail;
     GRANT INSERT ON deliveries TO rusty_webmail;
     GRANT UPDATE ON mailboxes TO rusty_webmail;
+    GRANT SELECT, INSERT, DELETE ON webmail_outbox TO rusty_webmail;   -- what a person sends is queued here and read back as the outbox; the message itself is a blob (docs/design-webmail.md)
   END IF;
 
   -- rusty_outbound: the delivery worker. Claims and finishes jobs, reads the message and the DKIM and relay settings, writes the DNS check state.
@@ -187,6 +189,7 @@ BEGIN
     GRANT SELECT, DELETE ON audit_log TO rusty_gc;
     GRANT SELECT, DELETE ON imap_migrations TO rusty_gc;   -- a migration is kept two days (its sealed password is removed by the admin service)
     GRANT SELECT, DELETE ON message_searches TO rusty_gc;   -- a search is kept a day
+    GRANT SELECT, DELETE ON webmail_outbox TO rusty_gc;   -- what was sent is kept a week
     GRANT SELECT, DELETE ON backup_runs TO rusty_gc;   -- kept 400 days
     GRANT SELECT, DELETE ON vacation_replies TO rusty_gc;   -- the vacation book-keeping is kept 60 days (docs/design-mail-rules.md)   -- the audit log is kept 365 days
     GRANT SELECT, INSERT, UPDATE ON blob_stores, blob_backends TO rusty_gc;

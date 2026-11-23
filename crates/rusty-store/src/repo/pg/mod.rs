@@ -20,6 +20,7 @@ mod transfers;
 mod audit;
 mod imap_migrations;
 mod searches;
+mod outbox;
 mod backups;
 mod admin;
 pub mod tx;

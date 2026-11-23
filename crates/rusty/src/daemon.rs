@@ -219,6 +219,7 @@ async fn build(
             }));
         }
     }
+    let mut webmail_sender = false;
     for planned in listener_plan_for(&cfg, role) {
         let bound = BoundListener::bind(planned.spec).await?;
         addrs.push((planned.kind, bound.local_addr()));
@@ -271,7 +272,13 @@ async fn build(
                     budget: budget.clone(),
                     ..InboundOptions::default()
                 };
-                Arc::new(InboundHandler::submission(&ctx, options, deps))
+                let handler = Arc::new(InboundHandler::submission(&ctx, options, deps));
+                // What a person sends from the webmail goes out through this very handler (once per process, whatever the number of submission ports).
+                if !webmail_sender {
+                    webmail_sender = true;
+                    services.push(Box::new(rusty_smtp::webmail_send::WebmailSendService::new(handler.clone())));
+                }
+                handler
             }
             ListenerKind::Imap143 | ListenerKind::Imaps993 => Arc::new(rusty_imap::ImapHandler::new(ctx.clone()).with_budget(budget.clone())),
             ListenerKind::Pop3110 => Arc::new(rusty_pop3::Pop3Handler::new(ctx.clone(), rusty_pop3::Port::Starttls).with_budget(budget.clone())),

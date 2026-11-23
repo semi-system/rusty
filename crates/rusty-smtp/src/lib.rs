@@ -33,3 +33,4 @@ pub mod rules;
 pub mod scan;
 pub mod session;
 pub mod stack;
+pub mod webmail_send;

@@ -33,6 +33,8 @@ pub struct GcSummary {
     pub migrations_purged: u64,
     /// Searches of the mail past their day.
     pub searches_purged: u64,
+    /// Messages sent from the webmail whose outbox entry is past its week.
+    pub outbox_purged: u64,
     /// Rows of the backup history past their 400 days.
     pub backup_runs_purged: u64,
     /// Messages expunged because a retention rule made them due.
@@ -128,6 +130,10 @@ impl GcService {
         match ctx.migrations.purge_expired(500).await {
             Ok(n) => s.migrations_purged = n,
             Err(e) => step_failed(&mut s, "purge the migrations", &e),
+        }
+        match ctx.outbox.purge_finished(7 * 86_400, 500).await {
+            Ok(n) => s.outbox_purged = n,
+            Err(e) => step_failed(&mut s, "purge the outbox", &e),
         }
         match ctx.searches.purge_expired(500).await {
             Ok(n) => s.searches_purged = n,
