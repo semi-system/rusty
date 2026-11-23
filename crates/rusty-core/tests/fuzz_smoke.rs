@@ -13,7 +13,7 @@ const SEED_EXAMPLE: &str = include_str!("../../../rusty.example.toml");
 /// Role files: an accepted one is a valid configuration, and a role without blobs always has the stand-in directory.
 fn check_roles(text: &str) {
     use rusty_core::config::{Role, UNUSED_BLOB_DIR};
-    for role in [Role::SmtpIn, Role::Submission, Role::Imap, Role::Outbound, Role::Gc, Role::Admin] {
+    for role in [Role::SmtpIn, Role::Submission, Role::Imap, Role::Outbound, Role::Gc, Role::Admin, Role::Webmail] {
         if let Ok(c) = StartupConfig::from_toml_str_for(role, text) {
             assert!(c.blob_dir.is_absolute());
             if !role.uses_blobs() {

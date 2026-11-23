@@ -2457,6 +2457,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusty-webmail"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "rand_core 0.6.4",
+ "rusty-core",
+ "rusty-directory",
+ "rusty-http",
+ "rusty-runtime",
+ "rusty-store",
+ "rusty-svc",
+ "rusty-valkey",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
