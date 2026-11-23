@@ -12,6 +12,8 @@ const MAX_DEPTH: usize = 6;
 const MAX_PARTS: usize = 200;
 /// The most text shown.
 pub const MAX_TEXT: usize = 256 * 1024;
+/// The most bytes of the HTML part the reader keeps.
+pub const MAX_HTML: usize = 512 * 1024;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Headers {
@@ -39,6 +41,8 @@ pub struct View {
     pub text_truncated: bool,
     /// The message has a body, but only as HTML: the reader says so.
     pub html_only: bool,
+    /// The first `text/html` part that is not an attachment, as UTF-8 and cut at [`MAX_HTML`]; the reader shows it only inside a sandbox (it is hostile content).
+    pub html: Option<String>,
     pub attachments: Vec<Attachment>,
 }
 
@@ -232,6 +236,7 @@ struct Walk {
     text: Option<String>,
     truncated: bool,
     html_seen: bool,
+    html: Option<String>,
     attachments: Vec<Attachment>,
 }
 
@@ -309,6 +314,18 @@ fn walk(entity: &[u8], depth: usize, w: &mut Walk) {
     }
     if kind == "text/html" && !is_attachment {
         w.html_seen = true;
+        if w.html.is_none() {
+            let bytes = decode_body(body, cte);
+            let mut html = to_text(&bytes, &param(ctype, "charset").unwrap_or_else(|| "utf-8".to_owned()));
+            if html.len() > MAX_HTML {
+                let mut cut = MAX_HTML;
+                while !html.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                html.truncate(cut);
+            }
+            w.html = Some(html);
+        }
         return;
     }
     let size = if cte.trim().eq_ignore_ascii_case("base64") { body.iter().filter(|b| b.is_ascii_alphanumeric() || **b == b'+' || **b == b'/').count() / 4 * 3 } else { body.len() };
@@ -321,9 +338,9 @@ pub fn view(raw: &[u8]) -> View {
     let h = parse_headers(head);
     let get = |n: &str| decode_words(header(&h, n).unwrap_or(""));
     let headers = Headers { from: get("from"), to: get("to"), cc: get("cc"), subject: get("subject"), date: header(&h, "date").unwrap_or("").to_owned(), message_id: header(&h, "message-id").unwrap_or("").to_owned() };
-    let mut w = Walk { parts: 0, text: None, truncated: false, html_seen: false, attachments: Vec::new() };
+    let mut w = Walk { parts: 0, text: None, truncated: false, html_seen: false, html: None, attachments: Vec::new() };
     walk(raw, 0, &mut w);
-    View { headers, html_only: w.text.is_none() && w.html_seen, text_truncated: w.truncated, text: w.text.unwrap_or_default(), attachments: w.attachments }
+    View { headers, html_only: w.text.is_none() && w.html_seen, text_truncated: w.truncated, text: w.text.unwrap_or_default(), html: w.html, attachments: w.attachments }
 }
 
 #[cfg(test)]

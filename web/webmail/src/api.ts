@@ -59,6 +59,7 @@ export interface Message {
   text: string;
   text_truncated: boolean;
   html_only: boolean;
+  has_html: boolean;
   attachments: Attachment[];
 }
 export interface OutboxItem {
@@ -93,6 +94,7 @@ export interface Api {
   outbox(): Promise<OutboxItem[]>;
   withdraw(id: number): Promise<void>;
   rawUrl(id: number): string;
+  htmlUrl(id: number): string;
 }
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
@@ -152,6 +154,7 @@ export function createApi(doFetch: Fetch = (i, init) => fetch(i, init)): Api {
       await call('DELETE', `/api/v1/outbox/${id}`);
     },
     rawUrl: (id) => `/api/v1/messages/${id}/raw`,
+    htmlUrl: (id) => `/api/v1/messages/${id}/html`,
   };
 }
 

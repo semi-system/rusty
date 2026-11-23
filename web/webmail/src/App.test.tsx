@@ -30,6 +30,7 @@ const message: Message = {
   text: 'Noon?\nBring cash.',
   text_truncated: false,
   html_only: false,
+  has_html: false,
   attachments: [],
 };
 
@@ -47,6 +48,7 @@ function api(over: Partial<Api> = {}): Api {
     outbox: vi.fn().mockResolvedValue([]),
     withdraw: vi.fn().mockResolvedValue(undefined),
     rawUrl: (id: number) => `/api/v1/messages/${id}/raw`,
+    htmlUrl: (id: number) => `/api/v1/messages/${id}/html`,
     ...over,
   };
 }
@@ -95,6 +97,17 @@ describe('the webmail page', () => {
     fireEvent.click(await screen.findByText(en['compose.send']));
     expect((await screen.findByRole('alert')).textContent).toBe(en['error.bad_address']);
     expect(screen.getByLabelText(en['compose.to'])).toBeTruthy();
+  });
+
+  it('a message with only HTML is shown in a frame that cannot run script, and can be switched to plain text when it has some', async () => {
+    const html = { ...message, text: '', html_only: true, has_html: true };
+    const a = api({ me: vi.fn().mockResolvedValue({ address: 'alice@one.test', csrf: 'tok' }), message: vi.fn().mockResolvedValue(html) });
+    render(() => <App api={a} />);
+    fireEvent.click(await screen.findByText('Lunch'));
+    const frame = (await screen.findByTitle(en['message.htmlTitle'])) as HTMLIFrameElement;
+    expect(frame.getAttribute('sandbox')).toBe('allow-popups allow-popups-to-escape-sandbox');
+    expect(frame.getAttribute('src')).toBe('/api/v1/messages/2/html');
+    expect(frame.getAttribute('referrerpolicy')).toBe('no-referrer');
   });
 
   it('deleting removes the message from the list', async () => {

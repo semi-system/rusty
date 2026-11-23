@@ -27,6 +27,8 @@ export const Mailbox: Component<{ api: Api; address: string; onSignOut: () => vo
   const [composing, setComposing] = createSignal<Start | null>(null);
   const [notice, setNotice] = createSignal('');
   const [error, setError] = createSignal('');
+  // Whether the formatted (HTML) version of the open message is shown; a message with no plain text starts with it.
+  const [formatted, setFormatted] = createSignal(false);
 
   const guard = async (work: () => Promise<void>) => {
     setError('');
@@ -59,6 +61,7 @@ export const Mailbox: Component<{ api: Api; address: string; onSignOut: () => vo
     guard(async () => {
       const m = await props.api.message(id);
       setOpened(m);
+      setFormatted(m.has_html && m.text === '');
       if (!m.flags.seen) {
         await props.api.actions([id], 'read');
         setItems(items().map((i) => (i.id === id ? { ...i, flags: { ...i.flags, seen: true } } : i)));
@@ -213,10 +216,15 @@ export const Mailbox: Component<{ api: Api; address: string; onSignOut: () => vo
                     {t('message.original')}
                   </a>
                 </div>
-                <Show when={m().html_only}>
-                  <p class="note">{t('message.htmlOnly')}</p>
+                <Show when={m().has_html}>
+                  <button type="button" class="quiet" onClick={() => setFormatted(!formatted())}>
+                    {formatted() ? t('message.showText') : t('message.showHtml')}
+                  </button>
                 </Show>
-                <pre class="text">{m().text}</pre>
+                <Show when={formatted() && m().has_html} fallback={<pre class="text">{m().text}</pre>}>
+                  <p class="note">{t('message.remoteBlocked')}</p>
+                  <iframe class="formatted" title={t('message.htmlTitle')} sandbox="allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" src={props.api.htmlUrl(m().id)} />
+                </Show>
                 <Show when={m().text_truncated}>
                   <p class="note">{t('message.truncated')}</p>
                 </Show>

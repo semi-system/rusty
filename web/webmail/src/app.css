@@ -328,3 +328,10 @@ dd {
     transition: background-color 0.12s;
   }
 }
+.formatted {
+  width: 100%;
+  min-height: 60vh;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+}

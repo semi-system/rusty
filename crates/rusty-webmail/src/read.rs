@@ -188,6 +188,8 @@ struct MessageJson {
     text_truncated: bool,
     /// The message has a body only as HTML, which this reader does not show yet: the original can be downloaded.
     html_only: bool,
+    /// The message has an HTML part: `/api/v1/messages/{m}/html` serves it for a sandboxed frame.
+    has_html: bool,
     attachments: Vec<AttachmentJson>,
 }
 
@@ -226,6 +228,7 @@ async fn message(app: &WebmailApp, req: Request) -> Response {
         text: v.text,
         text_truncated: v.text_truncated,
         html_only: v.html_only,
+        has_html: v.html.is_some(),
         attachments: v.attachments.into_iter().map(|a| AttachmentJson { name: a.name, content_type: a.content_type, size: a.size }).collect(),
     })
 }
@@ -249,6 +252,32 @@ async fn raw(app: &WebmailApp, req: Request) -> Response {
     }
 }
 
+/// What the browser is told about the HTML of a message, which is hostile content: no script (the sandbox has no `allow-scripts`), nothing loaded from anywhere (so no tracking pixel, no remote
+/// style, no font), inline styles and `data:` images only, no form, no base, and it may be framed by this origin alone. Links open in a new window that is not sandboxed and sends no referrer.
+const HTML_CSP: &str = "sandbox allow-popups allow-popups-to-escape-sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
+
+/// `GET /api/v1/messages/{m}/html`: the HTML part, for the sandboxed frame of the reader and for nothing else.
+async fn html(app: &WebmailApp, req: Request) -> Response {
+    let mb = match mailbox(app, &req).await {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    let Some(id) = message_id(&req) else { return error(404, "not_found") };
+    let raw = match mb.get_raw(id).await {
+        Ok(r) => r,
+        Err(e) => return fail(&e),
+    };
+    let Some(body) = mail::view(&raw).html else { return error(404, "not_found") };
+    let page = format!("<!doctype html><meta charset=\"utf-8\"><meta name=\"referrer\" content=\"no-referrer\"><base target=\"_blank\">{body}");
+    Response::new(200)
+        .with_header("content-type", "text/html; charset=utf-8")
+        .with_header("content-security-policy", HTML_CSP)
+        .with_header("x-content-type-options", "nosniff")
+        .with_header("referrer-policy", "no-referrer")
+        .with_header("cache-control", "no-store")
+        .with_body(page.into_bytes())
+}
+
 pub fn routes(app: Arc<WebmailApp>, router: Router) -> Router {
     macro_rules! route {
         ($router:expr, $path:expr, $f:ident) => {{
@@ -262,5 +291,6 @@ pub fn routes(app: Arc<WebmailApp>, router: Router) -> Router {
     let router = route!(router, "/api/v1/folders", folders);
     let router = route!(router, "/api/v1/folders/{f}/messages", messages);
     let router = route!(router, "/api/v1/messages/{m}", message);
-    route!(router, "/api/v1/messages/{m}/raw", raw)
+    let router = route!(router, "/api/v1/messages/{m}/raw", raw);
+    route!(router, "/api/v1/messages/{m}/html", html)
 }
