@@ -8,6 +8,8 @@ publish.workspace = true
 
 [dependencies]
 rusty-core = { path = "../rusty-core" }
+# The DNS wire codec: named only inside src/adapter (scripts/wrapped-libs.txt).
+hickory-proto = { version = "0.26", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 proptest.workspace = true

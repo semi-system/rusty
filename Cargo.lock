@@ -2213,6 +2213,7 @@ dependencies = [
 name = "rusty-dns"
 version = "0.1.0"
 dependencies = [
+ "hickory-proto",
  "proptest",
  "rusty-core",
 ]
