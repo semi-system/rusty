@@ -23,7 +23,7 @@ ARG SERVICE=rusty
 # The admin web (web/admin): installed from the lockfile with no package script, checked by the same
 # gates as CI (dependency allow-list, types current, bundle scan) and built. Runs on the BUILD platform:
 # the output is plain files, the same for every target. The build is reproducible (scripts/ci-web.sh).
-FROM --platform=$BUILDPLATFORM node:22-alpine3.22@sha256:cd7807368cf24826297cbad5dca1a44972ccfd770647db52a8c7589eb4599ac8 AS web
+FROM --platform=$BUILDPLATFORM node:26-alpine3.22@sha256:c7932b9e5e337b0e733d6e16abc1b0e104759e8b05e59ed56586cce967d26dfe AS web
 WORKDIR /src/web/admin
 COPY web/admin/package.json web/admin/package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
@@ -32,7 +32,7 @@ COPY crates/rusty-admin/contract /src/crates/rusty-admin/contract
 RUN node scripts/check-deps.mjs && node scripts/gen-types.mjs --check && npx vite build && node scripts/check-bundle.mjs
 
 # The webmail (web/webmail): the same gates, its own lockfile and allow-list.
-FROM --platform=$BUILDPLATFORM node:22-alpine3.22@sha256:cd7807368cf24826297cbad5dca1a44972ccfd770647db52a8c7589eb4599ac8 AS webmail-web
+FROM --platform=$BUILDPLATFORM node:26-alpine3.22@sha256:c7932b9e5e337b0e733d6e16abc1b0e104759e8b05e59ed56586cce967d26dfe AS webmail-web
 WORKDIR /src/web/webmail
 COPY web/webmail/package.json web/webmail/package-lock.json web/webmail/.npmrc ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
