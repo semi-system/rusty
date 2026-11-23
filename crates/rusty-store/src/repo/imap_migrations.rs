@@ -73,8 +73,10 @@ pub trait MigrationRepo: Send + Sync {
     async fn finish(&self, id: i64, state: &str, error: Option<&str>, p: &Progress) -> Result<()>;
     /// Stop it: a `queued` one is `cancelled` at once, a `running` one is asked to stop; `false` for any other.
     async fn request_cancel(&self, id: i64) -> Result<bool>;
-    /// Remove the migrations that have expired, and their sealed passwords; how many, at most `limit`.
+    /// Remove the migrations that have expired; how many, at most `limit`.
     async fn purge_expired(&self, limit: i64) -> Result<u64>;
+    /// Remove the sealed passwords of migrations that are gone (the admin service does this: no service that works on the mail may write a sealed secret); how many.
+    async fn purge_orphan_secrets(&self) -> Result<u64>;
     /// A migration `running` with no sign of life from the worker for this many seconds is made `failed`.
     async fn fail_stuck(&self, older_than_secs: i64) -> Result<u64>;
 }

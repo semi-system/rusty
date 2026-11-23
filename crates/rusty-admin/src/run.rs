@@ -138,6 +138,12 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
                     () = stop.cancelled() => break,
                     () = tokio::time::sleep(Duration::from_secs(600)) => {}
                 }
+                // The passwords of the moves of a mailbox that were removed after their two days (the garbage collector removes the rows, this service may remove the sealed secrets).
+                if let Some(s) = app.services.as_ref() {
+                    if let Err(e) = s.migrations.purge_orphan_secrets().await {
+                        tracing::warn!(error = %e, "the passwords of removed migrations could not be removed");
+                    }
+                }
                 if let (Some(s), Ok(now)) = (app.services.as_ref(), jobs.now().await) {
                     match crate::outbound::retire_due_dkim_keys(s, now).await {
                         Ok(n) if n > 0 => tracing::info!(retired = n, "old DKIM keys were retired"),

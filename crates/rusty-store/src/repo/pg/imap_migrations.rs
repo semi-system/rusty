@@ -114,9 +114,11 @@ impl MigrationRepo for PgRepo {
 
     async fn purge_expired(&self, limit: i64) -> Result<u64> {
         let n: i64 = sqlx::query_scalar(r(sql::PURGE)).bind(limit).fetch_one(self.store.pool()).await.map_err(map_db_error)?;
-        // The passwords of what is gone go with it.
-        sqlx::query(r(sql::PURGE_SECRETS)).execute(self.store.pool()).await.map_err(map_db_error)?;
         Ok(u64::try_from(n).unwrap_or(0))
+    }
+
+    async fn purge_orphan_secrets(&self) -> Result<u64> {
+        Ok(sqlx::query(r(sql::PURGE_SECRETS)).execute(self.store.pool()).await.map_err(map_db_error)?.rows_affected())
     }
 
     async fn fail_stuck(&self, older_than_secs: i64) -> Result<u64> {

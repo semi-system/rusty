@@ -1,6 +1,6 @@
 -- The move of a mailbox from another IMAP server into an account of this one (docs/design-imap-migration.md): asked for in the admin web, done where the mailboxes are (the IMAP service) by pulling the
 -- mail from the other server over IMAP, with progress that the admin web shows. The password of the other server is a sealed secret (`sealed_secrets`: owner kind `migration`, owner id the id of this
--- row, purpose `password`): the admin service can seal it and cannot read it, the IMAP service opens it. A migration and its secret are removed two days after it was asked for.
+-- row, purpose `password`): the admin service can seal it and cannot read it, the IMAP service opens it. The row is removed two days after it was asked for, and the admin service then removes the secret.
 CREATE TABLE imap_migrations (
   id               bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   account_id       bigint NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,

@@ -70,4 +70,9 @@ async fn a_move_is_asked_for_by_a_platform_administrator_sealed_stoppable_and_au
     let entry = audit.json()["items"].as_array().unwrap().iter().find(|i| i["path"] == json!("/api/v1/accounts/alice@one.test/migrations") && i["method"] == json!("POST")).expect("the move was audited").clone();
     let detail = entry["detail"].as_str().unwrap();
     assert!(detail.contains("imap.old.example") && detail.contains("(hidden)"), "{detail}");
+
+    // When the rows are gone after their two days the admin service removes the sealed passwords that were left (no service that works on the mail may write a sealed secret).
+    r.fx.run("DELETE FROM imap_migrations", &[]).await;
+    assert_eq!(r.store.repos().migrations.purge_orphan_secrets().await.unwrap(), 2);
+    assert_eq!(r.fx.scalar("SELECT count(*) FROM sealed_secrets WHERE owner_kind = 'migration'", &[]).await, 0);
 }

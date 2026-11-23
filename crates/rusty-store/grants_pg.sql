@@ -169,8 +169,7 @@ BEGIN
     GRANT SELECT, DELETE ON mailbox_transfers, mailbox_transfer_chunks TO rusty_gc;   -- an export or import is kept a day (docs/design-mailbox-transfers.md)
     GRANT SELECT, INSERT, UPDATE, DELETE ON message_stats TO rusty_gc;   -- the roll-up of the delivery log into days (docs/design-queue.md)   -- the log is kept 30 days
     GRANT SELECT, DELETE ON audit_log TO rusty_gc;
-    GRANT SELECT, DELETE ON imap_migrations TO rusty_gc;   -- a migration and its sealed password are kept two days
-    GRANT DELETE ON sealed_secrets TO rusty_gc;   -- the passwords of the migrations that are gone
+    GRANT SELECT, DELETE ON imap_migrations TO rusty_gc;   -- a migration is kept two days (its sealed password is removed by the admin service)
     GRANT SELECT, DELETE ON message_searches TO rusty_gc;   -- a search is kept a day
     GRANT SELECT, DELETE ON backup_runs TO rusty_gc;   -- kept 400 days
     GRANT SELECT, DELETE ON vacation_replies TO rusty_gc;   -- the vacation book-keeping is kept 60 days (docs/design-mail-rules.md)   -- the audit log is kept 365 days
