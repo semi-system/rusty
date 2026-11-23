@@ -573,6 +573,9 @@ impl GcRepo for SkewedGc {
     async fn purge_deleted_batch(&self, o: i64, l: i64) -> Result<rusty_store::PurgeBatch, Error> {
         self.inner.purge_deleted_batch(o, l).await
     }
+    async fn expunge_by_retention(&self, n: i64, l: i64) -> Result<u64, Error> {
+        self.inner.expunge_by_retention(n, l).await
+    }
     async fn purge_deliveries_batch(&self, o: i64, l: i64) -> Result<u64, Error> {
         self.inner.purge_deliveries_batch(o, l).await
     }

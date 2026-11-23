@@ -52,7 +52,7 @@
     "Monitor": { "services": "MonitorService[]", "queue": "MonitorQueue", "storage": "MonitorCount[]", "dns_problem_domains": "integer" },
     "Protocol": { "name": "string", "enabled": "boolean" },
     "Protocols": { "protocols": "Protocol[]" },
-    "Plan": { "name": "string", "quota_bytes": "integer|null", "max_message_bytes": "integer|null", "messages_per_hour": "integer|null", "protocols": "string[]|null", "spam_junk_score": "number|null", "spam_reject_score": "number|null" },
+    "Plan": { "name": "string", "quota_bytes": "integer|null", "max_message_bytes": "integer|null", "messages_per_hour": "integer|null", "protocols": "string[]|null", "spam_junk_score": "number|null", "spam_reject_score": "number|null", "spam_retention_days": "integer|null", "retention_days": "integer|null" },
     "PlanList": { "items": "Plan[]" },
     "AccountPlan": { "plan": "string|null" },
     "Deletion": { "deletion": "string" },
@@ -163,7 +163,7 @@
     { "method": "GET", "path": "/api/v1/certificates", "auth": "platform", "request": null, "response": "CertificateList", "status": 200, "note": "what a client is handed at the public names of this server (the admin web's host and the mail host's 993, 995 and 465), read by connecting; a probe that failed carries an error text" },
     { "method": "GET", "path": "/api/v1/audit", "auth": "admin", "request": null, "response": "Audit", "status": 200, "note": "the changes administrators made, newest first (kept 365 days); a domain administrator gets its own domain; query: domain, before" },
     { "method": "GET", "path": "/api/v1/plans", "auth": "admin", "request": null, "response": "PlanList", "status": 200 },
-    { "method": "PUT", "path": "/api/v1/plans", "auth": "platform", "request": { "name": "string", "quota_bytes": "integer|null", "max_message_bytes": "integer|null", "messages_per_hour": "integer|null (optional)", "protocols": "string[]|null (optional: imap, pop3, submission)", "spam_junk_score": "number|null (optional, 0 to 100)", "spam_reject_score": "number|null (optional, 0 to 100, above the junk score)" }, "response": "Plan", "status": 200, "note": "creates the plan (201) or changes its limits; a null limit removes it; the services read the limits when they open a mailbox" },
+    { "method": "PUT", "path": "/api/v1/plans", "auth": "platform", "request": { "name": "string", "quota_bytes": "integer|null", "max_message_bytes": "integer|null", "messages_per_hour": "integer|null (optional)", "protocols": "string[]|null (optional: imap, pop3, submission)", "spam_junk_score": "number|null (optional, 0 to 100)", "spam_reject_score": "number|null (optional, 0 to 100, above the junk score)", "spam_retention_days": "integer|null (optional, 1 to 36500)", "retention_days": "integer|null (optional, 1 to 36500)" }, "response": "Plan", "status": 200, "note": "creates the plan (201) or changes its limits; a null limit removes it; the services read the limits when they open a mailbox" },
     { "method": "PUT", "path": "/api/v1/accounts/{a}/plan", "auth": "admin", "request": { "plan": "string|null" }, "response": "AccountPlan", "status": 200, "note": "put the account on the plan, or on none with null" }
   ]
 }
