@@ -226,6 +226,23 @@ grep -qxF 'allowed_hosts = ["tasks.prometheus"]' "$me/admin.toml" || fail "monit
 grep -qF 'targets: ["tasks.admin:9100"]' "$me/prometheus.yml" || fail "monitoring: Prometheus does not scrape the admin web"
 ! grep -q "^  prometheus:" "$tmp/prost.stack.yaml" || fail "monitoring: a stack without MONITORING has Prometheus"
 
+# Alerts by email: a smarthost with a login; the password is a secret, never in a config or the stack file.
+printf 'smtp-pass-value\n' > "$tmp/smtp-pw"
+scenario alertmail "$EXT"$'
+MONITORING=1
+ALERT_KIND=email
+ALERT_EMAIL_TO=ops@example.org
+ALERT_EMAIL_FROM=alerts@example.org
+ALERT_SMARTHOST=mail.example.org:587
+ALERT_SMTP_USER=alerts@example.org
+ALERT_SMTP_PASSWORD_FILE='"$tmp/smtp-pw"$'
+REPLICAS_DEFAULT=1' "prometheus alertmanager admin" "certd"
+ap="$tmp/alertmail.stack.yaml"; ae="$tmp/state-alertmail/stack/etc"
+grep -q 'smtp_smarthost: "mail.example.org:587"' "$ae/alertmanager.yml" && grep -q 'smtp_require_tls: true' "$ae/alertmanager.yml" && grep -q 'smtp_auth_password_file: /run/secrets/alert_smtp' "$ae/alertmanager.yml" && grep -q 'to: "ops@example.org"' "$ae/alertmanager.yml" || fail "alertmail: the Alertmanager configuration is not the inventory's"
+! grep -q 'alert_url' "$ae/alertmanager.yml" "$ap" || fail "alertmail: a webhook secret in an email setup"
+! grep -rq "smtp-pass-value" "$ap" "$ae" || fail "alertmail: the mail password is in the stack file or a config (it belongs in the secret)"
+grep -q 'target: alert_smtp' "$ap" || fail "alertmail: the password secret does not reach Alertmanager"
+
 scenario limits "$EXT"$'
 EDGE=prost
 TLS_MODE=self
@@ -333,6 +350,16 @@ refuse "a pilot offset that is out of range" $'EDGE=prost-pilot\nPROST_PILOT_OFF
 refuse "the certificates in the bucket of the mail" $'EDGE=prost\nTLS_MODE=acme\nCERT_S3=1\nCERT_S3_BUCKET=rusty-mail'
 refuse "a bad ADMIN_PROXY" 'ADMIN_PROXY=2'
 refuse "monitoring without the URL file" 'MONITORING=1'
+refuse "email alerts without a recipient" 'MONITORING=1
+ALERT_KIND=email
+ALERT_EMAIL_FROM=a@example.org
+ALERT_SMARTHOST=mail.example.org:587'
+refuse "email alerts with a login and no password file" 'MONITORING=1
+ALERT_KIND=email
+ALERT_EMAIL_TO=o@example.org
+ALERT_EMAIL_FROM=a@example.org
+ALERT_SMARTHOST=mail.example.org:587
+ALERT_SMTP_USER=a'
 refuse "monitoring with a URL file that is not a URL" 'MONITORING=1
 ALERT_URL_FILE=/etc/hostname'
 refuse "a bad alert kind" 'ALERT_KIND=sms'
