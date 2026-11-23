@@ -25,6 +25,8 @@ declare -A SECRET_NAME=() CONFIG_NAME=()
 . "$HERE/profiles.sh"
 # shellcheck source=edge-prost.sh
 . "$HERE/edge-prost.sh"
+# shellcheck source=monitoring.sh
+. "$HERE/monitoring.sh"
 
 sw() { dk "$(manager_name)" "$@"; }
 sha16() { if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -c1-16; else shasum -a 256 | cut -c1-16; fi; }
@@ -141,10 +143,14 @@ conf_admin() {
   [ "$ADMIN_PROXY" != 1 ] || [ "$EDGE" != prost-pilot ] || printf 'extra_origins = ["https://%s:%s"]\n' "$ADMIN_HOST" "$(edge_port 443)"
   printf '\n'; blk_store admin; blk_valkey admin
   printf '[sealing]\npublic_key = "%s"\n\n' "$(cat "$STATE_DIR/keys/seal.pub")"
-  if [ -n "${METRICS_ALLOW:-}" ]; then
+  if [ -n "${METRICS_ALLOW:-}" ] || [ "$MONITORING" = 1 ]; then
     local c list=""
-    for c in $METRICS_ALLOW; do list="${list:+$list, }\"$c\""; done
-    printf '[metrics]\nlisten = "0.0.0.0:9100"\nallowed_peers = [%s]\n\n' "$list"
+    for c in ${METRICS_ALLOW:-}; do list="${list:+$list, }\"$c\""; done
+    printf '[metrics]\nlisten = "0.0.0.0:9100"\n'
+    [ -z "$list" ] || printf 'allowed_peers = [%s]\n' "$list"
+    # The Prometheus of the monitoring profile is found by its service name (no address is fixed anywhere).
+    [ "$MONITORING" != 1 ] || printf 'allowed_hosts = ["tasks.prometheus"]\n'
+    printf '\n'
     for c in smtp-in submission imap outbound gc; do printf '[[metrics.scrape]]\nservice = "%s"\naddress = "tasks.%s:9100"\n\n' "$c" "$c"; done
   fi
 }
@@ -307,6 +313,7 @@ require_stack_inputs() {
   esac
   check_inputs
   check_edge_inputs
+  monitoring_check_inputs
   make_passwords
 }
 
@@ -337,6 +344,7 @@ cmd_prepare_secrets() {
     ensure_secret db_server_key "$STATE_DIR/dbtls/server.key"
   fi
   profile_secrets
+  monitoring_secrets
   save_names
   echo "prepare secrets: done"
 }
@@ -356,6 +364,7 @@ cmd_prepare_configs() {
   if [ "$DB_IN_STACK" = 1 ]; then make_db_tls; ( umask 077; conf_pg_hba > "$d/pg_hba.conf" ); ensure_config pg_hba "$d/pg_hba.conf"; fi
   if [ -n "$DB_CA" ]; then ensure_config db_ca "$DB_CA"; fi
   profile_configs
+  monitoring_configs
   save_names
   echo "prepare configs: done"
 }
@@ -394,7 +403,7 @@ load_names() {
   local t k
   [ "$DB_IN_STACK" != 1 ] || need_c="$need_c pg_hba"
   [ -z "$DB_CA" ] || need_c="$need_c db_ca"
-  while read -r t k; do case "$t" in S) need_s="$need_s $k" ;; C) need_c="$need_c $k" ;; esac; done < <(profile_names_needed; edge_names_needed)
+  while read -r t k; do case "$t" in S) need_s="$need_s $k" ;; C) need_c="$need_c $k" ;; esac; done < <(profile_names_needed; edge_names_needed; monitoring_names_needed)
   for base in $need_s; do
     [ -n "${SECRET_NAME[$base]:-}" ] && sw secret inspect "${SECRET_NAME[$base]}" >/dev/null 2>&1 || die "the secret $base is missing on the Manager: run 'prepare secrets'"
   done
@@ -492,16 +501,18 @@ gen_stack() {
       gen_rusty_service admin admin "app backend metrics" 0 0
       [ "$FILTER" = 0 ] || gen_scanner_services
       [ "$VALKEY" = 0 ] || gen_valkey_service
+      [ "$MONITORING" = 0 ] || gen_monitoring_services
     fi
     printf 'networks:\n  app: { driver: overlay, internal: true }\n  backend: { driver: overlay, attachable: true }\n  metrics: { driver: overlay, internal: true }\n'
     [ "$FILTER" = 0 ] || printf '  filter: { driver: overlay, internal: true }\n'
     [ "$VALKEY" = 0 ] || printf '  kv: { driver: overlay, internal: true }\n'
-    if [ "$DB_IN_STACK" = 1 ] || [ "$S3_IN_STACK" = 1 ] || [ "$TLS_MODE" = acme ] || [ "$FILTER" = 1 ] || [ "$EDGE" != haproxy ]; then
+    if [ "$DB_IN_STACK" = 1 ] || [ "$S3_IN_STACK" = 1 ] || [ "$TLS_MODE" = acme ] || [ "$FILTER" = 1 ] || [ "$EDGE" != haproxy ] || [ "$MONITORING" = 1 ]; then
       printf 'volumes:\n'
       [ "$DB_IN_STACK" = 0 ] || printf '  pgdata:\n'
       [ "$S3_IN_STACK" = 0 ] || printf '  s3data:\n'
       { [ "$TLS_MODE" != acme ] || ! haproxy_is_edge; } || printf '  edgedata:\n'
       [ "$EDGE" = haproxy ] || edge_volumes
+      [ "$MONITORING" = 0 ] || monitoring_volumes
       [ "$FILTER" = 0 ] || printf '  clamdb:\n'
     fi
     gen_externals
@@ -599,6 +610,7 @@ cmd_migrate() {
 cmd_deploy() {
   gen_stack > "$STATE_DIR/stack/stack.yaml"
   edge_prepare_volumes
+  monitoring_prepare_volumes
   # --prune removes the services that are not in the file: the base file (the helpers only) must never prune the mail services of a system that is already running.
   local prune=(--prune); [ -z "$STACK_ONLY" ] || prune=()
   sw stack deploy --with-registry-auth "${prune[@]}" -c - "$STACK_NAME" < "$STATE_DIR/stack/stack.yaml"
