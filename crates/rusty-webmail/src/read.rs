@@ -278,6 +278,43 @@ async fn html(app: &WebmailApp, req: Request) -> Response {
         .with_body(page.into_bytes())
 }
 
+/// A file name for `Content-Disposition`: a plain ASCII fallback and the real name percent-encoded (RFC 6266), never a character that could end the header value.
+fn disposition(name: &str, fallback: &str) -> String {
+    let plain: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ') { c } else { '_' }).take(100).collect();
+    let plain = if plain.trim_matches(|c| c == '.' || c == ' ' || c == '_').is_empty() { fallback.to_owned() } else { plain };
+    let mut encoded = String::new();
+    for b in name.bytes().take(300) {
+        if b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_') {
+            encoded.push(char::from(b));
+        } else {
+            encoded.push_str(&format!("%{b:02X}"));
+        }
+    }
+    format!("attachment; filename=\"{plain}\"; filename*=UTF-8''{encoded}")
+}
+
+/// `GET /api/v1/messages/{m}/attachments/{n}`: one attachment, always as a download of unknown type (what the sender says it is decides nothing), never a page of this origin.
+async fn attachment(app: &WebmailApp, req: Request) -> Response {
+    let mb = match mailbox(app, &req).await {
+        Ok(m) => m,
+        Err(r) => return r,
+    };
+    let Some(id) = message_id(&req) else { return error(404, "not_found") };
+    let Some(n) = req.param("n").and_then(|n| n.parse::<usize>().ok()) else { return error(404, "not_found") };
+    let raw = match mb.get_raw(id).await {
+        Ok(r) => r,
+        Err(e) => return fail(&e),
+    };
+    let Some((a, bytes)) = mail::attachment(&raw, n) else { return error(404, "not_found") };
+    Response::new(200)
+        .with_header("content-type", "application/octet-stream")
+        .with_header("content-disposition", disposition(a.name.as_deref().unwrap_or(""), &format!("attachment-{n}")))
+        .with_header("x-content-type-options", "nosniff")
+        .with_header("content-security-policy", "sandbox; default-src 'none'")
+        .with_header("cache-control", "no-store")
+        .with_body(bytes)
+}
+
 pub fn routes(app: Arc<WebmailApp>, router: Router) -> Router {
     macro_rules! route {
         ($router:expr, $path:expr, $f:ident) => {{
@@ -292,5 +329,6 @@ pub fn routes(app: Arc<WebmailApp>, router: Router) -> Router {
     let router = route!(router, "/api/v1/folders/{f}/messages", messages);
     let router = route!(router, "/api/v1/messages/{m}", message);
     let router = route!(router, "/api/v1/messages/{m}/raw", raw);
-    route!(router, "/api/v1/messages/{m}/html", html)
+    let router = route!(router, "/api/v1/messages/{m}/html", html);
+    route!(router, "/api/v1/messages/{m}/attachments/{n}", attachment)
 }

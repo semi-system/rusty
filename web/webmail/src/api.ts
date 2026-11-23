@@ -95,6 +95,7 @@ export interface Api {
   withdraw(id: number): Promise<void>;
   rawUrl(id: number): string;
   htmlUrl(id: number): string;
+  attachmentUrl(id: number, n: number): string;
 }
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
@@ -155,6 +156,7 @@ export function createApi(doFetch: Fetch = (i, init) => fetch(i, init)): Api {
     },
     rawUrl: (id) => `/api/v1/messages/${id}/raw`,
     htmlUrl: (id) => `/api/v1/messages/${id}/html`,
+    attachmentUrl: (id, n) => `/api/v1/messages/${id}/attachments/${n}`,
   };
 }
 

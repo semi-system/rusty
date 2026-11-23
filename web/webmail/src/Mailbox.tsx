@@ -232,9 +232,12 @@ export const Mailbox: Component<{ api: Api; address: string; onSignOut: () => vo
                   <h3>{t('message.attachments')}</h3>
                   <ul class="attachments">
                     <For each={m().attachments}>
-                      {(a) => (
+                      {(a, n) => (
                         <li>
-                          {a.name ?? a.content_type} <span class="when">{size(a.size)}</span>
+                          <a href={props.api.attachmentUrl(m().id, n())} download="">
+                            {a.name ?? a.content_type}
+                          </a>{' '}
+                          <span class="when">{size(a.size)}</span>
                         </li>
                       )}
                     </For>

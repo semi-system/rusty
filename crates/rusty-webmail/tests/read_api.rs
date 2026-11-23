@@ -222,6 +222,15 @@ async fn the_html_of_a_message_is_served_only_for_a_sandboxed_frame_and_a_messag
     assert!(csp.starts_with("sandbox ") && !csp.contains("allow-scripts") && csp.contains("default-src 'none'") && csp.contains("img-src data:") && csp.contains("frame-ancestors 'self'"), "{csp}");
     assert_eq!(h.header("x-content-type-options").as_deref(), Some("nosniff"));
     assert!(h.text().contains("<b>there</b>"));
+    // An attachment is a download of unknown type, with a safe file name.
+    let with_file = call(r.addr, "GET", "/api/v1/folders/1/messages?limit=1", &c, None).await.json()["items"][0]["id"].as_i64().unwrap();
+    let file = call(r.addr, "GET", &format!("/api/v1/messages/{with_file}/attachments/0"), &c, None).await;
+    assert_eq!(file.status, 200);
+    assert_eq!((file.header("content-type").as_deref(), file.text().as_str()), (Some("application/octet-stream"), "Hello world!"));
+    assert_eq!(file.header("content-disposition").as_deref(), Some("attachment; filename=\"a.pdf\"; filename*=UTF-8''a.pdf"));
+    assert_eq!(file.header("x-content-type-options").as_deref(), Some("nosniff"));
+    assert_eq!(call(r.addr, "GET", &format!("/api/v1/messages/{with_file}/attachments/1"), &c, None).await.status, 404);
+    assert_eq!(call(r.addr, "GET", &format!("/api/v1/messages/{with_file}/attachments/x"), &c, None).await.status, 404);
     // A message with plain text only has no HTML to show, and nothing is served without a session.
     let plain = call(r.addr, "GET", "/api/v1/folders/1/messages", &c, None).await.json()["items"][0]["id"].as_i64().unwrap();
     assert_eq!(call(r.addr, "GET", &format!("/api/v1/messages/{plain}/html"), &c, None).await.status, 404);

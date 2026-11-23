@@ -49,6 +49,7 @@ function api(over: Partial<Api> = {}): Api {
     withdraw: vi.fn().mockResolvedValue(undefined),
     rawUrl: (id: number) => `/api/v1/messages/${id}/raw`,
     htmlUrl: (id: number) => `/api/v1/messages/${id}/html`,
+    attachmentUrl: (id: number, n: number) => `/api/v1/messages/${id}/attachments/${n}`,
     ...over,
   };
 }
