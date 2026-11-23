@@ -205,7 +205,7 @@ grep -q '^  prom_data:' "$mp" && grep -q '^  am_data:' "$mp" || fail "monitoring
 grep -q 'api_url_file: /run/secrets/alert_url' "$me/alertmanager.yml" && grep -q 'repeat_interval: 2h' "$me/alertmanager.yml" || fail "monitoring: the Alertmanager configuration is not the inventory's"
 ! grep -rq "secret-token" "$mp" "$me" || fail "monitoring: the alert URL is in the stack file or a config (it belongs in the secret)"
 grep -qxF 'allowed_hosts = ["tasks.prometheus"]' "$me/admin.toml" || fail "monitoring: the admin web does not let Prometheus scrape it"
-grep -qF 'targets: ["admin:9100"]' "$me/prometheus.yml" || fail "monitoring: Prometheus does not scrape the admin web"
+grep -qF 'targets: ["tasks.admin:9100"]' "$me/prometheus.yml" || fail "monitoring: Prometheus does not scrape the admin web"
 ! grep -q "^  prometheus:" "$tmp/pilot.stack.yaml" || fail "monitoring: a stack without MONITORING has Prometheus"
 
 scenario adminproxy "$EXT"$'\nEDGE=prost\nTLS_MODE=self\nADMIN_PROXY=1\nREPLICAS_DEFAULT=1' "edge admin" "certd db s3"
