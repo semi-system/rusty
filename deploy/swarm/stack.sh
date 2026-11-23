@@ -711,13 +711,16 @@ cmd_backup_verify() { # [DUMP-FILE]  (default: the newest backup)
 # A systemd timer on the Manager: a backup every night (the newest BACKUP_KEEP, default 14, are kept), then the drill on it.
 cmd_backup_install_timer() {
   local self env_file s="" unit=/etc/systemd/system/rusty-swarm-backup keep="${BACKUP_KEEP:-14}" blobs=""
+  local runas=""
   [ "$(node_field "$(manager_name)" 2)" = local ] || die "backup install-timer: only for a Manager reached as 'local' (run this tool on it). From elsewhere: run '$0 backup --keep $keep' from cron"
   command -v systemctl >/dev/null 2>&1 || die "backup install-timer: no systemd here: run 'backup' from cron"
   [[ "$keep" =~ ^[1-9][0-9]*$ ]] || die "backup install-timer: BACKUP_KEEP is a number of backups (default 14)"
   [ "$S3_IN_STACK" != 1 ] || blobs=" --with-blobs"
   [ "$(id -u)" = 0 ] || s="sudo -n"
+  # The backups belong to whoever runs this tool (the docker group), not to root: the unit runs as that user.
+  if [ "$(id -u)" != 0 ]; then runas="User=$(id -un)"$'\n'; elif [ -n "${SUDO_USER:-}" ]; then runas="User=$SUDO_USER"$'\n'; fi
   self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"; env_file="$(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
-  printf '[Unit]\nDescription=Rusty swarm: backup and drill\n\n[Service]\nType=oneshot\nEnvironment=HOME=%s\nExecStart=%s --env %s backup --keep %s%s\nExecStart=%s --env %s backup verify\n' "$HOME" "$self" "$env_file" "$keep" "$blobs" "$self" "$env_file" | $s tee "$unit.service" >/dev/null
+  printf '[Unit]\nDescription=Rusty swarm: backup and drill\n\n[Service]\nType=oneshot\n%sEnvironment=HOME=%s\nExecStart=%s --env %s backup --keep %s%s\nExecStart=%s --env %s backup verify\n' "$runas" "$HOME" "$self" "$env_file" "$keep" "$blobs" "$self" "$env_file" | $s tee "$unit.service" >/dev/null
   printf '[Unit]\nDescription=Rusty swarm: backup every night\n\n[Timer]\nOnCalendar=*-*-* 02:30:00\nPersistent=true\nRandomizedDelaySec=900\n\n[Install]\nWantedBy=timers.target\n' | $s tee "$unit.timer" >/dev/null
   $s systemctl daemon-reload && $s systemctl enable --now rusty-swarm-backup.timer >/dev/null
   echo "backup install-timer: rusty-swarm-backup.timer makes a backup every night at 02:30 (keeping $keep) and checks it by restoring it into a scratch database"
