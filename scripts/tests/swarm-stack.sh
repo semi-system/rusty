@@ -208,6 +208,19 @@ grep -qxF 'allowed_hosts = ["tasks.prometheus"]' "$me/admin.toml" || fail "monit
 grep -qF 'targets: ["tasks.admin:9100"]' "$me/prometheus.yml" || fail "monitoring: Prometheus does not scrape the admin web"
 ! grep -q "^  prometheus:" "$tmp/pilot.stack.yaml" || fail "monitoring: a stack without MONITORING has Prometheus"
 
+scenario limits "$EXT"$'
+EDGE=prost
+TLS_MODE=self
+PROST_MAX_PER_IP=500
+PROST_CONN_RATE=200
+PROST_CONN_BURST=1000
+REPLICAS_DEFAULT=1' "edge" "certd db s3"
+lq="$tmp/state-limits/stack/etc/prost-edge.toml"
+no_placeholders "$lq"
+grep -q '^max_connections_per_ip = 500$' "$lq" && grep -q 'connections_per_second=200, burst=1000,' "$lq" || fail "limits: the per-address limits of the edge are not the inventory's"
+grep -q '^max_connections_per_ip = 50$' "$pe/prost-edge.toml" && grep -q 'connections_per_second=10, burst=100,' "$pe/prost-edge.toml" || fail "prost: the default per-address limits changed"
+prost_check limits
+
 scenario adminproxy "$EXT"$'\nEDGE=prost\nTLS_MODE=self\nADMIN_PROXY=1\nREPLICAS_DEFAULT=1' "edge admin" "certd db s3"
 ap="$tmp/state-adminproxy/stack/etc"
 grep -q '^proxy_protocol = true' "$ap/admin.toml" || fail "adminproxy: the admin web does not read the PROXY header"
@@ -275,6 +288,7 @@ refuse "monitoring without the URL file" 'MONITORING=1'
 refuse "monitoring with a URL file that is not a URL" 'MONITORING=1
 ALERT_URL_FILE=/etc/hostname'
 refuse "a bad alert kind" 'ALERT_KIND=sms'
+refuse "a per-address limit of zero" 'PROST_MAX_PER_IP=0'
 refuse "a bad image" 'PROST_IMAGE="Prost Latest"'
 echo "  ok    bad values are refused"
 # For a look at what the tool rendered (SWARM_STACK_KEEP=DIR): the Prost edge configuration of the scenario "prost".
