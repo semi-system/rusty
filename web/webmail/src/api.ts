@@ -105,6 +105,8 @@ export interface Api {
   appPasswords(): Promise<AppPassword[]>;
   createAppPassword(label: string, password: string): Promise<{ id: number; label: string; secret: string }>;
   revokeAppPassword(id: number): Promise<void>;
+  settings(): Promise<{ signature: string }>;
+  saveSettings(signature: string): Promise<{ signature: string }>;
 }
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
@@ -171,6 +173,8 @@ export function createApi(doFetch: Fetch = (i, init) => fetch(i, init)): Api {
     revokeAppPassword: async (id) => {
       await call('DELETE', `/api/v1/app-passwords/${id}`);
     },
+    settings: () => call('GET', '/api/v1/settings'),
+    saveSettings: (signature) => call('PUT', '/api/v1/settings', { signature }),
   };
 }
 

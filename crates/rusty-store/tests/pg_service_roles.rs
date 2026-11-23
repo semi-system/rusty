@@ -115,6 +115,8 @@ async fn each_service_keeps_to_its_own_writes() {
         ("rusty_webmail", "jobs", "INSERT", false),
         // app passwords: made and revoked by the webmail, read (and noted as used) by the services that check a login, never by the others
         ("rusty_webmail", "app_passwords", "DELETE", true),
+        ("rusty_webmail", "webmail_settings", "UPDATE", true),
+        ("rusty_imap", "webmail_settings", "SELECT", false),
         ("rusty_imap", "app_passwords", "SELECT", true),
         ("rusty_submission", "app_passwords", "SELECT", true),
         ("rusty_imap", "app_passwords", "INSERT", false),
