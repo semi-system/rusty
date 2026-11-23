@@ -1,6 +1,6 @@
 # Design: an authoritative DNS server for the hosted domains (`rusty-dns`)
 
-Status: **proposal for the owner's review**; the owner asked for it on 2026-11-16 (together with the filters). Nothing here is built. Rule of this project: no service is added without its image, its trust boundary and its behaviour when it is down written first. This document is only about the **authoritative** side (answering for tenants' zones); the recursive resolver (Unbound) is in `design-filters-and-resolver.md`.
+Status: **proposal for the owner's review**; the owner asked for it on 2026-11-16 (together with the filters). Step 1 of section 7 is built (2026-11-24): the pure answer engine (`crates/rusty-dns`: zones, `answer`, its tests); nothing else is. Rule of this project: no service is added without its image, its trust boundary and its behaviour when it is down written first. This document is only about the **authoritative** side (answering for tenants' zones); the recursive resolver (Unbound) is in `design-filters-and-resolver.md`.
 
 ## 1. What it is for
 
