@@ -32,6 +32,8 @@ struct SendBody {
     #[serde(default)]
     text: String,
     in_reply_to: Option<String>,
+    /// The draft this message was made from: it is removed once the message is queued.
+    draft_id: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -46,6 +48,7 @@ async fn send(app: &WebmailApp, req: Request) -> Response {
         Err(r) => return r,
     };
     let Ok(b) = serde_json::from_slice::<SendBody>(&req.body) else { return error(400, "invalid") };
+    let draft_id = b.draft_id;
     let draft = Draft { to: b.to, cc: b.cc, bcc: b.bcc, subject: b.subject, text: b.text, in_reply_to: b.in_reply_to };
     let composed = match compose::build(&session.address, &draft, compose::now()) {
         Ok(c) => c,
@@ -63,7 +66,12 @@ async fn send(app: &WebmailApp, req: Request) -> Response {
         Err(_) => return error(503, "busy"),
     };
     match app.outbox.enqueue(session.account_id(), &session.address, blob.as_str(), size, &composed.recipients, &composed.subject).await {
-        Ok(id) => json(202, &Queued { id }),
+        Ok(id) => {
+            if let Some(d) = draft_id {
+                remove_draft(app, session.account_id(), d).await;
+            }
+            json(202, &Queued { id })
+        }
         Err(Error::Quota(_)) => error(429, "outbox_full"),
         Err(_) => error(503, "busy"),
     }
@@ -132,6 +140,72 @@ pub fn routes(app: Arc<WebmailApp>, router: Router) -> Router {
         }};
     }
     let router = route!(router, Method::Post, "/api/v1/send", send);
+    let router = route!(router, Method::Post, "/api/v1/drafts", save_draft);
     let router = route!(router, Method::Get, "/api/v1/outbox", outbox);
     route!(router, Method::Delete, "/api/v1/outbox/{id}", discard)
+}
+
+/// The Drafts folder of the account, and the draft `id` in it if it is one.
+async fn drafts_of(app: &WebmailApp, account: rusty_core::AccountId) -> Option<(rusty_store::Mailbox, rusty_core::FolderId)> {
+    let mb = app.hub.open_for(account).await.ok()?;
+    let folder = mb.list_folders().await.ok()?.into_iter().find(|f| f.role == "drafts")?.id;
+    Some((mb, folder))
+}
+
+/// Remove a draft that was sent or replaced. Only a message of the Drafts folder is removed, whatever id the request carries; a failure leaves the draft, which is the safe side.
+async fn remove_draft(app: &WebmailApp, account: rusty_core::AccountId, id: i64) {
+    let Some((mb, folder)) = drafts_of(app, account).await else { return };
+    let id = rusty_core::MessageId(id);
+    if matches!(mb.get_message(id).await, Ok(d) if d.folder == folder && !d.deleted) {
+        let _ = mb.expunge(id).await;
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DraftBody {
+    /// The draft this one replaces.
+    id: Option<i64>,
+    #[serde(default)]
+    to: Vec<String>,
+    #[serde(default)]
+    cc: Vec<String>,
+    #[serde(default)]
+    bcc: Vec<String>,
+    #[serde(default)]
+    subject: String,
+    #[serde(default)]
+    text: String,
+    in_reply_to: Option<String>,
+}
+
+/// `POST /api/v1/drafts`: keep what is typed in the Drafts folder (replacing the draft `id` when there is one); answers the id of the new draft.
+async fn save_draft(app: &WebmailApp, req: Request) -> Response {
+    let session = match app.require(&req, true).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let Ok(b) = serde_json::from_slice::<DraftBody>(&req.body) else { return error(400, "invalid") };
+    let replaces = b.id;
+    let draft = Draft { to: b.to, cc: b.cc, bcc: b.bcc, subject: b.subject, text: b.text, in_reply_to: b.in_reply_to };
+    let composed = match compose::build_draft(&session.address, &draft, compose::now()) {
+        Ok(c) => c,
+        Err(Invalid::NoRecipient) => return error(400, "no_recipient"),
+        Err(Invalid::TooManyRecipients) => return error(400, "too_many_recipients"),
+        Err(Invalid::Address) => return error(400, "bad_address"),
+        Err(Invalid::Subject | Invalid::Reference) => return error(400, "invalid"),
+    };
+    if composed.bytes.len() > app.max_message_bytes {
+        return error(413, "too_large");
+    }
+    let Some((mb, folder)) = drafts_of(app, session.account_id()).await else { return error(503, "busy") };
+    let kept = match mb.append(folder, Bytes::from(composed.bytes), rusty_core::Flags::DRAFT | rusty_core::Flags::SEEN).await {
+        Ok(r) => r,
+        Err(Error::Quota(_)) => return error(413, "too_large"),
+        Err(_) => return error(503, "busy"),
+    };
+    if let Some(old) = replaces {
+        remove_draft(app, session.account_id(), old).await;
+    }
+    json(200, &Queued { id: kept.id.0 })
 }

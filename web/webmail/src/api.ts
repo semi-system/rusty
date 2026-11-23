@@ -54,6 +54,7 @@ export interface Message {
   from: string;
   to: string;
   cc: string;
+  bcc: string;
   subject: string;
   message_id: string;
   text: string;
@@ -78,6 +79,8 @@ export interface Draft {
   subject: string;
   text: string;
   in_reply_to?: string;
+  /// The draft this was made from; it is removed when the message is queued.
+  draft_id?: number;
 }
 export interface AppPassword {
   id: number;
@@ -97,6 +100,7 @@ export interface Api {
   actions(ids: number[], action: Action, folder?: number): Promise<{ applied: number; missing: number[] }>;
   emptyFolder(folder: number): Promise<void>;
   send(draft: Draft): Promise<{ id: number }>;
+  saveDraft(draft: Draft, replaces?: number): Promise<{ id: number }>;
   outbox(): Promise<OutboxItem[]>;
   withdraw(id: number): Promise<void>;
   rawUrl(id: number): string;
@@ -159,6 +163,7 @@ export function createApi(doFetch: Fetch = (i, init) => fetch(i, init)): Api {
       await call('POST', `/api/v1/folders/${folder}/empty`);
     },
     send: (draft) => call('POST', '/api/v1/send', draft),
+    saveDraft: (draft, replaces) => call('POST', '/api/v1/drafts', replaces === undefined ? draft : { ...draft, id: replaces }),
     outbox: async () => (await call<{ items: OutboxItem[] }>('GET', '/api/v1/outbox')).items,
     withdraw: async (id) => {
       await call('DELETE', `/api/v1/outbox/${id}`);

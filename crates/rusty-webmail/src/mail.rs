@@ -20,6 +20,7 @@ pub struct Headers {
     pub from: String,
     pub to: String,
     pub cc: String,
+    pub bcc: String,
     pub subject: String,
     pub date: String,
     pub message_id: String,
@@ -343,7 +344,7 @@ pub fn view(raw: &[u8]) -> View {
     let (head, _) = split(raw);
     let h = parse_headers(head);
     let get = |n: &str| decode_words(header(&h, n).unwrap_or(""));
-    let headers = Headers { from: get("from"), to: get("to"), cc: get("cc"), subject: get("subject"), date: header(&h, "date").unwrap_or("").to_owned(), message_id: header(&h, "message-id").unwrap_or("").to_owned() };
+    let headers = Headers { from: get("from"), to: get("to"), cc: get("cc"), bcc: get("bcc"), subject: get("subject"), date: header(&h, "date").unwrap_or("").to_owned(), message_id: header(&h, "message-id").unwrap_or("").to_owned() };
     let mut w = Walk { parts: 0, text: None, truncated: false, html_seen: false, html: None, attachments: Vec::new(), want: None, picked: None };
     walk(raw, 0, &mut w);
     View { headers, html_only: w.text.is_none() && w.html_seen, text_truncated: w.truncated, text: w.text.unwrap_or_default(), html: w.html, attachments: w.attachments }

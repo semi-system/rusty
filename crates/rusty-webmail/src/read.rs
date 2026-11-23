@@ -181,6 +181,8 @@ struct MessageJson {
     from: String,
     to: String,
     cc: String,
+    /// Only a draft has one.
+    bcc: String,
     subject: String,
     message_id: String,
     /// The plain text of the message; empty when it has none.
@@ -223,6 +225,7 @@ async fn message(app: &WebmailApp, req: Request) -> Response {
         from: v.headers.from,
         to: v.headers.to,
         cc: v.headers.cc,
+        bcc: v.headers.bcc,
         subject: v.headers.subject,
         message_id: v.headers.message_id,
         text: v.text,
