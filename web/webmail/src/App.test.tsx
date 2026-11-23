@@ -50,6 +50,9 @@ function api(over: Partial<Api> = {}): Api {
     rawUrl: (id: number) => `/api/v1/messages/${id}/raw`,
     htmlUrl: (id: number) => `/api/v1/messages/${id}/html`,
     attachmentUrl: (id: number, n: number) => `/api/v1/messages/${id}/attachments/${n}`,
+    appPasswords: vi.fn().mockResolvedValue([]),
+    createAppPassword: vi.fn().mockResolvedValue({ id: 1, label: 'Phone', secret: 'abcd-efgh-jkmn-pqrs' }),
+    revokeAppPassword: vi.fn().mockResolvedValue(undefined),
     ...over,
   };
 }
@@ -109,6 +112,19 @@ describe('the webmail page', () => {
     expect(frame.getAttribute('sandbox')).toBe('allow-popups allow-popups-to-escape-sandbox');
     expect(frame.getAttribute('src')).toBe('/api/v1/messages/2/html');
     expect(frame.getAttribute('referrerpolicy')).toBe('no-referrer');
+  });
+
+  it('makes an app password after confirming the password and shows the secret once', async () => {
+    const a = api({ me: vi.fn().mockResolvedValue({ address: 'alice@one.test', csrf: 'tok' }) });
+    render(() => <App api={a} />);
+    fireEvent.click(await screen.findByText(en['folder.settings']));
+    fireEvent.input(await screen.findByLabelText(en['settings.apppw.label']), { target: { value: 'Phone' } });
+    fireEvent.input(screen.getByLabelText(en['settings.apppw.confirm']), { target: { value: 'my-password-1' } });
+    fireEvent.submit(screen.getByLabelText(en['settings.apppw.label']).closest('form') as HTMLFormElement);
+    expect(await screen.findByText('abcd-efgh-jkmn-pqrs')).toBeTruthy();
+    expect(a.createAppPassword).toHaveBeenCalledWith('Phone', 'my-password-1');
+    fireEvent.click(screen.getByText(en['settings.apppw.done']));
+    await waitFor(() => expect(screen.queryByText('abcd-efgh-jkmn-pqrs')).toBeNull());
   });
 
   it('deleting removes the message from the list', async () => {
