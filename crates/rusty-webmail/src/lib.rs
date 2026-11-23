@@ -14,4 +14,5 @@ pub mod run;
 pub mod send;
 pub mod compose;
 pub mod session;
+pub mod web;
 pub mod write;
