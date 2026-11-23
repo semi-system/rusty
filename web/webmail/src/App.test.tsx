@@ -55,6 +55,10 @@ function api(over: Partial<Api> = {}): Api {
 
     settings: vi.fn().mockResolvedValue({ signature: 'Alice' }),
     saveSettings: vi.fn().mockImplementation(async (s: string) => ({ signature: s })),
+    totpStatus: vi.fn().mockResolvedValue({ available: true, enabled: false, pending: false }),
+    totpBegin: vi.fn().mockResolvedValue({ secret: 'JBSWY3DPEHPK3PXP', uri: 'otpauth://totp/x' }),
+    totpConfirm: vi.fn().mockResolvedValue({ recovery: ['abcde-fghjk'] }),
+    totpDisable: vi.fn().mockResolvedValue(undefined),
     appPasswords: vi.fn().mockResolvedValue([]),
     createAppPassword: vi.fn().mockResolvedValue({ id: 1, label: 'Phone', secret: 'abcd-efgh-jkmn-pqrs' }),
     revokeAppPassword: vi.fn().mockResolvedValue(undefined),
@@ -71,7 +75,7 @@ describe('the webmail page', () => {
     fireEvent.input(screen.getByLabelText(en['signin.password']), { target: { value: 'nope' } });
     fireEvent.submit(address.closest('form') as HTMLFormElement);
     expect((await screen.findByRole('alert')).textContent).toBe(en['error.unauthorized']);
-    expect(a.signIn).toHaveBeenCalledWith('alice@one.test', 'nope');
+    expect(a.signIn).toHaveBeenCalledWith('alice@one.test', 'nope', undefined);
   });
 
   it('opens the Inbox of a signed-in person, reads a message and marks it as read', async () => {
@@ -156,6 +160,23 @@ describe('the webmail page', () => {
     fireEvent.input(box, { target: { value: 'Alice B.' } });
     fireEvent.submit(box.closest('form') as HTMLFormElement);
     await waitFor(() => expect(a.saveSettings).toHaveBeenCalledWith('Alice B.'));
+  });
+
+  it('asks for the code after the password when the account has two-step sign-in, then signs in', async () => {
+    const err = new ApiError(401, 'second_factor');
+    const signIn = vi.fn().mockRejectedValueOnce(err).mockResolvedValueOnce({ address: 'alice@one.test', csrf: 'tok' });
+    const a = api({ signIn });
+    render(() => <App api={a} />);
+    const address = await screen.findByLabelText(en['signin.address']);
+    fireEvent.input(address, { target: { value: 'alice@one.test' } });
+    fireEvent.input(screen.getByLabelText(en['signin.password']), { target: { value: 'pw-1' } });
+    fireEvent.submit(address.closest('form') as HTMLFormElement);
+    const code = await screen.findByLabelText(en['signin.code']);
+    expect(screen.queryByRole('alert')).toBeNull();
+    fireEvent.input(code, { target: { value: '123456' } });
+    fireEvent.submit(code.closest('form') as HTMLFormElement);
+    await waitFor(() => expect(signIn).toHaveBeenLastCalledWith('alice@one.test', 'pw-1', '123456'));
+    expect(await screen.findByText(en['compose.new'])).toBeTruthy();
   });
 
   it('deleting removes the message from the list', async () => {

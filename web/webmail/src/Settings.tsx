@@ -3,6 +3,7 @@ import type { Api } from './api';
 import { errorText } from './errors';
 import { when } from './format';
 import { t } from './i18n';
+import { TwoStep } from './TwoStep';
 
 /** The app passwords of the account: one per device or program, shown once when made, revoked one by one. The mail protocols accept them; this page never does. */
 export const Settings: Component<{ api: Api; onSignature: () => void }> = (props) => {
@@ -72,6 +73,7 @@ export const Settings: Component<{ api: Api; onSignature: () => void }> = (props
           <span class="note" role="status">{t('settings.signature.saved')}</span>
         </Show>
       </form>
+      <TwoStep api={props.api} />
       <h2>{t('settings.apppw.title')}</h2>
       <p class="note">{t('settings.apppw.about')}</p>
       <Show when={secret() !== ''}>

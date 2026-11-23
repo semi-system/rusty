@@ -93,7 +93,7 @@ async fn create(app: &WebmailApp, req: Request) -> Response {
     }
     match app.auth.confirm(req.peer.addr.ip(), &session.address, &b.password).await {
         Ok(a) if a == session.account_id() => {}
-        Ok(_) | Err(SignInError::Invalid) => return error(401, "unauthorized"),
+        Ok(_) | Err(SignInError::Invalid | SignInError::SecondFactor) => return error(401, "unauthorized"),
         Err(SignInError::Throttled { retry_after_secs }) => return error(429, "throttled").with_header("retry-after", retry_after_secs.max(1).to_string()),
         Err(SignInError::Busy | SignInError::Unavailable) => return error(503, "busy"),
     }

@@ -79,7 +79,8 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
         None => Arc::new(AuthThrottle::from_limits(&cfg.limits)),
     };
     let authenticator = Arc::new(LocalAuthenticator::new(directory.clone()).await?);
-    let auth = WebmailAuth::new(authenticator, directory.clone(), sessions, throttle);
+    let second = crate::second_factor::SecondFactor::new(repos.totp.clone(), webmail.totp_key_file.as_deref(), &FileSecretSource::new())?;
+    let auth = WebmailAuth::new(authenticator, directory.clone(), sessions, throttle, second);
     // The mail: the platform blob store (a filesystem directory, or the S3 bucket of `[blob_s3]`); a domain's own store needs a key this service does not hold, so its messages answer as unavailable.
     let blobs: Arc<dyn BlobStore> = match &cfg.blob_s3 {
         Some(s3) => Arc::new(rusty_s3::platform_store(s3, &FileSecretSource::new())?),
@@ -104,7 +105,8 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     let router = crate::write::routes(app.clone(), router);
     let router = crate::send::routes(app.clone(), router);
     let router = crate::apppw::routes(app.clone(), router);
-    let router = crate::settings::routes(app, router);
+    let router = crate::settings::routes(app.clone(), router);
+    let router = crate::second::routes(app, router);
     // The front end embedded at build time answers every other path; without one this is an API server only.
     let router = match crate::web::handler() {
         Some(h) => router.fallback(h),

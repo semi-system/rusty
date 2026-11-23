@@ -88,11 +88,16 @@ export interface AppPassword {
   created: number;
   last_used: number | null;
 }
+export interface TotpStatus {
+  available: boolean;
+  enabled: boolean;
+  pending: boolean;
+}
 export type Action = 'read' | 'unread' | 'flag' | 'unflag' | 'move' | 'copy' | 'delete';
 
 export interface Api {
   me(): Promise<Me>;
-  signIn(address: string, password: string): Promise<Me>;
+  signIn(address: string, password: string, code?: string): Promise<Me>;
   signOut(): Promise<void>;
   folders(): Promise<Folder[]>;
   messages(folder: number, before?: number): Promise<Page>;
@@ -109,6 +114,10 @@ export interface Api {
   appPasswords(): Promise<AppPassword[]>;
   createAppPassword(label: string, password: string): Promise<{ id: number; label: string; secret: string }>;
   revokeAppPassword(id: number): Promise<void>;
+  totpStatus(): Promise<TotpStatus>;
+  totpBegin(password: string): Promise<{ secret: string; uri: string }>;
+  totpConfirm(code: string): Promise<{ recovery: string[] }>;
+  totpDisable(password: string, code: string): Promise<void>;
   settings(): Promise<{ signature: string }>;
   saveSettings(signature: string): Promise<{ signature: string }>;
 }
@@ -152,7 +161,7 @@ export function createApi(doFetch: Fetch = (i, init) => fetch(i, init)): Api {
   };
   return {
     me: async () => remember(await call<Me>('GET', '/api/v1/me')),
-    signIn: async (address, password) => remember(await call<Me>('POST', '/api/v1/session', { address, password })),
+    signIn: async (address, password, code) => remember(await call<Me>('POST', '/api/v1/session', code === undefined ? { address, password } : { address, password, code })),
     signOut: async () => {
       await call('DELETE', '/api/v1/session');
       csrf = '';
@@ -177,6 +186,12 @@ export function createApi(doFetch: Fetch = (i, init) => fetch(i, init)): Api {
     createAppPassword: (label, password) => call('POST', '/api/v1/app-passwords', { label, password }),
     revokeAppPassword: async (id) => {
       await call('DELETE', `/api/v1/app-passwords/${id}`);
+    },
+    totpStatus: () => call('GET', '/api/v1/totp'),
+    totpBegin: (password) => call('POST', '/api/v1/totp/begin', { password }),
+    totpConfirm: (code) => call('POST', '/api/v1/totp/confirm', { code }),
+    totpDisable: async (password, code) => {
+      await call('POST', '/api/v1/totp/disable', { password, code });
     },
     settings: () => call('GET', '/api/v1/settings'),
     saveSettings: (signature) => call('PUT', '/api/v1/settings', { signature }),

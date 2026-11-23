@@ -1,6 +1,6 @@
 # Two-factor sign-in for the webmail (TOTP)
 
-Status: **design** (2026-11-24), not built.
+Status: **built** (migration 0054, 2026-11-24): the webmail routes, the sign-in check, the refusal on the mail protocols, the Settings screen and the swarm kit (`webmail_totp` key). Not built: the QR code, administrator reset (`rustyctl totp-reset`).
 
 ## What
 

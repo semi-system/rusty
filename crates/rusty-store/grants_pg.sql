@@ -111,6 +111,7 @@ BEGIN
     GRANT SELECT ON accounts, domains, aliases, domain_aliases, lists, list_members, plans, address_owners, mailboxes, folders, deliveries, blob_stores, blob_backends, sealed_secrets TO rusty_submission;
     GRANT SELECT, UPDATE ON webmail_outbox TO rusty_submission;   -- what a person sent from the webmail is sent here, like a submission (docs/design-webmail.md)
     GRANT SELECT ON app_passwords TO rusty_submission;   -- a login may be with an app password (docs/design-app-passwords.md)
+    GRANT SELECT (account_id, confirmed_at) ON totp TO rusty_submission;   -- with the second factor on, the own password of the account is refused here (docs/design-2fa.md)
     GRANT UPDATE (last_used_at) ON app_passwords TO rusty_submission;
     GRANT SELECT, INSERT, UPDATE ON messages, blobs, blob_locations, jobs TO rusty_submission;
     GRANT INSERT ON keywords, change_log, deliveries TO rusty_submission;
@@ -124,6 +125,7 @@ BEGIN
     GRANT SELECT ON accounts, domains, aliases, domain_aliases, lists, list_members, plans, address_owners, mailboxes, folders, deliveries, blob_stores, blob_backends, sealed_secrets TO rusty_imap;
     GRANT UPDATE (last_login_at) ON accounts TO rusty_imap;   -- the time of the last sign-in (DirectoryRepo::record_login)
     GRANT SELECT ON app_passwords TO rusty_imap;   -- a login may be with an app password (docs/design-app-passwords.md)
+    GRANT SELECT (account_id, confirmed_at) ON totp TO rusty_imap;   -- likewise
     GRANT UPDATE (last_used_at) ON app_passwords TO rusty_imap;
     GRANT SELECT, UPDATE ON mailbox_transfers TO rusty_imap;   -- the exports and imports of the admin web are done where the mailboxes are (docs/design-mailbox-transfers.md)
     GRANT SELECT, UPDATE ON imap_migrations TO rusty_imap;   -- the worker of the move from another IMAP server (docs/design-imap-migration.md)
@@ -155,6 +157,8 @@ BEGIN
     GRANT SELECT, INSERT, DELETE ON webmail_outbox TO rusty_webmail;   -- what a person sends is queued here and read back as the outbox; the message itself is a blob (docs/design-webmail.md)
     GRANT SELECT, INSERT, DELETE ON app_passwords TO rusty_webmail;   -- the person makes and revokes their app passwords (docs/design-app-passwords.md)
     GRANT SELECT, INSERT, UPDATE ON webmail_settings TO rusty_webmail;   -- the person's own settings of the webmail: the signature (docs/design-webmail.md)
+    GRANT SELECT, INSERT, UPDATE, DELETE ON totp TO rusty_webmail;   -- the second factor of the sign-in (docs/design-2fa.md)
+    GRANT SELECT, INSERT, DELETE ON totp_recovery TO rusty_webmail;
   END IF;
 
   -- rusty_outbound: the delivery worker. Claims and finishes jobs, reads the message and the DKIM and relay settings, writes the DNS check state.
