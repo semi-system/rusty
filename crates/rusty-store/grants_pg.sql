@@ -84,7 +84,7 @@ BEGIN
   SELECT string_agg(quote_ident(column_name), ', ' ORDER BY ordinal_position) INTO cols
     FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = 'accounts' AND column_name <> 'password_hash';
-  FOREACH r IN ARRAY ARRAY['rusty_smtp_in', 'rusty_submission', 'rusty_imap', 'rusty_outbound', 'rusty_gc', 'rusty_webmail'] LOOP
+  FOREACH r IN ARRAY ARRAY['rusty_smtp_in', 'rusty_submission', 'rusty_imap', 'rusty_outbound', 'rusty_gc', 'rusty_webmail', 'rusty_dns'] LOOP
     IF to_regrole(r) IS NOT NULL THEN
       EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA public FROM %I', r);
       EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM %I', r);
@@ -159,6 +159,15 @@ BEGIN
     GRANT SELECT, INSERT, UPDATE ON webmail_settings TO rusty_webmail;   -- the person's own settings of the webmail: the signature (docs/design-webmail.md)
     GRANT SELECT, INSERT, UPDATE, DELETE ON totp TO rusty_webmail;   -- the second factor of the sign-in (docs/design-2fa.md)
     GRANT SELECT, INSERT, DELETE ON totp_recovery TO rusty_webmail;
+  END IF;
+
+  -- rusty_dns: the authoritative name server (docs/design-authoritative-dns.md). It is the most exposed service and the least trusting one: it reads the domains, the public half of the DKIM keys, the SPF include of a relay and the
+  -- extra records of the hosted domains, and nothing else. No mail, no account, no password hash, no sealed secret, no write (but the heartbeat, which the loop above grants).
+  IF to_regrole('rusty_dns') IS NOT NULL THEN
+    GRANT SELECT ON domains TO rusty_dns;
+    GRANT SELECT (domain_id, selector, algorithm, public_key_b64) ON domain_dkim_keys TO rusty_dns;
+    GRANT SELECT (domain_id, spf_include) ON domain_relays TO rusty_dns;
+    GRANT SELECT ON domain_dns_extra TO rusty_dns;
   END IF;
 
   -- rusty_outbound: the delivery worker. Claims and finishes jobs, reads the message and the DKIM and relay settings, writes the DNS check state.
