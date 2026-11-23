@@ -81,7 +81,8 @@ impl Context {
         opener: Arc<dyn StoreOpener>,
     ) -> Result<Context> {
         let directory = Directory::with_repo(repos.directory.clone());
-        let auth: Arc<dyn Authenticator> = Arc::new(LocalAuthenticator::new(directory.clone()).await?);
+        // The mail protocols also accept the app passwords of an account (docs/design-app-passwords.md); the webmail and the admin web build their own authenticator without them.
+        let auth: Arc<dyn Authenticator> = Arc::new(LocalAuthenticator::new(directory.clone()).await?.with_app_passwords(repos.app_passwords.clone()));
         let limits = MailboxLimits {
             max_message_bytes: usize::try_from(cfg.max_message_bytes).unwrap_or(usize::MAX),
             quota_bytes: None,

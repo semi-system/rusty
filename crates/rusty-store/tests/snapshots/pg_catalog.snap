@@ -24,6 +24,12 @@ COLUMN aliases.id bigint nullable=NO identity=YES/ALWAYS collation= default=
 COLUMN aliases.local_part text nullable=NO identity=NO/ collation=C default=
 COLUMN aliases.domain_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN aliases.account_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN app_passwords.id bigint nullable=NO identity=YES/ALWAYS collation= default=
+COLUMN app_passwords.account_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN app_passwords.label text nullable=NO identity=NO/ collation=C default=
+COLUMN app_passwords.hash text nullable=NO identity=NO/ collation=C default=
+COLUMN app_passwords.created_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN app_passwords.last_used_at bigint nullable=YES identity=NO/ collation= default=
 COLUMN audit_log.id bigint nullable=NO identity=YES/ALWAYS collation= default=
 COLUMN audit_log.at bigint nullable=NO identity=NO/ collation= default=
 COLUMN audit_log.actor_id bigint nullable=YES identity=NO/ collation= default=
@@ -356,6 +362,15 @@ CONSTRAINT aliases.aliases_local_part_domain_id_key UNIQUE (local_part, domain_i
 CONSTRAINT aliases.aliases_local_part_not_null NOT NULL local_part
 CONSTRAINT aliases.aliases_local_part_valid CHECK (length(local_part) > 0 AND local_part = lower(local_part))
 CONSTRAINT aliases.aliases_pkey PRIMARY KEY (id)
+CONSTRAINT app_passwords.app_passwords_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+CONSTRAINT app_passwords.app_passwords_account_id_not_null NOT NULL account_id
+CONSTRAINT app_passwords.app_passwords_created_at_not_null NOT NULL created_at
+CONSTRAINT app_passwords.app_passwords_hash_not_null NOT NULL hash
+CONSTRAINT app_passwords.app_passwords_hash_valid CHECK (length(hash) <= 200)
+CONSTRAINT app_passwords.app_passwords_id_not_null NOT NULL id
+CONSTRAINT app_passwords.app_passwords_label_not_null NOT NULL label
+CONSTRAINT app_passwords.app_passwords_label_valid CHECK (length(label) >= 1 AND length(label) <= 60)
+CONSTRAINT app_passwords.app_passwords_pkey PRIMARY KEY (id)
 CONSTRAINT audit_log.audit_log_actor_not_null NOT NULL actor
 CONSTRAINT audit_log.audit_log_actor_valid CHECK (length(actor) <= 320)
 CONSTRAINT audit_log.audit_log_at_not_null NOT NULL at
@@ -848,6 +863,8 @@ INDEX admin_grants.admin_grants_domain CREATE INDEX admin_grants_domain ON publi
 INDEX admin_grants.admin_grants_pkey CREATE UNIQUE INDEX admin_grants_pkey ON public.admin_grants USING btree (account_id)
 INDEX aliases.aliases_local_part_domain_id_key CREATE UNIQUE INDEX aliases_local_part_domain_id_key ON public.aliases USING btree (local_part, domain_id)
 INDEX aliases.aliases_pkey CREATE UNIQUE INDEX aliases_pkey ON public.aliases USING btree (id)
+INDEX app_passwords.app_passwords_account CREATE INDEX app_passwords_account ON public.app_passwords USING btree (account_id, id)
+INDEX app_passwords.app_passwords_pkey CREATE UNIQUE INDEX app_passwords_pkey ON public.app_passwords USING btree (id)
 INDEX audit_log.audit_log_at CREATE INDEX audit_log_at ON public.audit_log USING btree (at)
 INDEX audit_log.audit_log_domain CREATE INDEX audit_log_domain ON public.audit_log USING btree (domain_id, id DESC)
 INDEX audit_log.audit_log_pkey CREATE UNIQUE INDEX audit_log_pkey ON public.audit_log USING btree (id)
