@@ -13,8 +13,8 @@ use rusty_core::config::StartupConfig;
 use rusty_core::{Error, Result};
 use rusty_directory::{Directory, LocalAuthenticator};
 use rusty_http::{HttpConfig, HttpHandler, Router};
-use rusty_store::Store;
-use rusty_svc::{Accept, AuthThrottle, BoundListener, DirectTcp, DirectTls, FileSecretSource, ListenerSpec, PeerAllow, SecretSource, TlsProvider, TracingEvents};
+use rusty_store::{BlobRouter, BlobStore, BlobStores, FsBlobStore, FsStoreOpener, KindOpener, MailboxLimits, Store};
+use rusty_svc::{MailboxHub, Accept, AuthThrottle, BoundListener, DirectTcp, DirectTls, FileSecretSource, ListenerSpec, PeerAllow, SecretSource, TlsProvider, TracingEvents};
 use rusty_valkey::MemoryKv;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -79,8 +79,18 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
         None => Arc::new(AuthThrottle::from_limits(&cfg.limits)),
     };
     let authenticator = Arc::new(LocalAuthenticator::new(directory.clone()).await?);
-    let auth = WebmailAuth::new(authenticator, directory, sessions, throttle);
-    let app = Arc::new(WebmailApp { auth, public_origin: webmail.public_origin.clone(), extra_origins: webmail.extra_origins.clone() });
+    let auth = WebmailAuth::new(authenticator, directory.clone(), sessions, throttle);
+    // The mail: the platform blob store (a filesystem directory, or the S3 bucket of `[blob_s3]`); a domain's own store needs a key this service does not hold, so its messages answer as unavailable.
+    let blobs: Arc<dyn BlobStore> = match &cfg.blob_s3 {
+        Some(s3) => Arc::new(rusty_s3::platform_store(s3, &FileSecretSource::new())?),
+        None => Arc::new(FsBlobStore::open(&cfg.blob_dir).await?),
+    };
+    let stores_dir = cfg.blob_dir.parent().map_or_else(|| std::path::PathBuf::from("stores"), |p| p.join("stores"));
+    let opener = Arc::new(KindOpener::new().with_fs(Arc::new(FsStoreOpener::new(stores_dir))));
+    let stores: Arc<dyn BlobRouter> = Arc::new(BlobStores::new(blobs, repos.blob_stores.clone(), opener));
+    let limits = MailboxLimits { max_message_bytes: usize::try_from(cfg.max_message_bytes).unwrap_or(usize::MAX), quota_bytes: None };
+    let hub = MailboxHub::new(repos.mailbox.clone(), stores, limits).with_directory(directory.clone());
+    let app = Arc::new(WebmailApp { auth, hub, public_origin: webmail.public_origin.clone(), extra_origins: webmail.extra_origins.clone() });
 
     // The heartbeat of the webmail itself, for the Monitor page of the admin web.
     {
@@ -88,7 +98,8 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
         let stop = shutdown.clone();
         tokio::spawn(async move { beat.run_until(stop).await });
     }
-    let router = routes(app, Router::new());
+    let router = routes(app.clone(), Router::new());
+    let router = crate::read::routes(app, router);
     let handler = Arc::new(HttpHandler::new(router, HttpConfig::default()));
 
     let (accept, tls): (Arc<dyn Accept>, Option<TlsProvider>) = if cfg.tls.has_cert() {

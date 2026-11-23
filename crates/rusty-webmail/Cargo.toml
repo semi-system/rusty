@@ -14,6 +14,7 @@ rusty-svc = { path = "../rusty-svc" }
 rusty-valkey = { path = "../rusty-valkey" }
 rusty-http = { path = "../rusty-http" }
 rusty-runtime = { path = "../rusty-runtime" }
+rusty-s3 = { path = "../rusty-s3" }
 tokio-util = { workspace = true }
 tracing.workspace = true
 serde.workspace = true
@@ -24,6 +25,7 @@ rand_core.workspace = true
 tokio = { workspace = true, features = ["sync", "rt-multi-thread", "macros", "time"] }
 
 [dev-dependencies]
+bytes.workspace = true
 rusty-store = { path = "../rusty-store", features = ["test-fixtures"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net", "io-util"] }
 tempfile.workspace = true
