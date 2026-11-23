@@ -16,7 +16,7 @@ TLS_MODE="${TLS_MODE:-acme}"
 # `admin` is one task unless REPLICAS_ADMIN says more: its sessions need the shared key-value store (VALKEY=1) and the one-time setup token and the live-update hub belong to one process.
 REPLICAS_DEFAULT="${REPLICAS_DEFAULT:-2}"
 REPLICAS_ADMIN="${REPLICAS_ADMIN:-1}"
-replicas_of() { case "$1" in admin) echo "$REPLICAS_ADMIN" ;; *) echo "$REPLICAS_DEFAULT" ;; esac; }
+replicas_of() { case "$1" in admin) echo "$REPLICAS_ADMIN" ;; webmail) if [ "$VALKEY" = 1 ]; then echo "$REPLICAS_DEFAULT"; else echo 1; fi ;; *) echo "$REPLICAS_DEFAULT" ;; esac; }
 LOG_LEVEL="${LOG_LEVEL:-info}"
 declare -A SECRET_NAME=() CONFIG_NAME=()
 # shellcheck source=validate.sh
@@ -154,6 +154,12 @@ conf_admin() {
     for c in smtp-in submission imap outbound gc; do printf '[[metrics.scrape]]\nservice = "%s"\naddress = "tasks.%s:9100"\n\n' "$c" "$c"; done
   fi
 }
+# The webmail (docs/design-webmail.md): behind the edge only, which ends TLS and sends the PROXY header. No sealing or unsealing key: it opens no sealed secret.
+conf_webmail() {
+  head_common
+  printf '[webmail]\nlisten = "0.0.0.0:8090"\npublic_origin = "https://%s"\nallowed_peers = ["127.0.0.1/32"]\nallowed_hosts = ["tasks.edge", "edge"]\nproxy_protocol = true\n\n' "$WEBMAIL_HOST"
+  blk_blob; blk_valkey webmail; blk_store webmail
+}
 conf_migrate() { head_common; printf 'gc_grace_seconds = 604800\n\n'; blk_blob; blk_store gc; printf 'migrator_user = "rusty_migrator"\nmigrator_password_file = "/run/secrets/pg_migrator"\n'; }
 
 # The edge's configuration: the standalone template with the swarm's backends (every task of a service by `tasks.<service>`) and the certificates it has (self-signed here).
@@ -260,7 +266,7 @@ gen_limits() {
   [ "$S3_IN_STACK" = 0 ] || profiles="${profiles:+$profiles,}s3"
   [ "$FILTER" = 0 ] || profiles="${profiles:+$profiles,}filter"
   [ "$VALKEY" = 0 ] || profiles="${profiles:+$profiles,}valkey"
-  for s in smtp-in submission imap outbound gc admin; do [ "$(replicas_of "$s")" = 1 ] || reps="${reps:+$reps,}$s=$(replicas_of "$s")"; done
+  for s in smtp-in submission imap outbound gc admin ${WEBMAIL_HOST:+webmail}; do [ "$(replicas_of "$s")" = 1 ] || reps="${reps:+$reps,}$s=$(replicas_of "$s")"; done
   LIMITS_FILE="$STATE_DIR/stack/limits.yaml"
   bash "$HERE/../standalone/limits.sh" --total-mem-mib "$((mem / 1048576))" --total-cpus "$(awk -v n="$cpus" 'BEGIN { printf "%.2f", n / 1000000000 }')" ${profiles:+--profiles "$profiles"} ${reps:+--replicas "$reps"} \
     --out "$LIMITS_FILE" > "$STATE_DIR/stack/limits.txt" || { cat "$STATE_DIR/stack/limits.txt" >&2; die "limits: the services do not fit in the nodes (see above)"; }
@@ -356,7 +362,7 @@ cmd_prepare_configs() {
   local d="$STATE_DIR/stack/etc" s
   mkdir -p "$d"; chmod 0700 "$STATE_DIR/stack" "$d"
   gen_limits
-  for s in smtp_in submission imap outbound gc admin migrate; do
+  for s in smtp_in submission imap outbound gc admin ${WEBMAIL_HOST:+webmail} migrate; do
     ( umask 077; "conf_$s" | edge_hosts_filter > "$d/$s.toml" )
     ensure_config "$s" "$d/$s.toml"
   done
@@ -398,7 +404,7 @@ load_names() {
   need_s="${SERVICE_ROLES[*]/#/pg_} s3_access s3_secret unseal_key tls_cert tls_key"
   { [ "$TLS_MODE" != self ] || ! haproxy_is_edge; } || need_s="$need_s edge_mail_pem edge_admin_pem"
   [ "$DB_IN_STACK" != 1 ] || need_s="$need_s pg_postgres db_server_crt db_server_key"
-  need_c="smtp_in submission imap outbound gc admin migrate"
+  need_c="smtp_in submission imap outbound gc admin ${WEBMAIL_HOST:+webmail} migrate"
   ! haproxy_is_edge || need_c="$need_c haproxy"
   local t k
   [ "$DB_IN_STACK" != 1 ] || need_c="$need_c pg_hba"
@@ -441,7 +447,7 @@ gen_rusty_service() { # NAME ROLE-OF-DB NETWORKS(space) [TLS] [UNSEAL] [CONSTRAI
   local kv=0
   case "$name" in
     smtp-in) [ "$FILTER" != 1 ] || nets="$nets filter" ;;
-    submission|imap|admin) [ "$VALKEY" != 1 ] || { nets="$nets kv"; kv=1; } ;;
+    submission|imap|admin|webmail) [ "$VALKEY" != 1 ] || { nets="$nets kv"; kv=1; } ;;
   esac
   y_service_common "$name" "$(rusty_image "$name")"
   y_deploy "$(replicas_of "$name")" "$constraint" start-first "$name"
@@ -499,6 +505,7 @@ gen_stack() {
       gen_rusty_service outbound outbound "backend metrics" 0 1 'node.labels.outbound == true'
       gen_rusty_service gc gc "backend metrics" 0 1
       gen_rusty_service admin admin "app backend metrics" 0 0
+      [ -z "$WEBMAIL_HOST" ] || gen_rusty_service webmail webmail "app backend metrics" 0 0
       [ "$FILTER" = 0 ] || gen_scanner_services
       [ "$VALKEY" = 0 ] || gen_valkey_service
       [ "$MONITORING" = 0 ] || gen_monitoring_services

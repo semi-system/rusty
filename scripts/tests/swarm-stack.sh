@@ -221,6 +221,18 @@ grep -q '^max_connections_per_ip = 500$' "$lq" && grep -q 'connections_per_secon
 grep -q '^max_connections_per_ip = 50$' "$pe/prost-edge.toml" && grep -q 'connections_per_second=10, burst=100,' "$pe/prost-edge.toml" || fail "prost: the default per-address limits changed"
 prost_check limits
 
+scenario webmail "$EXT"$'\nWEBMAIL_HOST=webmail.example.org\nREPLICAS_DEFAULT=2' "edge smtp-in admin webmail" "certd"
+wp="$tmp/webmail.stack.yaml"; we="$tmp/state-webmail/stack/etc"
+grep -qx '  webmail:' "$wp" || fail "webmail: the service is missing"
+grep -q 'public_origin = "https://webmail.example.org"' "$we/webmail.toml" && grep -q '^proxy_protocol = true' "$we/webmail.toml" && grep -qF 'allowed_hosts = ["tasks.edge", "edge"]' "$we/webmail.toml" || fail "webmail: its configuration is not the inventory's"
+grep -q 'url = "postgres://rusty_webmail@' "$we/webmail.toml" || fail "webmail: it does not use its own database role"
+! grep -qE 'unsealing|\[sealing\]|unseal_key' "$we/webmail.toml" || fail "webmail: it was handed a key"
+wsvc="$(awk '/^  webmail:$/{f=1;next} /^  [a-z]/{f=0} f' "$wp")"
+! printf '%s\n' "$wsvc" | grep -q 'unseal_key' || fail "webmail: the service mounts the unsealing key"
+printf '%s\n' "$wsvc" | grep -q 'replicas: 1$' || fail "webmail: without Valkey the sessions are in the process: one task"
+! grep -qx '  webmail:' "$tmp/prost.stack.yaml" || fail "a stack without WEBMAIL_HOST has a webmail"
+echo "  ok    the webmail service (its own role, no key, one task without Valkey)"
+
 scenario adminproxy "$EXT"$'\nEDGE=prost\nTLS_MODE=self\nADMIN_PROXY=1\nREPLICAS_DEFAULT=1' "edge admin" "certd db s3"
 ap="$tmp/state-adminproxy/stack/etc"
 grep -q '^proxy_protocol = true' "$ap/admin.toml" || fail "adminproxy: the admin web does not read the PROXY header"
@@ -289,6 +301,8 @@ refuse "monitoring with a URL file that is not a URL" 'MONITORING=1
 ALERT_URL_FILE=/etc/hostname'
 refuse "a bad alert kind" 'ALERT_KIND=sms'
 refuse "a per-address limit of zero" 'PROST_MAX_PER_IP=0'
+refuse "the webmail on the admin host" 'WEBMAIL_HOST=admin.example.org'
+refuse "the webmail on something that is not a host name" 'WEBMAIL_HOST="not a host"'
 refuse "a bad image" 'PROST_IMAGE="Prost Latest"'
 echo "  ok    bad values are refused"
 # For a look at what the tool rendered (SWARM_STACK_KEEP=DIR): the Prost edge configuration of the scenario "prost".
