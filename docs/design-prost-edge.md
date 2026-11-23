@@ -50,3 +50,14 @@ Differences that matter: a certificate for **a new domain** needs a group in `pr
 * The Certificates page reading `prost-certd`'s `/certificates` (next renewal): it is a private endpoint of that container; the page still probes from outside.
 * Prost's metrics (loopback only) in the monitoring stack.
 * The standalone (non-swarm) stack stays on HAProxy.
+
+## Load test (2026-11-23, test VM: 4 CPU, 7.4 GB; the load generator ran on the same VM, from one address)
+
+The same closed-loop load against HAProxy (real ports) and the Prost pilot (offset ports); `edgeload.py` (SMTP banner and EHLO, IMAPS TLS and CAPABILITY, HTTPS GET of the admin page), the per-address limits of Prost raised so they do not take part.
+
+* **10 concurrent sessions, no errors:** SMTP 238 per second (HAProxy) against 814 (Prost); IMAPS 77 against 268 (median 107 ms against 37 ms); HTTPS 80 against 295 (median 105 ms against 33 ms). Prost uses more than one core for TLS; HAProxy's single worker is the likely cause of the gap (not checked).
+* **60 minutes at a steady moderate load on both at once:** no drift between the first and the last five minutes, no restart, no errors of the edges. Memory: Prost 4 to 27 MiB, HAProxy 25 to 59 MiB. Prost handled about four times the sessions.
+* **50 to 500 concurrent sessions from one address** cannot compare the edges: the Rusty services refuse the surplus themselves (`reason=PerIpLimit`, 40 held SMTP connections, empty banners; the admin web the same), and the edge shows it as a closed connection (HAProxy: 502, Prost: reset and 503). A fair test needs many source addresses.
+* **What was found in Prost's configuration** and set in the template: without a `passive_health` block ONE failed forward takes the only endpoint out until a probe passes, and the default `fall = 1` takes it out after ONE failed probe, so a short burst of closed connections answers every request with 503 (`no healthy endpoints`). The template now has `passive_health` (`max_fails = 20` in 5 s, `PROST_MAX_FAILS`) and `fall = 3`, `rise = 2` for every upstream. Whether this changes the 200-session figures could not be shown with a single source address.
+* The per-address limits of the edge (50 connections, 10 new SMTP connections per second with a burst of 100) are settings now: `PROST_MAX_PER_IP`, `PROST_CONN_RATE`, `PROST_CONN_BURST`. HAProxy has none at the edge.
+* Fixed limits of Prost (not in the TOML): 256 concurrent TLS handshakes, a listen backlog of 1024.
