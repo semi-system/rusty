@@ -680,8 +680,13 @@ cmd_backup() { # [DIR] [--with-keys] [--with-blobs] [--keep N] | verify [FILE] |
   else echo "backup: $dir ($(wc -c < "$dir/rusty.dump") bytes of database). The S3 bucket is not in it (add --with-blobs for the RustFS of the stack)."; fi
   # Keep the newest N (only directories this tool made: a timestamp as the name).
   if [ "$keep" -gt 0 ]; then
-    local old
-    while IFS= read -r old; do [ -z "$old" ] || { rm -rf "${out:?}/$old"; echo "backup: removed the old backup $old"; }; done < <(ls -1 "$out" 2>/dev/null | grep -E '^[0-9]{8}T[0-9]{6}Z$' | sort -r | tail -n +"$((keep + 1))")
+    local old n=0 d
+    # The directories of this tool, newest first (the names sort as the times do); the glob matches only a time stamp.
+    for d in $(printf '%s\n' "$out"/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z | sort -r); do
+      [ -d "$d" ] || continue
+      n=$((n + 1))
+      [ "$n" -le "$keep" ] || { old="${d##*/}"; rm -rf "${out:?}/$old"; echo "backup: removed the old backup $old"; }
+    done
   fi
   if [ "$keys" = 0 ]; then echo "backup: the sealing key ($STATE_DIR/keys/unseal.key) is NOT in it, on purpose: keep a copy of it somewhere else (without it the tenants' stored credentials cannot be read), or add --with-keys." >&2; fi
 }
