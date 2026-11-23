@@ -194,3 +194,22 @@ async fn the_action_on_a_virus_is_a_platform_setting_that_is_reject_or_quarantin
     assert_eq!(c.mutate("PUT", "/api/v1/settings", Some(json!({ "virus_action": null }))).await.status, 200);
     assert_eq!(r.dir.effective_config(root, "virus_action").await.unwrap(), None);
 }
+
+#[tokio::test]
+async fn a_plan_carries_its_retention_rules_and_they_must_be_a_sensible_number_of_days() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    let c = Client::sign_in(r.addr, "root@home.test").await;
+    let made = c.mutate("PUT", "/api/v1/plans", Some(json!({ "name": "keep", "quota_bytes": 1_000_000, "spam_retention_days": 30, "retention_days": 2555 }))).await;
+    assert_eq!(made.status, 201, "{}", made.body);
+    conforms(&made.json(), "Plan");
+    assert_eq!((made.json()["spam_retention_days"].clone(), made.json()["retention_days"].clone()), (json!(30), json!(2555)));
+    for bad in [json!({ "spam_retention_days": 0 }), json!({ "retention_days": 36_501 }), json!({ "retention_days": -5 })] {
+        let mut body = json!({ "name": "keep" });
+        body.as_object_mut().unwrap().extend(bad.as_object().unwrap().clone());
+        assert_eq!(c.mutate("PUT", "/api/v1/plans", Some(body.clone())).await.status, 400, "{body}");
+    }
+    // Clearing both removes the rules: the layers below decide.
+    let cleared = c.mutate("PUT", "/api/v1/plans", Some(json!({ "name": "keep", "quota_bytes": 1_000_000 }))).await;
+    assert_eq!((cleared.json()["spam_retention_days"].clone(), cleared.json()["retention_days"].clone()), (json!(null), json!(null)));
+}

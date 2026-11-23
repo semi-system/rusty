@@ -29,6 +29,8 @@ export const en = {
   'nav.audit': 'Audit log',
   'plans.junkScore': 'Spam score for the Spam folder (0 to 100, empty for rspamd\x27s own decision)',
   'plans.rejectScore': 'Spam score to refuse the mail (above the first)',
+  'plans.spamDays': 'Empty the Spam folder after this many days (empty: never)',
+  'plans.allDays': 'Delete every message older than this many days, in any folder (empty: never; the deleted mail can be recovered by an administrator for a while)',
   'queue.heldOnly': 'Only mail filed as spam',
   'transfers.openShort': 'Mailbox',
   'transfers.open': 'Export or import the mailbox of {address}',

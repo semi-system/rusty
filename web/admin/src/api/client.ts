@@ -488,8 +488,8 @@ export class Client {
   }
 
   /** Create a plan or change its limits (platform administrators): a null limit removes it. */
-  putPlan(name: string, quotaBytes: number | null, maxMessageBytes: number | null, messagesPerHour: number | null = null, protocols: string[] | null = null, spamJunk: number | null = null, spamReject: number | null = null): Promise<Plan> {
-    return this.call('PUT', '/api/v1/plans', { name, quota_bytes: quotaBytes, max_message_bytes: maxMessageBytes, messages_per_hour: messagesPerHour, protocols, spam_junk_score: spamJunk, spam_reject_score: spamReject });
+  putPlan(name: string, quotaBytes: number | null, maxMessageBytes: number | null, messagesPerHour: number | null = null, protocols: string[] | null = null, spamJunk: number | null = null, spamReject: number | null = null, spamRetentionDays: number | null = null, retentionDays: number | null = null): Promise<Plan> {
+    return this.call('PUT', '/api/v1/plans', { name, quota_bytes: quotaBytes, max_message_bytes: maxMessageBytes, messages_per_hour: messagesPerHour, protocols, spam_junk_score: spamJunk, spam_reject_score: spamReject, spam_retention_days: spamRetentionDays, retention_days: retentionDays });
   }
 
   /** Put an account on a plan, or on none. */
