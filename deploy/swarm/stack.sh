@@ -738,7 +738,7 @@ cmd_backup() { # [DIR] [--with-keys] [--with-blobs] [--keep N] | verify [FILE] |
       [ "$n" -le "$keep" ] || { old="${d##*/}"; rm -rf "${out:?}/$old"; echo "backup: removed the old backup $old"; }
     done
   fi
-  if [ "$keys" = 0 ]; then echo "backup: the sealing key ($STATE_DIR/keys/unseal.key) is NOT in it, on purpose: keep a copy of it somewhere else (without it the tenants' stored credentials cannot be read), or add --with-keys." >&2; fi
+  if [ "$keys" = 0 ]; then echo "backup: the sealing key ($STATE_DIR/keys/unseal.key) is NOT in it, on purpose: keep a copy of it somewhere else (without it the tenants' stored credentials cannot be read), or add --with-keys. The key of the second factor of the webmail ($STATE_DIR/keys/webmail_totp.key) is in the same directory: without it, people who turned the second factor on cannot sign in." >&2; fi
 }
 
 # What was done goes into the database (docs/design-backup-status.md), so that the Backups page of the admin web can show it; a row that cannot be written is a warning, never a failed backup.

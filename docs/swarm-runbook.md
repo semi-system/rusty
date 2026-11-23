@@ -37,6 +37,8 @@ tar xzf rusty-deploy-<release>.tar.gz && cd rusty-deploy-<release>
 * **DKIM keys**: rotate from the DKIM section of a domain in the admin web: a new selector is published, the old key retires itself after seven days (`design-dkim-rotation.md`).
 * **The sealing key** (`STATE_DIR/keys/unseal.key`, and `seal.pub`): there is no rotation of it, and **without it the sealed DKIM keys, relay passwords and tenants' S3 keys in the database cannot be read**.
   Keep a copy off the machine (`backup --with-keys` includes it; keep that backup apart from the dump) and prove once that you can read the copy.
+* **The key of the second factor** (`STATE_DIR/keys/webmail_totp.key`, made with `WEBMAIL_HOST` set): the webmail seals the two-step sign-in secrets of its people to it. There is no rotation yet; without it, people who turned the second factor on cannot sign in
+  (an account without it is not affected). It is in `backup --with-keys` like the sealing key. A person who lost their device uses a recovery code; if those are gone too, an administrator removes the row (`DELETE FROM totp WHERE account_id = ...`, a `rustyctl` command is to come).
 * **A role's database password** (not drilled in the swarm; the standalone stack's drill is in `operations.md`): delete `STATE_DIR/secrets/pg_<role>`, then `prepare secrets` (a new random password and a new
   version of the Docker secret), `prepare configs`, `prepare db` (sets the role's password in the database; the running tasks, which still hold the old one, fail to open new connections from here),
   and at once `deploy` (a rolling update onto the new secret). Do one role at a time, and check the Monitor page after.
@@ -55,3 +57,12 @@ tar xzf rusty-deploy-<release>.tar.gz && cd rusty-deploy-<release>
 * **Disk full**: `docker system df`; the volumes `pgdata`, `s3data` (when RustFS is in the stack), `prom_data`, `clamdb`, and `STATE_DIR/backups`.
 * **The whole machine is lost**: a new node, the kit of the release, the same `swarm.env` and **`STATE_DIR` (the keys!)**, then the restore of `backup.md`: `prepare secrets`, `prepare configs`, `restore FILE`, `prepare db`,
   `migrate`, `deploy`, the mail (`blobs.tar.gz` into the RustFS volume, or your bucket), and `verify`.
+
+## The webmail (`WEBMAIL_HOST`)
+
+* **Turn it on**: set `WEBMAIL_HOST=webmail.example.org` in `swarm.env` (a DNS name pointing at the edge, like `ADMIN_HOST`), then `upgrade`. The new service needs its own database role: `upgrade` makes it (`prepare db` runs before `migrate`; a kit older
+  than 2026-11-24 did not, and the webmail then fails to connect: run `prepare db` and `migrate` by hand once). The edge is HAProxy (or the Prost pilot beside it); the Prost edge does not route the webmail yet.
+* **Sending**: the webmail only queues a message (`webmail_outbox`); the **submission** service sends it. If the submission service is down, messages wait in the Outbox ("Waiting") and go when it is back; a message that was refused shows a fixed
+  reason (`not_yours`, `limit`, `refused`, `busy`). The sending budget (messages an hour) is the same as for SMTP submission.
+* **Two-step sign-in and app passwords**: people turn them on in the webmail Settings. Mail programs of an account with the second factor use app passwords (up to ten). See `design-2fa.md` and `design-app-passwords.md`.
+* **What to look at when it breaks**: `docker service ps rusty_webmail`, `logs webmail`; "cannot connect to Postgres" means the role (`prepare db`), "cannot read the Postgres schema state" means the grants (`migrate` after the role exists).
