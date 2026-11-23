@@ -145,6 +145,7 @@ pub struct WebmailApp {
     pub blobs: Arc<dyn rusty_store::BlobStore>,
     pub outbox: Arc<dyn rusty_store::OutboxRepo>,
     pub app_passwords: Arc<dyn rusty_store::AppPasswordRepo>,
+    pub settings: Arc<dyn rusty_store::WebmailSettingsRepo>,
     /// The most bytes of a message the person may send.
     pub max_message_bytes: usize,
     /// `https://host[:port]` of the webmail host name, as the browser sends it in `Origin`.

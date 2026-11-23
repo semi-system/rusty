@@ -52,6 +52,9 @@ function api(over: Partial<Api> = {}): Api {
     htmlUrl: (id: number) => `/api/v1/messages/${id}/html`,
     attachmentUrl: (id: number, n: number) => `/api/v1/messages/${id}/attachments/${n}`,
     saveDraft: vi.fn().mockResolvedValue({ id: 77 }),
+
+    settings: vi.fn().mockResolvedValue({ signature: 'Alice' }),
+    saveSettings: vi.fn().mockImplementation(async (s: string) => ({ signature: s })),
     appPasswords: vi.fn().mockResolvedValue([]),
     createAppPassword: vi.fn().mockResolvedValue({ id: 1, label: 'Phone', secret: 'abcd-efgh-jkmn-pqrs' }),
     revokeAppPassword: vi.fn().mockResolvedValue(undefined),
@@ -139,6 +142,20 @@ describe('the webmail page', () => {
     expect(a.saveDraft).toHaveBeenCalledWith(expect.objectContaining({ to: ['bob@one.test'] }), undefined);
     fireEvent.click(screen.getByText(en['compose.send']));
     await waitFor(() => expect(a.send).toHaveBeenCalledWith(expect.objectContaining({ draft_id: 77 })));
+  });
+
+  it('starts a new message with the signature, and saves a changed one', async () => {
+    const a = api({ me: vi.fn().mockResolvedValue({ address: 'alice@one.test', csrf: 'tok' }) });
+    render(() => <App api={a} />);
+    fireEvent.click(await screen.findByText(en['compose.new']));
+    expect(((await screen.findByLabelText(en['compose.text'])) as HTMLTextAreaElement).value).toBe('\n\n-- \nAlice\n');
+    fireEvent.click(screen.getByText(en['compose.cancel']));
+    fireEvent.click(screen.getByText(en['folder.settings']));
+    const box = (await screen.findByLabelText(en['settings.signature.label'])) as HTMLTextAreaElement;
+    await waitFor(() => expect(box.value).toBe('Alice'));
+    fireEvent.input(box, { target: { value: 'Alice B.' } });
+    fireEvent.submit(box.closest('form') as HTMLFormElement);
+    await waitFor(() => expect(a.saveSettings).toHaveBeenCalledWith('Alice B.'));
   });
 
   it('deleting removes the message from the list', async () => {

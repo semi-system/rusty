@@ -23,6 +23,18 @@ function folderName(f: Folder): string {
 /** The signed-in page: folders on the left, the list of the open folder, the open message or the outbox on the right, and the composer over them. */
 export const Mailbox: Component<{ api: Api; address: string; onSignOut: () => void }> = (props) => {
   const [folders, { refetch: refetchFolders }] = createResource(() => props.api.folders());
+  // The signature a new message starts with (the person sets it in Settings; a failure to read it only means none).
+  const [signature, { refetch: refetchSignature }] = createResource(async () => {
+    try {
+      return (await props.api.settings()).signature;
+    } catch {
+      return '';
+    }
+  });
+  const sign = () => {
+    const s = signature() ?? '';
+    return s === '' ? '' : `-- \n${s}\n`;
+  };
   const [current, setCurrent] = createSignal<number | null>(null);
   const [items, setItems] = createSignal<Item[]>([]);
   const [next, setNext] = createSignal<number | null>(null);
@@ -92,7 +104,7 @@ export const Mailbox: Component<{ api: Api; address: string; onSignOut: () => vo
       .split('\n')
       .map((l) => `> ${l}`)
       .join('\n');
-    setComposing({ to: m.from, subject: m.subject.toLowerCase().startsWith('re:') ? m.subject : t('compose.replyPrefix') + m.subject, text: `\n\n${t('compose.quote', { from: m.from })}\n${quoted}\n`, inReplyTo: m.message_id });
+    setComposing({ to: m.from, subject: m.subject.toLowerCase().startsWith('re:') ? m.subject : t('compose.replyPrefix') + m.subject, text: `\n\n${sign()}\n${t('compose.quote', { from: m.from })}\n${quoted}\n`, inReplyTo: m.message_id });
   };
   /** A message of the Drafts folder opens in the composer as it was saved. */
   const edit = () => {
@@ -125,7 +137,7 @@ export const Mailbox: Component<{ api: Api; address: string; onSignOut: () => vo
       <header>
         <strong>{t('app.name')}</strong>
         <span class="who">{props.address}</span>
-        <button type="button" class="primary" onClick={() => setComposing({ to: '', subject: '', text: '' })}>
+        <button type="button" class="primary" onClick={() => setComposing({ to: '', subject: '', text: sign() === '' ? '' : `\n\n${sign()}` })}>
           {t('compose.new')}
         </button>
         <button type="button" onClick={props.onSignOut}>
@@ -165,7 +177,7 @@ export const Mailbox: Component<{ api: Api; address: string; onSignOut: () => vo
           </button>
         </Show>
       </nav>
-      <Show when={current() !== OUTBOX && current() !== SETTINGS} fallback={current() === SETTINGS ? <Settings api={props.api} /> : <Outbox api={props.api} />}>
+      <Show when={current() !== OUTBOX && current() !== SETTINGS} fallback={current() === SETTINGS ? <Settings api={props.api} onSignature={() => void refetchSignature()} /> : <Outbox api={props.api} />}>
         <section class="list" aria-label={t('folders')}>
           <Show when={items().length > 0} fallback={<p class="empty">{t('list.empty')}</p>}>
             <ul>
