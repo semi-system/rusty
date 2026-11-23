@@ -30,6 +30,7 @@ pub(crate) mod queue;
 pub(crate) mod rules;
 pub(crate) mod transfers;
 pub(crate) mod audit;
+pub(crate) mod backups;
 pub(crate) mod admin;
 mod dns;
 pub(crate) mod jobs;
@@ -51,6 +52,7 @@ pub use rules::RulesRepo;
 pub use transfers::{Transfer, TransferRepo, MAX_TRANSFER_BYTES};
 pub use queue::{StatRow, InboundRow, LogRow, NewLogRow, QueueJob, QueueRepo, HELD_UNTIL};
 pub use audit::{AuditRepo, AuditRow, NewAuditRow};
+pub use backups::{BackupRepo, BackupRun};
 pub use admin::{AdminEntry, AdminGrant, AdminRepo, Revoked};
 pub use jobs::{BatchJob, BatchRequest, ClaimRequest, JobRepo, NewJob, OwnerLimits};
 pub use directory::{

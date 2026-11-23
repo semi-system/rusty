@@ -93,6 +93,7 @@ async fn build(with_sealing: bool) -> Rig {
         routing: repos.routing.clone(),
         queue: repos.queue.clone(),
         audit: repos.audit.clone(),
+        backups: repos.backups.clone(),
         transfers: repos.transfers.clone(),
         sealing: with_sealing.then_some(seal_key),
         mail: Some(MailSettings { host: "mail.example.org".into(), public_ips: vec!["203.0.114.5".parse().unwrap()], spf_include: None }),
@@ -110,6 +111,7 @@ async fn build(with_sealing: bool) -> Rig {
     let router = rusty_admin::settings::routes(app.clone(), router);
     let router = rusty_admin::autodiscover::routes(app.clone(), router);
     let router = rusty_admin::audit::routes(app.clone(), router);
+    let router = rusty_admin::backups::routes(app.clone(), router);
     let router = rusty_admin::certs::routes(app.clone(), router);
     let router = rusty_admin::mailrules::routes(app.clone(), router);
     let router = rusty_admin::transfers::routes(app.clone(), router);

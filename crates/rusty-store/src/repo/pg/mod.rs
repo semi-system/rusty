@@ -18,6 +18,7 @@ mod queue;
 mod rules;
 mod transfers;
 mod audit;
+mod backups;
 mod admin;
 pub mod tx;
 

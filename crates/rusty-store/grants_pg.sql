@@ -31,6 +31,7 @@ BEGIN
     GRANT SELECT, INSERT, UPDATE ON mailbox_transfers TO rusty_admin;   -- an export or import asked for in the admin web, and the pieces of the file (it never reads a mailbox itself)
     GRANT SELECT, INSERT ON mailbox_transfer_chunks TO rusty_admin;   -- the message trace
     GRANT SELECT, INSERT ON audit_log TO rusty_admin;   -- the audit log of the admin web (docs/design-audit.md)
+    GRANT SELECT ON backup_runs TO rusty_admin;   -- the Backups page of the admin web (docs/design-backup-status.md); the deployment tool writes with its own login
     GRANT SELECT, INSERT, UPDATE, DELETE ON domains, accounts, aliases, domain_aliases, lists, list_members, plans, capabilities, mailboxes,
       domain_dkim_keys, dkim_retirements, domain_dns_config, domain_dns_event, domain_dns_state, domain_relays, admin_grants, jobs TO rusty_admin;
     GRANT SELECT ON address_owners, _sqlx_migrations, schema_compat TO rusty_admin;
@@ -164,6 +165,7 @@ BEGIN
     GRANT SELECT, DELETE ON mailbox_transfers, mailbox_transfer_chunks TO rusty_gc;   -- an export or import is kept a day (docs/design-mailbox-transfers.md)
     GRANT SELECT, INSERT, UPDATE, DELETE ON message_stats TO rusty_gc;   -- the roll-up of the delivery log into days (docs/design-queue.md)   -- the log is kept 30 days
     GRANT SELECT, DELETE ON audit_log TO rusty_gc;
+    GRANT SELECT, DELETE ON backup_runs TO rusty_gc;   -- kept 400 days
     GRANT SELECT, DELETE ON vacation_replies TO rusty_gc;   -- the vacation book-keeping is kept 60 days (docs/design-mail-rules.md)   -- the audit log is kept 365 days
     GRANT SELECT, INSERT, UPDATE ON blob_stores, blob_backends TO rusty_gc;
     GRANT SELECT, DELETE ON service_heartbeats TO rusty_gc;   -- the cleanup of heartbeats nobody renews
