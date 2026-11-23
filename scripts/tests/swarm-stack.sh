@@ -188,6 +188,8 @@ no_placeholders "$tmp/state-prostself/stack/etc/prost-edge.toml"
 grep -q 'certificate = "/run/secrets/edge_mail_crt"' "$tmp/state-prostself/stack/etc/prost-edge.toml" && grep -q 'target: edge_admin_key' "$tmp/prostself.stack.yaml" || fail "prostself: the self-signed certificates do not reach the edge as secrets"
 ! grep -q '^address = "certd:8088"' "$tmp/state-prostself/stack/etc/prost-edge.toml" || fail "prostself: an ACME route without prost-certd"
 prost_check prostself
+o="$(run_tool "$tmp/prostself.env" backup --keep abc 2>&1 || true)"; case "$o" in *"number of backups"*) ;; *) fail "backup: a bad --keep is not refused";; esac
+o="$(run_tool "$tmp/prostself.env" backup verify 2>&1 || true)"; case "$o" in *"no dump"*|*"not readable"*) ;; *) fail "backup verify: a missing dump is not refused: $o";; esac
 
 scenario adminproxy "$EXT"$'\nEDGE=prost\nTLS_MODE=self\nADMIN_PROXY=1\nREPLICAS_DEFAULT=1' "edge admin" "certd db s3"
 ap="$tmp/state-adminproxy/stack/etc"

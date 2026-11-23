@@ -653,9 +653,14 @@ cmd_verify_stack() {
 # A dump of the database with the login that stays yours (pg_dump -Fc, from a container on a node: the same road the services take) and the sealing key. The S3 bucket is not in it: it is yours
 # (or, with the default RustFS, the volume `s3data` on the node labelled s3=true): copy it the way you copy any bucket.
 # shellcheck disable=SC2120 # called without a directory by upgrade
-cmd_backup() { # [DIR] [--with-keys]
-  local dir out="$STATE_DIR/backups" keys=0
-  while [ $# -gt 0 ]; do case "$1" in --with-keys) keys=1; shift ;; *) out="$1"; shift ;; esac; done
+cmd_backup() { # [DIR] [--with-keys] [--with-blobs] [--keep N] | verify [FILE] | install-timer
+  case "${1:-}" in
+    verify) shift; cmd_backup_verify "$@"; return ;;
+    install-timer) shift; cmd_backup_install_timer; return ;;
+  esac
+  local dir out="$STATE_DIR/backups" keys=0 blobs=0 keep="${BACKUP_KEEP:-0}"
+  while [ $# -gt 0 ]; do case "$1" in --with-keys) keys=1; shift ;; --with-blobs) blobs=1; shift ;; --keep) keep="${2:?--keep needs a number}"; shift 2 ;; *) out="$1"; shift ;; esac; done
+  [[ "$keep" =~ ^[0-9]+$ ]] || die "backup: --keep (BACKUP_KEEP) is a number of backups to keep (0: keep all)"
   dir="$out/$(date -u +%Y%m%dT%H%M%SZ)"
   [ -r "$DB_ADMIN_PASSWORD_FILE" ] || die "backup: DB_ADMIN_PASSWORD_FILE is not readable"
   ( umask 077; mkdir -p "$dir" )
@@ -663,8 +668,59 @@ cmd_backup() { # [DIR] [--with-keys]
   [ -s "$dir/rusty.dump" ] || { rm -rf "$dir"; die "backup: the dump is empty"; }
   # The sealing key opens the tenants' stored credentials that are IN the dump: it is kept apart from it unless you ask for both together.
   if [ "$keys" = 1 ] && [ -d "$STATE_DIR/keys" ]; then ( umask 077; cp -R "$STATE_DIR/keys" "$dir/keys" ); fi
-  echo "backup: $dir ($(wc -c < "$dir/rusty.dump") bytes of database). The S3 bucket is not in it."
+  # The mail itself is in the S3 bucket. With RustFS inside the stack its volume is copied too (a copy of live files: complete for the mail that existed when the copy began; the database dump is the part
+  # that is exactly consistent). An S3 of your own is yours to replicate.
+  if [ "$blobs" = 1 ]; then
+    [ "$S3_IN_STACK" = 1 ] || { rm -rf "$dir"; die "backup: --with-blobs copies the RustFS of the stack; with an S3 of your own replicate the bucket there"; }
+    ( umask 077; sw run --rm --user 0 --cap-drop ALL --cap-add DAC_READ_SEARCH --security-opt no-new-privileges:true -v "${STACK_NAME}_s3data:/d:ro" --entrypoint tar "$(lock_ref 'curlimages/curl:8.15.0')" czf - -C /d . > "$dir/blobs.tar.gz" ) \
+      || { rm -rf "$dir"; die "backup: the copy of the RustFS volume failed"; }
+    [ -s "$dir/blobs.tar.gz" ] || { rm -rf "$dir"; die "backup: the copy of the RustFS volume is empty"; }
+  fi
+  if [ "$blobs" = 1 ]; then echo "backup: $dir ($(wc -c < "$dir/rusty.dump") bytes of database, $(wc -c < "$dir/blobs.tar.gz") bytes of mail)."
+  else echo "backup: $dir ($(wc -c < "$dir/rusty.dump") bytes of database). The S3 bucket is not in it (add --with-blobs for the RustFS of the stack)."; fi
+  # Keep the newest N (only directories this tool made: a timestamp as the name).
+  if [ "$keep" -gt 0 ]; then
+    local old
+    while IFS= read -r old; do [ -z "$old" ] || { rm -rf "${out:?}/$old"; echo "backup: removed the old backup $old"; }; done < <(ls -1 "$out" 2>/dev/null | grep -E '^[0-9]{8}T[0-9]{6}Z$' | sort -r | tail -n +"$((keep + 1))")
+  fi
   if [ "$keys" = 0 ]; then echo "backup: the sealing key ($STATE_DIR/keys/unseal.key) is NOT in it, on purpose: keep a copy of it somewhere else (without it the tenants' stored credentials cannot be read), or add --with-keys." >&2; fi
+}
+
+# The drill, automatic: restore a dump into a scratch database next to the real one, read it, drop it. The real database is not touched. Needs a database user that may create databases (the superuser
+# of the stack's own PostgreSQL does).
+cmd_backup_verify() { # [DUMP-FILE]  (default: the newest backup)
+  local f="${1:-}" scratch ts live out="" rc=0 q="psql -v ON_ERROR_STOP=1 -At -d"
+  [ -n "$f" ] || f="$(ls -1d "$STATE_DIR"/backups/*/rusty.dump 2>/dev/null | sort | tail -1 || true)"
+  [ -n "$f" ] && [ -s "$f" ] || die "backup verify: no dump (run 'backup' first, or name a rusty.dump)"
+  [ -r "$DB_ADMIN_PASSWORD_FILE" ] || die "backup verify: DB_ADMIN_PASSWORD_FILE is not readable"
+  ts="$(date -u +%Y%m%d%H%M%S)"; scratch="rusty_verify_$ts"
+  echo "backup verify: restoring $f into the scratch database $scratch"
+  ( DB_NAME=postgres; echo "CREATE DATABASE $scratch;" | pg_tool_as "$q" "$DB_ADMIN_USER" "$DB_ADMIN_PASSWORD_FILE" >/dev/null ) || die "backup verify: the scratch database could not be created (the user needs CREATEDB)"
+  ( DB_NAME="$scratch"; pg_tool_as "pg_restore --no-owner -d" "$DB_ADMIN_USER" "$DB_ADMIN_PASSWORD_FILE" < "$f" ) || rc=1
+  if [ "$rc" = 0 ]; then
+    out="$( DB_NAME="$scratch"; printf '%s\n' "SELECT 'migrations=' || count(*) || ' newest=' || coalesce(max(version)::text, '-') FROM _sqlx_migrations;" "SELECT 'domains=' || count(*) FROM domains;" "SELECT 'accounts=' || count(*) FROM accounts;" "SELECT 'messages=' || count(*) FROM messages;" | pg_tool_as "$q" "$DB_ADMIN_USER" "$DB_ADMIN_PASSWORD_FILE" 2>&1 )" || rc=1
+  fi
+  ( DB_NAME=postgres; echo "DROP DATABASE IF EXISTS $scratch;" | pg_tool_as "$q" "$DB_ADMIN_USER" "$DB_ADMIN_PASSWORD_FILE" >/dev/null ) || echo "backup verify: the scratch database $scratch is left behind: drop it" >&2
+  [ "$rc" = 0 ] || { printf '%s\n' "$out" >&2; die "backup verify: the dump could not be restored and read: this backup is NOT good"; }
+  live="$( printf '%s\n' "SELECT 'migrations=' || count(*) || ' newest=' || coalesce(max(version)::text, '-') FROM _sqlx_migrations;" | pg_tool_as "$q" "$DB_ADMIN_USER" "$DB_ADMIN_PASSWORD_FILE" 2>/dev/null || true )"
+  printf 'backup verify: the dump holds    %s\n' "$(printf '%s' "$out" | tr '\n' ' ')"
+  [ -z "$live" ] || printf 'backup verify: the live database  %s\n' "$live"
+  echo "backup verify: OK, the dump restores and reads"
+}
+
+# A systemd timer on the Manager: a backup every night (the newest BACKUP_KEEP, default 14, are kept), then the drill on it.
+cmd_backup_install_timer() {
+  local self env_file s="" unit=/etc/systemd/system/rusty-swarm-backup keep="${BACKUP_KEEP:-14}" blobs=""
+  [ "$(node_field "$(manager_name)" 2)" = local ] || die "backup install-timer: only for a Manager reached as 'local' (run this tool on it). From elsewhere: run '$0 backup --keep $keep' from cron"
+  command -v systemctl >/dev/null 2>&1 || die "backup install-timer: no systemd here: run 'backup' from cron"
+  [[ "$keep" =~ ^[1-9][0-9]*$ ]] || die "backup install-timer: BACKUP_KEEP is a number of backups (default 14)"
+  [ "$S3_IN_STACK" != 1 ] || blobs=" --with-blobs"
+  [ "$(id -u)" = 0 ] || s="sudo -n"
+  self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"; env_file="$(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
+  printf '[Unit]\nDescription=Rusty swarm: backup and drill\n\n[Service]\nType=oneshot\nEnvironment=HOME=%s\nExecStart=%s --env %s backup --keep %s%s\nExecStart=%s --env %s backup verify\n' "$HOME" "$self" "$env_file" "$keep" "$blobs" "$self" "$env_file" | $s tee "$unit.service" >/dev/null
+  printf '[Unit]\nDescription=Rusty swarm: backup every night\n\n[Timer]\nOnCalendar=*-*-* 02:30:00\nPersistent=true\nRandomizedDelaySec=900\n\n[Install]\nWantedBy=timers.target\n' | $s tee "$unit.timer" >/dev/null
+  $s systemctl daemon-reload && $s systemctl enable --now rusty-swarm-backup.timer >/dev/null
+  echo "backup install-timer: rusty-swarm-backup.timer makes a backup every night at 02:30 (keeping $keep) and checks it by restoring it into a scratch database"
 }
 
 cmd_restore() { # DUMP-FILE: into the database of the inventory; the services should be stopped (docker stack rm rusty) while it runs
