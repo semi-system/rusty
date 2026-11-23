@@ -1,0 +1,330 @@
+/* One quiet surface for reading and writing. System fonts only (the page's CSP loads nothing from elsewhere). */
+:root {
+  --bg: #eef1f4;
+  --panel: #ffffff;
+  --ink: #17212b;
+  --muted: #5b6875;
+  --line: #d6dce2;
+  --accent: #0a6c74;
+  --accent-ink: #ffffff;
+  --unread: #0a6c74;
+  --danger: #a3262a;
+  --focus: #1a73e8;
+  color-scheme: light dark;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #11161b;
+    --panel: #181f26;
+    --ink: #e6ebf0;
+    --muted: #93a0ad;
+    --line: #2a343e;
+    --accent: #3fb6c0;
+    --accent-ink: #06191b;
+    --unread: #3fb6c0;
+    --danger: #ff8a8d;
+    --focus: #7ab4ff;
+  }
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+}
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+button,
+select {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 6px;
+  padding: 0.4rem 0.75rem;
+  cursor: pointer;
+}
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+button.danger {
+  color: var(--danger);
+}
+button.quiet {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  text-align: left;
+}
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+input,
+textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 6px;
+  padding: 0.45rem 0.6rem;
+}
+label {
+  display: block;
+  margin-bottom: 0.75rem;
+}
+label > span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-bottom: 0.2rem;
+}
+.error {
+  color: var(--danger);
+}
+.notice {
+  background: var(--panel);
+  border-left: 3px solid var(--accent);
+  padding: 0.5rem 0.75rem;
+  margin: 0;
+  grid-column: 1 / -1;
+}
+.empty,
+.loading,
+.note {
+  color: var(--muted);
+  padding: 1rem;
+}
+.signin {
+  max-width: 24rem;
+  margin: 12vh auto 0;
+  padding: 0 1rem;
+}
+.signin form {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1.25rem;
+}
+.signin h2 {
+  margin-top: 0;
+  font-size: 1.1rem;
+}
+.mailbox {
+  display: grid;
+  grid-template-columns: 13rem minmax(16rem, 24rem) 1fr;
+  grid-template-rows: auto auto 1fr;
+  height: 100vh;
+}
+.mailbox > header {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.mailbox > header .who {
+  margin-right: auto;
+  color: var(--muted);
+}
+.mailbox > .error {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 0.5rem 1rem;
+}
+nav {
+  grid-row: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0.75rem 0.5rem;
+  border-right: 1px solid var(--line);
+  overflow-y: auto;
+}
+.folder {
+  display: flex;
+  justify-content: space-between;
+  border: 0;
+  background: none;
+  text-align: left;
+}
+.folder.active {
+  background: var(--panel);
+  font-weight: 600;
+}
+.count {
+  color: var(--unread);
+  font-weight: 600;
+}
+.list {
+  grid-row: 3;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+}
+.list ul,
+.outbox ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.item {
+  display: grid;
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  text-align: left;
+  background: none;
+  gap: 0.1rem;
+}
+.item.active {
+  background: var(--bg);
+}
+.item.unread .from,
+.item.unread .subject {
+  font-weight: 700;
+}
+.item .line,
+.outbox .line {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+.when,
+.to,
+.flag {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.reader,
+.outbox {
+  grid-row: 3;
+  grid-column: 2 / -1;
+  overflow-y: auto;
+  padding: 1rem 1.5rem;
+}
+.reader {
+  grid-column: 3;
+}
+.list + .reader {
+  grid-column: 3;
+}
+.reader h2,
+.outbox h2 {
+  margin-top: 0;
+}
+dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.1rem 0.75rem;
+  margin: 0 0 0.75rem;
+}
+dt {
+  color: var(--muted);
+}
+dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+.text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: inherit;
+  margin: 0;
+}
+.outbox li {
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.badge {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 0.5rem;
+  font-size: 0.8rem;
+}
+.state-failed .badge {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.state-sent .badge {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 0.45);
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+.compose {
+  width: min(42rem, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+}
+.compose h2 {
+  margin-top: 0;
+}
+.compose textarea {
+  resize: vertical;
+}
+.row {
+  display: flex;
+  gap: 0.5rem;
+}
+@media (max-width: 52rem) {
+  .mailbox {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto auto 1fr;
+    height: auto;
+    min-height: 100vh;
+  }
+  nav {
+    grid-row: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .list,
+  .reader,
+  .outbox {
+    grid-row: auto;
+    grid-column: 1;
+    border-right: 0;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  button {
+    transition: background-color 0.12s;
+  }
+}
