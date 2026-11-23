@@ -166,7 +166,13 @@ conf_migrate() { head_common; printf 'gc_grace_seconds = 604800\n\n'; blk_blob; 
 conf_haproxy() {
   local allow="$ADMIN_ALLOW" keep="#SELF " drop="#ACME" dir="${ACME_DIRECTORY:-https://acme-v02.api.letsencrypt.org/directory}"
   if [ "$TLS_MODE" = acme ]; then keep="#ACME"; drop="#SELF "; fi
-  sed -e "/^${drop}/d" -e "s|^${keep}||" \
+  # The webmail's lines (marked `#WEBMAIL `) are in the file only with a WEBMAIL_HOST; the marker comes off first so that a line that is also `#ACME` or `#SELF` is then taken by those rules. Its certificate is one more `crt`.
+  local wm_keep="/^#WEBMAIL /d" wm_crt=""
+  if [ -n "$WEBMAIL_HOST" ]; then
+    wm_keep="s|^#WEBMAIL ||"
+    if [ "$TLS_MODE" = acme ]; then wm_crt=' crt "@certs/webmail.pem"'; else wm_crt=' crt /var/lib/haproxy/certs/webmail.pem'; fi
+  fi
+  sed -e "$wm_keep" -e "s|@WEBMAIL_CRT@|$wm_crt|g" -e "s|@WEBMAIL_HOST@|${WEBMAIL_HOST:-}|g" -e "/^${drop}/d" -e "s|^${keep}||" \
       -e "$([ "$ADMIN_PROXY" = 1 ] || echo '/server-template admin/s/ send-proxy-v2//')" \
       -e 's/\(server-template [a-z-]* [0-9]-[0-9]\) \([a-z-]*\):/\1 tasks.\2:/' \
       -e "s|@MAIL_HOST@|$MAIL_HOST|g" -e "s|@ADMIN_HOST@|$ADMIN_HOST|g" -e "s|@ADMIN_ALLOW@|$allow|g" -e "s|@CONTACT@|${CONTACT:-}|g" -e "s|@ACME_DIRECTORY@|$dir|g" \
@@ -331,6 +337,7 @@ cmd_prepare_secrets() {
   make_sealing_key
   make_selfsigned mail "$MAIL_HOST"
   make_selfsigned admin "$ADMIN_HOST"
+  [ -z "$WEBMAIL_HOST" ] || make_selfsigned webmail "$WEBMAIL_HOST"
   for r in "${SERVICE_ROLES[@]}"; do ensure_secret "pg_$r" "$(secret_file "$r")"; done
   ( umask 077; printf '%s' "$S3_ACCESS_KEY" > "$d/s3_access" )
   ensure_secret s3_access "$d/s3_access"
@@ -341,6 +348,7 @@ cmd_prepare_secrets() {
   if [ "$TLS_MODE" = self ] && haproxy_is_edge; then
     ensure_secret edge_mail_pem "$STATE_DIR/tls/mail.pem"
     ensure_secret edge_admin_pem "$STATE_DIR/tls/admin.pem"
+    [ -z "$WEBMAIL_HOST" ] || ensure_secret edge_webmail_pem "$STATE_DIR/tls/webmail.pem"
   fi
   edge_prepare_secrets "$d"
   if [ "$DB_IN_STACK" = 1 ]; then
@@ -403,6 +411,7 @@ load_names() {
   read_names || die "nothing was prepared yet: run 'prepare secrets' and 'prepare configs'"
   need_s="${SERVICE_ROLES[*]/#/pg_} s3_access s3_secret unseal_key tls_cert tls_key"
   { [ "$TLS_MODE" != self ] || ! haproxy_is_edge; } || need_s="$need_s edge_mail_pem edge_admin_pem"
+  { [ -z "$WEBMAIL_HOST" ] || [ "$TLS_MODE" != self ] || ! haproxy_is_edge; } || need_s="$need_s edge_webmail_pem"
   [ "$DB_IN_STACK" != 1 ] || need_s="$need_s pg_postgres db_server_crt db_server_key"
   need_c="smtp_in submission imap outbound gc admin ${WEBMAIL_HOST:+webmail} migrate"
   ! haproxy_is_edge || need_c="$need_c haproxy"
@@ -419,6 +428,7 @@ load_names() {
   # A name of a thing this inventory does not use must not reach the stack file.
   [ -n "$DB_CA" ] || unset 'CONFIG_NAME[db_ca]'
   if [ "$TLS_MODE" != self ] || ! haproxy_is_edge; then unset 'SECRET_NAME[edge_mail_pem]' 'SECRET_NAME[edge_admin_pem]'; fi
+  if [ -z "$WEBMAIL_HOST" ] || [ "$TLS_MODE" != self ] || ! haproxy_is_edge; then unset 'SECRET_NAME[edge_webmail_pem]'; fi
   haproxy_is_edge || unset 'CONFIG_NAME[haproxy]'
   if [ "$DB_IN_STACK" != 1 ]; then unset 'SECRET_NAME[pg_postgres]' 'SECRET_NAME[db_server_crt]' 'SECRET_NAME[db_server_key]' 'CONFIG_NAME[pg_hba]'; fi
 }
@@ -494,6 +504,7 @@ gen_stack() {
         printf '    secrets:\n'
         y_secret edge_mail_pem /var/lib/haproxy/certs/mail.pem 99
         y_secret edge_admin_pem /var/lib/haproxy/certs/admin.pem 99
+        [ -z "$WEBMAIL_HOST" ] || y_secret edge_webmail_pem /var/lib/haproxy/certs/webmail.pem 99
       fi
       printf '    configs:\n'
       y_config haproxy /usr/local/etc/haproxy/haproxy.cfg
@@ -800,8 +811,8 @@ cmd_certs_sync() {
   c="$(edge_container)"
   [ -n "$c" ] || { echo "certs sync: the edge is not running yet" >&2; return 1; }
   mkdir -p "$dir"; chmod 0700 "$dir"
-  for name in mail admin; do
-    host="$MAIL_HOST"; [ "$name" = admin ] && host="$ADMIN_HOST"
+  for name in mail admin ${WEBMAIL_HOST:+webmail}; do
+    host="$MAIL_HOST"; [ "$name" = admin ] && host="$ADMIN_HOST"; [ "$name" = webmail ] && host="$WEBMAIL_HOST"
     pem="$(sw exec -i "$c" sh -c "echo 'dump ssl cert @certs/$name.pem' | socat -t5 - UNIX-CONNECT:/run/ha/admin.sock" 2>/dev/null || true)"
     if ! printf '%s\n' "$pem" | grep -q 'PRIVATE KEY' || ! printf '%s\n' "$pem" | grep -q 'BEGIN CERTIFICATE'; then
       echo "certs sync: the edge has no certificate for $host yet" >&2; return 1
