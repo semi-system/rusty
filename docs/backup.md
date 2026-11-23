@@ -49,3 +49,29 @@ docker compose up -d && docker compose run --rm --name rusty-ctl-1 ctl blobs ver
 started: the same 49 messages, accounts and blobs came back, IMAP showed the same 28 messages in the mailbox of the test account, `blobs verify` found 49 of 49 blobs, and new mail was accepted and
 delivered. Two defects of the first draft of the scripts showed up only in this run (backup files owned by root; the role-creating job started under a random container name and was refused by the
 database) and are fixed. Repeat the drill after any change to the stack, on a copy.
+
+## The swarm (`rusty-swarm`)
+
+```sh
+./rusty-swarm backup [--with-keys] [--with-blobs] [--keep N]   # a dump of the database in STATE_DIR/backups/<time>/ (and, with --with-blobs, the RustFS volume of the stack)
+./rusty-swarm backup verify [FILE]                              # the drill: the newest dump (or FILE) is restored into a scratch database next to the real one, read, and dropped
+./rusty-swarm backup install-timer                              # every night at 02:30: backup --keep BACKUP_KEEP (default 14), then verify; needs systemd and a Manager reached as `local`
+```
+
+* `backup verify` proves what matters: the dump **restores** and its tables **read** (migration count and newest version, domains, accounts, messages are printed, next to the live database's migration
+  state). The real database is not touched; the database login needs `CREATEDB` (the stack's own PostgreSQL has it). A backup that is not verified is a hope.
+* `--with-blobs` copies the RustFS volume of the stack (a root container with one capability, `DAC_READ_SEARCH`, reading the volume read-only). It is a copy of live files: it holds the mail that existed
+  when it began, and the database dump is the exactly consistent part, so restore the dump and the blobs together and run `rustyctl blobs verify` (missing files are reported, extra ones are harmless).
+  With an S3 of your own, replicate the bucket there (versioning or cross-site replication).
+* `--keep N` removes the oldest backups of this tool (directories named by a time stamp) beyond the newest N. Copy the directory off the machine: a backup on the disk it protects is one disk failure from nothing.
+* The sealing key (`STATE_DIR/keys`) is **not** in the dump unless `--with-keys`: without it the sealed DKIM keys and relay passwords in the dump cannot be read. Keep a copy elsewhere and test it.
+
+**The way back** (a new Manager, or after a loss): the same `swarm.env` and `STATE_DIR` (the keys!), the kit of the release, then
+
+```sh
+./rusty-swarm prepare secrets && ./rusty-swarm prepare configs
+./rusty-swarm restore STATE_DIR/backups/<time>/rusty.dump      # the services stopped (docker stack rm rusty) while it runs
+./rusty-swarm prepare db && ./rusty-swarm migrate && ./rusty-swarm deploy
+# the mail: unpack blobs.tar.gz into the RustFS volume (or restore your bucket), then
+./rusty-swarm verify
+```

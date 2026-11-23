@@ -188,6 +188,25 @@ no_placeholders "$tmp/state-prostself/stack/etc/prost-edge.toml"
 grep -q 'certificate = "/run/secrets/edge_mail_crt"' "$tmp/state-prostself/stack/etc/prost-edge.toml" && grep -q 'target: edge_admin_key' "$tmp/prostself.stack.yaml" || fail "prostself: the self-signed certificates do not reach the edge as secrets"
 ! grep -q '^address = "certd:8088"' "$tmp/state-prostself/stack/etc/prost-edge.toml" || fail "prostself: an ACME route without prost-certd"
 prost_check prostself
+o="$(run_tool "$tmp/prostself.env" backup --keep abc 2>&1 || true)"; case "$o" in *"number of backups"*) ;; *) fail "backup: a bad --keep is not refused";; esac
+o="$(run_tool "$tmp/prostself.env" backup verify 2>&1 || true)"; case "$o" in *"no dump"*|*"not readable"*) ;; *) fail "backup verify: a missing dump is not refused: $o";; esac
+
+printf "https://hooks.example.org/T000/secret-token
+" > "$tmp/alert-url"
+scenario monitoring "$EXT"$'
+MONITORING=1
+ALERT_URL_FILE='"$tmp/alert-url"$'
+ALERT_KIND=slack
+ALERT_REPEAT=2h
+REPLICAS_DEFAULT=1' "prometheus alertmanager admin" "certd"
+mp="$tmp/monitoring.stack.yaml"; me="$tmp/state-monitoring/stack/etc"
+grep -q 'image: prom/prometheus@sha256:' "$mp" && grep -q 'image: prom/alertmanager@sha256:' "$mp" || fail "monitoring: the images are not the pinned ones"
+grep -q '^  prom_data:' "$mp" && grep -q '^  am_data:' "$mp" || fail "monitoring: the volumes are missing"
+grep -q 'api_url_file: /run/secrets/alert_url' "$me/alertmanager.yml" && grep -q 'repeat_interval: 2h' "$me/alertmanager.yml" || fail "monitoring: the Alertmanager configuration is not the inventory's"
+! grep -rq "secret-token" "$mp" "$me" || fail "monitoring: the alert URL is in the stack file or a config (it belongs in the secret)"
+grep -qxF 'allowed_hosts = ["tasks.prometheus"]' "$me/admin.toml" || fail "monitoring: the admin web does not let Prometheus scrape it"
+grep -qF 'targets: ["tasks.admin:9100"]' "$me/prometheus.yml" || fail "monitoring: Prometheus does not scrape the admin web"
+! grep -q "^  prometheus:" "$tmp/pilot.stack.yaml" || fail "monitoring: a stack without MONITORING has Prometheus"
 
 scenario limits "$EXT"$'
 EDGE=prost
@@ -265,6 +284,10 @@ refuse "the pilot with ACME certificates and no bucket for them" $'EDGE=prost-pi
 refuse "a pilot offset that is out of range" $'EDGE=prost-pilot\nPROST_PILOT_OFFSET=500'
 refuse "the certificates in the bucket of the mail" $'EDGE=prost\nTLS_MODE=acme\nCERT_S3=1\nCERT_S3_BUCKET=rusty-mail'
 refuse "a bad ADMIN_PROXY" 'ADMIN_PROXY=2'
+refuse "monitoring without the URL file" 'MONITORING=1'
+refuse "monitoring with a URL file that is not a URL" 'MONITORING=1
+ALERT_URL_FILE=/etc/hostname'
+refuse "a bad alert kind" 'ALERT_KIND=sms'
 refuse "a per-address limit of zero" 'PROST_MAX_PER_IP=0'
 refuse "a bad image" 'PROST_IMAGE="Prost Latest"'
 echo "  ok    bad values are refused"
