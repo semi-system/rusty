@@ -11,6 +11,7 @@ pub mod storage_policy;
 mod config_role;
 mod config_admin;
 mod config_webmail;
+mod config_dns;
 mod config_blob_s3;
 mod config_filter;
 mod config_metrics;

@@ -83,7 +83,7 @@ fn parse_daemon(args: &[OsString]) -> Result<Invocation, String> {
                 );
             }
             Some("--role") => {
-                a.role = Some(value(&mut it, "--role")?.to_str().and_then(Role::from_name).filter(|r| !matches!(r, Role::Admin | Role::Webmail)).ok_or_else(|| "--role must be smtp-in, submission, imap, outbound or gc".to_owned())?);
+                a.role = Some(value(&mut it, "--role")?.to_str().and_then(Role::from_name).filter(|r| !matches!(r, Role::Admin | Role::Webmail | Role::Dns)).ok_or_else(|| "--role must be smtp-in, submission, imap, outbound or gc".to_owned())?);
             }
             Some("--log-format") => {
                 a.log_format = match value(&mut it, "--log-format")?.to_str() {

@@ -40,6 +40,11 @@ public_origin = \"https://admin.example.org\"
     ("webmail", "[webmail]
 public_origin = \"https://webmail.example.org\"
 "),
+    ("dns", "[dns]
+name_servers = [\"ns1.example.org\"]
+hostmaster = \"hostmaster.example.org\"
+mail_host = \"mail.example.org\"
+"),
 ];
 
 fn allowed(role: Role) -> &'static [&'static str] {
@@ -52,10 +57,11 @@ fn allowed(role: Role) -> &'static [&'static str] {
         Role::Gc => &["hostname", "log_level", "log_format", "store", "limits", "metrics", "blob_dir", "blob_s3", "unsealing", "gc_grace_seconds", "dns_check"],
         Role::Admin => &["hostname", "log_level", "log_format", "store", "limits", "metrics", "tls", "valkey", "sealing", "admin"],
         Role::Webmail => &["hostname", "log_level", "log_format", "store", "limits", "metrics", "blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "valkey", "webmail"],
+        Role::Dns => &["hostname", "log_level", "log_format", "store", "limits", "metrics", "dns"],
     }
 }
 
-const ROLES: [Role; 7] = [Role::SmtpIn, Role::Submission, Role::Imap, Role::Outbound, Role::Gc, Role::Admin, Role::Webmail];
+const ROLES: [Role; 8] = [Role::SmtpIn, Role::Submission, Role::Imap, Role::Outbound, Role::Gc, Role::Admin, Role::Webmail, Role::Dns];
 
 /// A file with exactly the keys in `names` (top-level keys first, then the tables).
 fn file(names: &[&str]) -> String {
@@ -74,7 +80,7 @@ fn file(names: &[&str]) -> String {
 }
 
 fn needs_blob_dir(role: Role) -> bool {
-    role != Role::Admin
+    !matches!(role, Role::Admin | Role::Dns)
 }
 
 #[test]
@@ -163,10 +169,28 @@ fn an_admin_file_gets_no_usable_blob_directory() {
 #[test]
 fn role_names_are_stable() {
     let names: Vec<&str> = ROLES.iter().map(|r| r.name()).collect();
-    assert_eq!(names, ["smtp-in", "submission", "imap", "outbound", "gc", "admin", "webmail"]);
+    assert_eq!(names, ["smtp-in", "submission", "imap", "outbound", "gc", "admin", "webmail", "dns"]);
     for r in ROLES {
         assert_eq!(Role::from_name(r.name()), Some(r));
     }
     assert_eq!(Role::from_name("ctl"), None);
     assert_eq!(Role::from_name(""), None);
+}
+
+#[test]
+fn the_dns_section_has_defaults_and_refuses_what_cannot_be_served() {
+    let ok = StartupConfig::from_toml_str_for(Role::Dns, &file(allowed(Role::Dns))).unwrap();
+    let d = ok.dns.expect("the section");
+    assert_eq!((d.ttl, d.reload_secs, d.slip, d.rate_per_second), (3600, 15, 2, 20));
+    let base = |extra: &str| format!("[store]
+url = \"postgres://rusty_dns@db.internal:5432/rusty\"
+password_file = \"/run/secrets/pg\"
+[dns]\nname_servers = [\"ns1.example.org\"]\nhostmaster = \"hostmaster.example.org\"\nmail_host = \"mail.example.org\"\n{extra}");
+    for bad in ["public_ips = [\"127.0.0.1\"]", "ttl = 5", "reload_secs = 0", "slip = 1000", "listen = []", "tcp_per_ip = 0", "surprise = 1"] {
+        assert!(StartupConfig::from_toml_str_for(Role::Dns, &base(bad)).is_err(), "{bad}");
+    }
+    assert!(StartupConfig::from_toml_str_for(Role::Dns, &base("public_ips = [\"192.0.2.25\", \"2001:db8::25\"]")).is_ok());
+    let no_ns = "[dns]\nname_servers = []\nhostmaster = \"hostmaster.example.org\"\nmail_host = \"mail.example.org\"\n";
+    assert!(StartupConfig::from_toml_str_for(Role::Dns, no_ns).is_err());
+    assert!(StartupConfig::from_toml_str_for(Role::Dns, &base("")).is_ok());
 }

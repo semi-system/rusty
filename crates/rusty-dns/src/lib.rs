@@ -6,5 +6,6 @@ pub mod adapter;
 pub mod answer;
 pub mod build;
 pub mod limit;
+pub mod run;
 pub mod server;
 pub mod zone;

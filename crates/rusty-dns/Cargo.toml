@@ -8,6 +8,10 @@ publish.workspace = true
 
 [dependencies]
 rusty-core = { path = "../rusty-core" }
+rusty-store = { path = "../rusty-store" }
+rusty-svc = { path = "../rusty-svc" }
+rusty-runtime = { path = "../rusty-runtime" }
+tracing.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time", "sync", "macros", "io-util"] }
 tokio-util.workspace = true
 # The DNS wire codec: named only inside src/adapter (scripts/wrapped-libs.txt).
@@ -15,4 +19,6 @@ hickory-proto = { version = "0.26", default-features = false, features = ["std"]
 
 [dev-dependencies]
 proptest.workspace = true
+rusty-store = { path = "../rusty-store", features = ["test-fixtures"] }
+tokio-util.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "io-util"] }
