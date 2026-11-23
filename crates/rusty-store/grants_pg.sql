@@ -133,11 +133,13 @@ BEGIN
     GRANT INSERT ON deliveries TO rusty_imap;
   END IF;
 
-  -- rusty_webmail: the people who own a mailbox read and write mail in a browser (docs/design-webmail.md). In the first step it signs people in and nothing else: the directory (with the password hashes it checks) and the time of the last
-  -- sign-in. What it needs to read and write mail is granted with the read path and the write path.
+  -- rusty_webmail: the people who own a mailbox read and write mail in a browser (docs/design-webmail.md). In the first step it signs people in and nothing else: the directory (with the password hashes it checks), the time of the last
+  -- sign-in, and (read path) the messages and where their bodies are. What it needs to write mail is granted with the write path.
   IF to_regrole('rusty_webmail') IS NOT NULL THEN
     GRANT SELECT ON accounts, domains, aliases, domain_aliases, lists, list_members, plans, address_owners, mailboxes, folders TO rusty_webmail;
     GRANT UPDATE (last_login_at) ON accounts TO rusty_webmail;   -- the time of the last sign-in (DirectoryRepo::record_login)
+    -- The read path: the messages and their bodies (never a write: nothing of the mailbox changes by reading it) and where a body is.
+    GRANT SELECT ON messages, keywords, blobs, blob_locations, blob_stores, blob_backends, deliveries TO rusty_webmail;
   END IF;
 
   -- rusty_outbound: the delivery worker. Claims and finishes jobs, reads the message and the DKIM and relay settings, writes the DNS check state.

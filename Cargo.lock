@@ -2460,12 +2460,14 @@ dependencies = [
 name = "rusty-webmail"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "hex",
  "rand_core 0.6.4",
  "rusty-core",
  "rusty-directory",
  "rusty-http",
  "rusty-runtime",
+ "rusty-s3",
  "rusty-store",
  "rusty-svc",
  "rusty-valkey",

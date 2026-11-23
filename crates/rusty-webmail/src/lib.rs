@@ -8,5 +8,7 @@
 
 pub mod api;
 pub mod health;
+pub mod mail;
+pub mod read;
 pub mod run;
 pub mod session;

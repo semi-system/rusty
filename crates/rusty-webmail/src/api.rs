@@ -124,6 +124,8 @@ impl WebmailAuth {
 /// What the endpoints share.
 pub struct WebmailApp {
     pub auth: WebmailAuth,
+    /// Opens the mailbox of an account: the read path asks it for the mail of the account behind the session and for nothing else.
+    pub hub: rusty_svc::MailboxHub,
     /// `https://host[:port]` of the webmail host name, as the browser sends it in `Origin`.
     pub public_origin: String,
     /// Other origins it is reached by (`[webmail] extra_origins`).

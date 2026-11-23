@@ -14,10 +14,15 @@ use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
 
 const ORIGIN: &str = "https://webmail.example.org";
-const BASE: &str = "blob_dir = \"/a/blobs\"\nhostname = \"webmail.example.org\"\n[store]\nurl = \"postgres://rusty_app@db.internal:5432/rusty\"\npassword_file = \"/run/secrets/pg\"\n";
+const BASE: &str = "hostname = \"webmail.example.org\"\n[store]\nurl = \"postgres://rusty_app@db.internal:5432/rusty\"\npassword_file = \"/run/secrets/pg\"\n";
 
-fn config() -> StartupConfig {
-    StartupConfig::from_toml_str_for(Role::Webmail, &format!("{BASE}[webmail]\nlisten = \"127.0.0.1:0\"\npublic_origin = \"{ORIGIN}\"\n")).unwrap()
+fn config(blob_dir: &std::path::Path) -> StartupConfig {
+    let text = format!("blob_dir = \"{}\"
+{BASE}[webmail]
+listen = \"127.0.0.1:0\"
+public_origin = \"{ORIGIN}\"
+", blob_dir.display());
+    StartupConfig::from_toml_str_for(Role::Webmail, &text).unwrap()
 }
 
 struct Reply {
@@ -66,7 +71,10 @@ fn cookie_of(r: &Reply) -> String {
     r.header("set-cookie").expect("a cookie").split(';').next().unwrap().to_owned()
 }
 
-async fn running() -> (Store, pg::PgTestDb, rusty_webmail::run::Running, CancellationToken, Directory) {
+async fn running() -> (Store, pg::PgTestDb, rusty_webmail::run::Running, CancellationToken, Directory, tempfile::TempDir) {
+    let tmp = tempfile::tempdir().unwrap();
+    let blob_dir = tmp.path().join("blobs");
+    rusty_store::FsBlobStore::init(&blob_dir).await.unwrap();
     let url = pg::pg_admin_url().expect("RUSTY_TEST_PG_URL");
     // The service runs as its own database role (deploy/db/roles.sql, grants_pg.sql): a query that needs more than that role has fails here. The fixtures (accounts) are made as the operator's role.
     let db = pg::PgTestDb::create_with_roles(&url).await;
@@ -74,13 +82,13 @@ async fn running() -> (Store, pg::PgTestDb, rusty_webmail::run::Running, Cancell
     let operator = Store::open(StoreConfig::postgres(db.role_url("rusty_app"))).await.unwrap();
     let dir = Directory::with_repo(operator.repos().directory.clone());
     let stop = CancellationToken::new();
-    let r = start(&config(), &store, stop.clone()).await.unwrap();
-    (store, db, r, stop, dir)
+    let r = start(&config(&blob_dir), &store, stop.clone()).await.unwrap();
+    (store, db, r, stop, dir, tmp)
 }
 
 #[tokio::test]
 async fn a_person_signs_in_sees_who_they_are_and_signs_out_and_every_failure_is_the_same_401() {
-    let (_store, _db, r, stop, dir) = running().await;
+    let (_store, _db, r, stop, dir, _tmp) = running().await;
     let d = dir.create_domain("one.test").await.unwrap();
     dir.create_account("alice", d, Some("correct-horse-battery-1"), None).await.unwrap();
 
@@ -125,7 +133,7 @@ async fn a_person_signs_in_sees_who_they_are_and_signs_out_and_every_failure_is_
 
 #[tokio::test]
 async fn the_sign_in_checks_the_origin_and_the_body_before_anything_else() {
-    let (_store, _db, r, stop, dir) = running().await;
+    let (_store, _db, r, stop, dir, _tmp) = running().await;
     let d = dir.create_domain("one.test").await.unwrap();
     dir.create_account("alice", d, Some("correct-horse-battery-1"), None).await.unwrap();
     let good = serde_json::json!({ "address": "alice@one.test", "password": "correct-horse-battery-1" }).to_string();
@@ -145,7 +153,7 @@ async fn the_sign_in_checks_the_origin_and_the_body_before_anything_else() {
 
 #[tokio::test]
 async fn repeated_failures_are_throttled_and_a_disabled_account_is_signed_out_at_its_next_request() {
-    let (_store, _db, r, stop, dir) = running().await;
+    let (_store, _db, r, stop, dir, _tmp) = running().await;
     let d = dir.create_domain("one.test").await.unwrap();
     let alice = dir.create_account("alice", d, Some("correct-horse-battery-1"), None).await.unwrap();
     dir.create_account("bob", d, Some("another-long-password-2"), None).await.unwrap();
@@ -175,14 +183,15 @@ async fn repeated_failures_are_throttled_and_a_disabled_account_is_signed_out_at
 
 #[tokio::test]
 async fn the_service_answers_its_own_health_check_and_refuses_to_start_without_its_section() {
-    let (_store, _db, r, stop, _dir) = running().await;
+    let (_store, _db, r, stop, _dir, _tmp) = running().await;
     assert!(rusty_webmail::health::healthy(r.addr, Duration::from_secs(5), false).await);
     stop.cancel();
 
     let url = pg::pg_admin_url().expect("RUSTY_TEST_PG_URL");
     let db = pg::PgTestDb::create_with_roles(&url).await;
     let store = Store::open(StoreConfig::postgres(db.role_url("rusty_webmail"))).await.unwrap();
-    let none = StartupConfig::from_toml_str_for(Role::Webmail, BASE).unwrap();
+    let none = StartupConfig::from_toml_str_for(Role::Webmail, &format!("blob_dir = \"/a/blobs\"
+{BASE}")).unwrap();
     assert!(start(&none, &store, CancellationToken::new()).await.is_err(), "no [webmail] section");
 }
 
