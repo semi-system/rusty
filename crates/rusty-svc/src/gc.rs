@@ -13,6 +13,8 @@ use crate::service::Service;
 /// How long a row of the delivery log is kept.
 const LOG_RETENTION_SECS: i64 = 30 * 86_400;
 const AUDIT_RETENTION_SECS: i64 = 365 * 86_400;
+/// What the tool did about backups is kept 400 days (docs/design-backup-status.md).
+const BACKUP_RUNS_RETENTION_SECS: i64 = 400 * 86_400;
 
 /// What one pass did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -29,6 +31,8 @@ pub struct GcSummary {
     pub audit_purged: u64,
     /// Searches of the mail past their day.
     pub searches_purged: u64,
+    /// Rows of the backup history past their 400 days.
+    pub backup_runs_purged: u64,
     /// Messages expunged because a retention rule made them due.
     pub retention_expunged: u64,
     /// Rows of the vacation book-keeping older than 60 days.
@@ -122,6 +126,13 @@ impl GcService {
         match ctx.searches.purge_expired(500).await {
             Ok(n) => s.searches_purged = n,
             Err(e) => step_failed(&mut s, "purge the searches", &e),
+        }
+        match ctx.jobs.now().await {
+            Ok(now) => match ctx.backups.purge(now.saturating_sub(BACKUP_RUNS_RETENTION_SECS), 5000).await {
+                Ok(n) => s.backup_runs_purged = n,
+                Err(e) => step_failed(&mut s, "purge the backup history", &e),
+            },
+            Err(e) => step_failed(&mut s, "read the clock", &e),
         }
         match ctx.jobs.now().await {
             Ok(now) => match ctx.rules.purge_vacation_replies(now.saturating_sub(60 * 86_400), 5000).await {

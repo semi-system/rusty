@@ -40,6 +40,8 @@ pub struct Context {
     pub audit: Arc<dyn rusty_store::AuditRepo>,
     /// The platform administrator's searches of the mail (docs/design-admin-search.md): run by the IMAP service, read by the admin web.
     pub searches: Arc<dyn rusty_store::SearchRepo>,
+    /// What the deployment tool did about backups: purged by the garbage collector, read by the admin web.
+    pub backups: Arc<dyn rusty_store::BackupRepo>,
     /// The book-keeping of automatic replies (vacation).
     pub rules: Arc<dyn rusty_store::RulesRepo>,
     /// The exports and imports of mailboxes asked for in the admin web.
@@ -94,6 +96,7 @@ impl Context {
             queue: repos.queue.clone(),
             audit: repos.audit.clone(),
             searches: repos.searches.clone(),
+            backups: repos.backups.clone(),
             rules: repos.rules.clone(),
             transfers: repos.transfers.clone(),
             plans: repos.plans.clone(),

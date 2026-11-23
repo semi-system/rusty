@@ -19,6 +19,7 @@ mod rules;
 mod transfers;
 mod audit;
 mod searches;
+mod backups;
 mod admin;
 pub mod tx;
 

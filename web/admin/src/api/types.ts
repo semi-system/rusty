@@ -481,6 +481,20 @@ export interface AuditEntry {
   detail: string | null;
 }
 
+export interface BackupRun {
+  id: number;
+  at: number;
+  kind: string;
+  ok: boolean;
+  bytes: number | null;
+  detail: string;
+}
+
+export interface Backups {
+  now: number;
+  items: BackupRun[];
+}
+
 export interface Audit {
   items: AuditEntry[];
   next: number | null;

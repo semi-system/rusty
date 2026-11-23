@@ -676,8 +676,8 @@ cmd_backup() { # [DIR] [--with-keys] [--with-blobs] [--keep N] | verify [FILE] |
   dir="$out/$(date -u +%Y%m%dT%H%M%SZ)"
   [ -r "$DB_ADMIN_PASSWORD_FILE" ] || die "backup: DB_ADMIN_PASSWORD_FILE is not readable"
   ( umask 077; mkdir -p "$dir" )
-  ( umask 077; pg_tool_as "pg_dump -Fc --no-owner" "$DB_ADMIN_USER" "$DB_ADMIN_PASSWORD_FILE" < /dev/null > "$dir/rusty.dump" ) || { rm -rf "$dir"; die "backup: pg_dump failed"; }
-  [ -s "$dir/rusty.dump" ] || { rm -rf "$dir"; die "backup: the dump is empty"; }
+  ( umask 077; pg_tool_as "pg_dump -Fc --no-owner" "$DB_ADMIN_USER" "$DB_ADMIN_PASSWORD_FILE" < /dev/null > "$dir/rusty.dump" ) || { rm -rf "$dir"; record_backup_run backup false - "pg_dump failed"; die "backup: pg_dump failed"; }
+  [ -s "$dir/rusty.dump" ] || { rm -rf "$dir"; record_backup_run backup false - "the dump is empty"; die "backup: the dump is empty"; }
   # The sealing key opens the tenants' stored credentials that are IN the dump: it is kept apart from it unless you ask for both together.
   if [ "$keys" = 1 ] && [ -d "$STATE_DIR/keys" ]; then ( umask 077; cp -R "$STATE_DIR/keys" "$dir/keys" ); fi
   # The mail itself is in the S3 bucket. With RustFS inside the stack its volume is copied too (a copy of live files: complete for the mail that existed when the copy began; the database dump is the part
@@ -688,7 +688,8 @@ cmd_backup() { # [DIR] [--with-keys] [--with-blobs] [--keep N] | verify [FILE] |
       || { rm -rf "$dir"; die "backup: the copy of the RustFS volume failed"; }
     [ -s "$dir/blobs.tar.gz" ] || { rm -rf "$dir"; die "backup: the copy of the RustFS volume is empty"; }
   fi
-  if [ "$blobs" = 1 ]; then echo "backup: $dir ($(wc -c < "$dir/rusty.dump") bytes of database, $(wc -c < "$dir/blobs.tar.gz") bytes of mail)."
+  record_backup_run backup true "$(wc -c < "$dir/rusty.dump")" "$([ "$blobs" = 1 ] && echo "with the mail of the RustFS volume" || echo "database only")"
+  if [ "$blobs" = 1 ]; then echo "backup: $dir ($(wc -c < "$dir/rusty.dump") bytes of database,$(wc -c < "$dir/blobs.tar.gz") bytes of mail)."
   else echo "backup: $dir ($(wc -c < "$dir/rusty.dump") bytes of database). The S3 bucket is not in it (add --with-blobs for the RustFS of the stack)."; fi
   # Keep the newest N (only directories this tool made: a timestamp as the name).
   if [ "$keep" -gt 0 ]; then
@@ -701,6 +702,16 @@ cmd_backup() { # [DIR] [--with-keys] [--with-blobs] [--keep N] | verify [FILE] |
     done
   fi
   if [ "$keys" = 0 ]; then echo "backup: the sealing key ($STATE_DIR/keys/unseal.key) is NOT in it, on purpose: keep a copy of it somewhere else (without it the tenants' stored credentials cannot be read), or add --with-keys." >&2; fi
+}
+
+# What was done goes into the database (docs/design-backup-status.md), so that the Backups page of the admin web can show it; a row that cannot be written is a warning, never a failed backup.
+record_backup_run() { # KIND (backup|verify) OK (true|false) BYTES|- DETAIL
+  local kind="$1" ok="$2" bytes="$3" detail="$4" b="NULL"
+  [ "$bytes" = - ] || b="$bytes"
+  detail="${detail//\'/\'\'}"; detail="${detail:0:500}"
+  printf "INSERT INTO backup_runs (kind, ok, bytes, detail) VALUES ('%s', %s, %s, '%s');\n" "$kind" "$ok" "$b" "$detail" \
+    | pg_tool_as "psql -v ON_ERROR_STOP=1 -q -d" "$DB_ADMIN_USER" "$DB_ADMIN_PASSWORD_FILE" >/dev/null 2>&1 \
+    || echo "backup: the run could not be recorded in the database (the Backups page will not show it)" >&2
 }
 
 # The drill, automatic: restore a dump into a scratch database next to the real one, read it, drop it. The real database is not touched. Needs a database user that may create databases (the superuser
@@ -718,10 +729,11 @@ cmd_backup_verify() { # [DUMP-FILE]  (default: the newest backup)
     out="$( DB_NAME="$scratch"; printf '%s\n' "SELECT 'migrations=' || count(*) || ' newest=' || coalesce(max(version)::text, '-') FROM _sqlx_migrations;" "SELECT 'domains=' || count(*) FROM domains;" "SELECT 'accounts=' || count(*) FROM accounts;" "SELECT 'messages=' || count(*) FROM messages;" | pg_tool_as "$q" "$DB_ADMIN_USER" "$DB_ADMIN_PASSWORD_FILE" 2>&1 )" || rc=1
   fi
   ( DB_NAME=postgres; echo "DROP DATABASE IF EXISTS $scratch;" | pg_tool_as "$q" "$DB_ADMIN_USER" "$DB_ADMIN_PASSWORD_FILE" >/dev/null ) || echo "backup verify: the scratch database $scratch is left behind: drop it" >&2
-  [ "$rc" = 0 ] || { printf '%s\n' "$out" >&2; die "backup verify: the dump could not be restored and read: this backup is NOT good"; }
+  [ "$rc" = 0 ] || { printf '%s\n' "$out" >&2; record_backup_run verify false - "the dump could not be restored and read"; die "backup verify: the dump could not be restored and read: this backup is NOT good"; }
   live="$( printf '%s\n' "SELECT 'migrations=' || count(*) || ' newest=' || coalesce(max(version)::text, '-') FROM _sqlx_migrations;" | pg_tool_as "$q" "$DB_ADMIN_USER" "$DB_ADMIN_PASSWORD_FILE" 2>/dev/null || true )"
   printf 'backup verify: the dump holds    %s\n' "$(printf '%s' "$out" | tr '\n' ' ')"
   [ -z "$live" ] || printf 'backup verify: the live database  %s\n' "$live"
+  record_backup_run verify true - "$(printf '%s' "$out" | tr '\n' ' ')"
   echo "backup verify: OK, the dump restores and reads"
 }
 

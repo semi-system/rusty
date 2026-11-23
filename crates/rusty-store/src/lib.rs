@@ -66,5 +66,5 @@ pub use pg::{PgPassword, PgLimits, PgSecurity, PgStore};
 pub use pg_queue::{MailboxPermit, MailboxQueue, STRIPES};
 pub use jobs::BatchSpec;
 pub use repo::HELD_UNTIL;
-pub use repo::{Transfer, TransferRepo, MAX_TRANSFER_BYTES, RulesRepo, StatRow, AuditRepo, AuditRow, NewAuditRow, results_json, Found, Search, SearchCriteria, SearchRepo, MAX_FOUND, AccountUsage, InboundRow, ListInfo, LogRow, MemberInfo, NewLogRow, PlanRepo, PlanRow, QueueJob, QueueRepo, RoutingRepo, SettingsRepo, PROTOCOLS, HeartbeatRepo, HeartbeatRow, BlobStoreRepo, BlobStoreRow, StoreId, PLATFORM_STORE, FlagUpdate, FolderCounts, FolderInfo, JobFence, DeletedMessage, MessageDetail, OwnerLimits, PurgeBatch, RawRef};
+pub use repo::{Transfer, TransferRepo, MAX_TRANSFER_BYTES, RulesRepo, StatRow, AuditRepo, AuditRow, NewAuditRow, BackupRepo, BackupRun, results_json, Found, Search, SearchCriteria, SearchRepo, MAX_FOUND, AccountUsage, InboundRow, ListInfo, LogRow, MemberInfo, NewLogRow, PlanRepo, PlanRow, QueueJob, QueueRepo, RoutingRepo, SettingsRepo, PROTOCOLS, HeartbeatRepo, HeartbeatRow, BlobStoreRepo, BlobStoreRow, StoreId, PLATFORM_STORE, FlagUpdate, FolderCounts, FolderInfo, JobFence, DeletedMessage, MessageDetail, OwnerLimits, PurgeBatch, RawRef};
 pub use store::{Repos, Store, StoreConfig};

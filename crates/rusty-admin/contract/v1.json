@@ -83,6 +83,8 @@
     "DayStats": { "day": "integer", "received": "integer", "rejected": "integer", "sent": "integer", "deferred": "integer", "failed": "integer" },
     "Stats": { "days": "DayStats[]" },
     "AuditEntry": { "id": "integer", "at": "integer", "actor": "string", "domain_id": "integer|null", "ip": "string", "method": "string", "route": "string", "path": "string", "status": "integer", "detail": "string|null" },
+    "BackupRun": { "id": "integer", "at": "integer", "kind": "string", "ok": "boolean", "bytes": "integer|null", "detail": "string" },
+    "Backups": { "now": "integer", "items": "BackupRun[]" },
     "Audit": { "items": "AuditEntry[]", "next": "integer|null" }
   },
   "endpoints": [
@@ -167,6 +169,7 @@
     { "method": "PUT", "path": "/api/v1/accounts/{a}/mail-rules", "auth": "admin", "request": { "forward": "MailForward|null (optional: one to ten addresses)", "vacation": "MailVacation|null (optional; an enabled reply needs a text)" }, "response": "MailRules", "status": 200, "note": "replaces the rules; an empty object removes them" },
     { "method": "GET", "path": "/api/v1/certificates", "auth": "platform", "request": null, "response": "CertificateList", "status": 200, "note": "what a client is handed at the public names of this server (the admin web's host and the mail host's 993, 995 and 465), read by connecting; a probe that failed carries an error text" },
     { "method": "GET", "path": "/api/v1/audit", "auth": "admin", "request": null, "response": "Audit", "status": 200, "note": "the changes administrators made, newest first (kept 365 days); a domain administrator gets its own domain; query: domain, before" },
+    { "method": "GET", "path": "/api/v1/backups", "auth": "platform", "request": null, "response": "Backups", "status": 200, "note": "what the deployment tool did about backups, newest first (the last 60): backups, drills and restores; platform administrators only" },
     { "method": "GET", "path": "/api/v1/plans", "auth": "admin", "request": null, "response": "PlanList", "status": 200 },
     { "method": "PUT", "path": "/api/v1/plans", "auth": "platform", "request": { "name": "string", "quota_bytes": "integer|null", "max_message_bytes": "integer|null", "messages_per_hour": "integer|null (optional)", "protocols": "string[]|null (optional: imap, pop3, submission)", "spam_junk_score": "number|null (optional, 0 to 100)", "spam_reject_score": "number|null (optional, 0 to 100, above the junk score)", "spam_retention_days": "integer|null (optional, 1 to 36500)", "retention_days": "integer|null (optional, 1 to 36500)" }, "response": "Plan", "status": 200, "note": "creates the plan (201) or changes its limits; a null limit removes it; the services read the limits when they open a mailbox" },
     { "method": "PUT", "path": "/api/v1/accounts/{a}/plan", "auth": "admin", "request": { "plan": "string|null" }, "response": "AccountPlan", "status": 200, "note": "put the account on the plan, or on none with null" }
