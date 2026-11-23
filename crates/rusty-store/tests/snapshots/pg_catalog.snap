@@ -163,7 +163,7 @@ COLUMN imap_migrations.host text nullable=NO identity=NO/ collation=C default=
 COLUMN imap_migrations.port integer nullable=NO identity=NO/ collation= default=
 COLUMN imap_migrations.security text nullable=NO identity=NO/ collation=C default=
 COLUMN imap_migrations.remote_user text nullable=NO identity=NO/ collation=C default=
-COLUMN imap_migrations.state text nullable=NO identity=NO/ collation=C default='queued'::text
+COLUMN imap_migrations.state text nullable=NO identity=NO/ collation=C default='preparing'::text
 COLUMN imap_migrations.cancel_requested boolean nullable=NO identity=NO/ collation= default=false
 COLUMN imap_migrations.folder text nullable=YES identity=NO/ collation=C default=
 COLUMN imap_migrations.folders_total integer nullable=NO identity=NO/ collation= default=0
@@ -597,7 +597,7 @@ CONSTRAINT imap_migrations.imap_migrations_security_not_null NOT NULL security
 CONSTRAINT imap_migrations.imap_migrations_security_valid CHECK (security = ANY (ARRAY['tls'::text, 'starttls'::text, 'plain'::text]))
 CONSTRAINT imap_migrations.imap_migrations_skipped_not_null NOT NULL skipped
 CONSTRAINT imap_migrations.imap_migrations_state_not_null NOT NULL state
-CONSTRAINT imap_migrations.imap_migrations_state_valid CHECK (state = ANY (ARRAY['queued'::text, 'running'::text, 'done'::text, 'failed'::text, 'cancelled'::text]))
+CONSTRAINT imap_migrations.imap_migrations_state_valid CHECK (state = ANY (ARRAY['preparing'::text, 'queued'::text, 'running'::text, 'done'::text, 'failed'::text, 'cancelled'::text]))
 CONSTRAINT imap_migrations.imap_migrations_user_valid CHECK (length(remote_user) >= 1 AND length(remote_user) <= 320)
 CONSTRAINT job_turns.job_turns_kind_not_null NOT NULL kind
 CONSTRAINT job_turns.job_turns_kind_valid CHECK (length(kind) >= 1 AND length(kind) <= 64)
