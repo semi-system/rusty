@@ -11,3 +11,4 @@ hyper crates/rusty-http/src/adapter
 hyper-util crates/rusty-http/src/adapter
 http-body-util crates/rusty-http/src/adapter
 hpke crates/rusty-seal/src/adapter
+hickory-proto crates/rusty-dns/src/adapter
