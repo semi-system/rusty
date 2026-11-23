@@ -11,6 +11,7 @@ pub mod admins;
 pub mod api;
 pub mod audit;
 pub mod audit_detail;
+pub mod search;
 pub mod backups;
 pub mod auth;
 pub mod autoconfig;

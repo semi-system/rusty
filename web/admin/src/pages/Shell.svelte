@@ -17,6 +17,7 @@
   import ProtocolsPage from './Protocols.svelte';
   import AuditPage from './Audit.svelte';
   import CertificatesPage from './Certificates.svelte';
+  import SearchPage from './Search.svelte';
   import BackupsPage from './Backups.svelte';
   import PlatformSettingsPage from './PlatformSettings.svelte';
   import PlansPage from './Plans.svelte';
@@ -31,7 +32,7 @@
   let { app, me }: { app: App; me: Me } = $props();
 
   // A route never ends in a domain name: the server answers a path that looks like a file with 404 (see docs/admin-web-frontend.md).
-  type Page = 'backups' | 'certificates' | 'stats' | 'platform' | 'audit' | 'domains' | 'overview' | 'accounts' | 'aliases' | 'dkim' | 'dns' | 'relay' | 'storage' | 'routing' | 'queue' | 'settings' | 'monitor' | 'protocols' | 'plans' | 'administrators';
+  type Page = 'search' | 'backups' | 'certificates' | 'stats' | 'platform' | 'audit' | 'domains' | 'overview' | 'accounts' | 'aliases' | 'dkim' | 'dns' | 'relay' | 'storage' | 'routing' | 'queue' | 'settings' | 'monitor' | 'protocols' | 'plans' | 'administrators';
   const routes: Route<Page>[] = [
     { pattern: '/', value: 'domains' },
     { pattern: '/monitor', value: 'monitor' },
@@ -39,6 +40,7 @@
     { pattern: '/plans', value: 'plans' },
     { pattern: '/audit', value: 'audit' },
     { pattern: '/certificates', value: 'certificates' },
+    { pattern: '/search', value: 'search' },
     { pattern: '/backups', value: 'backups' },
     { pattern: '/platform', value: 'platform' },
     { pattern: '/administrators', value: 'administrators' },
@@ -80,6 +82,7 @@
     if (match.value === 'plans') return [{ label: t('nav.plans') }];
     if (match.value === 'audit') return [{ label: t('nav.audit') }];
     if (match.value === 'certificates') return [{ label: t('nav.certificates') }];
+    if (match.value === 'search') return [{ label: t('nav.search') }];
     if (match.value === 'backups') return [{ label: t('nav.backups') }];
     if (match.value === 'platform') return [{ label: t('nav.platform') }];
     if (match.value === 'administrators') return [{ label: t('nav.administrators') }];
@@ -127,6 +130,7 @@
           <Link class="nav-link" href="/protocols" current={nav.path === '/protocols'}>{t('nav.protocols')}</Link>
           <Link class="nav-link" href="/platform" current={nav.path === '/platform'}>{t('nav.platform')}</Link>
           <Link class="nav-link" href="/certificates" current={nav.path === '/certificates'}>{t('nav.certificates')}</Link>
+          <Link class="nav-link" href="/search" current={nav.path === '/search'}>{t('nav.search')}</Link>
           <Link class="nav-link" href="/backups" current={nav.path === '/backups'}>{t('nav.backups')}</Link>
         </div>
       {/if}
@@ -174,6 +178,8 @@
       {#if me.scope === 'platform'}<PlatformSettingsPage {app} />{:else}<NotFound />{/if}
     {:else if match.value === 'certificates'}
       {#if me.scope === 'platform'}<CertificatesPage {app} />{:else}<NotFound />{/if}
+    {:else if match.value === 'search'}
+      {#if me.scope === 'platform'}<SearchPage {app} />{:else}<NotFound />{/if}
     {:else if match.value === 'backups'}
       {#if me.scope === 'platform'}<BackupsPage {app} />{:else}<NotFound />{/if}
     {:else if match.value === 'audit'}

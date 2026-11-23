@@ -122,7 +122,7 @@ async fn the_platform_limits_are_the_last_layer_and_only_platform_administrators
     let root = Client::sign_in(r.addr, "root@home.test").await;
     let none = root.get("/api/v1/settings").await;
     conforms(&none.json(), "PlatformSettings");
-    assert_eq!(none.json(), json!({ "quota_bytes": null, "max_message_bytes": null, "messages_per_hour": null, "virus_action": null, "blocked_extensions": [] }));
+    assert_eq!(none.json(), json!({ "quota_bytes": null, "max_message_bytes": null, "messages_per_hour": null, "virus_action": null, "blocked_extensions": [], "admin_search": false }));
     assert_eq!(root.post("/api/v1/domains/one.test/accounts", json!({ "local": "alice", "password": "alice-password-1" })).await.status, 201);
     let put = root.mutate("PUT", "/api/v1/settings", Some(json!({ "quota_bytes": 5_000_000, "max_message_bytes": null, "messages_per_hour": 40 }))).await;
     assert_eq!((put.status, put.json()["messages_per_hour"].clone()), (200, json!(40)), "{}", put.body);

@@ -314,3 +314,32 @@ async fn a_mailbox_is_exported_in_pieces_and_the_file_imports_into_another_mailb
     // The pieces and the rows go away when they expire (the test moves the clock by asking for expiry in the future through a direct purge of nothing yet).
     assert_eq!(repo.purge_expired(100).await.unwrap(), 0, "a day has not passed");
 }
+
+#[tokio::test]
+async fn a_queued_search_is_run_where_the_mail_is_and_leaves_at_most_a_hundred_results_and_no_body() {
+    use rusty_core::Flags;
+    use rusty_store::{Mailbox, SearchCriteria};
+    let p = parts().await;
+    let c = ctx(&p).await;
+    let dir = Directory::with_repo(p.seed_store.repos().directory.clone());
+    let d = dir.create_domain("find.test").await.unwrap();
+    let alice = dir.create_account("alice", d, None, None).await.unwrap();
+    let mb = Mailbox::open_with(p.seed_store.repos().mailbox.clone(), c.stores.clone(), alice).await.unwrap();
+    mb.append_dated(rusty_core::FolderId(1), bytes::Bytes::from_static(b"Subject: Invoice 42\r\nFrom: Bob <bob@else.test>\r\nMessage-ID: <1@x>\r\n\r\nsecret body words\r\n"), Flags::empty(), 1_700_000_000).await.unwrap();
+    mb.append_dated(rusty_core::FolderId(1), bytes::Bytes::from_static(b"Subject: Lunch\r\nFrom: Carol <carol@else.test>\r\nMessage-ID: <2@x>\r\n\r\nnothing\r\n"), Flags::empty(), 1_700_000_100).await.unwrap();
+
+    let repo = p.seed_store.repos().searches.clone();
+    let id = repo.create("root@home.test", &SearchCriteria { subject_text: Some("invoice".into()), ..Default::default() }).await.unwrap();
+    assert!(rusty_svc::SearchService::run_once(&c).await.unwrap(), "the search was waiting");
+    let done = repo.get(id).await.unwrap().unwrap();
+    assert_eq!((done.state.as_str(), done.found, done.truncated), ("done", 1, false), "{done:?}");
+    assert!(done.results.contains("alice@find.test") && done.results.contains("Invoice 42") && done.results.contains("Inbox"), "{}", done.results);
+    assert!(!done.results.contains("secret body words"), "a body is never part of a result");
+    assert!(!rusty_svc::SearchService::run_once(&c).await.unwrap(), "nothing else waits");
+
+    // A search with nothing to look for is refused by the worker too, with a fixed word.
+    let empty = repo.create("root@home.test", &SearchCriteria::default()).await.unwrap();
+    assert!(rusty_svc::SearchService::run_once(&c).await.unwrap());
+    let refused = repo.get(empty).await.unwrap().unwrap();
+    assert_eq!((refused.state.as_str(), refused.error.as_deref()), ("failed", Some("no_criteria")));
+}

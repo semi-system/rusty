@@ -306,12 +306,38 @@ export interface DomainAliasName {
   name: string;
 }
 
+export interface SearchFound {
+  account: string;
+  folder: string;
+  at: number;
+  from: string;
+  subject: string;
+  size: number;
+}
+
+export interface Search {
+  id: number;
+  state: string;
+  found: number;
+  truncated: boolean;
+  results: SearchFound[];
+  error: string | null;
+  created_at: number;
+  finished_at: number | null;
+}
+
+export interface SearchQueued {
+  id: number;
+  state: string;
+}
+
 export interface PlatformSettings {
   quota_bytes: number | null;
   max_message_bytes: number | null;
   messages_per_hour: number | null;
   virus_action: string | null;
   blocked_extensions: string[];
+  admin_search: boolean;
 }
 
 export interface DomainSettings {

@@ -21,6 +21,7 @@
   // What happens to a message with a virus: refused (the default) or filed in the Spam folder.
   let virusAction = $state('reject');
   let blockedText = $state('');
+  let adminSearch = $state(false);
 
   const mb = (n: number | null): string => (n === null ? '' : String(n / 1_048_576));
 
@@ -32,6 +33,7 @@
       perHour = s.messages_per_hour === null ? '' : String(s.messages_per_hour);
       virusAction = s.virus_action ?? 'reject';
       blockedText = s.blocked_extensions.join(' ');
+      adminSearch = s.admin_search;
       loaded = true;
     } catch (e) {
       error = e;
@@ -49,7 +51,7 @@
     error = null;
     notice = null;
     try {
-      await app.client.setPlatformSettings({ quota_bytes: quota, max_message_bytes: message, messages_per_hour: hours, virus_action: virusAction === 'reject' ? null : virusAction, blocked_extensions: blockedText.split(/[\s,]+/).filter((x) => x !== '') });
+      await app.client.setPlatformSettings({ quota_bytes: quota, max_message_bytes: message, messages_per_hour: hours, virus_action: virusAction === 'reject' ? null : virusAction, blocked_extensions: blockedText.split(/[\s,]+/).filter((x) => x !== ''), admin_search: adminSearch });
       notice = t('platform.saved');
     } catch (err) {
       error = err;
@@ -86,6 +88,11 @@
         <label>{t('platform.blocked')}<input bind:value={blockedText} name="blocked" type="text" autocapitalize="none" spellcheck="false" /></label>
       </div>
       <p class="hint">{t('platform.blockedHelp')}</p>
+      <fieldset class="checks">
+        <legend>{t('platform.searchLegend')}</legend>
+        <label><input type="checkbox" bind:checked={adminSearch} /> {t('platform.search')}</label>
+        <p class="hint">{t('platform.searchHelp')}</p>
+      </fieldset>
       <div class="form-actions"><button type="submit" class="primary" disabled={busy}>{busy ? t('common.saving') : t('common.save')}</button></div>
     </form>
   {/if}

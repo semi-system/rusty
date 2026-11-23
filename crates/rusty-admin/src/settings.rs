@@ -259,13 +259,16 @@ pub struct PlatformSettings {
     /// File extensions (without a dot) of attachments refused everywhere (a domain may add its own).
     #[serde(default)]
     pub blocked_extensions: Vec<String>,
+    /// Platform administrators may search the mail of every mailbox (who, folder, date, sender, subject, never a body; every search is audited). Off by default: a privacy risk to choose (docs/design-admin-search.md).
+    #[serde(default)]
+    pub admin_search: bool,
 }
 
 impl PlatformSettings {
     fn from_config(config: &str) -> PlatformSettings {
         let v: Value = serde_json::from_str(config).unwrap_or(Value::Null);
         let n = |k: &str| v.get(k).and_then(Value::as_u64);
-        PlatformSettings { quota_bytes: n("quota_bytes"), max_message_bytes: n("max_message_bytes"), messages_per_hour: n("messages_per_hour"), virus_action: v.get("virus_action").and_then(Value::as_str).map(str::to_owned), blocked_extensions: text_list(&v, "blocked_extensions") }
+        PlatformSettings { quota_bytes: n("quota_bytes"), max_message_bytes: n("max_message_bytes"), messages_per_hour: n("messages_per_hour"), virus_action: v.get("virus_action").and_then(Value::as_str).map(str::to_owned), blocked_extensions: text_list(&v, "blocked_extensions"), admin_search: v.get("admin_search").and_then(Value::as_bool).unwrap_or(false) }
     }
 
     fn invalid(&self) -> bool {
@@ -326,6 +329,11 @@ async fn put_platform(app: &AdminApp, req: Request) -> Response {
             set.insert("virus_action".to_owned(), Value::from(a.clone()));
         }
         None => remove.push("virus_action".to_owned()),
+    }
+    if new.admin_search {
+        set.insert("admin_search".to_owned(), Value::from(true));
+    } else {
+        remove.push("admin_search".to_owned());
     }
     if let Err(e) = s.plans.set_global_keys(&remove, &Value::Object(set).to_string()).await {
         return fail(&e);

@@ -457,6 +457,39 @@ async fn verify_changes_nothing() {
 }
 
 #[tokio::test]
+async fn a_search_finds_by_text_account_and_date_and_never_the_deleted() {
+    use rusty_store::SearchCriteria;
+    for_each_backend(|b| async move {
+        let n = b.name;
+        let (dom, acc, mb) = acct(&b, "srch").await;
+        let other = acct_in(&b, dom, "second").await;
+        for (m, subject, at) in [(&mb, "Quarterly report", 1000i64), (&mb, "Lunch plans", 2000), (&other, "QUARTERLY numbers", 3000), (&mb, "100%_sure", 4000)] {
+            m.append(INBOX, common::raw(subject, None), Flags::default()).await.unwrap();
+            execute(&b, "UPDATE messages SET internal_date = ? WHERE subject = ?", &[Bind::I(at), Bind::S(subject)]).await;
+        }
+        let repo = b.sorepo.clone();
+        let by = |c: SearchCriteria| {
+            let repo = repo.clone();
+            async move { repo.run(&c, 10).await.unwrap() }
+        };
+        let q = by(SearchCriteria { subject_text: Some("quarterly".into()), ..Default::default() }).await;
+        assert_eq!(q.iter().map(|f| f.at).collect::<Vec<_>>(), vec![3000, 1000], "{n}: case does not matter, newest first, both accounts");
+        let address = text(&b, &format!("SELECT a.local_part || '@' || d.name FROM accounts a JOIN domains d ON d.id = a.domain_id WHERE a.id = {}", acc.0)).await;
+        let own = by(SearchCriteria { subject_text: Some("quarterly".into()), account: Some(address), ..Default::default() }).await;
+        assert_eq!(own.len(), 1, "{n}: narrowed to one account");
+        assert_eq!(own[0].folder, "Inbox", "{n}");
+        // Wildcards mean themselves.
+        assert_eq!(by(SearchCriteria { subject_text: Some("100%_".into()), ..Default::default() }).await.len(), 1, "{n}: % and _ are not wildcards");
+        assert_eq!(by(SearchCriteria { subject_text: Some("_".into()), ..Default::default() }).await.len(), 1, "{n}: a lone _ matches only a subject that has one");
+        // A date range, and a deleted message is not found.
+        assert_eq!(by(SearchCriteria { since: Some(1500), until: Some(3500), ..Default::default() }).await.len(), 2, "{n}");
+        execute(&b, "UPDATE messages SET deleted_at = 1 WHERE internal_date = 3000", &[]).await;
+        assert_eq!(by(SearchCriteria { subject_text: Some("quarterly".into()), ..Default::default() }).await.len(), 1, "{n}: expunged mail is not found");
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn retention_rules_expunge_what_they_make_due_through_the_layers_and_nothing_else() {
     for_each_backend(|b| async move {
         let n = b.name;
