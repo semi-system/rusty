@@ -50,6 +50,7 @@ prep_state() { # STATE_DIR MAIL_HOST ADMIN_HOST
   local s="$1"
   mkdir -p "$s/keys" "$s/tls" "$s/dbtls" "$s/kvtls" "$s/secrets"
   printf 'k' > "$s/keys/unseal.key"; echo "rusty-seal-v1:$(printf '0%.0s' $(seq 1 64))" > "$s/keys/seal.pub"
+  printf 'k' > "$s/keys/webmail_totp.key"
   local n h e
   for n in mail:$2 admin:$3; do h="${n#*:}"; n="${n%%:*}"; for e in crt key pem; do echo x > "$s/tls/$n.$e"; done; printf '%s' "$h" > "$s/tls/$n.host"; done
   for e in crt key pem; do echo x > "$s/tls/webmail.$e"; done; printf "%s" webmail.example.org > "$s/tls/webmail.host"
@@ -246,6 +247,8 @@ grep -q 'public_origin = "https://webmail.example.org"' "$we/webmail.toml" && gr
 grep -q 'url = "postgres://rusty_webmail@' "$we/webmail.toml" || fail "webmail: it does not use its own database role"
 ! grep -qE 'unsealing|\[sealing\]|unseal_key' "$we/webmail.toml" || fail "webmail: it was handed a key"
 wsvc="$(awk '/^  webmail:$/{f=1;next} /^  [a-z]/{f=0} f' "$wp")"
+grep -q 'totp_key_file = "/etc/rusty-keys/totp.key"' "$we/webmail.toml" || fail "webmail: no key for the second factor in its configuration"
+printf '%s\n' "$wsvc" | grep -q 'webmail_totp' || fail "webmail: the service does not mount the key of the second factor"
 ! printf '%s\n' "$wsvc" | grep -q 'unseal_key' || fail "webmail: the service mounts the unsealing key"
 printf '%s\n' "$wsvc" | grep -q 'replicas: 1$' || fail "webmail: without Valkey the sessions are in the process: one task"
 ! grep -qx '  webmail:' "$tmp/prost.stack.yaml" || fail "a stack without WEBMAIL_HOST has a webmail"

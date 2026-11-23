@@ -99,6 +99,21 @@ make_sealing_key() {
   echo "prepare secrets: a sealing key was made: $dir/unseal.key. It is the key that opens the tenants' stored credentials: keep a copy somewhere else (without it they cannot be read)." >&2
 }
 
+# The key of the second factor of the webmail (docs/design-2fa.md): a key pair of its own, made once; only the webmail holds it. It is not the sealing key of the outbound service.
+make_totp_key() {
+  local dir="$STATE_DIR/keys" tmp uid
+  mkdir -p "$dir"; chmod 0700 "$dir"
+  [ ! -s "$dir/webmail_totp.key" ] || return 0
+  tmp="/tmp/rusty-swarm-totp.$$"
+  uid="$(on "$(manager_name)" id -u):$(on "$(manager_name)" id -g)"
+  on "$(manager_name)" sh -c "rm -rf $tmp && mkdir -m 1777 $tmp"
+  sw run --rm --user "$uid" --entrypoint /usr/local/bin/rustyctl -v "$tmp:/k" "$(rusty_image "")" seal keygen /k/totp.key >/dev/null
+  ( umask 077; on "$(manager_name)" cat "$tmp/totp.key" > "$dir/webmail_totp.key" )
+  on "$(manager_name)" rm -rf "$tmp"
+  [ -s "$dir/webmail_totp.key" ] || die "could not make the key of the second factor"
+  echo "prepare secrets: a key for the second factor of the webmail was made: $dir/webmail_totp.key (without it, people who turned the second factor on cannot sign in: keep a copy)." >&2
+}
+
 # ---- the configuration files of the services ---------------------------------------------------------------------------------------------------------------------------------------------
 db_ssl_lines() {
   if [ "$DB_TLS" = 1 ]; then
@@ -154,10 +169,10 @@ conf_admin() {
     for c in smtp-in submission imap outbound gc; do printf '[[metrics.scrape]]\nservice = "%s"\naddress = "tasks.%s:9100"\n\n' "$c" "$c"; done
   fi
 }
-# The webmail (docs/design-webmail.md): behind the edge only, which ends TLS and sends the PROXY header. No sealing or unsealing key: it opens no sealed secret.
+# The webmail (docs/design-webmail.md): behind the edge only, which ends TLS and sends the PROXY header. It opens no sealed secret and has no key of the outbound service; the key pair of its own is for the second factor of the sign-in (docs/design-2fa.md).
 conf_webmail() {
   head_common
-  printf '[webmail]\nlisten = "0.0.0.0:8090"\npublic_origin = "https://%s"\nallowed_peers = ["127.0.0.1/32"]\nallowed_hosts = ["tasks.edge", "edge"]\nproxy_protocol = true\n\n' "$WEBMAIL_HOST"
+  printf '[webmail]\nlisten = "0.0.0.0:8090"\npublic_origin = "https://%s"\nallowed_peers = ["127.0.0.1/32"]\nallowed_hosts = ["tasks.edge", "edge"]\nproxy_protocol = true\ntotp_key_file = "/etc/rusty-keys/totp.key"\n\n' "$WEBMAIL_HOST"
   blk_blob; blk_valkey webmail; blk_store webmail
 }
 conf_migrate() { head_common; printf 'gc_grace_seconds = 604800\n\n'; blk_blob; blk_store gc; printf 'migrator_user = "rusty_migrator"\nmigrator_password_file = "/run/secrets/pg_migrator"\n'; }
@@ -343,6 +358,7 @@ cmd_prepare_secrets() {
   ensure_secret s3_access "$d/s3_access"
   ensure_secret s3_secret "$S3_SECRET_KEY_FILE"
   ensure_secret unseal_key "$STATE_DIR/keys/unseal.key"
+  [ -z "$WEBMAIL_HOST" ] || { make_totp_key; ensure_secret webmail_totp "$STATE_DIR/keys/webmail_totp.key"; }
   ensure_secret tls_cert "$STATE_DIR/tls/mail.crt"
   ensure_secret tls_key "$STATE_DIR/tls/mail.key"
   if [ "$TLS_MODE" = self ] && haproxy_is_edge; then
@@ -412,6 +428,7 @@ load_names() {
   need_s="${SERVICE_ROLES[*]/#/pg_} s3_access s3_secret unseal_key tls_cert tls_key"
   { [ "$TLS_MODE" != self ] || ! haproxy_is_edge; } || need_s="$need_s edge_mail_pem edge_admin_pem"
   { [ -z "$WEBMAIL_HOST" ] || [ "$TLS_MODE" != self ] || ! haproxy_is_edge; } || need_s="$need_s edge_webmail_pem"
+  [ -z "$WEBMAIL_HOST" ] || need_s="$need_s webmail_totp"
   [ "$DB_IN_STACK" != 1 ] || need_s="$need_s pg_postgres db_server_crt db_server_key"
   need_c="smtp_in submission imap outbound gc admin ${WEBMAIL_HOST:+webmail} migrate"
   ! haproxy_is_edge || need_c="$need_c haproxy"
@@ -429,6 +446,7 @@ load_names() {
   [ -n "$DB_CA" ] || unset 'CONFIG_NAME[db_ca]'
   if [ "$TLS_MODE" != self ] || ! haproxy_is_edge; then unset 'SECRET_NAME[edge_mail_pem]' 'SECRET_NAME[edge_admin_pem]'; fi
   if [ -z "$WEBMAIL_HOST" ] || [ "$TLS_MODE" != self ] || ! haproxy_is_edge; then unset 'SECRET_NAME[edge_webmail_pem]'; fi
+  [ -n "$WEBMAIL_HOST" ] || unset 'SECRET_NAME[webmail_totp]'
   haproxy_is_edge || unset 'CONFIG_NAME[haproxy]'
   if [ "$DB_IN_STACK" != 1 ]; then unset 'SECRET_NAME[pg_postgres]' 'SECRET_NAME[db_server_crt]' 'SECRET_NAME[db_server_key]' 'CONFIG_NAME[pg_hba]'; fi
 }
@@ -466,6 +484,7 @@ gen_rusty_service() { # NAME ROLE-OF-DB NETWORKS(space) [TLS] [UNSEAL] [CONSTRAI
   y_secret "pg_$role"
   if [ "$name" != admin ]; then y_secret s3_access; y_secret s3_secret; fi
   if [ "$unseal" = 1 ]; then y_secret unseal_key /etc/rusty-keys/unseal.key; fi
+  [ "$name" != webmail ] || y_secret webmail_totp /etc/rusty-keys/totp.key
   if [ "$tls" = 1 ]; then y_secret tls_cert /etc/rusty-tls/cert.pem; y_secret tls_key /etc/rusty-tls/key.pem; fi
   if [ "$kv" = 1 ]; then y_secret "kv_$name"; fi
   printf '    configs:\n'
