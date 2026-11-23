@@ -40,6 +40,11 @@ pub struct Context {
     pub audit: Arc<dyn rusty_store::AuditRepo>,
     /// The platform administrator's searches of the mail (docs/design-admin-search.md): run by the IMAP service, read by the admin web.
     pub searches: Arc<dyn rusty_store::SearchRepo>,
+    /// The moves of a mailbox from another IMAP server (docs/design-imap-migration.md): done by the IMAP service.
+    pub migrations: Arc<dyn rusty_store::MigrationRepo>,
+    /// The sealed secrets (the password of the other server of a migration) and the key that opens them; `None` where `[unsealing]` is not configured.
+    pub sealed: rusty_store::SealedReader,
+    pub unsealer: Option<Arc<rusty_seal::Unsealer>>,
     /// The book-keeping of automatic replies (vacation).
     pub rules: Arc<dyn rusty_store::RulesRepo>,
     /// The exports and imports of mailboxes asked for in the admin web.
@@ -94,11 +99,20 @@ impl Context {
             queue: repos.queue.clone(),
             audit: repos.audit.clone(),
             searches: repos.searches.clone(),
+            migrations: repos.migrations.clone(),
+            sealed: rusty_store::SealedReader::with_repo(repos.sealed.clone()),
+            unsealer: None,
             rules: repos.rules.clone(),
             transfers: repos.transfers.clone(),
             plans: repos.plans.clone(),
             cfg,
         })
+    }
+
+    /// The key that opens the sealed secrets this service reads (the composition root gives it where `[unsealing]` is set).
+    pub fn with_unsealer(mut self, unsealer: Option<Arc<rusty_seal::Unsealer>>) -> Context {
+        self.unsealer = unsealer;
+        self
     }
 
     pub fn with_events(mut self, events: Arc<dyn ServiceEvents>) -> Context {

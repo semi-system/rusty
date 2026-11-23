@@ -27,6 +27,8 @@ pub struct GcSummary {
     pub log_purged: u64,
     /// Rows of the audit log past their 365 days.
     pub audit_purged: u64,
+    /// Moves from another IMAP server past their two days.
+    pub migrations_purged: u64,
     /// Searches of the mail past their day.
     pub searches_purged: u64,
     /// Messages expunged because a retention rule made them due.
@@ -118,6 +120,10 @@ impl GcService {
                 Err(e) => step_failed(&mut s, "purge the audit log", &e),
             },
             Err(e) => step_failed(&mut s, "read the clock", &e),
+        }
+        match ctx.migrations.purge_expired(500).await {
+            Ok(n) => s.migrations_purged = n,
+            Err(e) => step_failed(&mut s, "purge the migrations", &e),
         }
         match ctx.searches.purge_expired(500).await {
             Ok(n) => s.searches_purged = n,

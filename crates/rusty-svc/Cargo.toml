@@ -17,12 +17,14 @@ rusty-core = { path = "../rusty-core" }
 rusty-store = { path = "../rusty-store" }
 rusty-directory = { path = "../rusty-directory" }
 rusty-valkey = { path = "../rusty-valkey" }
+rusty-seal = { path = "../rusty-seal" }
 async-trait.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "time", "sync", "signal", "io-util", "macros"] }
 tokio-util.workspace = true
 rustls.workspace = true
 rustls-pki-types.workspace = true
 tokio-rustls.workspace = true
+rustls-native-certs.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 rustix = { workspace = true, features = ["process"] }
