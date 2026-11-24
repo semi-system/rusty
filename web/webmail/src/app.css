@@ -178,7 +178,8 @@ nav {
   background: var(--panel);
 }
 .list ul,
-.outbox ul {
+.outbox ul,
+.agenda ul {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -214,6 +215,7 @@ nav {
   font-size: 0.85rem;
 }
 .reader,
+.agenda,
 .outbox {
   grid-row: 3;
   grid-column: 2 / -1;
@@ -401,4 +403,27 @@ dd {
 .suggestions button:hover,
 .suggestions button:focus-visible {
   background: var(--line);
+}
+.agenda h3 {
+  margin: 1.25rem 0 0.25rem;
+  font-size: 1rem;
+}
+.agenda li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  align-items: baseline;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.agenda .clock {
+  min-width: 4.5rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.agenda .where,
+.agenda .zone,
+.agenda .note {
+  color: var(--muted);
+  font-size: 0.85rem;
 }

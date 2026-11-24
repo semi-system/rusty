@@ -5,12 +5,15 @@ import { errorText } from './errors';
 import { size, when } from './format';
 import { t, type MessageKey } from './i18n';
 import { Outbox } from './Outbox';
+import { Agenda } from './Agenda';
 import { Settings } from './Settings';
 
 /** The outbox is not a folder of the server; it is listed next to them. */
 const OUTBOX = -1;
 /** Likewise the settings page. */
 const SETTINGS = -2;
+/** And the agenda. */
+const AGENDA = -3;
 
 const ROLE_NAMES: Record<string, MessageKey> = { inbox: 'folder.inbox', sent: 'folder.sent', drafts: 'folder.drafts', trash: 'folder.trash', spam: 'folder.spam', archive: 'folder.archive' };
 
@@ -58,7 +61,7 @@ export const Mailbox: Component<{ api: Api; address: string; onSignOut: () => vo
     guard(async () => {
       setCurrent(folder);
       setOpened(null);
-      if (folder === OUTBOX || folder === SETTINGS) return;
+      if (folder === OUTBOX || folder === SETTINGS || folder === AGENDA) return;
       const page = await props.api.messages(folder);
       setItems(page.items);
       setNext(page.next);
@@ -168,6 +171,9 @@ export const Mailbox: Component<{ api: Api; address: string; onSignOut: () => vo
         <button type="button" class="folder" classList={{ active: current() === OUTBOX }} aria-current={current() === OUTBOX ? 'page' : undefined} onClick={() => void open(OUTBOX)}>
           <span>{t('folder.outbox')}</span>
         </button>
+        <button type="button" class="folder" classList={{ active: current() === AGENDA }} aria-current={current() === AGENDA ? 'page' : undefined} onClick={() => void open(AGENDA)}>
+          <span>{t('folder.agenda')}</span>
+        </button>
         <button type="button" class="folder" classList={{ active: current() === SETTINGS }} aria-current={current() === SETTINGS ? 'page' : undefined} onClick={() => void open(SETTINGS)}>
           <span>{t('folder.settings')}</span>
         </button>
@@ -177,7 +183,7 @@ export const Mailbox: Component<{ api: Api; address: string; onSignOut: () => vo
           </button>
         </Show>
       </nav>
-      <Show when={current() !== OUTBOX && current() !== SETTINGS} fallback={current() === SETTINGS ? <Settings api={props.api} onSignature={() => void refetchSignature()} /> : <Outbox api={props.api} />}>
+      <Show when={current() !== OUTBOX && current() !== SETTINGS && current() !== AGENDA} fallback={current() === SETTINGS ? <Settings api={props.api} onSignature={() => void refetchSignature()} /> : current() === AGENDA ? <Agenda api={props.api} /> : <Outbox api={props.api} />}>
         <section class="list" aria-label={t('folders')}>
           <Show when={items().length > 0} fallback={<p class="empty">{t('list.empty')}</p>}>
             <ul>

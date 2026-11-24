@@ -108,7 +108,8 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     let router = crate::settings::routes(app.clone(), router);
     let router = crate::second::routes(app.clone(), router);
     let router = crate::filters::routes(app.clone(), router);
-    let router = crate::contacts::routes(app, router);
+    let router = crate::contacts::routes(app.clone(), router);
+    let router = crate::events::routes(app, router);
     // The front end embedded at build time answers every other path; without one this is an API server only.
     let router = match crate::web::handler() {
         Some(h) => router.fallback(h),

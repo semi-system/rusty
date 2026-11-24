@@ -19,6 +19,7 @@ pub mod settings;
 pub mod send;
 pub mod compose;
 pub mod contacts;
+pub mod events;
 pub mod session;
 pub mod totp;
 pub mod web;

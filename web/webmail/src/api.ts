@@ -113,6 +113,25 @@ export interface Contact {
   email: string;
 }
 
+/** One event of the agenda: a UTC time is shown in the reader's zone, any other as the wall clock it states. */
+export interface AgendaItem {
+  uid: string;
+  summary: string;
+  location: string;
+  start: number;
+  end: number;
+  all_day: boolean;
+  utc: boolean;
+  tzid: string | null;
+  unexpanded: boolean;
+  calendar: string;
+}
+
+export interface AgendaPage {
+  items: AgendaItem[];
+  truncated: boolean;
+}
+
 export interface Api {
   me(): Promise<Me>;
   signIn(address: string, password: string, code?: string): Promise<Me>;
@@ -145,6 +164,8 @@ export interface Api {
   saveSettings(signature: string): Promise<{ signature: string }>;
   /** The contacts of the person whose name or address holds `q` (two characters or more): what the composer suggests. */
   contacts(q: string): Promise<Contact[]>;
+  /** The events of the person that meet `[from, to)` (unix seconds), the repeating ones expanded. */
+  events(from: number, to: number): Promise<AgendaPage>;
 }
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
@@ -231,6 +252,7 @@ export function createApi(doFetch: Fetch = (i, init) => fetch(i, init)): Api {
     },
     settings: () => call('GET', '/api/v1/settings'),
     contacts: async (q) => (await call<{ items: Contact[] }>('GET', `/api/v1/contacts?q=${encodeURIComponent(q)}`)).items,
+    events: (from, to) => call<AgendaPage>('GET', `/api/v1/events?from=${from}&to=${to}`),
     saveSettings: (signature) => call('PUT', '/api/v1/settings', { signature }),
   };
 }
