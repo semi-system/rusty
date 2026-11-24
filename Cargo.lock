@@ -2216,8 +2216,12 @@ dependencies = [
  "hickory-proto",
  "proptest",
  "rusty-core",
+ "rusty-runtime",
+ "rusty-store",
+ "rusty-svc",
  "tokio",
  "tokio-util",
+ "tracing",
 ]
 
 [[package]]
