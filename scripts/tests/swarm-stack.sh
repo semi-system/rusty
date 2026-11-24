@@ -286,6 +286,20 @@ grep -q 'load crt "webmail.pem" acme letsencrypt domains "webmail.example.org"' 
 ! grep -q '@WEBMAIL\|^#WEBMAIL' "$wa" || fail "webmailacme: a placeholder or a marker is left"
 echo "  ok    the webmail's entry at the edge (HAProxy, self-signed and ACME)"
 
+# The authoritative name server: a service of its own with a role of its own, port 53 published in host mode, the names handed to the admin web.
+scenario dns "$EXT"$'\nDNS_NAME_SERVERS="ns1.example.org ns2.example.org"\nREPLICAS_DEFAULT=1' "dns admin" "certd"
+dp="$tmp/dns.stack.yaml"; de="$tmp/state-dns/stack/etc"
+dsvc="$(awk '/^  dns:$/{f=1;next} /^  [a-z]/{f=0} f' "$dp")"
+[ -n "$dsvc" ] || fail "dns: the service is missing"
+printf '%s\n' "$dsvc" | grep -q 'published: 53, protocol: udp, mode: host' && printf '%s\n' "$dsvc" | grep -q 'published: 53, protocol: tcp, mode: host' || fail "dns: port 53 is not published on UDP and TCP in host mode"
+printf '%s\n' "$dsvc" | grep -q 'node.role == manager' || fail "dns: without a labelled node it does not stay on the Manager"
+printf '%s\n' "$dsvc" | grep -q 'pg_dns' && ! printf '%s\n' "$dsvc" | grep -qE 's3_|unseal|webmail_totp|tls_' || fail "dns: it has a secret that is not its own role's password"
+grep -q 'url = "postgres://rusty_dns@' "$de/dns.toml" && grep -q 'name_servers = \["ns1.example.org", "ns2.example.org"\]' "$de/dns.toml" && grep -q 'hostmaster = "hostmaster.example.org"' "$de/dns.toml" || fail "dns: its configuration is not the inventory's"
+! grep -qE 'blob|unsealing|sealing|\[tls\]' "$de/dns.toml" || fail "dns: it was handed what a name server never uses"
+grep -q 'name_servers = \["ns1.example.org", "ns2.example.org"\]' "$de/admin.toml" || fail "dns: the admin web is not told the names to set at the registrar"
+! grep -q '^  dns:' "$tmp/webmail.stack.yaml" || fail "dns: a stack without DNS_NAME_SERVERS has the service"
+echo "  ok    the authoritative name server (service, port 53, configuration)"
+
 scenario adminproxy "$EXT"$'\nEDGE=prost\nTLS_MODE=self\nADMIN_PROXY=1\nREPLICAS_DEFAULT=1' "edge admin" "certd db s3"
 ap="$tmp/state-adminproxy/stack/etc"
 grep -q '^proxy_protocol = true' "$ap/admin.toml" || fail "adminproxy: the admin web does not read the PROXY header"
@@ -344,6 +358,8 @@ refuse "a bad port" 'DB_PORT=99999'
 refuse "a bad database name" 'DB_NAME=Rusty-DB'
 refuse "two admin tasks without the shared session store" 'REPLICAS_ADMIN=2'
 refuse "no tasks" 'REPLICAS_DEFAULT=0'
+refuse "a name server that is not a host name" 'DNS_NAME_SERVERS="ns1.example.org bad name!"'
+refuse "a name server with no domain to take the hostmaster from" 'DNS_NAME_SERVERS="ns1"'
 refuse "an unknown edge" 'EDGE=nginx'
 refuse "the pilot with ACME certificates and no bucket for them" $'EDGE=prost-pilot\nTLS_MODE=acme'
 refuse "a pilot offset that is out of range" $'EDGE=prost-pilot\nPROST_PILOT_OFFSET=500'
