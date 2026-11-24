@@ -51,6 +51,8 @@ pub struct Context {
     pub unsealer: Option<Arc<rusty_seal::Unsealer>>,
     /// The book-keeping of automatic replies (vacation).
     pub rules: Arc<dyn rusty_store::RulesRepo>,
+    /// The Sieve scripts of the accounts (docs/design-sieve.md): the delivering service runs the active one.
+    pub sieve: Arc<dyn rusty_store::SieveRepo>,
     /// The exports and imports of mailboxes asked for in the admin web.
     pub transfers: Arc<dyn rusty_store::TransferRepo>,
     /// Plans and what a mailbox holds (the IMAP `QUOTA` answer).
@@ -110,6 +112,7 @@ impl Context {
             sealed: rusty_store::SealedReader::with_repo(repos.sealed.clone()),
             unsealer: None,
             rules: repos.rules.clone(),
+            sieve: repos.sieve.clone(),
             transfers: repos.transfers.clone(),
             plans: repos.plans.clone(),
             cfg,

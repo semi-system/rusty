@@ -15,6 +15,7 @@ rusty-seal = { path = "../rusty-seal" }
 rusty-valkey = { path = "../rusty-valkey" }
 zeroize = "1"
 rusty-svc = { path = "../rusty-svc", default-features = false }
+rusty-sieve = { path = "../rusty-sieve" }
 smtp-proto.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true

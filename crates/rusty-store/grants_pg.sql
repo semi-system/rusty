@@ -102,8 +102,10 @@ BEGIN
     GRANT SELECT, INSERT, UPDATE ON messages, blobs, blob_locations TO rusty_smtp_in;
     GRANT INSERT ON keywords, change_log, deliveries, jobs TO rusty_smtp_in;
     GRANT SELECT, INSERT, UPDATE ON vacation_replies TO rusty_smtp_in;   -- one automatic reply per sender and week (docs/design-mail-rules.md)
+    GRANT SELECT ON sieve_scripts TO rusty_smtp_in;   -- the active filter of the account runs on what is delivered (docs/design-sieve.md)
     GRANT INSERT ON mail_log TO rusty_smtp_in;   -- the trace of incoming mail (docs/design-queue.md)
     GRANT UPDATE ON mailboxes, folders TO rusty_smtp_in;
+    GRANT INSERT ON folders TO rusty_smtp_in;   -- a Sieve script may file mail into a folder that does not exist yet (docs/design-sieve.md)
   END IF;
 
   -- rusty_submission: authenticated submission. Checks a password, stores the copy and queues the outbound job.

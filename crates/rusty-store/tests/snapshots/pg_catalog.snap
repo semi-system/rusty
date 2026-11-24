@@ -316,6 +316,11 @@ COLUMN service_heartbeats.started_at bigint nullable=NO identity=NO/ collation= 
 COLUMN service_heartbeats.last_seen bigint nullable=NO identity=NO/ collation= default=
 COLUMN service_heartbeats.status text nullable=NO identity=NO/ collation=C default=
 COLUMN service_heartbeats.detail text nullable=NO identity=NO/ collation=C default='{}'::text
+COLUMN sieve_scripts.account_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN sieve_scripts.name text nullable=NO identity=NO/ collation=C default=
+COLUMN sieve_scripts.body text nullable=NO identity=NO/ collation=C default=
+COLUMN sieve_scripts.active boolean nullable=NO identity=NO/ collation= default=false
+COLUMN sieve_scripts.updated_at bigint nullable=NO identity=NO/ collation= default=
 COLUMN totp.account_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN totp.sealed bytea nullable=NO identity=NO/ collation= default=
 COLUMN totp.confirmed_at bigint nullable=YES identity=NO/ collation= default=
@@ -863,6 +868,15 @@ CONSTRAINT service_heartbeats.service_heartbeats_status_not_null NOT NULL status
 CONSTRAINT service_heartbeats.service_heartbeats_status_valid CHECK (status = ANY (ARRAY['ok'::text, 'degraded'::text]))
 CONSTRAINT service_heartbeats.service_heartbeats_version_not_null NOT NULL version
 CONSTRAINT service_heartbeats.service_heartbeats_version_valid CHECK (length(version) >= 1 AND length(version) <= 64)
+CONSTRAINT sieve_scripts.sieve_scripts_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+CONSTRAINT sieve_scripts.sieve_scripts_account_id_not_null NOT NULL account_id
+CONSTRAINT sieve_scripts.sieve_scripts_active_not_null NOT NULL active
+CONSTRAINT sieve_scripts.sieve_scripts_body_not_null NOT NULL body
+CONSTRAINT sieve_scripts.sieve_scripts_body_valid CHECK (length(body) <= 65536)
+CONSTRAINT sieve_scripts.sieve_scripts_name_not_null NOT NULL name
+CONSTRAINT sieve_scripts.sieve_scripts_name_valid CHECK (length(name) >= 1 AND length(name) <= 128 AND name !~ '[[:cntrl:]]'::text)
+CONSTRAINT sieve_scripts.sieve_scripts_pkey PRIMARY KEY (account_id, name)
+CONSTRAINT sieve_scripts.sieve_scripts_updated_at_not_null NOT NULL updated_at
 CONSTRAINT totp.totp_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 CONSTRAINT totp.totp_account_id_not_null NOT NULL account_id
 CONSTRAINT totp.totp_created_at_not_null NOT NULL created_at
@@ -1001,6 +1015,8 @@ INDEX schema_compat.schema_compat_pkey CREATE UNIQUE INDEX schema_compat_pkey ON
 INDEX sealed_secrets.sealed_secrets_pkey CREATE UNIQUE INDEX sealed_secrets_pkey ON public.sealed_secrets USING btree (owner_kind, owner_id, purpose)
 INDEX service_heartbeats.service_heartbeats_pkey CREATE UNIQUE INDEX service_heartbeats_pkey ON public.service_heartbeats USING btree (service, instance)
 INDEX service_heartbeats.service_heartbeats_seen CREATE INDEX service_heartbeats_seen ON public.service_heartbeats USING btree (last_seen)
+INDEX sieve_scripts.sieve_scripts_one_active CREATE UNIQUE INDEX sieve_scripts_one_active ON public.sieve_scripts USING btree (account_id) WHERE active
+INDEX sieve_scripts.sieve_scripts_pkey CREATE UNIQUE INDEX sieve_scripts_pkey ON public.sieve_scripts USING btree (account_id, name)
 INDEX totp.totp_pkey CREATE UNIQUE INDEX totp_pkey ON public.totp USING btree (account_id)
 INDEX totp_recovery.totp_recovery_account CREATE INDEX totp_recovery_account ON public.totp_recovery USING btree (account_id)
 INDEX totp_recovery.totp_recovery_pkey CREATE UNIQUE INDEX totp_recovery_pkey ON public.totp_recovery USING btree (id)
