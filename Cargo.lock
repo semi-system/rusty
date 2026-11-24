@@ -2376,6 +2376,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusty-sieve"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "rusty-smtp"
 version = "0.1.0"
 dependencies = [
