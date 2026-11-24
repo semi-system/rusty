@@ -367,8 +367,8 @@ prost_check davprost
 ! grep -q 'dav' "$tmp/state-prostself/stack/etc/prost-edge.toml" || fail "prostself: a DAV upstream without DAV=1"
 echo "  ok    the calendar and contacts service and its routes (HAProxy and Prost)"
 # The DNS check before the setup (deploy/swarm/dns-wait.sh): the names must point at the Manager; the setup waits until they do.
+# shellcheck disable=SC2034  # the variables are read by the functions sourced inside
 (
-  # shellcheck disable=SC2034  # read by the functions sourced below
   MAIL_HOST=mx.example.org ADMIN_HOST=admin.example.org WEBMAIL_HOST=mail.example.org TLS_MODE=acme DNS_EXPECT_IP=203.0.113.7 DNS_POLL_SECS=0
   die() { echo "DIE: $*"; exit 1; }
   # shellcheck source=../../deploy/swarm/dns-wait.sh
