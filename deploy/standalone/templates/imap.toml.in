@@ -13,8 +13,6 @@ listen_993 = "0.0.0.0:1993"
 # POP3: the edge passes 110 and ends TLS on 995; whether it answers is a switch in the database (docs/design-protocols.md).
 listen_110 = "0.0.0.0:1110"
 listen_995 = "0.0.0.0:1995"
-# ManageSieve (docs/design-sieve.md): the edge passes 4190 through.
-listen_4190 = "0.0.0.0:4190"
 proxy_protocol = true
 trusted_proxies = ["10.77.0.2/32", "127.0.0.1/32"]
 

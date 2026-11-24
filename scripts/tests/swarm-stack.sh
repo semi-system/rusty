@@ -126,9 +126,8 @@ grep -q 'replicas: 2' "$tmp/profiles.stack.yaml" || fail "REPLICAS_DEFAULT=2 has
 # the IMAP service listens; nothing in the environment turns it on or off.
 grep -q 'published: 110' "$tmp/external.stack.yaml" && grep -q 'published: 995' "$tmp/external.stack.yaml" || fail "the edge does not publish 110 and 995"
 grep -q '^listen_110 = "0.0.0.0:1110"' "$tmp/state-external/stack/etc/imap.toml" && grep -q '^listen_995 = "0.0.0.0:1995"' "$tmp/state-external/stack/etc/imap.toml" || fail "the IMAP service does not listen for POP3"
-# ManageSieve (docs/design-sieve.md) is open the same way: published by the edge, passed through to the IMAP service on 4190.
+# ManageSieve (docs/design-sieve.md) is open the same way: published by the edge, passed through to the IMAP service on 4190 (its default: the stack names no port for it).
 grep -q 'published: 4190' "$tmp/external.stack.yaml" || fail "the edge does not publish 4190"
-grep -q '^listen_4190 = "0.0.0.0:4190"' "$tmp/state-external/stack/etc/imap.toml" || fail "the IMAP service does not listen for ManageSieve"
 ! grep -q '^pop3' "$tmp/state-external/stack/etc/admin.toml" || fail "the admin web is told about POP3 in its file: the switch is in the database"
 cfg="$tmp/state-external/stack/etc/haproxy.cfg"
 grep -q '^frontend pop3_in' "$cfg" && grep -q '^frontend pop3s_in' "$cfg" || fail "the edge has no POP3 frontend"
