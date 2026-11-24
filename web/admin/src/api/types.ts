@@ -199,6 +199,21 @@ export interface DnsRecords {
   warnings: string[];
 }
 
+export interface ExtraRecord {
+  id: number;
+  name: string;
+  type: string;
+  value: string;
+  ttl: number;
+}
+
+export interface DnsHosting {
+  mode: string;
+  name_servers: string[];
+  extra: ExtraRecord[];
+  max_extra: number;
+}
+
 export interface Queue {
   queued: number;
   running: number;

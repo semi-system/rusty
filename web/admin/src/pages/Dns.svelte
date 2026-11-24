@@ -5,6 +5,7 @@
   import type { DnsRecords } from '../api/types';
   import Copy from '../lib/Copy.svelte';
   import DomainShell from '../lib/DomainShell.svelte';
+  import Hosting from '../lib/Hosting.svelte';
   import ErrorNote from '../lib/ErrorNote.svelte';
   import { labelled } from '../lib/stack';
   import { t, tFor } from '../i18n';
@@ -93,5 +94,6 @@
         </table>
       </div>
     {/if}
+    <Hosting {app} {name} />
   </DomainShell>
 </main>
