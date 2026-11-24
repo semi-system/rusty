@@ -9,7 +9,7 @@
 # the swarm gave the resolver service on the filter network (it stays the same as long as the service exists) and writes it into their configuration; `init` therefore starts the resolver first.
 
 FILTER="${FILTER:-0}"; VALKEY="${VALKEY:-0}"
-KV_ROLES=(submission imap admin webmail)
+KV_ROLES=(submission imap admin webmail dav)
 
 # ---- the resolver's address ---------------------------------------------------------------------------------------------------------------------------------------------------------------------
 resolver_addr() { # -> 10.0.5.2:53 (empty when the resolver is not there yet)

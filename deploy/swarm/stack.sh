@@ -16,7 +16,7 @@ TLS_MODE="${TLS_MODE:-acme}"
 # `admin` is one task unless REPLICAS_ADMIN says more: its sessions need the shared key-value store (VALKEY=1) and the one-time setup token and the live-update hub belong to one process.
 REPLICAS_DEFAULT="${REPLICAS_DEFAULT:-2}"
 REPLICAS_ADMIN="${REPLICAS_ADMIN:-1}"
-replicas_of() { case "$1" in dav) echo 1 ;; admin) echo "$REPLICAS_ADMIN" ;; webmail) if [ "$VALKEY" = 1 ]; then echo "$REPLICAS_DEFAULT"; else echo 1; fi ;; *) echo "$REPLICAS_DEFAULT" ;; esac; }
+replicas_of() { case "$1" in dav) if [ "$VALKEY" = 1 ]; then echo "$REPLICAS_DEFAULT"; else echo 1; fi ;; admin) echo "$REPLICAS_ADMIN" ;; webmail) if [ "$VALKEY" = 1 ]; then echo "$REPLICAS_DEFAULT"; else echo 1; fi ;; *) echo "$REPLICAS_DEFAULT" ;; esac; }
 LOG_LEVEL="${LOG_LEVEL:-info}"
 declare -A SECRET_NAME=() CONFIG_NAME=()
 # shellcheck source=validate.sh
@@ -184,12 +184,12 @@ conf_webmail() {
   blk_blob; blk_valkey webmail; blk_store webmail
 }
 # The calendar and contacts service (docs/design-caldav-carddav.md), DAV=1: behind the edge only, which ends TLS and sends the PROXY header. It holds no key and no mail (no blob store, no sealed secret): its
-# database role reads the directory to check a password and keeps the collections and objects. One task: the sign-in counters are in its own memory.
+# database role reads the directory to check a password and keeps the collections and objects. One task, or the replicas of the others with VALKEY=1 (then the sign-in counters are shared in the key-value store; without it they are in its own memory).
 conf_dav() {
   printf 'hostname = "%s"\n' "$MAIL_HOST"
   [ "$LOG_LEVEL" = info ] || printf 'log_level = "%s"\n' "$LOG_LEVEL"
   printf '\n[dav]\nlisten = "0.0.0.0:8091"\nallowed_peers = ["127.0.0.1/32"]\nallowed_hosts = ["tasks.edge", "edge"]\nproxy_protocol = true\n\n'
-  blk_store dav
+  blk_valkey dav; blk_store dav
 }
 # The name server (docs/design-authoritative-dns.md): its own database role, no blob store and no key; it listens on 5353 (the stack publishes port 53 to it).
 conf_dns() {
@@ -502,7 +502,7 @@ gen_rusty_service() { # NAME ROLE-OF-DB NETWORKS(space) [TLS] [UNSEAL] [CONSTRAI
   local kv=0
   case "$name" in
     smtp-in) [ "$FILTER" != 1 ] || nets="$nets filter" ;;
-    submission|imap|admin|webmail) [ "$VALKEY" != 1 ] || { nets="$nets kv"; kv=1; } ;;
+    submission|imap|admin|webmail|dav) [ "$VALKEY" != 1 ] || { nets="$nets kv"; kv=1; } ;;
   esac
   y_service_common "$name" "$(rusty_image "$name")"
   y_deploy "$(replicas_of "$name")" "$constraint" start-first "$name"
