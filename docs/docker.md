@@ -306,7 +306,7 @@ cp swarm.env.example swarm.env      # the nodes and the database; the file stays
 
 The archive is reproducible (sorted names, a fixed time, no owner): the same tree and tag give the same bytes. `scripts/package-deploy.sh TAG [OUTDIR]` makes it by hand; `scripts/tests/package-deploy.sh` is its gate.
 
-**The images of a kit are pinned by digest.** On a release tag `docker.yml` builds and signs the ten service images (`rusty`, `rusty-smtp-in`, `-submission`, `-imap`, `-outbound`, `-gc`, `-admin`, each as `ghcr.io/OWNER/NAME:X.Y.Z`),
+**The images of a kit are pinned by digest.** On a release tag `docker.yml` builds and signs the ten service images (`rusty`, `rusty-smtp-in`, `-submission`, `-imap`, `-outbound`, `-gc`, `-admin`, `-webmail`, `-dav`, `-dns`, each as `ghcr.io/OWNER/NAME:X.Y.Z`),
 and `release.yml` runs `scripts/pin-release-images.sh`: it waits until each image exists **and** carries its keyless cosign signature (made by `docker.yml` of this repository on that tag), then writes one line per image
 (`name:tag  name@sha256:digest`) at the end of the kit's `deploy/images.lock`, after the pins of the third-party images; `deploy/RELEASE` holds the tag. So a kit names the exact bytes built for its release and cannot
 pull a newer `main`, and an image that is not signed is never pinned (the release fails instead). `scripts/tests/package-deploy.sh` checks this with a stub registry.
