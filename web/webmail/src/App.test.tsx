@@ -54,6 +54,7 @@ function api(over: Partial<Api> = {}): Api {
     saveDraft: vi.fn().mockResolvedValue({ id: 77 }),
 
     contacts: vi.fn().mockResolvedValue([]),
+    events: vi.fn().mockResolvedValue({ items: [], truncated: false }),
     settings: vi.fn().mockResolvedValue({ signature: 'Alice' }),
     saveSettings: vi.fn().mockImplementation(async (s: string) => ({ signature: s })),
     scripts: vi.fn().mockResolvedValue({ scripts: [], max_scripts: 10, max_bytes: 65536 }),
@@ -157,6 +158,28 @@ describe('the webmail page', () => {
     expect(frame.getAttribute('sandbox')).toBe('allow-popups allow-popups-to-escape-sandbox');
     expect(frame.getAttribute('src')).toBe('/api/v1/messages/2/html');
     expect(frame.getAttribute('referrerpolicy')).toBe('no-referrer');
+  });
+
+  it('lists the events of the next two weeks by day, a time as the event states it, and says when a rule is not expanded', async () => {
+    const day = Date.UTC(2030, 4, 6) / 1000;
+    const events = vi.fn().mockResolvedValue({
+      items: [
+        { uid: 'a', summary: 'Stand-up', location: 'Room 1', start: day + 9 * 3600, end: day + 9.5 * 3600, all_day: false, utc: false, tzid: 'Europe/Berlin', unexpanded: false, calendar: 'default' },
+        { uid: 'b', summary: 'Holiday', location: '', start: day + 86400, end: day + 2 * 86400, all_day: true, utc: false, tzid: null, unexpanded: true, calendar: 'default' },
+      ],
+      truncated: false,
+    });
+    const a = api({ me: vi.fn().mockResolvedValue({ address: 'alice@one.test', csrf: 'tok' }), events });
+    render(() => <App api={a} />);
+    fireEvent.click(await screen.findByText(en['folder.agenda']));
+    expect(await screen.findByText('Stand-up')).toBeTruthy();
+    expect(screen.getByText('09:00')).toBeTruthy();
+    expect(screen.getByText('Europe/Berlin')).toBeTruthy();
+    expect(screen.getByText(en['agenda.allday'])).toBeTruthy();
+    expect(screen.getByText(en['agenda.repeats'])).toBeTruthy();
+    expect(events).toHaveBeenCalledTimes(1);
+    const [from, to] = events.mock.calls[0] as [number, number];
+    expect(to - from).toBe(14 * 86400);
   });
 
   it('offers the contacts as a .vcf download from the settings', async () => {

@@ -588,3 +588,45 @@ async fn the_contacts_of_the_person_are_exported_as_one_vcf_file_and_nobody_else
     assert_eq!(none.status, 200);
     assert_eq!(none.text(), "");
 }
+
+#[tokio::test]
+async fn the_agenda_lists_the_events_of_the_person_in_a_window_with_the_repeating_ones_expanded() {
+    let r = rig().await;
+    let dav = r.operator.repos().dav.clone();
+    dav.ensure_defaults(r.alice_id).await.unwrap();
+    let cal = dav.collection(r.alice_id, "calendar", "default").await.unwrap().unwrap().id;
+    // Bounds as the DAV service keeps them: the one-off is bounded, the daily rule has no end.
+    let one = rusty_dav::ical::read(&format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//t//EN\r\nBEGIN:VEVENT\r\nUID:one\r\nDTSTAMP:20240101T000000Z\r\nDTSTART:20240305T100000Z\r\nDTEND:20240305T110000Z\r\nSUMMARY:Dentist\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")).unwrap();
+    let daily = rusty_dav::ical::read("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//t//EN\r\nBEGIN:VEVENT\r\nUID:daily\r\nDTSTAMP:20240101T000000Z\r\nDTSTART:20240301T080000Z\r\nDTEND:20240301T083000Z\r\nRRULE:FREQ=DAILY\r\nSUMMARY:Stand-up\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n").unwrap();
+    for (name, o, lines) in [
+        ("one.ics", &one, "DTSTART:20240305T100000Z\r\nDTEND:20240305T110000Z\r\nSUMMARY:Dentist\r\n"),
+        ("daily.ics", &daily, "DTSTART:20240301T080000Z\r\nDTEND:20240301T083000Z\r\nRRULE:FREQ=DAILY\r\nSUMMARY:Stand-up\r\n"),
+    ] {
+        let body = format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//t//EN\r\nBEGIN:VEVENT\r\nUID:{}\r\nDTSTAMP:20240101T000000Z\r\n{lines}END:VEVENT\r\nEND:VCALENDAR\r\n", o.uid);
+        let new = rusty_store::NewDavObject { name: name.into(), uid: o.uid.clone(), body, component: "VEVENT".into(), starts_at: o.starts_at, ends_at: o.ends_at, recurring: o.recurring };
+        dav.put(cal, &new, &rusty_store::DavPrecondition::None).await.unwrap();
+    }
+    let s = alice(&r).await;
+    let ask = |q: String| {
+        let (addr, cookie) = (r.addr, s.cookie.clone());
+        async move { call(addr, "GET", &format!("/api/v1/events?{q}"), &[("Cookie", &cookie)], None).await }
+    };
+    // 2024-03-04 .. 2024-03-07 (UTC): three stand-ups (4th, 5th, 6th) and the dentist on the 5th.
+    let (from, to) = (1_709_510_400, 1_709_769_600);
+    let res = ask(format!("from={from}&to={to}")).await;
+    assert_eq!(res.status, 200, "{}", res.text());
+    let items = res.json()["items"].as_array().unwrap().clone();
+    let names: Vec<&str> = items.iter().map(|i| i["summary"].as_str().unwrap()).collect();
+    assert_eq!(names, ["Stand-up", "Stand-up", "Dentist", "Stand-up"], "{items:?}");
+    assert!(items.windows(2).all(|w| w[0]["start"].as_i64() <= w[1]["start"].as_i64()), "sorted by start");
+    assert_eq!(items[2]["utc"], true);
+    assert_eq!(res.json()["truncated"], false);
+    // A window outside everything the one-off touches has only the daily rule; a bad window is refused; no session, no agenda.
+    assert_eq!(ask("from=5&to=1".into()).await.status, 400);
+    assert_eq!(ask(format!("from={from}")).await.status, 400);
+    assert_eq!(call(r.addr, "GET", &format!("/api/v1/events?from={from}&to={to}"), &[], None).await.status, 401);
+    // Another person sees none of it.
+    let (bob_cookie, _) = sign_in(r.addr, "bob@one.test", "another-long-password-2").await;
+    let none = call(r.addr, "GET", &format!("/api/v1/events?from={from}&to={to}"), &[("Cookie", &bob_cookie)], None).await;
+    assert_eq!((none.status, none.json()["items"].as_array().unwrap().len()), (200, 0));
+}
