@@ -311,6 +311,6 @@ and `release.yml` runs `scripts/pin-release-images.sh`: it waits until each imag
 (`name:tag  name@sha256:digest`) at the end of the kit's `deploy/images.lock`, after the pins of the third-party images; `deploy/RELEASE` holds the tag. So a kit names the exact bytes built for its release and cannot
 pull a newer `main`, and an image that is not signed is never pinned (the release fails instead). `scripts/tests/package-deploy.sh` checks this with a stub registry.
 
-**Without a tag: the release `kit-main`.** `kit.yml` runs after `docker.yml` has built and signed the images of a commit on `main`: it makes `rusty-deploy-main-<sha>.tar.gz` and `.zip` with that commit's images pinned by digest, signs `SHA256SUMS`
-with cosign, and puts them on the prerelease `kit-main`, replacing what was there. Download from the Releases page, or `gh release download kit-main`; check the sums (`sha256sum -c SHA256SUMS` after `cosign verify-blob`),
-unpack, `./rusty-swarm init`. It always holds the newest `main`; for a fixed version use a tagged release (`release.yml`, the same kit).
+**Without a tag: a release `kit-<date>-<sha>` per build of `main`.** `kit.yml` runs after `docker.yml` has built and signed the images of a commit on `main`: it makes `rusty-deploy-main-<sha>.tar.gz` and `.zip` with that commit's images pinned by digest, signs `SHA256SUMS`
+with cosign, and puts them on a new release of their own (nothing is replaced; the newest is marked Latest). Download from the Releases page, or `gh release download --pattern 'rusty-deploy-*'` for the latest; check the sums (`sha256sum -c SHA256SUMS` after `cosign verify-blob`),
+unpack, `./rusty-swarm init`. Each version stays downloadable, so an install can name the one it ran; for a hand-numbered version use a tagged release (`release.yml`, the same kit).
