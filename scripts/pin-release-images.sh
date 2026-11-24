@@ -26,7 +26,7 @@ fi
 [[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || { echo "pin-release-images: REPO is owner/name" >&2; exit 2; }
 version="$image_tag"
 base="ghcr.io/${repo,,}"
-suffixes=("" -smtp-in -submission -imap -outbound -gc -admin)   # the services of docker.yml
+suffixes=("" -smtp-in -submission -imap -outbound -gc -admin -webmail -dav -dns)   # the services of docker.yml (its `services` matrix)
 timeout="${PIN_TIMEOUT_SECS:-3000}"; interval="${PIN_INTERVAL_SECS:-30}"
 identity="https://github.com/${repo}/.github/workflows/docker.yml@${gitref}"
 issuer="https://token.actions.githubusercontent.com"

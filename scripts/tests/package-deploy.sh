@@ -33,13 +33,14 @@ echo "$*" >> "${COSIGN_LOG:-/dev/null}"
 STUB
 chmod +x "$bin/docker" "$bin/cosign"
 PATH="$bin:$PATH" bash scripts/pin-release-images.sh v1.2.3 Owner/Rusty "$tmp/pins.txt" >/dev/null
-[ "$(wc -l < "$tmp/pins.txt")" = 7 ] || { echo "package-deploy: 7 service images are pinned, got $(wc -l < "$tmp/pins.txt")" >&2; exit 1; }
+[ "$(wc -l < "$tmp/pins.txt")" = 10 ] || { echo "package-deploy: 10 service images are pinned, got $(wc -l < "$tmp/pins.txt")" >&2; exit 1; }
 grep -qE "^ghcr.io/owner/rusty-imap:1.2.3  ghcr.io/owner/rusty-imap@sha256:[0-9a-f]{64}  " "$tmp/pins.txt" || { echo "package-deploy: the imap pin is wrong: $(cat "$tmp/pins.txt")" >&2; exit 1; }
 grep -q "^ghcr.io/owner/rusty:1.2.3  ghcr.io/owner/rusty@sha256:" "$tmp/pins.txt" || { echo "package-deploy: the all-in-one image is not pinned" >&2; exit 1; }
+for s in webmail dav dns; do grep -q "^ghcr.io/owner/rusty-$s:1.2.3  ghcr.io/owner/rusty-$s@sha256:" "$tmp/pins.txt" || { echo "package-deploy: the $s image is not pinned" >&2; exit 1; }; done
 bash scripts/package-deploy.sh v1.2.3 "$tmp/k" "$tmp/pins.txt" >/dev/null
 tar -xzf "$tmp/k/rusty-deploy-v1.2.3.tar.gz" -C "$tmp/k"
 lock="$tmp/k/rusty-deploy-v1.2.3/deploy/images.lock"
-[ "$(grep -c "(release v1.2.3)" "$lock")" = 7 ] || { echo "package-deploy: the kit's images.lock lacks the release pins" >&2; exit 1; }
+[ "$(grep -c "(release v1.2.3)" "$lock")" = 10 ] || { echo "package-deploy: the kit's images.lock lacks the release pins" >&2; exit 1; }
 grep -q "^postgres:18 " "$lock" || { echo "package-deploy: the third-party pins are gone from the kit's images.lock" >&2; exit 1; }
 [ "$(cat "$tmp/k/rusty-deploy-v1.2.3/deploy/RELEASE")" = v1.2.3 ] || { echo "package-deploy: RELEASE is wrong" >&2; exit 1; }
 # An image whose signature does not verify is not pinned (and the script gives up at the deadline); a tag that is not a version is refused.
