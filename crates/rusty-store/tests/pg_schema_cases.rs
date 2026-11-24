@@ -148,7 +148,8 @@ fn cases() -> Vec<Case> {
     v.push(case("list explicit id refused", "INSERT INTO lists(id,local_part,domain_id) VALUES (50,'q',1)", Err(ALWAYS, None)));
     v.push(case("mailbox explicit id refused", "INSERT INTO mailboxes(id,account_id,uid_validity) VALUES (50,1,1)", Err(ALWAYS, None)));
     v.push(case("job explicit id refused", &job("id,kind,payload", "50,'k','{}'"), Err(ALWAYS, None)));
-    v.push(case("domain delete with accounts", "DELETE FROM domains WHERE id=1", Err(RESTRICT, Some("accounts_domain_id_fkey"))));
+    // Two foreign keys refuse this delete (accounts and address_owners): which one Postgres reports first follows the order its restrict triggers fire in (the OIDs they were made with), so only the refusal is checked.
+    v.push(case("domain delete with accounts", "DELETE FROM domains WHERE id=1", Err(RESTRICT, None)));
     v.push(case("domain delete when empty", "DELETE FROM domains WHERE id=2", Pass));
     v.push(case("plan empty name", "INSERT INTO plans(name) VALUES ('')", Err(CHECK, Some("plans_name_valid"))));
     v.push(case("plan duplicate", "INSERT INTO plans(name) VALUES ('basic')", Err(UNIQUE, Some("plans_name_key"))));

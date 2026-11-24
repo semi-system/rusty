@@ -306,6 +306,17 @@ pub fn records_for_domain(i: &DnsInputs<'_>) -> Result<Vec<DnsRecord>> {
             required: Requirement::Optional,
         });
     }
+    // Calendars and contacts (RFC 6764, docs/design-caldav-carddav.md): where a CalDAV or CardDAV client finds the service from the address alone (the path is the well-known one, so no TXT record). Optional: only a deployment that runs the DAV service needs them.
+    for service in ["_caldavs._tcp", "_carddavs._tcp"] {
+        out.push(DnsRecord {
+            name: format!("{service}.{domain}"),
+            rtype: RecordType::Srv,
+            value: format!("0 1 443 {host}"),
+            ttl_hint: TTL,
+            purpose: "Lets calendar and contact apps find the server (RFC 6764); needs the DAV service",
+            required: Requirement::Optional,
+        });
+    }
     // Thunderbird asks http://autoconfig.<domain>/... first. The name may also be a CNAME to the mail host: the check compares addresses, which a CNAME gives the same.
     for ip in i.outbound_ips {
         out.push(DnsRecord {
