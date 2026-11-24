@@ -11,6 +11,15 @@ pub enum Method {
     Post,
     Put,
     Delete,
+    /// WebDAV (RFC 4918) and its extensions: served by a service that opts in with its routes.
+    Options,
+    Propfind,
+    Proppatch,
+    Report,
+    Mkcol,
+    Mkcalendar,
+    Copy,
+    Move,
 }
 
 impl Method {
@@ -21,6 +30,14 @@ impl Method {
             Method::Post => "POST",
             Method::Put => "PUT",
             Method::Delete => "DELETE",
+            Method::Options => "OPTIONS",
+            Method::Propfind => "PROPFIND",
+            Method::Proppatch => "PROPPATCH",
+            Method::Report => "REPORT",
+            Method::Mkcol => "MKCOL",
+            Method::Mkcalendar => "MKCALENDAR",
+            Method::Copy => "COPY",
+            Method::Move => "MOVE",
         }
     }
 }

@@ -20,6 +20,8 @@ pub struct Limits {
     pub request_timeout: Duration,
     /// A connection is closed after this many requests.
     pub max_requests_per_connection: u32,
+    /// A path may end with one slash (`/dav/calendars/x/`): the route is chosen without it (a collection of WebDAV is spelt with it, and clients insist). Off for every service that has no collections.
+    pub allow_trailing_slash: bool,
 }
 
 impl Default for Limits {
@@ -33,6 +35,7 @@ impl Default for Limits {
             head_timeout: Duration::from_secs(10),
             request_timeout: Duration::from_secs(30),
             max_requests_per_connection: 100,
+            allow_trailing_slash: false,
         }
     }
 }

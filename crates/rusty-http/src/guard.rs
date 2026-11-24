@@ -7,7 +7,7 @@ use crate::request::{Method, Request};
 use crate::response::Response;
 
 fn mutating(m: Method) -> bool {
-    matches!(m, Method::Post | Method::Put | Method::Delete)
+    matches!(m, Method::Post | Method::Put | Method::Delete | Method::Proppatch | Method::Mkcol | Method::Mkcalendar | Method::Copy | Method::Move)
 }
 
 /// A state-changing request must carry exactly one `Origin` header equal to `public_origin` (`https://host[:port]`,
