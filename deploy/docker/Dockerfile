@@ -123,6 +123,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
     mkdir -p /rootfs-admin/etc/rusty; chmod 0755 /rootfs-admin/etc/rusty; \
     install -D "/out/$triple/release/rusty-webmail" /rootfs-webmail/usr/local/bin/rusty-webmail; \
     mkdir -p /rootfs-webmail/etc/rusty; chmod 0755 /rootfs-webmail/etc/rusty; \
+    install -D "/out/$triple/release/rusty-dns" /rootfs-dns/usr/local/bin/rusty-dns; \
+    mkdir -p /rootfs-dns/etc/rusty; chmod 0755 /rootfs-dns/etc/rusty; \
     for svc in smtp-in submission imap outbound gc; do \
       install -D "/out/$triple/release/rusty-$svc" "/rootfs-$svc/usr/local/bin/rusty-$svc"; \
       mkdir -p "/rootfs-$svc/etc/rusty"; chmod 0755 "/rootfs-$svc/etc/rusty"; \
