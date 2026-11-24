@@ -130,6 +130,7 @@ async fn each_service_keeps_to_its_own_writes() {
         ("rusty_dns", "domain_relays", "UPDATE", false),
         ("rusty_webmail", "domain_dns_extra", "SELECT", false),
         ("rusty_webmail", "totp", "UPDATE", true),
+        ("rusty_webmail", "sieve_scripts", "UPDATE", true),
         ("rusty_imap", "totp", "UPDATE", false),
         ("rusty_submission", "totp_recovery", "SELECT", false),
         ("rusty_gc", "totp", "SELECT", false),

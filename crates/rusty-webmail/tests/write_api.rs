@@ -470,3 +470,57 @@ async fn the_second_factor_is_begun_confirmed_asked_at_sign_in_once_per_code_and
     assert!(protocols.verify("alice@one.test", "correct-horse-battery-1").await.unwrap().is_some());
     r.stop.cancel();
 }
+
+#[tokio::test]
+async fn filters_are_checked_by_the_parser_kept_per_account_activated_one_at_a_time_and_removed_when_not_active() {
+    let r = rig().await;
+    let s = alice(&r).await;
+    let put = |name: &str, body: &str| {
+        let b = serde_json::json!({ "body": body }).to_string();
+        let path = format!("/api/v1/sieve/{name}");
+        let headers = [("Cookie", s.cookie.clone()), ("Content-Type", "application/json".to_owned()), ("Origin", ORIGIN.to_owned()), ("X-CSRF-Token", s.csrf.clone())];
+        let addr = r.addr;
+        async move {
+            let h: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            call(addr, "PUT", &path, &h, Some(&b)).await
+        }
+    };
+    // A script the parser refuses is not kept, and the answer says where.
+    let bad = put("main", "require \"fileinto\";\nif header :contains \"subject\" \"x\" {\n").await;
+    assert_eq!(bad.status, 400);
+    assert_eq!((bad.json()["error"].clone(), bad.json()["line"].clone()), (serde_json::json!("script_invalid"), serde_json::json!(2)), "{}", bad.text());
+    assert!(s.get(r.addr, "/api/v1/sieve").await["scripts"].as_array().unwrap().is_empty());
+    // A good one is kept and read back; saving again replaces it.
+    let good = "require \"fileinto\";\nif header :contains \"list-id\" \"lists.example.org\" { fileinto \"Lists\"; }\n";
+    assert_eq!(put("main", good).await.status, 200);
+    assert_eq!(put("main", &format!("{good}stop;\n")).await.status, 200);
+    let got = s.get(r.addr, "/api/v1/sieve/main").await;
+    assert_eq!(got["body"], serde_json::json!(format!("{good}stop;\n")));
+    // One runs at a time; an active one is not removed.
+    assert_eq!(s.post(r.addr, "/api/v1/sieve/main/activate", serde_json::json!({})).await.status, 200);
+    assert_eq!(put("second", "keep;").await.status, 200);
+    assert_eq!(s.post(r.addr, "/api/v1/sieve/second/activate", serde_json::json!({})).await.status, 200);
+    let list = s.get(r.addr, "/api/v1/sieve").await;
+    let active: Vec<&str> = list["scripts"].as_array().unwrap().iter().filter(|x| x["active"] == true).map(|x| x["name"].as_str().unwrap()).collect();
+    assert_eq!(active, ["second"]);
+    assert_eq!(s.delete(r.addr, "/api/v1/sieve/second").await.status, 409);
+    assert_eq!(s.post(r.addr, "/api/v1/sieve/deactivate", serde_json::json!({})).await.status, 200);
+    assert_eq!(s.delete(r.addr, "/api/v1/sieve/second").await.status, 200);
+    assert_eq!(s.delete(r.addr, "/api/v1/sieve/second").await.status, 404);
+    assert_eq!(s.post(r.addr, "/api/v1/sieve/nothing/activate", serde_json::json!({})).await.status, 404);
+    // Names, size and number are bounded.
+    assert!([400, 404].contains(&put("bad%2Fname", "keep;").await.status), "an encoded slash is no name");
+    assert_eq!(put("a%3Cb", "keep;").await.status, 404, "nor is anything the name check refuses");
+    assert_eq!(put("x", &"#".repeat(70_000)).await.status, 413);
+    for i in 0..9 {
+        assert_eq!(put(&format!("s{i}"), "keep;").await.status, 200);
+    }
+    assert_eq!(put("one-too-many", "keep;").await.status, 429);
+    // Another account sees none of it; a write needs the token.
+    let (bob_cookie, _) = sign_in(r.addr, "bob@one.test", "another-long-password-2").await;
+    assert!(call(r.addr, "GET", "/api/v1/sieve", &[("Cookie", &bob_cookie)], None).await.json()["scripts"].as_array().unwrap().is_empty());
+    assert_eq!(call(r.addr, "GET", "/api/v1/sieve/main", &[("Cookie", &bob_cookie)], None).await.status, 404);
+    let body = serde_json::json!({ "body": "keep;" }).to_string();
+    assert_eq!(call(r.addr, "PUT", "/api/v1/sieve/main", &[("Cookie", &s.cookie), ("Content-Type", "application/json"), ("Origin", ORIGIN)], Some(&body)).await.status, 403);
+    r.stop.cancel();
+}
