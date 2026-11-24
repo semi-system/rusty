@@ -88,6 +88,8 @@ export const en = {
   'settings.contacts.title': 'Contacts',
   'settings.contacts.about': 'The contacts you keep through a calendar and contacts app (CardDAV), as one file you can import into another program.',
   'settings.contacts.export': 'Download contacts (.vcf)',
+  'settings.contacts.import': 'Add contacts from a .vcf file',
+  'settings.contacts.imported': 'Added {added}, replaced {updated}, skipped {skipped}.',
   'settings.totp.title': 'Two-step sign-in',
   'settings.totp.about': 'Sign-in asks for a code from an authenticator app as well as the password. Mail programs then need an app password.',
   'settings.totp.begin': 'Set up two-step sign-in',

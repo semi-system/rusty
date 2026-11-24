@@ -5,7 +5,8 @@
 use std::sync::Arc;
 
 use rusty_http::{handler, Method, Request, Response, Router};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::api::{error, WebmailApp};
 
@@ -151,12 +152,108 @@ async fn export(app: &WebmailApp, req: Request) -> Response {
     }
 }
 
+/// Most cards one import request holds (the body limit of the service is far lower for any real card).
+const IMPORT_MAX_CARDS: usize = 500;
+
+#[derive(Deserialize)]
+struct ImportBody {
+    vcf: String,
+}
+
+#[derive(Serialize, Default, Debug, PartialEq, Eq)]
+struct Imported {
+    /// New contacts.
+    imported: usize,
+    /// Contacts the person already had (same UID, same name) that were replaced.
+    updated: usize,
+    /// Cards that are not valid vCards.
+    invalid: usize,
+    /// Cards whose UID another contact already has under another name.
+    duplicates: usize,
+}
+
+/// The cards of a `.vcf` text, each one as its own text with CRLF line ends: what lies between a `BEGIN:VCARD` line and the next `END:VCARD` line (anything outside is ignored). At most `max`.
+pub fn split_cards(text: &str, max: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur: Option<Vec<&str>> = None;
+    for line in text.lines() {
+        let upper = line.trim_end().to_ascii_uppercase();
+        if upper == "BEGIN:VCARD" {
+            cur = Some(vec![line.trim_end()]);
+        } else if let Some(lines) = cur.as_mut() {
+            lines.push(line.trim_end_matches('\r'));
+            if upper == "END:VCARD" {
+                out.push(lines.join("\r\n") + "\r\n");
+                cur = None;
+                if out.len() >= max {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The object of a card: the name of the stored object comes from its UID (the same card imported again is the same object); a card with no UID is given one.
+pub fn to_object(card_text: &str, random: [u8; 16]) -> Result<rusty_store::NewDavObject, &'static str> {
+    let card = rusty_dav::vcard::read(card_text)?;
+    let (uid, body) = match card.uid {
+        Some(uid) => (uid, card_text.to_owned()),
+        None => {
+            let uid = format!("urn:uuid:{}", hex::encode(random));
+            (uid.clone(), card_text.replacen("\r\n", &format!("\r\nUID:{uid}\r\n"), 1))
+        }
+    };
+    let name = format!("{}.vcf", hex::encode(&Sha256::digest(uid.as_bytes())[..16]));
+    Ok(rusty_store::NewDavObject { name, uid, body, component: "VCARD".into(), starts_at: None, ends_at: None, recurring: false })
+}
+
+/// `POST /api/v1/contacts/import` with `{"vcf": "<text of a .vcf file>"}`: the cards are added to the default address book of the person (or the first one). The writes are the DAV service's own
+/// (`DavRepo::put`), so the contacts are at once what a CardDAV client sees and syncs. A person who has no address book gets a 409: the book is made by the DAV service, never here.
+async fn import(app: &WebmailApp, req: Request) -> Response {
+    let session = match app.require(&req, true).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let Ok(b) = serde_json::from_slice::<ImportBody>(&req.body) else { return error(400, "invalid") };
+    let cards = split_cards(&b.vcf, IMPORT_MAX_CARDS);
+    if cards.is_empty() {
+        return error(400, "invalid");
+    }
+    let account = session.account_id();
+    let Ok(books) = app.dav.collections(account, "addressbook").await else { return error(503, "busy") };
+    let Some(book) = books.iter().find(|c| c.name == "default").or(books.first()) else { return error(409, "no_address_book") };
+    let mut result = Imported::default();
+    for text in cards {
+        let mut random = [0u8; 16];
+        rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut random);
+        let Ok(object) = to_object(&text, random) else {
+            result.invalid += 1;
+            continue;
+        };
+        match app.dav.put(book.id, &object, &rusty_store::DavPrecondition::None).await {
+            Ok(rusty_store::DavPutResult::Created { .. }) => result.imported += 1,
+            Ok(rusty_store::DavPutResult::Updated { .. }) => result.updated += 1,
+            Ok(rusty_store::DavPutResult::UidConflict(_)) => result.duplicates += 1,
+            Ok(rusty_store::DavPutResult::Full(_)) => return error(409, "full"),
+            Ok(rusty_store::DavPutResult::PreconditionFailed) => result.invalid += 1,
+            Err(_) => return error(503, "busy"),
+        }
+    }
+    Response::json(200, &result).with_header("cache-control", "no-store")
+}
+
 pub fn routes(app: Arc<WebmailApp>, router: Router) -> Router {
     let exporter = app.clone();
+    let importer = app.clone();
     router
         .route(Method::Get, "/api/v1/contacts/export", handler(move |req: Request| {
             let app = exporter.clone();
             async move { export(&app, req).await }
+        }))
+        .route(Method::Post, "/api/v1/contacts/import", handler(move |req: Request| {
+            let app = importer.clone();
+            async move { import(&app, req).await }
         }))
         .route(Method::Get, "/api/v1/contacts", handler(move |req: Request| {
             let app = app.clone();
@@ -202,6 +299,24 @@ mod tests {
         assert_eq!(export_text(&[]), "");
     }
 
+
+    #[test]
+    fn a_vcf_file_is_split_into_cards_and_a_card_without_a_uid_is_given_one() {
+        let vcf = "junk\nBEGIN:VCARD\nVERSION:3.0\nFN:Ada\nEND:VCARD\r\n\r\nbegin:vcard\r\nVERSION:3.0\r\nUID:x-1\r\nFN:Alan\r\nend:vcard\r\nBEGIN:VCARD\r\nFN:cut off";
+        let cards = split_cards(vcf, 10);
+        assert_eq!(cards.len(), 2, "{cards:?}");
+        assert!(cards[0].starts_with("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ada\r\n") && cards[0].ends_with("END:VCARD\r\n"));
+        assert_eq!(split_cards(vcf, 1).len(), 1, "the bound holds");
+        let a = to_object(&cards[0], [7; 16]).unwrap();
+        assert!(a.uid.starts_with("urn:uuid:07070707") && a.body.contains(&format!("\r\nUID:{}\r\n", a.uid)) && a.name.ends_with(".vcf"), "{a:?}");
+        // The name comes from the UID: the same card again is the same object; another UID is another.
+        let b = to_object(&cards[1], [1; 16]).unwrap();
+        assert_eq!(b.uid, "x-1");
+        assert_eq!(b.name, to_object(&cards[1], [2; 16]).unwrap().name);
+        assert_ne!(a.name, b.name);
+        assert!(rusty_dav::paths::name_ok(&a.name));
+        assert!(to_object("BEGIN:VCARD\r\nVERSION:3.0\r\nEND:VCARD\r\n", [0; 16]).is_err(), "a card with no name is refused");
+    }
     #[test]
     fn the_query_is_decoded_and_bounded() {
         assert_eq!(decode("ada+l%C3%B6v").as_deref(), Some("ada löv"));
