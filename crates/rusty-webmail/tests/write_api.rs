@@ -596,7 +596,7 @@ async fn the_agenda_lists_the_events_of_the_person_in_a_window_with_the_repeatin
     dav.ensure_defaults(r.alice_id).await.unwrap();
     let cal = dav.collection(r.alice_id, "calendar", "default").await.unwrap().unwrap().id;
     // Bounds as the DAV service keeps them: the one-off is bounded, the daily rule has no end.
-    let one = rusty_dav::ical::read(&format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//t//EN\r\nBEGIN:VEVENT\r\nUID:one\r\nDTSTAMP:20240101T000000Z\r\nDTSTART:20240305T100000Z\r\nDTEND:20240305T110000Z\r\nSUMMARY:Dentist\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")).unwrap();
+    let one = rusty_dav::ical::read("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//t//EN\r\nBEGIN:VEVENT\r\nUID:one\r\nDTSTAMP:20240101T000000Z\r\nDTSTART:20240305T100000Z\r\nDTEND:20240305T110000Z\r\nSUMMARY:Dentist\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n").unwrap();
     let daily = rusty_dav::ical::read("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//t//EN\r\nBEGIN:VEVENT\r\nUID:daily\r\nDTSTAMP:20240101T000000Z\r\nDTSTART:20240301T080000Z\r\nDTEND:20240301T083000Z\r\nRRULE:FREQ=DAILY\r\nSUMMARY:Stand-up\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n").unwrap();
     for (name, o, lines) in [
         ("one.ics", &one, "DTSTART:20240305T100000Z\r\nDTEND:20240305T110000Z\r\nSUMMARY:Dentist\r\n"),
