@@ -650,7 +650,7 @@ jobs:
         run: |
           set -euo pipefail
           cd fuzz
-          for t in parse_envelope parse_address fuzz_config fuzz_pem fuzz_ctl_args fuzz_smtp_command fuzz_smtp_data fuzz_smtp_path fuzz_smtp_headers fuzz_smtp_auth fuzz_imap_command fuzz_imap_structure fuzz_imap_search_eval fuzz_imap_seqset fuzz_imap_utf7 fuzz_pop3_command fuzz_pop3_session fuzz_managesieve_command; do
+          for t in parse_envelope parse_address fuzz_config fuzz_pem fuzz_ctl_args fuzz_smtp_command fuzz_smtp_data fuzz_smtp_path fuzz_smtp_headers fuzz_smtp_auth fuzz_imap_command fuzz_imap_structure fuzz_imap_search_eval fuzz_imap_seqset fuzz_imap_utf7 fuzz_pop3_command fuzz_pop3_session fuzz_managesieve_command fuzz_dav_object fuzz_dav_moment fuzz_dav_xml fuzz_dav_path; do
             mkdir -p "corpus/$t"
             cargo +nightly-2026-11-02 fuzz run "$t" "corpus/$t" "seeds/$t" -- -max_total_time=60 -rss_limit_mb=2048
           done

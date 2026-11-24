@@ -34,6 +34,7 @@ pub(crate) mod imap_migrations;
 pub(crate) mod searches;
 pub(crate) mod outbox;
 pub(crate) mod app_passwords;
+pub(crate) mod dav;
 pub(crate) mod sieve;
 pub(crate) mod dns_zone;
 pub(crate) mod totp;
@@ -65,6 +66,7 @@ pub use searches::{results_json, Found, Search, SearchCriteria, SearchRepo, MAX_
 pub use outbox::{OutboxItem, OutboxRepo, MAX_QUEUED_PER_ACCOUNT};
 pub use app_passwords::{AppPassword, AppPasswordRepo, MAX_APP_PASSWORDS};
 pub use sieve::{ScriptInfo, SieveRepo, MAX_SCRIPTS, MAX_SCRIPT_BYTES};
+pub use dav::{Changes, Collection as DavCollection, DavRepo, DeleteResult, NewObject as NewDavObject, Object as DavObject, Precondition, PutResult, MAX_COLLECTIONS_PER_ACCOUNT, MAX_OBJECTS_PER_ACCOUNT, MAX_OBJECTS_PER_COLLECTION, MAX_OBJECT_BYTES};
 pub use dns_zone::{DnsZoneRepo, ExtraRecord, HostedDomain, MAX_EXTRA_RECORDS};
 pub use totp::{TotpRepo, TotpRow, RECOVERY_CODES};
 pub use webmail_settings::{WebmailSettingsRepo, MAX_SIGNATURE};

@@ -93,6 +93,33 @@ COLUMN change_log.seq bigint nullable=NO identity=NO/ collation= default=
 COLUMN change_log.kind text nullable=NO identity=NO/ collation= default=
 COLUMN change_log.item_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN change_log.op text nullable=NO identity=NO/ collation= default=
+COLUMN dav_collections.id bigint nullable=NO identity=YES/ALWAYS collation= default=
+COLUMN dav_collections.account_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN dav_collections.kind text nullable=NO identity=NO/ collation= default=
+COLUMN dav_collections.name text nullable=NO identity=NO/ collation=C default=
+COLUMN dav_collections.display_name text nullable=NO identity=NO/ collation= default=''::text
+COLUMN dav_collections.description text nullable=NO identity=NO/ collation= default=''::text
+COLUMN dav_collections.color text nullable=NO identity=NO/ collation= default=''::text
+COLUMN dav_collections.revision bigint nullable=NO identity=NO/ collation= default=0
+COLUMN dav_collections.tombstone_floor bigint nullable=NO identity=NO/ collation= default=0
+COLUMN dav_collections.created_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN dav_collections.updated_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN dav_objects.collection_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN dav_objects.name text nullable=NO identity=NO/ collation=C default=
+COLUMN dav_objects.uid text nullable=NO identity=NO/ collation=C default=
+COLUMN dav_objects.etag text nullable=NO identity=NO/ collation= default=
+COLUMN dav_objects.body text nullable=NO identity=NO/ collation=C default=
+COLUMN dav_objects.size integer nullable=NO identity=NO/ collation= default=
+COLUMN dav_objects.component text nullable=NO identity=NO/ collation= default=
+COLUMN dav_objects.starts_at bigint nullable=YES identity=NO/ collation= default=
+COLUMN dav_objects.ends_at bigint nullable=YES identity=NO/ collation= default=
+COLUMN dav_objects.recurring boolean nullable=NO identity=NO/ collation= default=false
+COLUMN dav_objects.revision bigint nullable=NO identity=NO/ collation= default=
+COLUMN dav_objects.updated_at bigint nullable=NO identity=NO/ collation= default=
+COLUMN dav_tombstones.collection_id bigint nullable=NO identity=NO/ collation= default=
+COLUMN dav_tombstones.name text nullable=NO identity=NO/ collation=C default=
+COLUMN dav_tombstones.revision bigint nullable=NO identity=NO/ collation= default=
+COLUMN dav_tombstones.deleted_at bigint nullable=NO identity=NO/ collation= default=
 COLUMN deliveries.mailbox_id bigint nullable=NO identity=NO/ collation= default=
 COLUMN deliveries.delivery_id bytea nullable=NO identity=NO/ collation= default=
 COLUMN deliveries.message_id bigint nullable=NO identity=NO/ collation= default=
@@ -500,6 +527,48 @@ CONSTRAINT change_log.change_log_op_valid CHECK (op = ANY (ARRAY['create'::text,
 CONSTRAINT change_log.change_log_pkey PRIMARY KEY (mailbox_id, seq)
 CONSTRAINT change_log.change_log_seq_not_null NOT NULL seq
 CONSTRAINT change_log.change_log_seq_valid CHECK (seq >= 1)
+CONSTRAINT dav_collections.dav_collections_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+CONSTRAINT dav_collections.dav_collections_account_id_kind_name_key UNIQUE (account_id, kind, name)
+CONSTRAINT dav_collections.dav_collections_account_id_not_null NOT NULL account_id
+CONSTRAINT dav_collections.dav_collections_color CHECK (color ~ '^(#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?)?$'::text)
+CONSTRAINT dav_collections.dav_collections_color_not_null NOT NULL color
+CONSTRAINT dav_collections.dav_collections_created_at_not_null NOT NULL created_at
+CONSTRAINT dav_collections.dav_collections_description CHECK (length(description) <= 2048)
+CONSTRAINT dav_collections.dav_collections_description_not_null NOT NULL description
+CONSTRAINT dav_collections.dav_collections_display CHECK (length(display_name) <= 256 AND display_name !~ '[[:cntrl:]]'::text)
+CONSTRAINT dav_collections.dav_collections_display_name_not_null NOT NULL display_name
+CONSTRAINT dav_collections.dav_collections_id_not_null NOT NULL id
+CONSTRAINT dav_collections.dav_collections_kind CHECK (kind = ANY (ARRAY['calendar'::text, 'addressbook'::text]))
+CONSTRAINT dav_collections.dav_collections_kind_not_null NOT NULL kind
+CONSTRAINT dav_collections.dav_collections_name CHECK (name ~ '^[A-Za-z0-9._-]{1,128}$'::text)
+CONSTRAINT dav_collections.dav_collections_name_not_null NOT NULL name
+CONSTRAINT dav_collections.dav_collections_pkey PRIMARY KEY (id)
+CONSTRAINT dav_collections.dav_collections_revision_not_null NOT NULL revision
+CONSTRAINT dav_collections.dav_collections_tombstone_floor_not_null NOT NULL tombstone_floor
+CONSTRAINT dav_collections.dav_collections_updated_at_not_null NOT NULL updated_at
+CONSTRAINT dav_objects.dav_objects_body CHECK (length(body) <= 1048576)
+CONSTRAINT dav_objects.dav_objects_body_not_null NOT NULL body
+CONSTRAINT dav_objects.dav_objects_collection_id_fkey FOREIGN KEY (collection_id) REFERENCES dav_collections(id) ON DELETE CASCADE
+CONSTRAINT dav_objects.dav_objects_collection_id_not_null NOT NULL collection_id
+CONSTRAINT dav_objects.dav_objects_collection_id_uid_key UNIQUE (collection_id, uid)
+CONSTRAINT dav_objects.dav_objects_component CHECK (component = ANY (ARRAY['VEVENT'::text, 'VTODO'::text, 'VJOURNAL'::text, 'VCARD'::text]))
+CONSTRAINT dav_objects.dav_objects_component_not_null NOT NULL component
+CONSTRAINT dav_objects.dav_objects_etag_not_null NOT NULL etag
+CONSTRAINT dav_objects.dav_objects_name CHECK (name ~ '^[A-Za-z0-9._-]{1,128}$'::text)
+CONSTRAINT dav_objects.dav_objects_name_not_null NOT NULL name
+CONSTRAINT dav_objects.dav_objects_pkey PRIMARY KEY (collection_id, name)
+CONSTRAINT dav_objects.dav_objects_recurring_not_null NOT NULL recurring
+CONSTRAINT dav_objects.dav_objects_revision_not_null NOT NULL revision
+CONSTRAINT dav_objects.dav_objects_size_not_null NOT NULL size
+CONSTRAINT dav_objects.dav_objects_uid CHECK (length(uid) >= 1 AND length(uid) <= 255)
+CONSTRAINT dav_objects.dav_objects_uid_not_null NOT NULL uid
+CONSTRAINT dav_objects.dav_objects_updated_at_not_null NOT NULL updated_at
+CONSTRAINT dav_tombstones.dav_tombstones_collection_id_fkey FOREIGN KEY (collection_id) REFERENCES dav_collections(id) ON DELETE CASCADE
+CONSTRAINT dav_tombstones.dav_tombstones_collection_id_not_null NOT NULL collection_id
+CONSTRAINT dav_tombstones.dav_tombstones_deleted_at_not_null NOT NULL deleted_at
+CONSTRAINT dav_tombstones.dav_tombstones_name_not_null NOT NULL name
+CONSTRAINT dav_tombstones.dav_tombstones_pkey PRIMARY KEY (collection_id, name)
+CONSTRAINT dav_tombstones.dav_tombstones_revision_not_null NOT NULL revision
 CONSTRAINT deliveries.deliveries_blob_hash_not_null NOT NULL blob_hash
 CONSTRAINT deliveries.deliveries_created_at_not_null NOT NULL created_at
 CONSTRAINT deliveries.deliveries_delivery_id_not_null NOT NULL delivery_id
@@ -949,6 +1018,14 @@ INDEX capabilities.capabilities_expires CREATE INDEX capabilities_expires ON pub
 INDEX capabilities.capabilities_pkey CREATE UNIQUE INDEX capabilities_pkey ON public.capabilities USING btree (token_hash)
 INDEX capabilities.capabilities_revoked CREATE INDEX capabilities_revoked ON public.capabilities USING btree (revoked_at) WHERE (revoked_at IS NOT NULL)
 INDEX change_log.change_log_pkey CREATE UNIQUE INDEX change_log_pkey ON public.change_log USING btree (mailbox_id, seq)
+INDEX dav_collections.dav_collections_account_id_kind_name_key CREATE UNIQUE INDEX dav_collections_account_id_kind_name_key ON public.dav_collections USING btree (account_id, kind, name)
+INDEX dav_collections.dav_collections_pkey CREATE UNIQUE INDEX dav_collections_pkey ON public.dav_collections USING btree (id)
+INDEX dav_objects.dav_objects_collection_id_uid_key CREATE UNIQUE INDEX dav_objects_collection_id_uid_key ON public.dav_objects USING btree (collection_id, uid)
+INDEX dav_objects.dav_objects_pkey CREATE UNIQUE INDEX dav_objects_pkey ON public.dav_objects USING btree (collection_id, name)
+INDEX dav_objects.dav_objects_range CREATE INDEX dav_objects_range ON public.dav_objects USING btree (collection_id, starts_at, ends_at)
+INDEX dav_objects.dav_objects_revision CREATE INDEX dav_objects_revision ON public.dav_objects USING btree (collection_id, revision)
+INDEX dav_tombstones.dav_tombstones_age CREATE INDEX dav_tombstones_age ON public.dav_tombstones USING btree (deleted_at)
+INDEX dav_tombstones.dav_tombstones_pkey CREATE UNIQUE INDEX dav_tombstones_pkey ON public.dav_tombstones USING btree (collection_id, name)
 INDEX deliveries.deliveries_created CREATE INDEX deliveries_created ON public.deliveries USING btree (created_at)
 INDEX deliveries.deliveries_message CREATE INDEX deliveries_message ON public.deliveries USING btree (mailbox_id, message_id)
 INDEX deliveries.deliveries_pkey CREATE UNIQUE INDEX deliveries_pkey ON public.deliveries USING btree (mailbox_id, delivery_id)

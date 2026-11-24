@@ -18,6 +18,7 @@ rusty-seal = { path = "../crates/rusty-seal" }
 rusty-imap = { path = "../crates/rusty-imap" }
 rusty-pop3 = { path = "../crates/rusty-pop3" }
 rusty-managesieve = { path = "../crates/rusty-managesieve" }
+rusty-dav = { path = "../crates/rusty-dav" }
 rusty-ctl = { path = "../crates/rusty-ctl" }
 rusty-smtp = { path = "../crates/rusty-smtp" }
 rusty-http = { path = "../crates/rusty-http" }
@@ -215,5 +216,29 @@ doc = false
 [[bin]]
 name = "fuzz_managesieve_command"
 path = "fuzz_targets/fuzz_managesieve_command.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_dav_object"
+path = "fuzz_targets/fuzz_dav_object.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_dav_moment"
+path = "fuzz_targets/fuzz_dav_moment.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_dav_xml"
+path = "fuzz_targets/fuzz_dav_xml.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_dav_path"
+path = "fuzz_targets/fuzz_dav_path.rs"
 test = false
 doc = false

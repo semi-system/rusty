@@ -22,6 +22,7 @@ mod imap_migrations;
 mod searches;
 mod outbox;
 mod app_passwords;
+mod dav;
 mod sieve;
 mod dns_zone;
 mod totp;

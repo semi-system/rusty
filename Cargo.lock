@@ -2189,6 +2189,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusty-dav"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "rusty-core",
+ "rusty-store",
+ "tokio",
+]
+
+[[package]]
 name = "rusty-directory"
 version = "0.1.0"
 dependencies = [
