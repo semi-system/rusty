@@ -69,6 +69,14 @@ fn method_of(m: &hyper::Method) -> Option<Method> {
         "POST" => Some(Method::Post),
         "PUT" => Some(Method::Put),
         "DELETE" => Some(Method::Delete),
+        "OPTIONS" => Some(Method::Options),
+        "PROPFIND" => Some(Method::Propfind),
+        "PROPPATCH" => Some(Method::Proppatch),
+        "REPORT" => Some(Method::Report),
+        "MKCOL" => Some(Method::Mkcol),
+        "MKCALENDAR" => Some(Method::Mkcalendar),
+        "COPY" => Some(Method::Copy),
+        "MOVE" => Some(Method::Move),
         _ => None,
     }
 }
@@ -84,7 +92,11 @@ async fn build(core: &Core, peer: PeerInfo, req: hyper::Request<Incoming>) -> (R
         return (core.error(414, "invalid"), true);
     }
     // Routing happens before the body is read: a refused request costs nothing.
-    let (handler, params) = match core.refusal(core.find(method, path)) {
+    let route_path = match path.strip_suffix('/') {
+        Some(rest) if core.limits.allow_trailing_slash && !rest.is_empty() && !rest.ends_with('/') => rest,
+        _ => path,
+    };
+    let (handler, params) = match core.refusal(core.find(method, route_path)) {
         Ok(x) => x,
         Err(resp) => return (resp, true),
     };

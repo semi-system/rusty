@@ -3,10 +3,12 @@
 //! as raw bytes; the handler counter proves that a refused request never reached a handler.
 mod common;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::*;
-use rusty_http::Limits;
+use rusty_http::{handler, Limits, Method, Request, Response, Router};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -283,4 +285,59 @@ async fn shutdown_lets_a_request_in_flight_finish_and_closes_idle_connections() 
     let _ = tokio::time::timeout(Duration::from_secs(5), idle.read_to_end(&mut rest)).await;
     assert!(t0.elapsed() < Duration::from_secs(3), "an idle connection must close promptly on shutdown");
     s.shutdown().await;
+}
+
+// ------------------------------------------------------------------------------------- WebDAV (docs/design-caldav-carddav.md)
+
+fn dav_router(calls: Arc<AtomicUsize>) -> Router {
+    let mk = |tag: &'static str, calls: Arc<AtomicUsize>| {
+        handler(move |req: Request| {
+            let c = calls.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Response::text(207, &format!("{tag}|{}|{}|{}", req.method.as_str(), req.path, req.param("c").unwrap_or("-")))
+            }
+        })
+    };
+    let mut r = Router::new();
+    for (m, tag) in [(Method::Options, "o"), (Method::Propfind, "p"), (Method::Proppatch, "pp"), (Method::Report, "r"), (Method::Mkcol, "k"), (Method::Mkcalendar, "kc"), (Method::Copy, "cp"), (Method::Move, "mv")] {
+        r = r.route(m, "/dav/cal/{c}", mk(tag, calls.clone()));
+    }
+    r
+}
+
+#[tokio::test]
+async fn the_methods_of_webdav_are_served_by_a_route_that_names_them_and_by_nothing_else() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let s = start_router(dav_router(calls.clone()), Limits::default(), calls).await;
+    for (m, want) in [("OPTIONS", "o"), ("PROPFIND", "p"), ("PROPPATCH", "pp"), ("REPORT", "r"), ("MKCOL", "k"), ("MKCALENDAR", "kc"), ("COPY", "cp"), ("MOVE", "mv")] {
+        let r = raw(s.addr, format!("{m} /dav/cal/work HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await;
+        assert_eq!((r.status, r.body.as_str()), (207, format!("{want}|{m}|/dav/cal/work|work").as_str()), "{m}");
+        assert_secure(&r);
+    }
+    // A method with no route is 405 and the Allow list names the ones there are, in a fixed order.
+    let r = raw(s.addr, b"GET /dav/cal/work HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n").await;
+    assert_eq!(r.status, 405);
+    assert_eq!(r.header("allow").as_deref(), Some("options, propfind, proppatch, report, mkcol, mkcalendar, copy, move"));
+    // A method nobody knows is still refused before routing.
+    let r = raw(s.addr, b"LOCK /dav/cal/work HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+    assert!(r.status == 405 || r.status == 400 || r.status == 501, "{}", r.status);
+    s.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_trailing_slash_is_routed_only_when_the_service_allows_it_and_the_handler_sees_the_path_as_sent() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let strict = start_router(dav_router(calls.clone()), Limits::default(), calls.clone()).await;
+    let r = raw(strict.addr, b"PROPFIND /dav/cal/work/ HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+    assert_eq!(r.status, 400, "a path with an empty segment is refused");
+    strict.shutdown().await;
+    let open = start_router(dav_router(calls.clone()), Limits { allow_trailing_slash: true, ..Limits::default() }, calls.clone()).await;
+    let r = raw(open.addr, b"PROPFIND /dav/cal/work/ HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+    assert_eq!((r.status, r.body.as_str()), (207, "p|PROPFIND|/dav/cal/work/|work"));
+    for bad in ["//", "/dav/cal/work//", "/dav//cal/work/", "/dav/cal/./work/", "/dav/cal/work/../"] {
+        let r = raw(open.addr, format!("PROPFIND {bad} HTTP/1.1\r\nHost: t\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await;
+        assert!(r.status == 400 || r.status == 404, "{bad} -> {}", r.status);
+    }
+    open.shutdown().await;
 }

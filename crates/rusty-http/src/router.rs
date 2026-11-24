@@ -150,6 +150,14 @@ impl Router {
             Method::Post => 2,
             Method::Put => 3,
             Method::Delete => 4,
+            Method::Options => 5,
+            Method::Propfind => 6,
+            Method::Proppatch => 7,
+            Method::Report => 8,
+            Method::Mkcol => 9,
+            Method::Mkcalendar => 10,
+            Method::Copy => 11,
+            Method::Move => 12,
         };
         allow.sort_by_key(order);
         Routed::MethodNotAllowed { allow }
