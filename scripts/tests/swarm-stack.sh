@@ -378,6 +378,7 @@ vlog="$tmp/volumes.log"; : > "$vlog"
   prost_has_certd() { return 1; }
   eval "$(sed -n '/^edge_prepare_volumes() {$/,/^}$/p' "$ROOT/deploy/swarm/edge-prost.sh")"
   edge_prepare_volumes
+  # shellcheck disable=SC2034  # read by the function evaluated above
   TLS_MODE=self
   edge_prepare_volumes
 ) || fail "edge_prepare_volumes failed"
