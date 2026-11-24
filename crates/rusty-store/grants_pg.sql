@@ -161,6 +161,7 @@ BEGIN
     GRANT SELECT, INSERT, UPDATE ON webmail_settings TO rusty_webmail;   -- the person's own settings of the webmail: the signature (docs/design-webmail.md)
     GRANT SELECT, INSERT, UPDATE, DELETE ON totp TO rusty_webmail;   -- the second factor of the sign-in (docs/design-2fa.md)
     GRANT SELECT, INSERT, DELETE ON totp_recovery TO rusty_webmail;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON sieve_scripts TO rusty_webmail;   -- the filters of the person (docs/design-sieve.md)
   END IF;
 
   -- rusty_dns: the authoritative name server (docs/design-authoritative-dns.md). It is the most exposed service and the least trusting one: it reads the domains, the public half of the DKIM keys, the SPF include of a relay and the

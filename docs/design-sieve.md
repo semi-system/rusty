@@ -1,6 +1,6 @@
 # Sieve filters
 
-Status: **steps 1 and 2 built** (2026-11-24): `crates/rusty-sieve` (the parser and the interpreter, no I/O) and the delivery: scripts in the database (migration 0057, `SieveRepo`), the active one run by the inbound service on port 25 (`fileinto` to a folder made on the way, `keep`, `discard`, `redirect` as an outbound job, `vacation` through the vacation book with its days, `reject` refused at the door when there is one recipient). With an active script the mail rules of the account are not applied. There is no way yet for a person to upload a script: that is ManageSieve and the webmail editor (steps 3 and 4).
+Status: **steps 1 and 2 built** (2026-11-24): `crates/rusty-sieve` (the parser and the interpreter, no I/O) and the delivery: scripts in the database (migration 0057, `SieveRepo`), the active one run by the inbound service on port 25 (`fileinto` to a folder made on the way, `keep`, `discard`, `redirect` as an outbound job, `vacation` through the vacation book with its days, `reject` refused at the door when there is one recipient). With an active script the mail rules of the account are not applied. The webmail has an editor (Settings, Filters; `GET/PUT /api/v1/sieve/{name}`, activate, deactivate, delete; the parser checks a script before it is kept and answers with the line). ManageSieve (step 3) is not built.
 
 ## What it is for
 

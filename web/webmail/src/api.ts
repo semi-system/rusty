@@ -4,6 +4,8 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     readonly code: string,
+    /** What else the server said (a refused script: the line and the words of the parser). */
+    readonly detail: Record<string, unknown> = {},
   ) {
     super(code);
   }
@@ -93,6 +95,16 @@ export interface TotpStatus {
   enabled: boolean;
   pending: boolean;
 }
+export interface ScriptInfo {
+  name: string;
+  active: boolean;
+  size: number;
+}
+export interface Scripts {
+  scripts: ScriptInfo[];
+  max_scripts: number;
+  max_bytes: number;
+}
 export type Action = 'read' | 'unread' | 'flag' | 'unflag' | 'move' | 'copy' | 'delete';
 
 export interface Api {
@@ -114,6 +126,11 @@ export interface Api {
   appPasswords(): Promise<AppPassword[]>;
   createAppPassword(label: string, password: string): Promise<{ id: number; label: string; secret: string }>;
   revokeAppPassword(id: number): Promise<void>;
+  scripts(): Promise<Scripts>;
+  script(name: string): Promise<{ name: string; body: string }>;
+  saveScript(name: string, body: string): Promise<void>;
+  activateScript(name: string | null): Promise<void>;
+  deleteScript(name: string): Promise<void>;
   totpStatus(): Promise<TotpStatus>;
   totpBegin(password: string): Promise<{ secret: string; uri: string }>;
   totpConfirm(code: string): Promise<{ recovery: string[] }>;
@@ -151,7 +168,7 @@ export function createApi(doFetch: Fetch = (i, init) => fetch(i, init)): Api {
     }
     if (!res.ok) {
       const code = typeof data === 'object' && data !== null && 'error' in data ? String((data as { error: unknown }).error) : 'unknown';
-      throw new ApiError(res.status, code);
+      throw new ApiError(res.status, code, typeof data === 'object' && data !== null ? (data as Record<string, unknown>) : {});
     }
     return data as T;
   }
@@ -186,6 +203,17 @@ export function createApi(doFetch: Fetch = (i, init) => fetch(i, init)): Api {
     createAppPassword: (label, password) => call('POST', '/api/v1/app-passwords', { label, password }),
     revokeAppPassword: async (id) => {
       await call('DELETE', `/api/v1/app-passwords/${id}`);
+    },
+    scripts: () => call('GET', '/api/v1/sieve'),
+    script: (name) => call('GET', `/api/v1/sieve/${encodeURIComponent(name)}`),
+    saveScript: async (name, body) => {
+      await call('PUT', `/api/v1/sieve/${encodeURIComponent(name)}`, { body });
+    },
+    activateScript: async (name) => {
+      await call('POST', name === null ? '/api/v1/sieve/deactivate' : `/api/v1/sieve/${encodeURIComponent(name)}/activate`);
+    },
+    deleteScript: async (name) => {
+      await call('DELETE', `/api/v1/sieve/${encodeURIComponent(name)}`);
     },
     totpStatus: () => call('GET', '/api/v1/totp'),
     totpBegin: (password) => call('POST', '/api/v1/totp/begin', { password }),

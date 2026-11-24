@@ -12,6 +12,7 @@ pub mod health;
 pub mod mail;
 pub mod read;
 pub mod run;
+pub mod filters;
 pub mod second;
 pub mod second_factor;
 pub mod settings;

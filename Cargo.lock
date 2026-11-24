@@ -2494,6 +2494,7 @@ dependencies = [
  "rusty-runtime",
  "rusty-s3",
  "rusty-seal",
+ "rusty-sieve",
  "rusty-store",
  "rusty-svc",
  "rusty-valkey",
