@@ -95,3 +95,29 @@ async fn the_mozilla_answer_is_also_served_at_the_well_known_path() {
     assert_eq!(a.body, b.body, "the same answer at both paths");
     assert!(a.body.contains("<hostname>mail.example.org</hostname>") && a.body.contains("<incomingServer type=\"pop3\">"), "POP3 is on by default, so it is offered");
 }
+
+#[tokio::test]
+async fn the_apple_profile_adds_calendars_and_contacts_only_where_the_dav_service_runs() {
+    let r = rig().await;
+    let q = "/mail/config.mobileconfig?emailaddress=alice%40known.test";
+    let before = send(r.addr, "GET", q, &[], "").await;
+    assert_eq!(before.status, 200);
+    assert!(!before.body.contains("com.apple.caldav.account") && !before.body.contains("com.apple.carddav.account"), "{}", before.body);
+    // The service is there once it has a heartbeat.
+    r.outbound.repos().heartbeat.beat("dav", "dav-1", "1.2.3", 90, "ok", "").await.unwrap();
+    let after = send(r.addr, "GET", q, &[], "").await;
+    assert_eq!(after.status, 200);
+    for want in [
+        "com.apple.caldav.account",
+        "com.apple.carddav.account",
+        "<key>CalDAVHostName</key><string>mail.example.org</string>",
+        "<key>CardDAVHostName</key><string>mail.example.org</string>",
+        "<key>CalDAVPrincipalURL</key><string>/dav/principals/alice%40known.test/</string>",
+        "<key>CardDAVPrincipalURL</key><string>/dav/principals/alice%40known.test/</string>",
+        "<key>CalDAVUsername</key><string>alice@known.test</string>",
+        "<integer>443</integer>",
+    ] {
+        assert!(after.body.contains(want), "{want}: {}", after.body);
+    }
+    assert!(!after.body.to_ascii_lowercase().contains("password</key><string"), "no password in a profile");
+}
