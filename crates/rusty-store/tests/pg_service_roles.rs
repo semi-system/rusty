@@ -9,7 +9,7 @@ use common::pg::{pg_admin_url, PgTestDb};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
-const SERVICES: [&str; 7] = ["rusty_smtp_in", "rusty_submission", "rusty_imap", "rusty_outbound", "rusty_gc", "rusty_webmail", "rusty_dns"];
+const SERVICES: [&str; 8] = ["rusty_smtp_in", "rusty_submission", "rusty_imap", "rusty_outbound", "rusty_gc", "rusty_webmail", "rusty_dav", "rusty_dns"];
 
 async fn admin_pool(db: &PgTestDb) -> PgPool {
     PgPoolOptions::new().max_connections(2).connect(db.admin_db_url()).await.unwrap()
@@ -73,7 +73,7 @@ async fn only_the_services_that_check_a_password_can_read_the_hashes() {
     let db = PgTestDb::create_with_roles(&url).await;
     let admin = admin_pool(&db).await;
     for role in SERVICES {
-        let may = matches!(role, "rusty_submission" | "rusty_imap" | "rusty_webmail");
+        let may = matches!(role, "rusty_submission" | "rusty_imap" | "rusty_webmail" | "rusty_dav");
         assert_eq!(column_priv(&admin, role, "accounts", "password_hash", "SELECT").await, may, "{role} and accounts.password_hash");
         assert!(!column_priv(&admin, role, "accounts", "password_hash", "UPDATE").await, "{role} can change a password hash");
         // `password_set` is what the others read to know that an account has a password.
@@ -123,6 +123,18 @@ async fn each_service_keeps_to_its_own_writes() {
         ("rusty_imap", "sieve_scripts", "SELECT", true),
         ("rusty_imap", "sieve_scripts", "DELETE", true),
         ("rusty_submission", "sieve_scripts", "SELECT", false),
+        // calendars and contacts: only the dav service reads and writes them (and the collector drops the old tombstones); the dav service reads no mail
+        ("rusty_dav", "dav_objects", "DELETE", true),
+        ("rusty_dav", "dav_collections", "UPDATE", true),
+        ("rusty_dav", "messages", "SELECT", false),
+        ("rusty_dav", "blobs", "SELECT", false),
+        ("rusty_dav", "sealed_secrets", "SELECT", false),
+        ("rusty_dav", "sieve_scripts", "SELECT", false),
+        ("rusty_dav", "accounts", "UPDATE", false),
+        ("rusty_imap", "dav_objects", "SELECT", false),
+        ("rusty_webmail", "dav_collections", "SELECT", false),
+        ("rusty_gc", "dav_tombstones", "DELETE", true),
+        ("rusty_gc", "dav_objects", "SELECT", false),
         ("rusty_dns", "domains", "SELECT", true),
         ("rusty_dns", "domains", "UPDATE", false),
         ("rusty_dns", "domain_dns_extra", "SELECT", true),
@@ -247,11 +259,11 @@ async fn the_storage_check_worker_can_record_a_check_and_nothing_else_on_the_sto
 async fn the_webmail_and_the_name_server_write_their_own_heartbeat_rows_whatever_they_pass() {
     let Some(url) = pg_admin_url() else { return };
     let db = PgTestDb::create_with_roles(&url).await;
-    for role in ["rusty_webmail", "rusty_dns"] {
+    for role in ["rusty_webmail", "rusty_dav", "rusty_dns"] {
         let pool = pool_as(&db, role).await;
         sqlx::query("SELECT rs_heartbeat('imap', 'i1', '1.0', 5, 'ok', '{}')").execute(&pool).await.unwrap_or_else(|e| panic!("{role}: {e}"));
     }
     let admin = admin_pool(&db).await;
     let seen: Vec<String> = sqlx::query_scalar("SELECT service FROM service_heartbeats ORDER BY service").fetch_all(&admin).await.unwrap();
-    assert_eq!(seen, ["dns", "webmail"], "each wrote its own name, not the one it passed");
+    assert_eq!(seen, ["dav", "dns", "webmail"], "each wrote its own name, not the one it passed");
 }

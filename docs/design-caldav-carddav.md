@@ -1,6 +1,6 @@
 # Calendars and contacts (CalDAV and CardDAV)
 
-Status: **design** (2026-11-24). Decision D1 of `design-admin-parity.md`: groupware is built as a service of its own, after the mail features. This page is that design.
+Status: **steps 1 to 4 built** (2026-11-24): storage (migration 0058), the readers, the server (`crates/rusty-dav`), and the service (`crates/rusty-davd`, role `dav`, image `rusty-dav`, Swarm `DAV=1`, the routes at the HAProxy and Prost edges, the heartbeat, the tombstone collector). Open: contact completion in the webmail (step 5), the SRV records in the DNS check and the hosted zones, the Autodiscover entries, the sign-in counters in Valkey (one task for now), scheduling and sharing (v2). Decision D1 of `design-admin-parity.md`: groupware is built as a service of its own. This page is that design.
 
 ## What it is for
 

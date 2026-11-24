@@ -13,8 +13,9 @@ declare -A SUITES=(
   [rusty_gc]="-p rusty-smtp --test outbound_gc -p rusty-svc --test service"
   [rusty_webmail]="-p rusty-webmail"
   [rusty_dns]="-p rusty-dns"
+  [rusty_dav]="-p rusty-davd"
 )
-roles=("$@"); [ "${#roles[@]}" -gt 0 ] || roles=(rusty_smtp_in rusty_submission rusty_imap rusty_outbound rusty_gc rusty_webmail rusty_dns)
+roles=("$@"); [ "${#roles[@]}" -gt 0 ] || roles=(rusty_smtp_in rusty_submission rusty_imap rusty_outbound rusty_gc rusty_webmail rusty_dav rusty_dns)
 bad=0
 for r in "${roles[@]}"; do
   [ -n "${SUITES[$r]:-}" ] || { echo "pg-role-suites: unknown role $r" >&2; exit 2; }

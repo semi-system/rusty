@@ -115,6 +115,13 @@ frontend admin_https
     acl setup_path path -i -m str /autodiscover/autodiscover.json
     acl setup_method method GET POST
     http-request allow if mail_host setup_path setup_method
+#DAV     # Calendars and contacts (docs/design-caldav-carddav.md): CalDAV and CardDAV on the mail host, /dav/ and the well-known addresses of clients (RFC 6764), to the DAV service with the PROXY header.
+#DAV     acl dav_path path -m beg /dav/
+#DAV     acl dav_path path -m str /dav
+#DAV     acl dav_path path -m str /.well-known/caldav
+#DAV     acl dav_path path -m str /.well-known/carddav
+#DAV     http-request allow if mail_host dav_path
+#DAV     use_backend be_dav if mail_host dav_path
     http-request deny deny_status 421 unless admin_host
     http-request deny deny_status 403 unless admin_net
     use_backend be_admin if mail_host setup_path setup_method
@@ -146,6 +153,10 @@ backend be_sieve
 
 backend be_pop3s
     server-template imap 1-8 imap:1995 resolvers docker init-addr none check inter 5s send-proxy-v2
+
+#DAV backend be_dav
+#DAV     mode http
+#DAV     server-template dav 1-4 dav:8091 resolvers docker init-addr none check inter 5s send-proxy-v2
 
 backend be_admin
     mode http

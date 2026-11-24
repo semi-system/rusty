@@ -21,6 +21,13 @@ pub const APPLE: &str = "http://apple.com/ns/ical/";
 /// How many objects a report returns at most.
 pub const REPORT_LIMIT: i64 = 1000;
 const OBJECT_LIMIT: i64 = MAX_OBJECTS_PER_COLLECTION;
+/// An answer stops growing here (the rest is reported as not returned): a collection of large objects must not make one answer of a gigabyte.
+pub const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
+/// The entry that says the list was cut at the limit (RFC 4791 section 7.1, RFC 6578 section 3.6).
+fn truncated(collection_href: &str) -> String {
+    format!("<D:response>{}<D:status>HTTP/1.1 507 Insufficient Storage</D:status><D:error><D:number-of-matches-within-limits/></D:error></D:response>", href(collection_href))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
@@ -246,6 +253,14 @@ impl Dav {
         }
     }
 
+    /// The answer to `OPTIONS` for a path: it does not depend on who asks (clients ask what is there before they send a password).
+    pub fn options_of(path: &str) -> Reply {
+        match paths::parse(path) {
+            Some(res) => Self::options(&res),
+            None => Reply::text(404, "there is nothing here"),
+        }
+    }
+
     fn options(res: &Resource) -> Reply {
         let mut r = Reply::new(200).header("dav", "1, 3, calendar-access, addressbook").header("allow", allow_of(res));
         r.content_type = "text/plain; charset=utf-8";
@@ -441,6 +456,10 @@ impl Dav {
                     match self.repo.objects(c.id, OBJECT_LIMIT).await {
                         Ok(list) => {
                             for o in &list {
+                                if out.len() > MAX_RESPONSE_BYTES {
+                                    out.push_str(&truncated(&collection_href(*kind, a, name)));
+                                    break;
+                                }
                                 out.push_str(&self.response(who, &object_href(*kind, a, name, &o.name), &Target::Object(*kind, o), &wanted, true));
                             }
                         }
@@ -792,6 +811,10 @@ impl Dav {
         let is_multiget = doc.name.ends_with("multiget");
         let mut seen: Vec<&str> = Vec::new();
         for o in &list {
+            if out.len() > MAX_RESPONSE_BYTES {
+                out.push_str(&truncated(&collection_href(kind, &who.address, &c.name)));
+                break;
+            }
             seen.push(&o.name);
             out.push_str(&self.response(who, &object_href(kind, &who.address, &c.name, &o.name), &Target::Object(kind, o), &wanted, true));
         }
@@ -831,6 +854,10 @@ impl Dav {
         };
         let mut out = String::new();
         for o in &objects {
+            if out.len() > MAX_RESPONSE_BYTES {
+                out.push_str(&truncated(&collection_href(kind, &who.address, &c.name)));
+                break;
+            }
             out.push_str(&self.response(who, &object_href(kind, &who.address, &c.name, &o.name), &Target::Object(kind, o), wanted, true));
         }
         for d in &changes.deleted {

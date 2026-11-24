@@ -339,6 +339,33 @@ grep -q '^allowed_hosts = \["tasks.edge", "edge", "tasks.edge-prost", "edge-pros
 ! grep -q 'aws_access_key_id' "$pp" || fail "pilot: a key is in the stack file"
 echo "  ok    Prost as the edge, as a pilot beside HAProxy, and its certificates (files, S3, secrets)"
 echo "  ok    the webmail at the Prost edge (certificate, route, upstream)"
+# Calendars and contacts (docs/design-caldav-carddav.md), DAV=1: a service of its own with a role of its own, no key and no mail, one task, and its routes at the edge (HAProxy and Prost).
+scenario dav "$EXT"$'\nDAV=1\nREPLICAS_DEFAULT=2' "edge smtp-in admin dav" "certd"
+dp="$tmp/dav.stack.yaml"; de="$tmp/state-dav/stack/etc"; dh="$de/haproxy.cfg"
+grep -q 'url = "postgres://rusty_dav@' "$de/dav.toml" && grep -q '^proxy_protocol = true' "$de/dav.toml" && grep -q '^listen = "0.0.0.0:8091"' "$de/dav.toml" || fail "dav: its configuration is not the service's own"
+grep -qF 'allowed_hosts = ["tasks.edge", "edge"]' "$de/dav.toml" || fail "dav: it does not trust the edge by name"
+! grep -qE 'unsealing|\[sealing\]|unseal_key|blob_dir|blob_s3|\[valkey\]' "$de/dav.toml" || fail "dav: it was handed a key, a blob store or a key-value store"
+dsvc="$(awk '/^  dav:$/{f=1;next} /^  [a-z]/{f=0} f' "$dp")"
+printf '%s\n' "$dsvc" | grep -q 'pg_dav' || fail "dav: the service does not mount the password of its role"
+! printf '%s\n' "$dsvc" | grep -qE 's3_access|s3_secret|unseal_key|webmail_totp' || fail "dav: the service mounts a secret it has no use for"
+printf '%s\n' "$dsvc" | grep -q 'replicas: 1$' || fail "dav: one task (the sign-in counters are in its memory)"
+printf '%s\n' "$dsvc" | grep -q 'rusty-dav:' || fail "dav: the image is not rusty-dav"
+grep -q 'acl dav_path path -m str /.well-known/caldav' "$dh" && grep -q 'use_backend be_dav if mail_host dav_path' "$dh" || fail "dav: the edge does not send /dav/ and the well-known paths to it"
+awk '/http-request allow if mail_host dav_path/{a=NR} /http-request deny deny_status 421 unless admin_host/{d=NR} END{exit !(a && d && a < d)}' "$dh" || fail "dav: its allowance comes after the refusals"
+grep -q 'server-template dav 1-4 tasks.dav:8091 .* send-proxy-v2' "$dh" || fail "dav: the backend is not the task addresses with the PROXY header"
+! grep -q '^#DAV\|@DAV' "$dh" || fail "dav: a marker is left in haproxy.cfg"
+! grep -q 'dav' "$tmp/state-external/stack/etc/haproxy.cfg" || fail "a stack without DAV=1 has a DAV route"
+! grep -qx '  dav:' "$tmp/external.stack.yaml" || fail "a stack without DAV=1 has a DAV service"
+scenario davprost "$EXT"$'\nEDGE=prost\nTLS_MODE=self\nDAV=1\nREPLICAS_DEFAULT=1' "edge dav" "certd db s3"
+dq="$tmp/state-davprost/stack/etc/prost-edge.toml"
+no_placeholders "$dq"
+! grep -q '^#DAV' "$dq" || fail "davprost: a marker is left"
+grep -q '^\[upstreams.dav\]' "$dq" && grep -q '^address = "tasks.dav:8091"' "$dq" && grep -q '^upstream = "dav"' "$dq" || fail "davprost: the upstream or a route of the DAV service is missing"
+[ "$(grep -c '^upstream = "dav"' "$dq")" = 3 ] || fail "davprost: /dav and the two well-known paths are routes of the mail host"
+grep -q '^path_prefix = "/.well-known/carddav"' "$dq" || fail "davprost: no route for the well-known address of CardDAV"
+prost_check davprost
+! grep -q 'dav' "$tmp/state-prostself/stack/etc/prost-edge.toml" || fail "prostself: a DAV upstream without DAV=1"
+echo "  ok    the calendar and contacts service and its routes (HAProxy and Prost)"
 
 # ---- the configuration keys match those of the standalone templates ----------------------------------------------------------------------------------------------------------------------------
 # section.key of a TOML text; a template's profile markers are switched on, its other comments dropped

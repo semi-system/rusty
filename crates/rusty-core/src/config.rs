@@ -13,6 +13,7 @@ use crate::{Error, Result};
 
 pub use crate::config_role::{Role, UNUSED_BLOB_DIR};
 pub use crate::config_admin::{valid_origin, AdminConfig};
+pub use crate::config_dav::DavConfig;
 pub use crate::config_webmail::WebmailConfig;
 pub use crate::config_dns::DnsConfig;
 pub use crate::config_sealing::{SealingConfig, UnsealingConfig, MAX_UNSEALING_KEYS};
@@ -127,6 +128,9 @@ pub struct StartupConfig {
     /// `[webmail]`: the webmail service (listen address, public origin); the webmail role only.
     #[serde(default)]
     pub webmail: Option<WebmailConfig>,
+    /// `[dav]`: the calendar and contacts service (listen address, the edge it trusts); the dav role only.
+    #[serde(default)]
+    pub dav: Option<DavConfig>,
     /// `[dns]`: the authoritative name server; the dns role only.
     #[serde(default)]
     pub dns: Option<DnsConfig>,
@@ -256,6 +260,9 @@ impl StartupConfig {
         }
         if let Some(w) = &self.webmail {
             w.validate()?;
+        }
+        if let Some(d) = &self.dav {
+            d.validate()?;
         }
         if let Some(d) = &self.dns {
             d.validate()?;
@@ -440,6 +447,7 @@ impl StartupConfig {
             metrics: None,
             admin: None,
             webmail: None,
+            dav: None,
             dns: None,
         }
     }

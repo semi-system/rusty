@@ -42,6 +42,8 @@ pub struct Context {
     pub searches: Arc<dyn rusty_store::SearchRepo>,
     /// What a person sends from the webmail (docs/design-webmail.md): written by the webmail, sent by the submission service.
     pub outbox: Arc<dyn rusty_store::OutboxRepo>,
+    /// The calendars and address books (docs/design-caldav-carddav.md): kept by the DAV service, their old tombstones dropped by the garbage collector.
+    pub dav: Arc<dyn rusty_store::DavRepo>,
     /// What the deployment tool did about backups: purged by the garbage collector, read by the admin web.
     pub backups: Arc<dyn rusty_store::BackupRepo>,
     /// The moves of a mailbox from another IMAP server (docs/design-imap-migration.md): done by the IMAP service.
@@ -107,6 +109,7 @@ impl Context {
             audit: repos.audit.clone(),
             searches: repos.searches.clone(),
             outbox: repos.outbox.clone(),
+            dav: repos.dav.clone(),
             backups: repos.backups.clone(),
             migrations: repos.migrations.clone(),
             sealed: rusty_store::SealedReader::with_repo(repos.sealed.clone()),

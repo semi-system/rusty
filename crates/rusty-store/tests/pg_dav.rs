@@ -175,3 +175,24 @@ async fn the_sync_report_gives_what_changed_and_what_was_deleted_in_pages_and_a_
     assert!(dav.changes_since(cal, 0, 100).await.unwrap().is_some(), "a first sync never does");
     assert!(dav.changes_since(9_999_999, 0, 10).await.is_err());
 }
+
+#[tokio::test]
+async fn the_collector_drops_old_tombstones_logged_in_as_its_own_role_and_the_dav_service_as_its_own() {
+    let Some(url) = pg_admin_url() else { return };
+    let db = PgTestDb::create_with_roles(&url).await;
+    let operator = Store::open(StoreConfig::postgres(db.role_url("rusty_app"))).await.unwrap();
+    let service = Store::open(StoreConfig::postgres(db.role_url("rusty_dav"))).await.unwrap();
+    let collector = Store::open(StoreConfig::postgres(db.role_url("rusty_gc"))).await.unwrap();
+    let admin = sqlx::PgPool::connect(db.admin_db_url()).await.unwrap();
+    let alice = account(&operator, "alice@one.test").await;
+    // The service makes and removes objects as its own role.
+    let dav = service.repos().dav.clone();
+    let cal = dav.create_collection(alice, "calendar", "main", "", "").await.unwrap().id;
+    dav.put(cal, &event("a.ics", "a", None, None), &DavPrecondition::None).await.unwrap();
+    assert_eq!(dav.delete(cal, "a.ics", &DavPrecondition::None).await.unwrap(), DavDeleteResult::Deleted { revision: 2 });
+    // The collector keeps a fresh tombstone and drops an old one, as its own role.
+    assert_eq!(collector.repos().dav.purge_tombstones().await.unwrap(), 0);
+    sqlx::query("UPDATE dav_tombstones SET deleted_at = deleted_at - 40 * 24 * 3600").execute(&admin).await.unwrap();
+    assert_eq!(collector.repos().dav.purge_tombstones().await.unwrap(), 1);
+    assert!(dav.changes_since(cal, 1, 10).await.unwrap().is_none());
+}

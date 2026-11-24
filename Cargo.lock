@@ -2199,6 +2199,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusty-davd"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "hex",
+ "rand_core 0.6.4",
+ "rusty-core",
+ "rusty-dav",
+ "rusty-directory",
+ "rusty-http",
+ "rusty-runtime",
+ "rusty-store",
+ "rusty-svc",
+ "rusty-valkey",
+ "sha2 0.11.1",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "rusty-directory"
 version = "0.1.0"
 dependencies = [

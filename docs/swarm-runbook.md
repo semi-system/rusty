@@ -67,6 +67,17 @@ tar xzf rusty-deploy-<release>.tar.gz && cd rusty-deploy-<release>
 * **Two-step sign-in and app passwords**: people turn them on in the webmail Settings. Mail programs of an account with the second factor use app passwords (up to ten). See `design-2fa.md` and `design-app-passwords.md`.
 * **What to look at when it breaks**: `docker service ps rusty_webmail`, `logs webmail`; "cannot connect to Postgres" means the role (`prepare db`), "cannot read the Postgres schema state" means the grants (`migrate` after the role exists).
 
+## Calendars and contacts (`DAV=1`)
+
+`DAV=1` in the inventory adds the DAV service (`docs/design-caldav-carddav.md`): CalDAV and CardDAV for phones and desktop apps, one task, its own database role `rusty_dav` (made by `prepare db`, as `upgrade` does for a release that adds a role), no key and no
+mail. It needs no host name of its own: the edge sends `/dav/` and the well-known addresses `/.well-known/caldav` and `/.well-known/carddav` of the **mail host** to it (HAProxy and the Prost edge both do, with the PROXY header). People sign in with their
+address and their password, or with an app password (an account with the second factor on must use an app password). A password verified a moment ago is remembered for a minute, so a password changed or an app password revoked takes up to a minute to bite.
+
+* Check: `docker service ls` shows `rusty_dav 1/1`; `curl -i -X OPTIONS https://MAIL_HOST/dav/` answers `200` with a `DAV:` header; `curl -u address:password -X PROPFIND -H 'Depth: 0' https://MAIL_HOST/dav/` answers `207`. The Monitor page of the admin web shows the service once it beats.
+* Clients: Thunderbird (Calendar, Address Book: the network location `https://MAIL_HOST/dav/`), iOS and macOS (an account of type CalDAV or CardDAV with the server `MAIL_HOST`), Android with DAVx5 (a login with the base URL `https://MAIL_HOST/dav/`). Add the SRV records `_caldavs._tcp` and `_carddavs._tcp` (port 443, target the mail host) and a TXT `path=/dav/` of the same names at the domain if clients should find it from the address alone.
+* Limits: 1 MiB per object, 10 000 objects per collection, 50 collections and 100 000 objects per account; a collection that never ends is bounded by the answer limit (16 MiB per answer). Deleted objects leave a tombstone for 30 days; a client that was away longer does a full sync.
+* A backup of the database holds the calendars and contacts with the rest. `DAV=0` takes the service and its routes out; the data stays.
+
 ## The name server (`DNS_NAME_SERVERS`)
 
 * **Turn it on**: `DNS_NAME_SERVERS="ns1.example.org ns2.example.org"` in `swarm.env` (and `DNS_HOSTMASTER`, by default `hostmaster.` plus the domain of the first name server), then `upgrade`. The service `dns` publishes port 53 (UDP and TCP) in host mode on every node

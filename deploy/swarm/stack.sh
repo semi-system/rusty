@@ -16,7 +16,7 @@ TLS_MODE="${TLS_MODE:-acme}"
 # `admin` is one task unless REPLICAS_ADMIN says more: its sessions need the shared key-value store (VALKEY=1) and the one-time setup token and the live-update hub belong to one process.
 REPLICAS_DEFAULT="${REPLICAS_DEFAULT:-2}"
 REPLICAS_ADMIN="${REPLICAS_ADMIN:-1}"
-replicas_of() { case "$1" in admin) echo "$REPLICAS_ADMIN" ;; webmail) if [ "$VALKEY" = 1 ]; then echo "$REPLICAS_DEFAULT"; else echo 1; fi ;; *) echo "$REPLICAS_DEFAULT" ;; esac; }
+replicas_of() { case "$1" in dav) echo 1 ;; admin) echo "$REPLICAS_ADMIN" ;; webmail) if [ "$VALKEY" = 1 ]; then echo "$REPLICAS_DEFAULT"; else echo 1; fi ;; *) echo "$REPLICAS_DEFAULT" ;; esac; }
 LOG_LEVEL="${LOG_LEVEL:-info}"
 declare -A SECRET_NAME=() CONFIG_NAME=()
 # shellcheck source=validate.sh
@@ -183,6 +183,14 @@ conf_webmail() {
   printf '\n'
   blk_blob; blk_valkey webmail; blk_store webmail
 }
+# The calendar and contacts service (docs/design-caldav-carddav.md), DAV=1: behind the edge only, which ends TLS and sends the PROXY header. It holds no key and no mail (no blob store, no sealed secret): its
+# database role reads the directory to check a password and keeps the collections and objects. One task: the sign-in counters are in its own memory.
+conf_dav() {
+  printf 'hostname = "%s"\n' "$MAIL_HOST"
+  [ "$LOG_LEVEL" = info ] || printf 'log_level = "%s"\n' "$LOG_LEVEL"
+  printf '\n[dav]\nlisten = "0.0.0.0:8091"\nallowed_peers = ["127.0.0.1/32"]\nallowed_hosts = ["tasks.edge", "edge"]\nproxy_protocol = true\n\n'
+  blk_store dav
+}
 # The name server (docs/design-authoritative-dns.md): its own database role, no blob store and no key; it listens on 5353 (the stack publishes port 53 to it).
 conf_dns() {
   local ns="" n
@@ -204,7 +212,9 @@ conf_haproxy() {
     wm_keep="s|^#WEBMAIL ||"
     if [ "$TLS_MODE" = acme ]; then wm_crt=' crt "@certs/webmail.pem"'; else wm_crt=' crt /var/lib/haproxy/certs/webmail.pem'; fi
   fi
-  sed -e "$wm_keep" -e "s|@WEBMAIL_CRT@|$wm_crt|g" -e "s|@WEBMAIL_HOST@|${WEBMAIL_HOST:-}|g" -e "/^${drop}/d" -e "s|^${keep}||" \
+  local dav_keep="/^#DAV /d"
+  [ "$DAV" != 1 ] || dav_keep="s|^#DAV ||"
+  sed -e "$dav_keep" -e "$wm_keep" -e "s|@WEBMAIL_CRT@|$wm_crt|g" -e "s|@WEBMAIL_HOST@|${WEBMAIL_HOST:-}|g" -e "/^${drop}/d" -e "s|^${keep}||" \
       -e "$([ "$ADMIN_PROXY" = 1 ] || echo '/server-template admin/s/ send-proxy-v2//')" \
       -e 's/\(server-template [a-z-]* [0-9]-[0-9]\) \([a-z-]*\):/\1 tasks.\2:/' \
       -e "s|@MAIL_HOST@|$MAIL_HOST|g" -e "s|@ADMIN_HOST@|$ADMIN_HOST|g" -e "s|@ADMIN_ALLOW@|$allow|g" -e "s|@CONTACT@|${CONTACT:-}|g" -e "s|@ACME_DIRECTORY@|$dir|g" \
@@ -403,7 +413,7 @@ cmd_prepare_configs() {
   local d="$STATE_DIR/stack/etc" s
   mkdir -p "$d"; chmod 0700 "$STATE_DIR/stack" "$d"
   gen_limits
-  for s in smtp_in submission imap outbound gc admin ${WEBMAIL_HOST:+webmail} ${DNS_NAME_SERVERS:+dns} migrate; do
+  for s in smtp_in submission imap outbound gc admin ${WEBMAIL_HOST:+webmail} $([ "$DAV" != 1 ] || echo dav) ${DNS_NAME_SERVERS:+dns} migrate; do
     ( umask 077; "conf_$s" | edge_hosts_filter > "$d/$s.toml" )
     ensure_config "$s" "$d/$s.toml"
   done
@@ -447,7 +457,7 @@ load_names() {
   { [ -z "$WEBMAIL_HOST" ] || [ "$TLS_MODE" != self ] || ! haproxy_is_edge; } || need_s="$need_s edge_webmail_pem"
   [ -z "$WEBMAIL_HOST" ] || need_s="$need_s webmail_totp"
   [ "$DB_IN_STACK" != 1 ] || need_s="$need_s pg_postgres db_server_crt db_server_key"
-  need_c="smtp_in submission imap outbound gc admin ${WEBMAIL_HOST:+webmail} ${DNS_NAME_SERVERS:+dns }migrate"
+  need_c="smtp_in submission imap outbound gc admin ${WEBMAIL_HOST:+webmail} $([ "$DAV" != 1 ] || echo "dav ")${DNS_NAME_SERVERS:+dns }migrate"
   ! haproxy_is_edge || need_c="$need_c haproxy"
   local t k
   [ "$DB_IN_STACK" != 1 ] || need_c="$need_c pg_hba"
@@ -499,7 +509,7 @@ gen_rusty_service() { # NAME ROLE-OF-DB NETWORKS(space) [TLS] [UNSEAL] [CONSTRAI
   y_hosts
   printf '    secrets:\n'
   y_secret "pg_$role"
-  if [ "$name" != admin ]; then y_secret s3_access; y_secret s3_secret; fi
+  if [ "$name" != admin ] && [ "$name" != dav ]; then y_secret s3_access; y_secret s3_secret; fi
   if [ "$unseal" = 1 ]; then y_secret unseal_key /etc/rusty-keys/unseal.key; fi
   [ "$name" != webmail ] || y_secret webmail_totp /etc/rusty-keys/totp.key
   if [ "$tls" = 1 ]; then y_secret tls_cert /etc/rusty-tls/cert.pem; y_secret tls_key /etc/rusty-tls/key.pem; fi
@@ -581,6 +591,7 @@ gen_stack() {
       gen_rusty_service gc gc "backend metrics" 0 1
       gen_rusty_service admin admin "app backend metrics" 0 0
       [ -z "$WEBMAIL_HOST" ] || gen_rusty_service webmail webmail "app backend metrics" 0 0
+      [ "$DAV" != 1 ] || gen_rusty_service dav dav "app backend metrics" 0 0
       [ -z "$DNS_NAME_SERVERS" ] || gen_dns_service
       [ "$FILTER" = 0 ] || gen_scanner_services
       [ "$VALKEY" = 0 ] || gen_valkey_service
