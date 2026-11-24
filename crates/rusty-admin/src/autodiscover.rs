@@ -2,7 +2,7 @@
 //!
 //! * **Outlook** (Microsoft Autodiscover, the "POX" XML form that Outlook uses for IMAP accounts): `POST /autodiscover/autodiscover.xml` with the address in the request body
 //!   (`GET` answers too, for a browser test), under both spellings of the path that clients send;
-//! * **Apple Mail** (iPhone, iPad, Mac): `GET /mail/config.mobileconfig?emailaddress=user@domain` is a configuration profile that adds the account (the person types the password
+//! * **Apple Mail** (iPhone, iPad, Mac): `GET /mail/config.mobileconfig?emailaddress=user@domain` is a configuration profile that adds the account (and the CalDAV and CardDAV accounts where the DAV service runs) (the person types the password
 //!   when they install it; no password and no secret is in the profile).
 //!
 //! Like the autoconfig answer these name the platform's mail host (IMAP over TLS on 993, submission over TLS on 465) with the address as the user name, whatever the domain: they say
@@ -108,14 +108,43 @@ fn uuid_of(what: &str) -> String {
     format!("{}-{}-{}-{}-{}", &x[..8], &x[8..12], &x[12..16], &x[16..20], &x[20..])
 }
 
+/// The CalDAV and CardDAV accounts of the profile (TLS on 443 of the mail host; the person types the password once for them, as for the mail account). The principal is the one of
+/// `rusty-dav` (`/dav/principals/<address>/`; the address has been checked, only its `@` needs escaping).
+fn dav_payloads(host: &str, address: &str, reverse: &str) -> String {
+    let (h, a) = (xml_escape(host), xml_escape(address));
+    let principal = xml_escape(&format!("/dav/principals/{}/", address.replace('@', "%40")));
+    let mut out = String::new();
+    for (kind, prefix, what) in [("caldav", "CalDAV", "Calendars"), ("carddav", "CardDAV", "Contacts")] {
+        let id = uuid_of(&format!("account:{kind}:{host}:{address}"));
+        out.push_str(&format!(
+            "    <dict>\n\
+      <key>{prefix}AccountDescription</key><string>{what} {a}</string>\n\
+      <key>{prefix}HostName</key><string>{h}</string>\n\
+      <key>{prefix}PrincipalURL</key><string>{principal}</string>\n\
+      <key>{prefix}Port</key><integer>443</integer>\n\
+      <key>{prefix}UseSSL</key><true/>\n\
+      <key>{prefix}Username</key><string>{a}</string>\n\
+      <key>PayloadDescription</key><string>Adds the {what} of {a}</string>\n\
+      <key>PayloadDisplayName</key><string>{what} {a}</string>\n\
+      <key>PayloadIdentifier</key><string>{reverse}.{kind}.{id}</string>\n\
+      <key>PayloadType</key><string>com.apple.{kind}.account</string>\n\
+      <key>PayloadUUID</key><string>{id}</string>\n\
+      <key>PayloadVersion</key><integer>1</integer>\n\
+    </dict>\n"
+        ));
+    }
+    out
+}
+
 /// The Apple configuration profile (unsigned): an IMAP account over TLS on 993 and submission over TLS on 465, the address as the user name, no password.
-pub(crate) fn mobileconfig(host: &str, address: &str, pop3: bool) -> String {
+pub(crate) fn mobileconfig(host: &str, address: &str, pop3: bool, dav: bool) -> String {
     let (h, a) = (xml_escape(host), xml_escape(address));
     // `EmailTypeIMAP` or `EmailTypePOP`; a POP3 profile has another incoming port and its own identifiers (one address may have both accounts).
     let (kind, in_port, which) = if pop3 { ("EmailTypePOP", 995, "pop") } else { ("EmailTypeIMAP", 993, "imap") };
     let account = uuid_of(&format!("account:{which}:{host}:{address}"));
     let profile = uuid_of(&format!("profile:{which}:{host}:{address}"));
     let reverse: String = host.split('.').rev().collect::<Vec<_>>().join(".");
+    let dav_accounts = if dav { dav_payloads(host, address, &reverse) } else { String::new() };
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
@@ -147,6 +176,7 @@ pub(crate) fn mobileconfig(host: &str, address: &str, pop3: bool) -> String {
       <key>PayloadVersion</key><integer>1</integer>\n\
       <key>SMIMEEnabled</key><false/>\n\
     </dict>\n\
+{dav_accounts}\
   </array>\n\
   <key>PayloadDescription</key><string>Mail account {a}</string>\n\
   <key>PayloadDisplayName</key><string>{h}: {a}</string>\n\
@@ -170,6 +200,12 @@ fn mail_host(app: &AdminApp) -> Option<String> {
 /// Whether POP3 is switched on (the operator sets it in the admin web).
 async fn pop3_on(app: &AdminApp) -> bool {
     crate::protocols::is_on(app, "pop3").await
+}
+
+/// Whether the CalDAV/CardDAV service runs: it has a heartbeat (the monitor prunes old ones). A store that cannot answer counts as not running, so the profile never promises accounts that are not there.
+async fn dav_runs(app: &AdminApp) -> bool {
+    let Some(s) = app.services.as_ref() else { return false };
+    s.monitor.list().await.is_ok_and(|rows| rows.iter().any(|h| h.service == "dav"))
 }
 
 /// `?protocol=pop3` asks for the POP3 profile; it is honoured only where POP3 runs (otherwise the answer is the IMAP profile, which is always there).
@@ -220,7 +256,7 @@ async fn apple(app: &AdminApp, req: Request) -> Response {
         .with_header("content-disposition", "attachment; filename=\"mail.mobileconfig\"")
         .with_header("cache-control", "no-store")
         .with_header("x-content-type-options", "nosniff")
-        .with_body(mobileconfig(&host, &address, wants_pop3(app, req.query.as_deref()).await).into_bytes())
+        .with_body(mobileconfig(&host, &address, wants_pop3(app, req.query.as_deref()).await, dav_runs(app).await).into_bytes())
 }
 
 /// The routes of this part of the service.
@@ -279,12 +315,12 @@ mod tests {
         let with = outlook_xml("mail.example.net", "bob@example.org", true);
         assert!(with.contains("<Type>POP3</Type>") && with.contains("<Port>995</Port>") && with.find("<Type>IMAP</Type>") < with.find("<Type>POP3</Type>"), "POP3 comes after IMAP");
         assert!(o.contains("<Server>mail.example.net</Server>") && o.contains("<LoginName>bob@example.org</LoginName>") && o.contains("<Port>993</Port>") && o.contains("<Port>465</Port>"));
-        let m = mobileconfig("mail.example.net", "bob@example.org", false);
-        let p = mobileconfig("mail.example.net", "bob@example.org", true);
+        let m = mobileconfig("mail.example.net", "bob@example.org", false, false);
+        let p = mobileconfig("mail.example.net", "bob@example.org", true, false);
         assert!(p.contains("EmailTypePOP") && p.contains("<integer>995</integer>") && !p.contains("EmailTypeIMAP") && p != m, "the POP3 profile is its own account");
         assert!(m.contains("<string>mail.example.net</string>") && m.contains("<integer>993</integer>") && m.contains("net.example.mail.mail."));
         // Even a value that got past the checks could not break out of the markup.
-        assert!(!outlook_xml("h", "a<b>&c", true).contains("<b>") && !mobileconfig("h", "a<b>&c", true).contains("<b>"));
+        assert!(!outlook_xml("h", "a<b>&c", true).contains("<b>") && !mobileconfig("h", "a<b>&c", true, true).contains("<b>"));
         // The same account always has the same identifiers, and they have the UUID shape.
         assert_eq!(uuid_of("x"), uuid_of("x"));
         assert_ne!(uuid_of("x"), uuid_of("y"));
