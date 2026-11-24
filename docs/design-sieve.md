@@ -15,7 +15,7 @@ A person writes rules for their incoming mail in Sieve (RFC 5228): file the list
 * `run(&Script, &Message) -> Outcome`: the actions, in the order of the script, and whether the implicit keep stands. No clock, no database, no network: the same message gives the same answer.
 * Limits, all fixed: a script of at most 64 KiB, 1000 commands, blocks nested 16 deep, lists of 100; at run time at most 10 redirects, 20 folders and one automatic reply per message, and the same target twice counts once. `*`/`?` matching is
   iterative (no backtracking explosion). A property test feeds arbitrary text to the parser and runs whatever it accepts.
-* Header values are compared as they are written (unfolded); encoded words (`=?utf-8?...?=`) are not decoded yet.
+* Header values are compared as a person sees them: unfolded, with the encoded words (`=?utf-8?...?=`, RFC 2047) decoded (UTF-8, US-ASCII and the Latin charsets; a word that is not well formed stays as written).
 
 ## What is next
 

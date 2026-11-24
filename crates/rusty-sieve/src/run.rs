@@ -37,6 +37,10 @@ impl Message {
                 break;
             }
         }
+        // A header test sees the text a person sees (RFC 5228 section 5.7): the encoded words are decoded.
+        for h in &mut headers {
+            h.1 = crate::words::decode(&h.1);
+        }
         Message { headers, envelope_from: envelope_from.to_owned(), envelope_to: envelope_to.to_owned(), size: raw.len() as u64 }
     }
 
@@ -318,6 +322,11 @@ mod tests {
         assert!(o.implicit_keep);
     }
 
+#[test]    fn a_header_test_sees_the_decoded_text_of_encoded_words() {        let m = Message::from_raw(b"Subject: =?utf-8?Q?Caf=C3=A9_menu?=
+From: =?utf-8?B?QWRhIEzDtnZlbGFjZQ==?= <ada@example.org>
+
+body
+", "a@b.test", "c@d.test");        let run_on = |s: &str| run(&parse(s).unwrap(), &m);        assert_eq!(run_on("require \"fileinto\"; if header :contains \"subject\" \"café\" { fileinto \"Cafe\"; }").actions, [Action::FileInto("Cafe".into())]);        assert_eq!(run_on("require \"fileinto\"; if address :contains :all \"from\" \"example.org\" { fileinto \"Org\"; }").actions.len(), 1);        assert!(run_on("require \"fileinto\"; if header :contains \"subject\" \"=?utf-8\" { fileinto \"X\"; }").actions.is_empty(), "the words are not tested in their encoded form");    }
     #[test]
     fn header_tests_use_the_comparator_the_match_type_and_every_header_of_that_name() {
         assert_eq!(go("require \"fileinto\"; if header :contains \"subject\" \"report\" { fileinto \"Reports\"; }").actions, [Action::FileInto("Reports".into())]);
