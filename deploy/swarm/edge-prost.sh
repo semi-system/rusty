@@ -31,7 +31,7 @@ CERT_S3_SECRET_KEY_FILE="${CERT_S3_SECRET_KEY_FILE:-}"
 PROST_IMAGE="${PROST_IMAGE:-}"
 
 # The ports of the edge: the container's port, then the standard one it stands for.
-PROST_PORTS="10025:25 10587:587 10143:143 10110:110 10465:465 10993:993 10995:995 10443:443 10080:80"
+PROST_PORTS="10025:25 10587:587 10143:143 10110:110 14190:4190 10465:465 10993:993 10995:995 10443:443 10080:80"
 
 # Is HAProxy a service of this stack? (Not when Prost is the edge; with the pilot both are.)
 haproxy_is_edge() { [ "$EDGE" != prost ]; }

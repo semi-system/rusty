@@ -147,7 +147,7 @@ head_common() {
 
 conf_smtp_in() { head_common; printf '[smtp]\nlisten_25 = "0.0.0.0:2525"\nproxy_protocol = true\ntrusted_proxies = ["127.0.0.1/32"]\ntrusted_proxy_hosts = ["tasks.edge", "edge"]\n\n'; blk_tls; blk_unseal; blk_blob; blk_filter; blk_store smtp_in; blk_limits smtp-in; blk_metrics; }
 conf_submission() { head_common; printf '[smtp]\nlisten_587 = "0.0.0.0:5587"\nlisten_465 = "0.0.0.0:4465"\nproxy_protocol = true\ntrusted_proxies = ["127.0.0.1/32"]\ntrusted_proxy_hosts = ["tasks.edge", "edge"]\n\n[outbound]\npublic_ips = ["%s"]\n\n' "$(manager_public_ip)"; blk_tls; blk_unseal; blk_blob; blk_valkey submission; blk_store submission; blk_limits submission; blk_metrics; }
-conf_imap() { head_common; printf '[imap]\nlisten_143 = "0.0.0.0:1143"\nlisten_993 = "0.0.0.0:1993"\nlisten_110 = "0.0.0.0:1110"\nlisten_995 = "0.0.0.0:1995"\nproxy_protocol = true\ntrusted_proxies = ["127.0.0.1/32"]\ntrusted_proxy_hosts = ["tasks.edge", "edge"]\n\n'; blk_tls; blk_unseal; blk_blob; blk_valkey imap; blk_store imap; blk_metrics; }
+conf_imap() { head_common; printf '[imap]\nlisten_143 = "0.0.0.0:1143"\nlisten_993 = "0.0.0.0:1993"\nlisten_110 = "0.0.0.0:1110"\nlisten_995 = "0.0.0.0:1995"\nlisten_4190 = "0.0.0.0:4190"\nproxy_protocol = true\ntrusted_proxies = ["127.0.0.1/32"]\ntrusted_proxy_hosts = ["tasks.edge", "edge"]\n\n'; blk_tls; blk_unseal; blk_blob; blk_valkey imap; blk_store imap; blk_metrics; }
 conf_outbound() { head_common; printf '[outbound]\ndkim_dir = "/var/lib/rusty/dkim"\npublic_ips = ["%s"]\n\n' "$(manager_public_ip)"; blk_unseal; blk_blob; blk_store outbound; blk_metrics; }
 conf_gc() { head_common; printf 'gc_grace_seconds = 604800\n\n[dns_check]\nenabled = true\n\n'; blk_unseal; blk_blob; blk_store gc; blk_metrics; }
 conf_admin() {
@@ -558,7 +558,7 @@ gen_stack() {
       fi
       printf '    sysctls: { net.ipv4.ip_unprivileged_port_start: 0 }\n    ports:\n'
       local p
-      local ports="25 80 110 143 443 465 587 993 995"
+      local ports="25 80 110 143 443 465 587 993 995 4190"
       for p in $ports; do printf '      - { target: %s, published: %s, protocol: tcp, mode: host }\n' "$p" "$p"; done
       y_deploy 1 "node.role == manager" stop-first edge
       if [ "$TLS_MODE" = self ]; then

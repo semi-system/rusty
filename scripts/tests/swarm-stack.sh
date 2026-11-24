@@ -126,11 +126,15 @@ grep -q 'replicas: 2' "$tmp/profiles.stack.yaml" || fail "REPLICAS_DEFAULT=2 has
 # the IMAP service listens; nothing in the environment turns it on or off.
 grep -q 'published: 110' "$tmp/external.stack.yaml" && grep -q 'published: 995' "$tmp/external.stack.yaml" || fail "the edge does not publish 110 and 995"
 grep -q '^listen_110 = "0.0.0.0:1110"' "$tmp/state-external/stack/etc/imap.toml" && grep -q '^listen_995 = "0.0.0.0:1995"' "$tmp/state-external/stack/etc/imap.toml" || fail "the IMAP service does not listen for POP3"
+# ManageSieve (docs/design-sieve.md) is open the same way: published by the edge, passed through to the IMAP service on 4190.
+grep -q 'published: 4190' "$tmp/external.stack.yaml" || fail "the edge does not publish 4190"
+grep -q '^listen_4190 = "0.0.0.0:4190"' "$tmp/state-external/stack/etc/imap.toml" || fail "the IMAP service does not listen for ManageSieve"
 ! grep -q '^pop3' "$tmp/state-external/stack/etc/admin.toml" || fail "the admin web is told about POP3 in its file: the switch is in the database"
 cfg="$tmp/state-external/stack/etc/haproxy.cfg"
 grep -q '^frontend pop3_in' "$cfg" && grep -q '^frontend pop3s_in' "$cfg" || fail "the edge has no POP3 frontend"
 grep -q 'bind :995 ssl crt /var/lib/haproxy/certs/mail.pem' "$cfg" || fail "port 995 does not end TLS with the mail certificate"
 grep -q 'server-template imap 1-8 tasks.imap:1110 ' "$cfg" && grep -q 'server-template imap 1-8 tasks.imap:1995 ' "$cfg" || fail "the edge does not name the IMAP tasks for POP3"
+grep -q '^frontend sieve_in' "$cfg" && grep -q 'server-template imap 1-8 tasks.imap:4190 ' "$cfg" || fail "the edge does not pass ManageSieve to the IMAP tasks"
 # The rendered edge config keeps its shape: one be_admin backend, the admin frontend's default, no stray keyword.
 for s in external defaults; do
   cfg="$tmp/state-$s/stack/etc/haproxy.cfg"
@@ -183,7 +187,7 @@ ps="$tmp/prost.stack.yaml"; pe="$tmp/state-prost/stack/etc"
 grep -q 'image: ghcr.io/semi-system/prost@sha256:' "$ps" || fail "prost: the edge does not use the pinned Prost image"
 [ ! -e "$pe/haproxy.cfg" ] || fail "prost: HAProxy's configuration was made although Prost is the edge"
 no_placeholders "$pe/prost-edge.toml"; no_placeholders "$pe/prost-certd.toml"
-for p in 25:10025 587:10587 143:10143 110:10110 465:10465 993:10993 995:10995 443:10443 80:10080; do grep -q "target: ${p#*:}, published: ${p%%:*}, protocol: tcp, mode: host" "$ps" || fail "prost: the edge does not publish ${p%%:*}"; done
+for p in 25:10025 587:10587 143:10143 110:10110 465:10465 993:10993 995:10995 4190:14190 443:10443 80:10080; do grep -q "target: ${p#*:}, published: ${p%%:*}, protocol: tcp, mode: host" "$ps" || fail "prost: the edge does not publish ${p%%:*}"; done
 grep -q '^  prost_state:' "$ps" && grep -q 'uid=10001,gid=10001' "$ps" && grep -q 'prost_state:/var/lib/prost' "$ps" || fail "prost: the edge's state directory is not a volume owned by its user"
 grep -q '"/usr/local/bin/prostctl", "status"' "$ps" || fail "prost: the health check does not name the binary by its path (the image has no PATH entry for it)"
 grep -q '^  certd_state:' "$ps" && grep -q '^  certificates:' "$ps" && grep -q '^  prost_run:' "$ps" || fail "prost: the volumes of the edge and prost-certd are missing"

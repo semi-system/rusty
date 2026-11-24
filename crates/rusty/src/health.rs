@@ -34,6 +34,7 @@ fn expected_greeting(kind: ListenerKind, proxied: bool) -> Option<&'static str> 
         ListenerKind::Smtp25 | ListenerKind::Submission587 => Some("220 "),
         ListenerKind::Imap143 => Some("* OK"),
         ListenerKind::Pop3110 => Some("+OK"),
+        ListenerKind::Sieve4190 => Some("\"IMPLEMENTATION\""),
         // TLS ends at the edge when proxied: the service itself speaks plain text on these ports.
         ListenerKind::Submissions465 => proxied.then_some("220 "),
         ListenerKind::Imaps993 => proxied.then_some("* OK"),

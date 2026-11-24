@@ -84,6 +84,11 @@ frontend pop3_in
     bind :110
     default_backend be_pop3
 
+# ManageSieve (docs/design-sieve.md): the filters of a person, put by a mail client; STARTTLS, passed through like 143 and 110.
+frontend sieve_in
+    bind :4190
+    default_backend be_sieve
+
 frontend pop3s_in
 #ACME     bind :995 ssl crt "@certs/mail.pem"
 #SELF     bind :995 ssl crt /var/lib/haproxy/certs/mail.pem
@@ -135,6 +140,9 @@ backend be_imaps
 
 backend be_pop3
     server-template imap 1-8 imap:1110 resolvers docker init-addr none check inter 5s send-proxy-v2
+
+backend be_sieve
+    server-template imap 1-8 imap:4190 resolvers docker init-addr none check inter 5s send-proxy-v2
 
 backend be_pop3s
     server-template imap 1-8 imap:1995 resolvers docker init-addr none check inter 5s send-proxy-v2

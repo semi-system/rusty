@@ -24,6 +24,7 @@ rusty-svc = { path = "../rusty-svc", default-features = false }
 rusty-metrics = { path = "../rusty-metrics" }
 rusty-imap = { path = "../rusty-imap" }
 rusty-pop3 = { path = "../rusty-pop3" }
+rusty-managesieve = { path = "../rusty-managesieve" }
 async-trait.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time", "sync", "signal", "io-util", "macros"] }
 tokio-util.workspace = true

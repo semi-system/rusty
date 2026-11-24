@@ -134,6 +134,7 @@ BEGIN
     GRANT SELECT, UPDATE ON message_searches TO rusty_imap;   -- the searches of the admin web are run where the mailboxes are (docs/design-admin-search.md)
     GRANT SELECT, INSERT ON mailbox_transfer_chunks TO rusty_imap;
     GRANT SELECT, INSERT, UPDATE, DELETE ON messages TO rusty_imap;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON sieve_scripts TO rusty_imap;   -- ManageSieve: the filters of the person, put by a mail client (docs/design-sieve.md)
     GRANT SELECT, INSERT, UPDATE ON blobs, blob_locations TO rusty_imap;
     GRANT SELECT, INSERT, DELETE ON keywords TO rusty_imap;
     GRANT SELECT, INSERT ON change_log TO rusty_imap;

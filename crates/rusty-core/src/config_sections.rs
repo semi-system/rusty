@@ -107,6 +107,9 @@ pub struct ImapConfig {
     /// POP3 over implicit TLS.
     #[serde(default = "l995")]
     pub listen_995: Listen,
+    /// ManageSieve with `STARTTLS` (RFC 5804, docs/design-sieve.md): the filters of a person, put by a mail client. A listener of this service, like 110; an empty address leaves it out.
+    #[serde(default = "l4190")]
+    pub listen_4190: Listen,
     #[serde(default = "d_max_connections")]
     pub max_connections: u32,
     #[serde(default = "d_per_ip_imap")]
@@ -469,6 +472,9 @@ fn l993() -> Listen {
 fn l110() -> Listen {
     Listen::any(110)
 }
+fn l4190() -> Listen {
+    Listen::any(4190)
+}
 fn l995() -> Listen {
     Listen::any(995)
 }
@@ -524,6 +530,7 @@ impl Default for ImapConfig {
             listen_993: l993(),
             listen_110: l110(),
             listen_995: l995(),
+            listen_4190: l4190(),
             max_connections: d_max_connections(),
             max_connections_per_ip: d_per_ip_imap(),
             proxy_protocol: false,

@@ -130,7 +130,7 @@ fn production_without_cert_and_without_dev_flag_refuses_authenticated_listeners(
     // Only port 25 (never offers AUTH) may run without a certificate.
     let c = with(
         "hostname = \"mail.example.com\"\n[smtp]\nlisten_587 = \"\"\nlisten_465 = \"\"\n\
-         [imap]\nlisten_143 = \"\"\nlisten_993 = \"\"\nlisten_110 = \"\"\nlisten_995 = \"\"",
+         [imap]\nlisten_143 = \"\"\nlisten_993 = \"\"\nlisten_110 = \"\"\nlisten_995 = \"\"\nlisten_4190 = \"\"",
     )
     .unwrap();
     assert!(c.check_startup(Profile::Production).is_ok());
