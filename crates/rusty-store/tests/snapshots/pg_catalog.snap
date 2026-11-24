@@ -857,7 +857,7 @@ CONSTRAINT service_heartbeats.service_heartbeats_instance_valid CHECK (length(in
 CONSTRAINT service_heartbeats.service_heartbeats_last_seen_not_null NOT NULL last_seen
 CONSTRAINT service_heartbeats.service_heartbeats_pkey PRIMARY KEY (service, instance)
 CONSTRAINT service_heartbeats.service_heartbeats_service_not_null NOT NULL service
-CONSTRAINT service_heartbeats.service_heartbeats_service_valid CHECK (service = ANY (ARRAY['smtp-in'::text, 'submission'::text, 'imap'::text, 'outbound'::text, 'gc'::text, 'admin'::text]))
+CONSTRAINT service_heartbeats.service_heartbeats_service_valid CHECK (service = ANY (ARRAY['smtp-in'::text, 'submission'::text, 'imap'::text, 'outbound'::text, 'gc'::text, 'admin'::text, 'webmail'::text, 'dns'::text]))
 CONSTRAINT service_heartbeats.service_heartbeats_started_at_not_null NOT NULL started_at
 CONSTRAINT service_heartbeats.service_heartbeats_status_not_null NOT NULL status
 CONSTRAINT service_heartbeats.service_heartbeats_status_valid CHECK (status = ANY (ARRAY['ok'::text, 'degraded'::text]))
@@ -1254,6 +1254,8 @@ BEGIN
     WHEN 'rusty_outbound' THEN 'outbound'
     WHEN 'rusty_gc' THEN 'gc'
     WHEN 'rusty_admin' THEN 'admin'
+    WHEN 'rusty_webmail' THEN 'webmail'
+    WHEN 'rusty_dns' THEN 'dns'
     ELSE p_service
   END;
   INSERT INTO service_heartbeats (service, instance, version, started_at, last_seen, status, detail)
