@@ -55,6 +55,7 @@ function api(over: Partial<Api> = {}): Api {
 
     contacts: vi.fn().mockResolvedValue([]),
     events: vi.fn().mockResolvedValue({ items: [], truncated: false }),
+    importContacts: vi.fn().mockResolvedValue({ imported: 0, updated: 0, invalid: 0, duplicates: 0 }),
     settings: vi.fn().mockResolvedValue({ signature: 'Alice' }),
     saveSettings: vi.fn().mockImplementation(async (s: string) => ({ signature: s })),
     scripts: vi.fn().mockResolvedValue({ scripts: [], max_scripts: 10, max_bytes: 65536 }),

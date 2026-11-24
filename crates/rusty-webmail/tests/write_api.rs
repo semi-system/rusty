@@ -630,3 +630,35 @@ async fn the_agenda_lists_the_events_of_the_person_in_a_window_with_the_repeatin
     let none = call(r.addr, "GET", &format!("/api/v1/events?from={from}&to={to}"), &[("Cookie", &bob_cookie)], None).await;
     assert_eq!((none.status, none.json()["items"].as_array().unwrap().len()), (200, 0));
 }
+
+#[tokio::test]
+async fn a_vcf_file_is_imported_into_the_address_book_and_is_what_the_composer_and_the_export_see() {
+    let r = rig().await;
+    let dav = r.operator.repos().dav.clone();
+    dav.ensure_defaults(r.alice_id).await.unwrap();
+    let s = alice(&r).await;
+    let vcf = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:ada-1\r\nFN:Ada Lovelace\r\nEMAIL:ada@example.org\r\nEND:VCARD\r\nBEGIN:VCARD\r\nVERSION:3.0\r\nFN:Grace Hopper\r\nEMAIL:grace@navy.example\r\nEND:VCARD\r\nBEGIN:VCARD\r\nVERSION:3.0\r\nEND:VCARD\r\n";
+    let first = s.post(r.addr, "/api/v1/contacts/import", serde_json::json!({ "vcf": vcf })).await;
+    assert_eq!(first.status, 200, "{}", first.text());
+    assert_eq!(first.json(), serde_json::json!({ "imported": 2, "updated": 0, "invalid": 1, "duplicates": 0 }));
+    // Seen at once by the composer and the export.
+    let found = call(r.addr, "GET", "/api/v1/contacts?q=grace", &[("Cookie", &s.cookie)], None).await;
+    assert_eq!(found.json()["items"], serde_json::json!([{ "name": "Grace Hopper", "email": "grace@navy.example" }]));
+    let out = call(r.addr, "GET", "/api/v1/contacts/export", &[("Cookie", &s.cookie)], None).await.text();
+    assert_eq!(out.matches("BEGIN:VCARD").count(), 2, "{out}");
+    // Importing the file again changes nothing but the card that has a UID (the other one had none, so it is a new card each time).
+    let again = s.post(r.addr, "/api/v1/contacts/import", serde_json::json!({ "vcf": vcf })).await;
+    assert_eq!(again.json()["updated"], 1, "{}", again.text());
+    // A CardDAV client sees it as a collection change (the sync token moved).
+    let book = dav.collection(r.alice_id, "addressbook", "default").await.unwrap().unwrap();
+    assert!(book.revision >= 3, "{}", book.revision);
+    // No session, no CSRF token, no cards and no book are all refused.
+    assert_eq!(call(r.addr, "POST", "/api/v1/contacts/import", &[("Content-Type", "application/json"), ("Origin", ORIGIN)], Some("{\"vcf\":\"x\"}")).await.status, 401);
+    let no_csrf = call(r.addr, "POST", "/api/v1/contacts/import", &[("Cookie", &s.cookie), ("Content-Type", "application/json"), ("Origin", ORIGIN)], Some("{\"vcf\":\"x\"}")).await;
+    assert!(matches!(no_csrf.status, 401 | 403), "{}", no_csrf.status);
+    assert_eq!(s.post(r.addr, "/api/v1/contacts/import", serde_json::json!({ "vcf": "nothing here" })).await.status, 400);
+    assert_eq!(s.post(r.addr, "/api/v1/contacts/import", serde_json::json!({ "nope": 1 })).await.status, 400);
+    let (bob_cookie, bob_csrf) = sign_in(r.addr, "bob@one.test", "another-long-password-2").await;
+    let nobook = call(r.addr, "POST", "/api/v1/contacts/import", &[("Cookie", &bob_cookie), ("Content-Type", "application/json"), ("Origin", ORIGIN), ("X-CSRF-Token", &bob_csrf)], Some(&serde_json::json!({ "vcf": vcf }).to_string())).await;
+    assert_eq!(nobook.status, 409, "bob has no address book: the DAV service makes it, not the webmail");
+}

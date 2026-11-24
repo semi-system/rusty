@@ -113,6 +113,14 @@ export interface Contact {
   email: string;
 }
 
+/** What an import of contacts did, summed over its requests. */
+export interface ImportResult {
+  imported: number;
+  updated: number;
+  invalid: number;
+  duplicates: number;
+}
+
 /** One event of the agenda: a UTC time is shown in the reader's zone, any other as the wall clock it states. */
 export interface AgendaItem {
   uid: string;
@@ -166,6 +174,8 @@ export interface Api {
   contacts(q: string): Promise<Contact[]>;
   /** The events of the person that meet `[from, to)` (unix seconds), the repeating ones expanded. */
   events(from: number, to: number): Promise<AgendaPage>;
+  /** Adds the cards of the text of a .vcf file to the address book. */
+  importContacts(vcf: string): Promise<ImportResult>;
 }
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
@@ -253,6 +263,7 @@ export function createApi(doFetch: Fetch = (i, init) => fetch(i, init)): Api {
     settings: () => call('GET', '/api/v1/settings'),
     contacts: async (q) => (await call<{ items: Contact[] }>('GET', `/api/v1/contacts?q=${encodeURIComponent(q)}`)).items,
     events: (from, to) => call<AgendaPage>('GET', `/api/v1/events?from=${from}&to=${to}`),
+    importContacts: (vcf) => call<ImportResult>('POST', '/api/v1/contacts/import', { vcf }),
     saveSettings: (signature) => call('PUT', '/api/v1/settings', { signature }),
   };
 }

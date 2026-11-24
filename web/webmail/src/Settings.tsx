@@ -1,7 +1,7 @@
 import { createResource, createSignal, For, Show, type Component } from 'solid-js';
 import type { Api } from './api';
 import { errorText } from './errors';
-import { when } from './format';
+import { cardBatches, when } from './format';
 import { t } from './i18n';
 import { Filters } from './Filters';
 import { TwoStep } from './TwoStep';
@@ -10,6 +10,26 @@ import { TwoStep } from './TwoStep';
 export const Settings: Component<{ api: Api; onSignature: () => void }> = (props) => {
   const [signature, setSignature] = createSignal('');
   const [signatureSaved, setSignatureSaved] = createSignal(false);
+  const [imported, setImported] = createSignal('');
+  const [importError, setImportError] = createSignal('');
+  const importFile = async (file: File | undefined) => {
+    setImported('');
+    setImportError('');
+    if (file === undefined) return;
+    try {
+      const sum = { imported: 0, updated: 0, invalid: 0, duplicates: 0 };
+      for (const batch of cardBatches(await file.text())) {
+        const r = await props.api.importContacts(batch);
+        sum.imported += r.imported;
+        sum.updated += r.updated;
+        sum.invalid += r.invalid;
+        sum.duplicates += r.duplicates;
+      }
+      setImported(t('settings.contacts.imported', { added: sum.imported, updated: sum.updated, skipped: sum.invalid + sum.duplicates }));
+    } catch (err) {
+      setImportError(errorText(err));
+    }
+  };
   const [loaded] = createResource(async () => {
     try {
       setSignature((await props.api.settings()).signature);
@@ -81,6 +101,20 @@ export const Settings: Component<{ api: Api; onSignature: () => void }> = (props
           {t('settings.contacts.export')}
         </a>
       </p>
+      <label>
+        <span>{t('settings.contacts.import')}</span>
+        <input type="file" accept=".vcf,text/vcard" onChange={(e) => void importFile(e.currentTarget.files?.[0])} />
+      </label>
+      <Show when={imported() !== ''}>
+        <p class="note" role="status">
+          {imported()}
+        </p>
+      </Show>
+      <Show when={importError() !== ''}>
+        <p class="error" role="alert">
+          {importError()}
+        </p>
+      </Show>
       <Filters api={props.api} />
       <TwoStep api={props.api} />
       <h2>{t('settings.apppw.title')}</h2>

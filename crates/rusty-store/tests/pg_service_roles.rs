@@ -134,7 +134,11 @@ async fn each_service_keeps_to_its_own_writes() {
         ("rusty_imap", "dav_objects", "SELECT", false),
         ("rusty_webmail", "dav_collections", "SELECT", true),
         ("rusty_webmail", "dav_objects", "SELECT", true),
-        ("rusty_webmail", "dav_objects", "INSERT", false),
+        ("rusty_webmail", "dav_objects", "INSERT", true),
+        ("rusty_webmail", "dav_objects", "UPDATE", true),
+        ("rusty_webmail", "dav_collections", "INSERT", false),
+        ("rusty_webmail", "dav_collections", "DELETE", false),
+        ("rusty_webmail", "dav_tombstones", "DELETE", true),
         ("rusty_webmail", "dav_objects", "DELETE", false),
         ("rusty_gc", "dav_tombstones", "DELETE", true),
         ("rusty_gc", "dav_objects", "SELECT", false),
@@ -190,6 +194,10 @@ async fn each_service_keeps_to_its_own_writes() {
     ];
     for (role, table, privilege, expected) in cases {
         assert_eq!(table_priv(&admin, role, table, privilege).await, expected, "{role}: {privilege} on {table}");
+    }
+    // The webmail's import writes through DavRepo::put: it bumps the change count of the address book and nothing else of the collection (its name, owner and kind stay the DAV service's).
+    for (column, may) in [("revision", true), ("updated_at", true), ("display_name", false), ("name", false), ("account_id", false), ("kind", false)] {
+        assert_eq!(column_priv(&admin, "rusty_webmail", "dav_collections", column, "UPDATE").await, may, "rusty_webmail: UPDATE on dav_collections.{column}");
     }
 }
 

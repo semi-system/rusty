@@ -163,7 +163,10 @@ BEGIN
     GRANT SELECT, INSERT, UPDATE, DELETE ON totp TO rusty_webmail;   -- the second factor of the sign-in (docs/design-2fa.md)
     GRANT SELECT, INSERT, DELETE ON totp_recovery TO rusty_webmail;
     GRANT SELECT, INSERT, UPDATE, DELETE ON sieve_scripts TO rusty_webmail;   -- the filters of the person (docs/design-sieve.md)
-    GRANT SELECT ON dav_collections, dav_objects TO rusty_webmail;   -- the composer suggests the contacts of the person (docs/design-caldav-carddav.md): read only
+    GRANT SELECT ON dav_collections, dav_objects TO rusty_webmail;   -- the composer suggests the contacts of the person and the agenda lists their events (docs/design-caldav-carddav.md)
+    GRANT INSERT, UPDATE ON dav_objects TO rusty_webmail;   -- the import of a .vcf adds contacts through DavRepo::put, the DAV service's own write; no DELETE: the webmail removes nothing
+    GRANT UPDATE (revision, updated_at) ON dav_collections TO rusty_webmail;   -- the change count of the address book (the sync token) that every write bumps
+    GRANT SELECT, DELETE ON dav_tombstones TO rusty_webmail;   -- a contact written again drops the tombstone of its name (DavRepo::put)
   END IF;
 
   -- rusty_dav: calendars and contacts (docs/design-caldav-carddav.md). It checks a password like the mail protocols (the accounts with their hashes, the app passwords, the second factor), keeps the

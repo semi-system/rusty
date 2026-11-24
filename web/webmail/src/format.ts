@@ -35,3 +35,19 @@ export function eventClock(e: { start: number; utc: boolean; all_day: boolean })
 export function dayHeading(day: string): string {
   return new Date(`${day}T00:00:00Z`).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' });
 }
+
+/** The cards of a .vcf text in groups of at most `limit` characters (a card is never cut), so that each request stays under the body limit of the service. */
+export function cardBatches(text: string, limit = 40000): string[] {
+  const cards = text.match(/BEGIN:VCARD[\s\S]*?END:VCARD/gi) ?? [];
+  const out: string[] = [];
+  let cur = '';
+  for (const c of cards) {
+    if (cur !== '' && cur.length + c.length + 2 > limit) {
+      out.push(cur);
+      cur = '';
+    }
+    cur += (cur === '' ? '' : '\r\n') + c;
+  }
+  if (cur !== '') out.push(cur);
+  return out;
+}
