@@ -23,6 +23,21 @@ check_inputs() {
     valid_host "$WEBMAIL_HOST" || die "WEBMAIL_HOST is not a host name"
     [ "$WEBMAIL_HOST" != "$MAIL_HOST" ] && [ "$WEBMAIL_HOST" != "$ADMIN_HOST" ] || die "WEBMAIL_HOST is a host name of its own: not MAIL_HOST and not ADMIN_HOST"
   fi
+  if [ -n "$DNS_NAME_SERVERS" ]; then
+    n=0
+    for c in $DNS_NAME_SERVERS; do
+      n=$((n + 1)); valid_host "$c" || die "DNS_NAME_SERVERS: '$c' is not a host name"
+    done
+    [ "$n" -le 8 ] || die "DNS_NAME_SERVERS names one to eight name servers"
+    # The person in charge, in the SOA form: by default hostmaster at the domain of the first name server (ns1.example.org gives hostmaster.example.org).
+    if [ -z "$DNS_HOSTMASTER" ]; then
+      c="${DNS_NAME_SERVERS%% *}"
+      [[ "$c" == *.*.* ]] || die "DNS_HOSTMASTER is needed: the first name server has no domain to take it from"
+      DNS_HOSTMASTER="hostmaster.${c#*.}"
+    fi
+    valid_host "$DNS_HOSTMASTER" || die "DNS_HOSTMASTER is not a host name (hostmaster.example.org stands for hostmaster@example.org)"
+    n=0
+  fi
   for c in $ADMIN_ALLOW; do
     n=$((n + 1)); valid_cidr "$c" || die "ADMIN_ALLOW: '$c' is not an IPv4 address or block (and /0 would open the admin web to everyone)"
   done

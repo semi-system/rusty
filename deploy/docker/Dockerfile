@@ -114,7 +114,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
     export "CARGO_TARGET_${tu}_LINKER=/usr/local/bin/zigld" "CC_${tl}=/usr/local/bin/zigcc" "AR_${tl}=/usr/local/bin/zigar" \
            "CFLAGS_${tl}=-O2" "RUSTFLAGS=-C target-feature=+crt-static --remap-path-prefix=/src=/build --remap-path-prefix=/usr/local/cargo=/cargo"; \
     if [ "$DEV_CERT" = 1 ]; then feat=""; else feat="--no-default-features"; fi; \
-    RUSTY_ADMIN_WEB_REQUIRED=1 RUSTY_WEBMAIL_WEB_REQUIRED=1 cargo build --release --locked --target "$triple" -p rusty $feat -p rusty-admin -p rusty-webmail --target-dir /out; \
+    RUSTY_ADMIN_WEB_REQUIRED=1 RUSTY_WEBMAIL_WEB_REQUIRED=1 cargo build --release --locked --target "$triple" -p rusty $feat -p rusty-admin -p rusty-webmail -p rusty-dns --target-dir /out; \
     install -D "/out/$triple/release/rusty" /rootfs/usr/local/bin/rusty; \
     ln -s rusty /rootfs/usr/local/bin/rustyd; ln -s rusty /rootfs/usr/local/bin/rustyctl; \
     mkdir -p /rootfs/var/lib/rusty /rootfs/etc/rusty; \
@@ -127,7 +127,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
       install -D "/out/$triple/release/rusty-$svc" "/rootfs-$svc/usr/local/bin/rusty-$svc"; \
       mkdir -p "/rootfs-$svc/etc/rusty"; chmod 0755 "/rootfs-$svc/etc/rusty"; \
     done; \
-    find /rootfs /rootfs-admin /rootfs-webmail /rootfs-smtp-in /rootfs-submission /rootfs-imap /rootfs-outbound /rootfs-gc -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+    find /rootfs /rootfs-admin /rootfs-webmail /rootfs-dns /rootfs-smtp-in /rootfs-submission /rootfs-imap /rootfs-outbound /rootfs-gc -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 
 # ---- release artefact stage ------------------------------------------------------------------
 # `docker buildx build --target binary --output type=local,dest=out .` exports just the binary
@@ -203,6 +203,39 @@ HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=3 \
     CMD ["/usr/local/bin/rusty-webmail", "healthcheck", "--config", "/etc/rusty/webmail.toml"]
 ENTRYPOINT ["/usr/local/bin/rusty-webmail"]
 CMD ["--config", "/etc/rusty/webmail.toml"]
+
+# ---- name server image (docker build --target dns) ---------------------------------------------
+# One service, one image: the authoritative name server for the hosted domains (docs/design-authoritative-dns.md), one static binary. It is the most exposed service and the least trusting one: its database role reads
+# the domain data and nothing else, it holds no key, and it is never recursive. It listens on 5353 (UDP and TCP) as an unprivileged user; the stack publishes port 53 to it. Not the default target: the last stage below is.
+FROM ghcr.io/semi-system/baseless-static@sha256:0818dee927a7fdd28e358e3337c891b878ebc58e9e20094d236ae3fe03a09f1b AS dns
+
+ARG VERSION=dev
+ARG REVISION=unknown
+ARG SOURCE_URL=
+ARG CREATED=
+
+LABEL org.opencontainers.image.title="rusty-dns" \
+      org.opencontainers.image.description="Rusty authoritative name server as one static binary" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="$VERSION" \
+      org.opencontainers.image.revision="$REVISION" \
+      org.opencontainers.image.source="$SOURCE_URL" \
+      org.opencontainers.image.created="$CREATED" \
+      org.opencontainers.image.base.name="ghcr.io/semi-system/baseless-static"
+
+COPY --from=build --chown=65532:65532 /rootfs-dns/etc/rusty /etc/rusty
+COPY --from=build /rootfs-dns/usr/local/bin/ /usr/local/bin/
+
+USER 65532:65532
+WORKDIR /etc/rusty
+VOLUME ["/etc/rusty"]
+EXPOSE 5353/udp 5353/tcp
+STOPSIGNAL SIGTERM
+# Exec form, no shell: `rusty-dns healthcheck` sends one question to the service's own listener (any answer is healthy).
+HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=3 \
+    CMD ["/usr/local/bin/rusty-dns", "healthcheck", "--config", "/etc/rusty/dns.toml"]
+ENTRYPOINT ["/usr/local/bin/rusty-dns"]
+CMD ["--config", "/etc/rusty/dns.toml"]
 
 # ---- one image per service (docs/design-per-service-images.md) ------------------------------
 # `docker build --target rusty-imap`, and so on: one static binary, no shell, numeric non-root user, a configuration file of its own that accepts only the sections the

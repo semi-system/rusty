@@ -154,6 +154,11 @@ conf_admin() {
   printf 'hostname = "%s"\n\n[admin]\nlisten = "0.0.0.0:8080"\npublic_origin = "https://%s"\npublic_ips = ["%s"]\nallowed_peers = ["127.0.0.1/32"]\nallowed_hosts = ["tasks.edge", "edge"]\n' "$MAIL_HOST" "$ADMIN_HOST" "$(manager_public_ip)"
   # shortcut: off until the admin image that knows the key is deployed (ADMIN_PROXY=1): an older admin refuses the unknown key.
   [ "$ADMIN_PROXY" != 1 ] || printf 'proxy_protocol = true\n'
+  if [ -n "$DNS_NAME_SERVERS" ]; then
+    local list="" n
+    for n in $DNS_NAME_SERVERS; do list="${list:+$list, }\"$n\""; done
+    printf 'name_servers = [%s]\n' "$list"
+  fi
   # The pilot is reached on its own port and the browser's Origin carries it: the admin web must know it (same release as proxy_protocol).
   [ "$ADMIN_PROXY" != 1 ] || [ "$EDGE" != prost-pilot ] || printf 'extra_origins = ["https://%s:%s"]\n' "$ADMIN_HOST" "$(edge_port 443)"
   printf '\n'; blk_store admin; blk_valkey admin
@@ -174,6 +179,15 @@ conf_webmail() {
   head_common
   printf '[webmail]\nlisten = "0.0.0.0:8090"\npublic_origin = "https://%s"\nallowed_peers = ["127.0.0.1/32"]\nallowed_hosts = ["tasks.edge", "edge"]\nproxy_protocol = true\ntotp_key_file = "/etc/rusty-keys/totp.key"\n\n' "$WEBMAIL_HOST"
   blk_blob; blk_valkey webmail; blk_store webmail
+}
+# The name server (docs/design-authoritative-dns.md): its own database role, no blob store and no key; it listens on 5353 (the stack publishes port 53 to it).
+conf_dns() {
+  local ns="" n
+  for n in $DNS_NAME_SERVERS; do ns="${ns:+$ns, }\"$n\""; done
+  printf 'hostname = "%s"\n' "$MAIL_HOST"
+  [ "$LOG_LEVEL" = info ] || printf 'log_level = "%s"\n' "$LOG_LEVEL"
+  printf '\n[dns]\nlisten = ["0.0.0.0:5353"]\nname_servers = [%s]\nhostmaster = "%s"\nmail_host = "%s"\npublic_ips = ["%s"]\n\n' "$ns" "$DNS_HOSTMASTER" "$MAIL_HOST" "$(manager_public_ip)"
+  blk_store dns
 }
 conf_migrate() { head_common; printf 'gc_grace_seconds = 604800\n\n'; blk_blob; blk_store gc; printf 'migrator_user = "rusty_migrator"\nmigrator_password_file = "/run/secrets/pg_migrator"\n'; }
 
@@ -386,7 +400,7 @@ cmd_prepare_configs() {
   local d="$STATE_DIR/stack/etc" s
   mkdir -p "$d"; chmod 0700 "$STATE_DIR/stack" "$d"
   gen_limits
-  for s in smtp_in submission imap outbound gc admin ${WEBMAIL_HOST:+webmail} migrate; do
+  for s in smtp_in submission imap outbound gc admin ${WEBMAIL_HOST:+webmail} ${DNS_NAME_SERVERS:+dns} migrate; do
     ( umask 077; "conf_$s" | edge_hosts_filter > "$d/$s.toml" )
     ensure_config "$s" "$d/$s.toml"
   done
@@ -430,7 +444,7 @@ load_names() {
   { [ -z "$WEBMAIL_HOST" ] || [ "$TLS_MODE" != self ] || ! haproxy_is_edge; } || need_s="$need_s edge_webmail_pem"
   [ -z "$WEBMAIL_HOST" ] || need_s="$need_s webmail_totp"
   [ "$DB_IN_STACK" != 1 ] || need_s="$need_s pg_postgres db_server_crt db_server_key"
-  need_c="smtp_in submission imap outbound gc admin ${WEBMAIL_HOST:+webmail} migrate"
+  need_c="smtp_in submission imap outbound gc admin ${WEBMAIL_HOST:+webmail} ${DNS_NAME_SERVERS:+dns }migrate"
   ! haproxy_is_edge || need_c="$need_c haproxy"
   local t k
   [ "$DB_IN_STACK" != 1 ] || need_c="$need_c pg_hba"
@@ -496,6 +510,34 @@ gen_rusty_service() { # NAME ROLE-OF-DB NETWORKS(space) [TLS] [UNSEAL] [CONSTRAI
   for n in $nets; do printf '      - %s\n' "$n"; done
 }
 
+# The name server: published on port 53 (UDP and TCP) of every node labelled dns=true (host mode: the client address is the real one, which the rate limit needs), one task per such node; with no
+# node labelled, one task on the Manager. It needs the backend network for the database only.
+# The nodes labelled dns=true in the inventory.
+dns_nodes() {
+  local n labels count=0
+  for n in $(node_names); do
+    labels="$(node_field "$n" 4)"
+    case ",$labels," in *,dns=true,*) count=$((count + 1)) ;; esac
+  done
+  echo "$count"
+}
+
+gen_dns_service() {
+  local reps constraint='node.labels.dns == true'
+  reps="$(dns_nodes)"
+  if [ "$reps" = 0 ]; then reps=1; constraint='node.role == manager'; fi
+  y_service_common dns "$(rusty_image dns)"
+  printf '    deploy:\n      replicas: %s\n      restart_policy: { condition: any, delay: 5s }\n      update_config: { parallelism: 1, order: stop-first, delay: 10s, monitor: 20s, failure_action: rollback }\n      placement:\n        max_replicas_per_node: 1\n        constraints: ["%s"]\n' "$reps" "$constraint"
+  y_hosts
+  printf '    ports:\n      - { target: 5353, published: 53, protocol: udp, mode: host }\n      - { target: 5353, published: 53, protocol: tcp, mode: host }\n'
+  printf '    secrets:\n'
+  y_secret pg_dns
+  printf '    configs:\n'
+  y_config dns /etc/rusty/dns.toml
+  if [ -n "${CONFIG_NAME[db_ca]:-}" ]; then y_config db_ca /etc/rusty/db-ca.pem; fi
+  printf '    networks:\n      - backend\n'
+}
+
 gen_stack() {
   gen_limits
   load_names
@@ -536,6 +578,7 @@ gen_stack() {
       gen_rusty_service gc gc "backend metrics" 0 1
       gen_rusty_service admin admin "app backend metrics" 0 0
       [ -z "$WEBMAIL_HOST" ] || gen_rusty_service webmail webmail "app backend metrics" 0 0
+      [ -z "$DNS_NAME_SERVERS" ] || gen_dns_service
       [ "$FILTER" = 0 ] || gen_scanner_services
       [ "$VALKEY" = 0 ] || gen_valkey_service
       [ "$MONITORING" = 0 ] || gen_monitoring_services

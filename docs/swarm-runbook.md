@@ -66,3 +66,11 @@ tar xzf rusty-deploy-<release>.tar.gz && cd rusty-deploy-<release>
   reason (`not_yours`, `limit`, `refused`, `busy`). The sending budget (messages an hour) is the same as for SMTP submission.
 * **Two-step sign-in and app passwords**: people turn them on in the webmail Settings. Mail programs of an account with the second factor use app passwords (up to ten). See `design-2fa.md` and `design-app-passwords.md`.
 * **What to look at when it breaks**: `docker service ps rusty_webmail`, `logs webmail`; "cannot connect to Postgres" means the role (`prepare db`), "cannot read the Postgres schema state" means the grants (`migrate` after the role exists).
+
+## The name server (`DNS_NAME_SERVERS`)
+
+* **Turn it on**: `DNS_NAME_SERVERS="ns1.example.org ns2.example.org"` in `swarm.env` (and `DNS_HOSTMASTER`, by default `hostmaster.` plus the domain of the first name server), then `upgrade`. The service `dns` publishes port 53 (UDP and TCP) in host mode on every node
+  labelled `dns=true` in the inventory (`NODES` labels), one task per node; with no such node, one task on the Manager. The names must exist as `A` records (glue) at the registrar of their own domain and point at those nodes.
+* **Port 53 must be free on the node**: on Ubuntu `systemd-resolved` listens on 127.0.0.53:53 and a published port on 0.0.0.0 clashes with it; set `DNSStubListener=no` in `/etc/systemd/resolved.conf` (or bind the node to an address of its own) first.
+* **A domain is hosted** by a platform administrator on its DNS page (Name servers of the platform); the tenant then sets the two names at its registrar and adds its own records there. A domain that is not hosted is not answered (`REFUSED`): the server is never recursive.
+* **When it breaks**: `docker service ps rusty_dns`, `logs dns`. It reads the zones again every 15 seconds and keeps the last good ones when the database cannot be read (for a day by default, then it refuses everything). "cannot bind" means port 53 is taken.
