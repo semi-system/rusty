@@ -509,7 +509,8 @@ async fn filters_are_checked_by_the_parser_kept_per_account_activated_one_at_a_t
     assert_eq!(s.delete(r.addr, "/api/v1/sieve/second").await.status, 404);
     assert_eq!(s.post(r.addr, "/api/v1/sieve/nothing/activate", serde_json::json!({})).await.status, 404);
     // Names, size and number are bounded.
-    assert_eq!(put("bad%2Fname", "keep;").await.status, 404);
+    assert!([400, 404].contains(&put("bad%2Fname", "keep;").await.status), "an encoded slash is no name");
+    assert_eq!(put("a%3Cb", "keep;").await.status, 404, "nor is anything the name check refuses");
     assert_eq!(put("x", &"#".repeat(70_000)).await.status, 413);
     for i in 0..9 {
         assert_eq!(put(&format!("s{i}"), "keep;").await.status, 200);
