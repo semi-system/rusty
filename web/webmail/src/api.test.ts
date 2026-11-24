@@ -17,6 +17,7 @@ function fake(replies: Array<{ status?: number; body: unknown }>): { doFetch: (p
 }
 
 describe('api', () => {
+it('asks for contacts with the query escaped and returns the items', async () => {    const { doFetch, seen } = fake([{ body: { items: [{ name: 'Ada', email: 'ada@example.org' }] } }]);    const found = await createApi(doFetch).contacts('a b&c');    expect(seen[0]?.path).toBe('/api/v1/contacts?q=a%20b%26c');    expect(found).toEqual([{ name: 'Ada', email: 'ada@example.org' }]);  });
   it('remembers the token of the session and sends it, with JSON, on every change', async () => {
     const { doFetch, seen } = fake([{ body: { address: 'a@b.test', csrf: 'tok' } }, { body: { id: 7 } }, { body: {} }]);
     const api = createApi(doFetch);

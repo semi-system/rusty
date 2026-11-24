@@ -232,6 +232,12 @@ impl DavRepo for PgRepo {
         Ok(Some(Changes { revision: token, changed: changed.into_iter().map(|(n, e, _)| (n, e)).collect(), deleted, truncated }))
     }
 
+    async fn search_cards(&self, account: AccountId, needle: &str, limit: i64) -> Result<Vec<Object>> {
+        let like = format!("%{}%", needle.replace('!', "!!").replace('%', "!%").replace('_', "!_"));
+        let rows = sqlx::query(r(sql::SEARCH_CARDS)).bind(account.0).bind(like).bind(limit).fetch_all(self.store.pool()).await.map_err(map_db_error)?;
+        rows.iter().map(object).collect::<std::result::Result<Vec<_>, _>>().map_err(map_db_error)
+    }
+
     async fn purge_tombstones(&self) -> Result<u64> {
         let n: i64 = sqlx::query_scalar(r(sql::PURGE)).bind(TOMBSTONE_KEEP_SECS).fetch_one(self.store.pool()).await.map_err(map_db_error)?;
         Ok(u64::try_from(n).unwrap_or(0))

@@ -2542,6 +2542,7 @@ dependencies = [
  "hmac",
  "rand_core 0.6.4",
  "rusty-core",
+ "rusty-dav",
  "rusty-directory",
  "rusty-http",
  "rusty-runtime",

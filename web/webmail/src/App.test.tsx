@@ -53,6 +53,7 @@ function api(over: Partial<Api> = {}): Api {
     attachmentUrl: (id: number, n: number) => `/api/v1/messages/${id}/attachments/${n}`,
     saveDraft: vi.fn().mockResolvedValue({ id: 77 }),
 
+    contacts: vi.fn().mockResolvedValue([]),
     settings: vi.fn().mockResolvedValue({ signature: 'Alice' }),
     saveSettings: vi.fn().mockImplementation(async (s: string) => ({ signature: s })),
     scripts: vi.fn().mockResolvedValue({ scripts: [], max_scripts: 10, max_bytes: 65536 }),
@@ -106,6 +107,36 @@ describe('the webmail page', () => {
     expect(sent.to).toEqual(['bob@one.test']);
     expect(sent.in_reply_to).toBe('<m1@one.test>');
     expect((await screen.findByRole('status')).textContent).toBe(en['compose.queued']);
+  });
+
+  it('offers the contacts of the person while an address is typed and puts the address of the chosen one in place of the part being typed', async () => {
+    const contacts = vi.fn().mockResolvedValue([{ name: 'Ada Lovelace', email: 'ada@example.org' }]);
+    const a = api({ me: vi.fn().mockResolvedValue({ address: 'alice@one.test', csrf: 'tok' }), contacts });
+    render(() => <App api={a} />);
+    fireEvent.click(await screen.findByText(en['compose.new']));
+    const to = (await screen.findByLabelText(en['compose.to'])) as HTMLInputElement;
+    // One character asks nothing.
+    fireEvent.input(to, { target: { value: 'a' } });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(contacts).not.toHaveBeenCalled();
+    // After a comma, the part being typed is what is asked.
+    fireEvent.input(to, { target: { value: 'bob@one.test, ad' } });
+    const pick = await screen.findByText('Ada Lovelace <ada@example.org>');
+    expect(contacts).toHaveBeenCalledWith('ad');
+    fireEvent.click(pick);
+    expect((screen.getByLabelText(en['compose.to']) as HTMLInputElement).value).toBe('bob@one.test, ada@example.org, ');
+    expect(screen.queryByText('Ada Lovelace <ada@example.org>')).toBeNull();
+  });
+
+  it('a failing contact search is no error of the form: the field just offers nothing', async () => {
+    const contacts = vi.fn().mockRejectedValue(new ApiError(503, 'busy'));
+    const a = api({ me: vi.fn().mockResolvedValue({ address: 'alice@one.test', csrf: 'tok' }), contacts });
+    render(() => <App api={a} />);
+    fireEvent.click(await screen.findByText(en['compose.new']));
+    fireEvent.input(await screen.findByLabelText(en['compose.to']), { target: { value: 'ad' } });
+    await waitFor(() => expect(contacts).toHaveBeenCalled());
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByLabelText(en['compose.suggestions'])).toBeNull();
   });
 
   it('a refused send keeps the form and says why', async () => {

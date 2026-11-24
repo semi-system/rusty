@@ -16,6 +16,7 @@ rusty-http = { path = "../rusty-http" }
 rusty-runtime = { path = "../rusty-runtime" }
 rusty-seal = { path = "../rusty-seal" }
 rusty-sieve = { path = "../rusty-sieve" }
+rusty-dav = { path = "../rusty-dav" }
 zeroize = "1"
 rusty-s3 = { path = "../rusty-s3" }
 tokio-util = { workspace = true }

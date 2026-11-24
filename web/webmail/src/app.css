@@ -378,3 +378,27 @@ dd {
   overflow-wrap: anywhere;
   user-select: all;
 }
+.compose .field {
+  position: relative;
+}
+.suggestions {
+  list-style: none;
+  margin: 0.15rem 0 0.5rem;
+  padding: 0.25rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+}
+.suggestions button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  padding: 0.35rem 0.5rem;
+  border-radius: 4px;
+}
+.suggestions button:hover,
+.suggestions button:focus-visible {
+  background: var(--line);
+}

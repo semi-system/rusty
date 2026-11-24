@@ -122,6 +122,8 @@ pub trait DavRepo: Send + Sync {
     async fn delete(&self, collection: i64, name: &str, pre: &Precondition) -> Result<DeleteResult>;
     /// What changed since `since` (the revision of a token); `None` when tombstones the client needs were collected (it does a full sync).
     async fn changes_since(&self, collection: i64, since: i64, limit: i64) -> Result<Option<Changes>>;
+    /// The cards of the address books of an account whose text holds `needle` (case does not matter; the characters of a pattern are taken as themselves), at most `limit`: what the composer of the webmail suggests from.
+    async fn search_cards(&self, account: AccountId, needle: &str, limit: i64) -> Result<Vec<Object>>;
     /// The collector: drop the tombstones older than [`TOMBSTONE_KEEP_SECS`] and raise the floor of their collections; how many went.
     async fn purge_tombstones(&self) -> Result<u64>;
 }
@@ -166,6 +168,7 @@ pub(crate) mod sql {
     pub const REVISION_AND_FLOOR: &str = "SELECT revision, tombstone_floor FROM dav_collections WHERE id = $1";
     pub const CHANGED: &str = "SELECT name, etag, revision FROM dav_objects WHERE collection_id = $1 AND revision > $2 ORDER BY revision, name LIMIT $3";
     pub const DELETED: &str = "SELECT name FROM dav_tombstones WHERE collection_id = $1 AND revision > $2 AND revision <= $3 ORDER BY revision, name";
+    pub const SEARCH_CARDS: &str = "SELECT o.name, o.uid, o.etag, o.body, o.size, o.component, o.starts_at, o.ends_at, o.recurring, o.revision, o.updated_at FROM dav_objects o JOIN dav_collections c ON c.id = o.collection_id WHERE c.account_id = $1 AND c.kind = 'addressbook' AND o.body ILIKE $2 ESCAPE '!' ORDER BY o.name LIMIT $3";
     pub const PURGE: &str = "WITH gone AS (DELETE FROM dav_tombstones WHERE deleted_at < rs_now() - $1 RETURNING collection_id, revision), \
         floors AS (SELECT collection_id, max(revision) AS r FROM gone GROUP BY collection_id), \
         raised AS (UPDATE dav_collections c SET tombstone_floor = GREATEST(c.tombstone_floor, f.r) FROM floors f WHERE c.id = f.collection_id RETURNING 1) \
