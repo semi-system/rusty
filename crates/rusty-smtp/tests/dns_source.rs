@@ -62,6 +62,8 @@ const SRV: u16 = 33;
 struct Zone {
     rr: HashMap<(String, u16), Vec<Vec<u8>>>,
     servfail: HashSet<String>,
+    /// Answer "no such record" the way a real zone does: with its SOA in the authority section, whose minimum is the negative TTL a resolver may keep the miss for.
+    negative_soa: bool,
 }
 
 impl Zone {
@@ -70,37 +72,71 @@ impl Zone {
     }
 }
 
+/// The answer of the test server to one query.
+fn answer(zone: &Zone, q: &[u8]) -> Vec<u8> {
+    let (name, end) = name_of(q);
+    let qtype = u16::from_be_bytes([q[end], q[end + 1]]);
+    let question = &q[12..end + 4];
+    let mut answer: Vec<u8> = Vec::new();
+    let mut count = 0u16;
+    let rcode = if zone.servfail.contains(&name) {
+        2u8
+    } else if let Some(list) = zone.rr.get(&(name.clone(), qtype)) {
+        for rdata in list {
+            answer.extend_from_slice(&[0xC0, 0x0C]);
+            answer.extend_from_slice(&qtype.to_be_bytes());
+            answer.extend_from_slice(&1u16.to_be_bytes());
+            answer.extend_from_slice(&60u32.to_be_bytes());
+            answer.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
+            answer.extend_from_slice(rdata);
+            count += 1;
+        }
+        0
+    } else if zone.rr.keys().any(|(n, _)| *n == name) {
+        0 // the name exists, there is no data of this type
+    } else {
+        3 // NXDOMAIN
+    };
+    // A miss from a real zone carries its SOA (a negative answer is cached for its minimum: half an hour at Cloudflare).
+    let soa = if zone.negative_soa && count == 0 && rcode != 2 {
+        let mut rr = encode_name("test");
+        rr.extend_from_slice(&6u16.to_be_bytes());
+        rr.extend_from_slice(&1u16.to_be_bytes());
+        rr.extend_from_slice(&1800u32.to_be_bytes());
+        let mut rdata = encode_name("ns.test");
+        rdata.extend_from_slice(&encode_name("hostmaster.test"));
+        for v in [1u32, 3600, 600, 86_400, 1800] {
+            rdata.extend_from_slice(&v.to_be_bytes());
+        }
+        rr.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
+        rr.extend_from_slice(&rdata);
+        Some(rr)
+    } else {
+        None
+    };
+    let mut resp = vec![q[0], q[1], 0x81, 0x80 | rcode, 0, 1, (count >> 8) as u8, count as u8, 0, u8::from(soa.is_some()), 0, 0];
+    resp.extend_from_slice(question);
+    resp.extend_from_slice(&answer);
+    if let Some(rr) = soa {
+        resp.extend_from_slice(&rr);
+    }
+    resp
+}
+
 async fn serve(sock: UdpSocket, zone: Arc<Zone>) {
     let mut buf = [0u8; 512];
     loop {
         let Ok((n, from)) = sock.recv_from(&mut buf).await else { return };
-        let q = &buf[..n];
-        let (name, end) = name_of(q);
-        let qtype = u16::from_be_bytes([q[end], q[end + 1]]);
-        let question = &q[12..end + 4];
-        let mut answer: Vec<u8> = Vec::new();
-        let mut count = 0u16;
-        let rcode = if zone.servfail.contains(&name) {
-            2u8
-        } else if let Some(list) = zone.rr.get(&(name.clone(), qtype)) {
-            for rdata in list {
-                answer.extend_from_slice(&[0xC0, 0x0C]);
-                answer.extend_from_slice(&qtype.to_be_bytes());
-                answer.extend_from_slice(&1u16.to_be_bytes());
-                answer.extend_from_slice(&60u32.to_be_bytes());
-                answer.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
-                answer.extend_from_slice(rdata);
-                count += 1;
-            }
-            0
-        } else if zone.rr.keys().any(|(n, _)| *n == name) {
-            0 // the name exists, there is no data of this type
-        } else {
-            3 // NXDOMAIN
-        };
-        let mut resp = vec![q[0], q[1], 0x81, 0x80 | rcode, 0, 1, (count >> 8) as u8, count as u8, 0, 0, 0, 0];
-        resp.extend_from_slice(question);
-        resp.extend_from_slice(&answer);
+        let _ = sock.send_to(&answer(&zone, &buf[..n]), from).await;
+    }
+}
+
+/// A server whose zone the test changes while it runs (the operator makes a record after the first check).
+async fn serve_shared(sock: UdpSocket, zone: Arc<std::sync::Mutex<Zone>>) {
+    let mut buf = [0u8; 512];
+    loop {
+        let Ok((n, from)) = sock.recv_from(&mut buf).await else { return };
+        let resp = answer(&zone.lock().unwrap(), &buf[..n]);
         let _ = sock.send_to(&resp, from).await;
     }
 }
@@ -232,5 +268,30 @@ async fn the_engine_over_real_dns_messages_finds_a_correct_publication_all_ok() 
         assert_eq!(c.status, RecordStatus::Ok, "{} {:?} -> {:?} {:?} seen {:?}", c.record.name, c.record.rtype, c.status, c.findings, c.seen);
     }
     assert_eq!(checks.len(), expected.len());
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_record_made_after_a_miss_is_seen_by_the_next_check_not_hidden_by_the_cache() {
+    // The first check of a new installation finds no MX and no SPF (the operator has not made them yet); a minute later, after the records are made, "Check now" must see them. The resolver of the
+    // check used to keep "no such record" for the negative TTL of the zone (half an hour at Cloudflare) and answer "Missing" from its cache until the process was restarted.
+    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let ns: SocketAddr = sock.local_addr().unwrap();
+    let zone = Arc::new(std::sync::Mutex::new(Zone { negative_soa: true, ..Zone::default() }));
+    zone.lock().unwrap().add("other.test", A, vec![192, 0, 2, 1]);
+    let server = tokio::spawn(serve_shared(sock, zone.clone()));
+    let dns = LiveDns::from_config(&OutboundConfig { nameserver: Some(ns), ..OutboundConfig::default() }).unwrap();
+    assert!(t!(dns.mx("apex.test")).unwrap().is_empty(), "no record yet");
+    assert!(t!(dns.txt("apex.test")).unwrap().is_empty());
+    {
+        let mut z = zone.lock().unwrap();
+        z.add("apex.test", MX, mx(10, "mx.apex.test"));
+        z.add("apex.test", TXT, txt(&["v=spf1 mx -all"]));
+    }
+    // A moment later (the cache keeps nothing for more than a few seconds) the records are there.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    let found = t!(dns.mx("apex.test")).unwrap();
+    assert_eq!(found.iter().map(|m| (m.preference, m.host.as_str())).collect::<Vec<_>>(), [(10, "mx.apex.test")]);
+    assert_eq!(t!(dns.txt("apex.test")).unwrap(), ["v=spf1 mx -all"]);
     server.abort();
 }
