@@ -1,7 +1,7 @@
 // The API client: the contract's endpoints as typed calls. It knows the three rules of a state-changing request (design section 5): the JSON content type,
 // the CSRF token of the session (the browser adds `Origin` itself) and that a failure is a fixed code, never text to show.
 
-import type { Account, Transfer, TransferList, MailRules, Backups, Migration, MigrationList, Search, SearchQueued, CertificateList, Stats, PlatformSettings, Audit, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, Domain, Me, DomainSettings, ImportResult, MailList, Member, Members, Monitor, Plan, PlanList, QueueList, Routing, Trace, Protocols, Queue, Relay, SetupState, Storage } from './types';
+import type { Account, Transfer, TransferList, MailRules, Backups, Migration, MigrationList, Search, SearchQueued, CertificateList, Stats, PlatformSettings, Audit, AccountCreated, AdminEntry, Alias, Dkim, DkimList, DnsRecords, DnsHosting, Domain, Me, DomainSettings, ImportResult, MailList, Member, Members, Monitor, Plan, PlanList, QueueList, Routing, Trace, Protocols, Queue, Relay, SetupState, Storage } from './types';
 import type { MessageKey } from '../i18n';
 
 /** A page of a list, the cursor of the next one and how many rows match in all. */
@@ -494,6 +494,22 @@ export class Client {
 
   async checkDns(domain: string): Promise<void> {
     await this.call('POST', `/api/v1/domains/${seg(domain)}/dns/check`);
+  }
+
+  dnsHosting(domain: string): Promise<DnsHosting> {
+    return this.call('GET', `/api/v1/domains/${seg(domain)}/dns/hosting`);
+  }
+
+  setDnsHosting(domain: string, mode: string): Promise<DnsHosting> {
+    return this.call('PUT', `/api/v1/domains/${seg(domain)}/dns/hosting`, { mode });
+  }
+
+  addDnsExtra(domain: string, record: { name: string; type: string; value: string; ttl: number }): Promise<DnsHosting> {
+    return this.call('POST', `/api/v1/domains/${seg(domain)}/dns/extra`, record);
+  }
+
+  removeDnsExtra(domain: string, id: number): Promise<DnsHosting> {
+    return this.call('DELETE', `/api/v1/domains/${seg(domain)}/dns/extra/${id}`);
   }
 
   outbound(domain: string): Promise<Queue> {

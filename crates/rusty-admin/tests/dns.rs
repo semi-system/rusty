@@ -101,3 +101,47 @@ async fn another_tenants_dns_is_not_found_exactly_like_a_missing_domain() {
     assert_eq!(c.get("/api/v1/domains/one.test/dns").await.status, 200);
     assert_eq!(send(r.addr, "GET", "/api/v1/domains/one.test/dns", &[], "").await.status, 401);
 }
+
+#[tokio::test]
+async fn hosting_is_switched_by_the_platform_and_the_tenant_edits_its_own_records_within_the_rules() {
+    let r = rig().await;
+    make_admin(&r, "root@home.test", false).await;
+    make_admin(&r, "boss@one.test", true).await;
+    make_admin(&r, "boss@two.test", true).await;
+    let root = Client::sign_in(r.addr, "root@home.test").await;
+    let tenant = Client::sign_in(r.addr, "boss@one.test").await;
+    let other = Client::sign_in(r.addr, "boss@two.test").await;
+
+    // Every domain starts as it is today, and the tenant sees the names to set once it is hosted.
+    let s = tenant.get("/api/v1/domains/one.test/dns/hosting").await;
+    assert_eq!(s.status, 200, "{}", s.body);
+    conforms(&s.json(), "DnsHosting");
+    assert_eq!((s.json()["mode"].clone(), s.json()["name_servers"].clone()), (json!("external"), json!(["ns1.platform.example", "ns2.platform.example"])));
+    // Only the platform hosts a domain.
+    assert_eq!(tenant.mutate("PUT", "/api/v1/domains/one.test/dns/hosting", Some(json!({ "mode": "hosted" }))).await.status, 403);
+    let on = root.mutate("PUT", "/api/v1/domains/one.test/dns/hosting", Some(json!({ "mode": "hosted" }))).await;
+    assert_eq!((on.status, on.json()["mode"].clone()), (200, json!("hosted")), "{}", on.body);
+    assert_eq!(root.mutate("PUT", "/api/v1/domains/one.test/dns/hosting", Some(json!({ "mode": "sideways" }))).await.status, 400);
+
+    // The tenant adds records; a bad one is refused, and a CNAME stands alone at its name.
+    let add = |name: &str, t: &str, v: &str| json!({ "name": name, "type": t, "value": v });
+    let a = tenant.mutate("POST", "/api/v1/domains/one.test/dns/extra", Some(add("blog", "A", "192.0.2.80"))).await;
+    assert_eq!(a.status, 200, "{}", a.body);
+    conforms(&a.json(), "DnsHosting");
+    assert_eq!(a.json()["extra"][0]["name"], json!("blog"));
+    let id = a.json()["extra"][0]["id"].as_i64().unwrap();
+    for bad in [add("*", "A", "192.0.2.1"), add("x", "A", "10"), add("@", "CNAME", "other.example.org"), add("x", "NS", "ns.example.org"), json!({ "name": "x", "type": "A", "value": "192.0.2.1", "ttl": 5 })] {
+        assert_eq!(tenant.mutate("POST", "/api/v1/domains/one.test/dns/extra", Some(bad.clone())).await.status, 400, "{bad}");
+    }
+    assert_eq!(tenant.mutate("POST", "/api/v1/domains/one.test/dns/extra", Some(add("blog", "CNAME", "other.example.org"))).await.status, 409, "a CNAME next to an A");
+    assert_eq!(tenant.mutate("POST", "/api/v1/domains/one.test/dns/extra", Some(add("www", "CNAME", "other.example.org"))).await.status, 200);
+    assert_eq!(tenant.mutate("POST", "/api/v1/domains/one.test/dns/extra", Some(add("www", "A", "192.0.2.5"))).await.status, 409, "an A next to a CNAME");
+
+    // Another tenant sees nothing of it and changes nothing; removing is for the owner.
+    for (m, p, b) in [("GET", "/api/v1/domains/one.test/dns/hosting", None), ("POST", "/api/v1/domains/one.test/dns/extra", Some(add("evil", "A", "192.0.2.9"))), ("DELETE", "/api/v1/domains/one.test/dns/extra/1", None)] {
+        assert_eq!(other.mutate(m, p, b).await.status, 404, "{m} {p}");
+    }
+    assert_eq!(tenant.mutate("DELETE", &format!("/api/v1/domains/one.test/dns/extra/{id}"), None).await.status, 200);
+    assert_eq!(tenant.mutate("DELETE", &format!("/api/v1/domains/one.test/dns/extra/{id}"), None).await.status, 404);
+    assert_eq!(tenant.get("/api/v1/domains/one.test/dns/hosting").await.json()["extra"].as_array().unwrap().len(), 1);
+}

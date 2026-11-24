@@ -35,7 +35,7 @@ BEGIN
     GRANT SELECT, INSERT ON message_searches TO rusty_admin;   -- a platform administrator's search is asked for here and answered where the mailboxes are (docs/design-admin-search.md)
     GRANT SELECT ON backup_runs TO rusty_admin;   -- the Backups page of the admin web (docs/design-backup-status.md); the deployment tool writes with its own login
     GRANT SELECT, INSERT, UPDATE, DELETE ON domains, accounts, aliases, domain_aliases, lists, list_members, plans, capabilities, mailboxes,
-      domain_dkim_keys, dkim_retirements, domain_dns_config, domain_dns_event, domain_dns_state, domain_relays, admin_grants, jobs TO rusty_admin;
+      domain_dkim_keys, dkim_retirements, domain_dns_config, domain_dns_event, domain_dns_state, domain_relays, domain_dns_extra, admin_grants, jobs TO rusty_admin;
     GRANT SELECT ON address_owners, _sqlx_migrations, schema_compat TO rusty_admin;
     GRANT SELECT ON service_heartbeats TO rusty_admin;   -- the monitor page
     GRANT SELECT, INSERT, UPDATE ON platform_settings TO rusty_admin;   -- the protocol switches (docs/design-protocols.md)

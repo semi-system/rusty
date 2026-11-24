@@ -283,6 +283,28 @@ describe('dns', () => {
     expect(s.last('POST /api/v1/domains/example.org/dns/check')!.headers['X-CSRF-Token']).toBe(PLATFORM.csrf);
   });
 
+  it('lets the platform host the domain and the tenant add a record of its own', async () => {
+    const hosted = { mode: 'hosted', name_servers: ['ns1.platform.example', 'ns2.platform.example'], extra: [], max_extra: 200 };
+    const withRecord = { ...hosted, extra: [{ id: 5, name: 'blog', type: 'A', value: '192.0.2.80', ttl: 300 }] };
+    const s = await open('/domains/example.org/dns', PLATFORM, {
+      'GET /api/v1/domains/example.org/dns': ok({ records: [R({})], warnings: [] }),
+      'GET /api/v1/domains/example.org/dns/hosting': ok({ ...hosted, mode: 'external' }),
+      'PUT /api/v1/domains/example.org/dns/hosting': ok(hosted),
+      'POST /api/v1/domains/example.org/dns/extra': ok(withRecord),
+    });
+    expect(await screen.findByText(t('hosting.modeExternal'))).toBeTruthy();
+    await fireEvent.click(await screen.findByRole('button', { name: t('hosting.turnOn') }));
+    expect(await screen.findByText(t('hosting.modeHosted'))).toBeTruthy();
+    expect(s.last('PUT /api/v1/domains/example.org/dns/hosting')!.body).toEqual({ mode: 'hosted' });
+    expect(screen.getAllByLabelText(t('hosting.nameServers')).filter((e) => e instanceof HTMLInputElement).map((e) => (e as HTMLInputElement).value)).toContain('ns1.platform.example');
+    const form = within(screen.getByRole('form', { name: t('hosting.add') }));
+    await fireEvent.input(form.getByLabelText(t('dns.name')), { target: { value: 'blog' } });
+    await fireEvent.input(form.getByLabelText(t('dns.value')), { target: { value: '192.0.2.80' } });
+    await fireEvent.click(screen.getByRole('button', { name: t('hosting.add') }));
+    expect(await screen.findByRole('table', { name: t('hosting.list') })).toBeTruthy();
+    expect(s.last('POST /api/v1/domains/example.org/dns/extra')!.body).toEqual({ name: 'blog', type: 'A', value: '192.0.2.80', ttl: 3600 });
+  });
+
   it('shows an unknown status as undecided, never as the raw value from the server', async () => {
     await open('/domains/example.org/dns', PLATFORM, { 'GET /api/v1/domains/example.org/dns': ok({ records: [R({ status: '<script>x</script>' })], warnings: [] }) });
     expect(await screen.findByText(t('dns.status.unknown'))).toBeTruthy();

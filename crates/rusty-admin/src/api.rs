@@ -36,11 +36,15 @@ pub struct MailSettings {
     pub host: String,
     pub public_ips: Vec<std::net::IpAddr>,
     pub spf_include: Option<String>,
+    /// The names of the platform's name servers, for the DNS page of a hosted domain.
+    pub name_servers: Vec<String>,
 }
 
 /// The stores the outbound endpoints (DKIM, relay) need beyond the directory; absent in a deployment that only manages domains and accounts.
 pub struct Services {
     pub dns: rusty_store::DnsStore,
+    /// The hosted-zone settings of domains: the mode and the extra records (docs/design-authoritative-dns.md).
+    pub dns_zone: Arc<dyn rusty_store::DnsZoneRepo>,
     pub relays: rusty_store::RelayStore,
     /// The blob stores of domains (docs/design-s3-per-tenant.md).
     pub blob_stores: rusty_store::BlobStoreAdmin,

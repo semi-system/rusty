@@ -27,6 +27,9 @@ pub struct AdminConfig {
     /// The relay provider's SPF `include:` name (as `[outbound.relay] spf_include`), when mail leaves through a relay.
     #[serde(default)]
     pub spf_include: Option<String>,
+    /// The name servers of the platform, shown on the DNS page of a hosted domain as the names to set at the registrar (the same as `[dns] name_servers` of the name server).
+    #[serde(default)]
+    pub name_servers: Vec<String>,
     /// Mail leaves through a relay: the reverse records of our own addresses are not our business.
     #[serde(default)]
     pub via_relay: bool,
@@ -53,6 +56,9 @@ impl AdminConfig {
         }
         if self.public_ips.len() > 8 || self.public_ips.iter().enumerate().any(|(i, a)| !crate::dns::publishable_address(*a) || self.public_ips.iter().take(i).any(|o| o == a)) {
             return Err(Error::Invalid("admin.public_ips must be at most 8 distinct addresses that can be published (no loopback, link-local or multicast)".into()));
+        }
+        if self.name_servers.len() > 8 || !self.name_servers.iter().all(|n| crate::config::valid_hostname(n) && !n.ends_with('.')) {
+            return Err(Error::Invalid("admin.name_servers must be at most 8 host names without a trailing dot".into()));
         }
         if self.spf_include.as_deref().is_some_and(|s| !crate::dns::valid_spf_domain(s)) {
             return Err(Error::Invalid("admin.spf_include must be a DNS name".into()));
