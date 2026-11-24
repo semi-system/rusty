@@ -16,6 +16,9 @@ use crate::manage::platform_only;
 /// The services of a deployment, in the order the page shows them.
 pub const SERVICES: [&str; 6] = ["smtp-in", "submission", "imap", "outbound", "gc", "admin"];
 
+/// Services a deployment may or may not run: shown, and counted as down when they stop, only once they have beaten (a deployment without a webmail or a name server has nothing to alarm about).
+pub const OPTIONAL_SERVICES: [&str; 2] = ["webmail", "dns"];
+
 /// An instance that has not beaten for this long (three beats of 15 seconds) is stale.
 pub const STALE_AFTER_SECS: i64 = 45;
 
@@ -116,6 +119,7 @@ async fn snapshot(monitor: &dyn rusty_store::HeartbeatRepo, jobs: &rusty_store::
     let dns_problem_domains = monitor.dns_problem_domains().await?;
     let services = SERVICES
         .iter()
+        .chain(OPTIONAL_SERVICES.iter().filter(|o| rows.iter().any(|h| h.service == **o)))
         .map(|name| {
             let mut instances: Vec<InstanceJson> = rows.iter().filter(|h| h.service == *name).map(instance).collect();
             mark_replaced(&mut instances);

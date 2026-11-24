@@ -236,3 +236,16 @@ async fn the_storage_check_worker_can_record_a_check_and_nothing_else_on_the_sto
         denied(&p, "UPDATE blob_stores SET check_status = 'ok'").await;
     }
 }
+
+#[tokio::test]
+async fn the_webmail_and_the_name_server_write_their_own_heartbeat_rows_whatever_they_pass() {
+    let Some(url) = pg_admin_url() else { return };
+    let db = PgTestDb::create_with_roles(&url).await;
+    for role in ["rusty_webmail", "rusty_dns"] {
+        let pool = pool_as(&db, role).await;
+        sqlx::query("SELECT rs_heartbeat('imap', 'i1', '1.0', 5, 'ok', '{}')").execute(&pool).await.unwrap_or_else(|e| panic!("{role}: {e}"));
+    }
+    let admin = admin_pool(&db).await;
+    let seen: Vec<String> = sqlx::query_scalar("SELECT service FROM service_heartbeats ORDER BY service").fetch_all(&admin).await.unwrap();
+    assert_eq!(seen, ["dns", "webmail"], "each wrote its own name, not the one it passed");
+}
