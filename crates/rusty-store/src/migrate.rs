@@ -345,3 +345,17 @@ async fn migrate_on(pool: &PgPool, require_roles: bool) -> Result<MigrationRepor
     let after = schema_status_of(pool).await?;
     Ok(MigrationReport { before, after, grants_applied: roles_exist })
 }
+
+/// A fingerprint of everything that makes up a migrated schema: the checksums of the embedded migrations (in order) and the privilege matrix. The test database of a suite is built once per
+/// fingerprint and then copied (`fixtures::pg_db`), so a change of any migration or grant is a new template, never a stale one.
+#[cfg(feature = "test-fixtures")]
+pub(crate) fn schema_fingerprint() -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for m in MIGRATOR.iter() {
+        h.update(m.version.to_be_bytes());
+        h.update(&m.checksum);
+    }
+    h.update(GRANTS_SQL.as_bytes());
+    hex::encode(h.finalize())
+}
