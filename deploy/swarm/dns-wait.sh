@@ -52,23 +52,36 @@ dns_names() {
   for n in "$MAIL_HOST" "$ADMIN_HOST" ${WEBMAIL_HOST:+"$WEBMAIL_HOST"}; do printf '%s\n' "$n"; done
 }
 
-# One pass: prints a line per name, returns 0 when every name points at the expected address (or, with no expected address known, resolves at all).
+# Is this an address of Cloudflare (a name whose record is "Proxied" there answers with these, not with the address of the server)?
+dns_is_cloudflare() {
+  [[ "$1" =~ ^(104\.(1[6-9]|2[0-9]|3[01])\.|172\.(6[4-9]|7[01])\.|162\.15[89]\.|108\.162\.|141\.101\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|188\.114\.(9[6-9]|10[0-9]|11[01])\.|190\.93\.(24[0-9]|25[0-5])\.|197\.234\.24[0-3]\.|198\.41\.(12[89]|1[3-9][0-9]|2[0-9][0-9])\.|103\.21\.24[4-7]\.|103\.22\.20[0-3]\.|103\.31\.[4-7]\.|131\.0\.7[2-5]\.|173\.245\.(4[89]|5[0-9]|6[0-3])\.) ]] \
+    || [[ "$1" =~ ^(2606:4700:|2803:f800:|2405:b500:|2405:8100:|2a06:98c) ]]
+}
+
+# One pass: prints a line per name, returns 0 when every name points at the expected address (or, with no expected address known, resolves at all). The lines name the TYPE of the record
+# to make (an A record for an IPv4 address, AAAA for IPv6): the name of a host (mx.example.org) is not the MX record of the domain.
 dns_pass() {
-  local want="$1" n got good=0 total=0
+  local want="$1" n got good=0 total=0 type="A" short a hint
+  case "$want" in *:*) type="AAAA" ;; esac
   while read -r n; do
     [ -n "$n" ] || continue
     total=$((total + 1))
+    short="${n%%.*}"
     got="$(dns_lookup "$n")"
     if [ -z "$got" ]; then
-      printf '  WAIT  %s has no address record yet\n' "$n"
+      printf '  WAIT  %s: no address record yet. Make the %s record  %s  ->  %s\n' "$n" "$type" "$short" "${want:-the address of this server}"
     elif [ -z "$want" ]; then
       printf '  ok    %s -> %s (the address of this server is not known: only that the name exists is checked)\n' "$n" "$(printf '%s' "$got" | tr '\n' ' ')"
       good=$((good + 1))
     elif printf '%s\n' "$got" | grep -qxF "$want"; then
-      printf '  ok    %s -> %s\n' "$n" "$want"
+      printf '  ok    %s (%s record) -> %s\n' "$n" "$type" "$want"
       good=$((good + 1))
     else
-      printf '  WAIT  %s points at %s, not at %s\n' "$n" "$(printf '%s' "$got" | tr '\n' ' ')" "$want"
+      hint=""
+      for a in $got; do
+        if dns_is_cloudflare "$a"; then hint=" These are Cloudflare's addresses: the record is \"Proxied\"; set it to \"DNS only\" (grey cloud) and put $want in it."; break; fi
+      done
+      printf '  WAIT  %s: its address records point at %s, not at %s. Change the %s record  %s  to %s.%s\n' "$n" "$(printf '%s' "$got" | tr '\n' ' ' | sed 's/ $//')" "$want" "$type" "$short" "$want" "$hint"
     fi
   done < <(dns_names)
   [ "$good" = "$total" ]

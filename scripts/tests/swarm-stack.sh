@@ -381,8 +381,14 @@ echo "  ok    the calendar and contacts service and its routes (HAProxy and Pros
   # A name that has no record, and one that points elsewhere, are waited for, each said in words.
   printf 'mx.example.org 203.0.113.7\nmail.example.org 198.51.100.9\n' > "$zone"
   out="$(dns_pass 203.0.113.7)" && { echo "a wrong zone was accepted"; exit 1; }
-  printf '%s\n' "$out" | grep -q 'WAIT  admin.example.org has no address record yet' || { echo "no record not said: $out"; exit 1; }
-  printf '%s\n' "$out" | grep -q 'WAIT  mail.example.org points at 198.51.100.9' || { echo "wrong address not said: $out"; exit 1; }
+  printf '%s\n' "$out" | grep -q 'WAIT  admin.example.org: no address record yet. Make the A record  admin  ->  203.0.113.7' || { echo "no record not said: $out"; exit 1; }
+  printf '%s\n' "$out" | grep -q 'WAIT  mail.example.org: its address records point at 198.51.100.9, not at 203.0.113.7. Change the A record  mail  to 203.0.113.7.' || { echo "wrong address not said: $out"; exit 1; }
+  printf '%s\n' "$out" | grep -q 'Cloudflare' && { echo "a plain address was taken for Cloudflare's: $out"; exit 1; }
+  # The address of a name that is Proxied at Cloudflare is named for what it is, and the fix is said.
+  printf 'mx.example.org 104.21.81.46\nadmin.example.org 203.0.113.7\nmail.example.org 203.0.113.7\n' > "$zone"
+  out="$(dns_pass 203.0.113.7)" && { echo "a Proxied name was accepted"; exit 1; }
+  printf '%s\n' "$out" | grep -q 'WAIT  mx.example.org: its address records point at 104.21.81.46.*Cloudflare.*DNS only' || { echo "Cloudflare not said: $out"; exit 1; }
+  dns_is_cloudflare 2606:4700:3033::6815:512e && dns_is_cloudflare 172.67.188.44 && ! dns_is_cloudflare 180.93.116.50 || { echo "the Cloudflare ranges are wrong"; exit 1; }
   # The setup waits: the record appears after two passes.
   : > "$tmp/passes"
   dns_lookup() {
