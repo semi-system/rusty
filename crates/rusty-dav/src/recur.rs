@@ -47,6 +47,16 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
 }
 
 
+/// A moment (seconds since the epoch) as iCalendar writes it: `YYYYMMDDTHHMMSSZ` in UTC, or `YYYYMMDD` for a whole day.
+pub fn format_moment(secs: i64, date_only: bool) -> String {
+    let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
+    if date_only {
+        return format!("{y:04}{m:02}{d:02}");
+    }
+    let t = secs.rem_euclid(86_400);
+    format!("{y:04}{m:02}{d:02}T{:02}{:02}{:02}Z", t / 3600, t % 3600 / 60, t % 60)
+}
+
 fn days_in_month(y: i64, m: i64) -> i64 {
     match m {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -423,6 +433,16 @@ BEGIN:VEVENT\r\nUID:u1\r\nSUMMARY:Moved\r\nRECURRENCE-ID:20240315T080000Z\r\nDTS
         // A nonsense rule is the same, and a text that is no calendar has nothing.
         assert!(occurrences(&ev("DTSTART:20240301T080000Z\r\nRRULE:FREQ=SOMETIMES\r\n"), 0, day(2025, 1, 1), 10)[0].unexpanded);
         assert!(occurrences("not a calendar", 0, 10, 10).is_empty());
+    }
+
+
+    #[test]
+    fn a_moment_is_written_the_way_it_is_read() {
+        let secs = day(2024, 3, 5) + 9 * 3600 + 7 * 60 + 3;
+        assert_eq!(format_moment(secs, false), "20240305T090703Z");
+        assert_eq!(parse_moment(&format_moment(secs, false)).unwrap().secs, secs);
+        assert_eq!(format_moment(secs, true), "20240305");
+        assert_eq!(parse_moment("20240305").unwrap().secs, day(2024, 3, 5));
     }
 
     #[test]

@@ -121,6 +121,15 @@ export interface ImportResult {
   duplicates: number;
 }
 
+/** An event the person adds: UTC seconds (a whole-day event: UTC midnights of its first day and the day after its last). */
+export interface NewEvent {
+  summary: string;
+  location: string;
+  start: number;
+  end: number;
+  all_day: boolean;
+}
+
 /** One event of the agenda: a UTC time is shown in the reader's zone, any other as the wall clock it states. */
 export interface AgendaItem {
   uid: string;
@@ -176,6 +185,8 @@ export interface Api {
   events(from: number, to: number): Promise<AgendaPage>;
   /** Adds the cards of the text of a .vcf file to the address book. */
   importContacts(vcf: string): Promise<ImportResult>;
+  /** Adds one event to the default calendar. */
+  createEvent(e: NewEvent): Promise<void>;
 }
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
@@ -264,6 +275,9 @@ export function createApi(doFetch: Fetch = (i, init) => fetch(i, init)): Api {
     contacts: async (q) => (await call<{ items: Contact[] }>('GET', `/api/v1/contacts?q=${encodeURIComponent(q)}`)).items,
     events: (from, to) => call<AgendaPage>('GET', `/api/v1/events?from=${from}&to=${to}`),
     importContacts: (vcf) => call<ImportResult>('POST', '/api/v1/contacts/import', { vcf }),
+    createEvent: async (e) => {
+      await call('POST', '/api/v1/events', e);
+    },
     saveSettings: (signature) => call('PUT', '/api/v1/settings', { signature }),
   };
 }
