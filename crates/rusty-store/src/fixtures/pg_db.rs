@@ -145,6 +145,57 @@ fn through_pooler(url: String) -> String {
     }
 }
 
+/// The name of the template database for the current schema, built on first use. Builders in different test processes are serialised by an advisory lock; a template is
+/// complete once it carries its final name (it is built as `..._building` and renamed). The name holds the fingerprint of the migrations and grants, so a changed schema is a new template.
+async fn ensure_template(admin: &sqlx::PgPool, admin_url: &str, roles: bool) -> String {
+    let fp = crate::migrate::schema_fingerprint();
+    let name = format!("rusty_tpl_{}_{}", if roles { "r" } else { "p" }, &fp[..16]);
+    async fn exists(admin: &sqlx::PgPool, db: &str) -> bool {
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)").bind(db).fetch_one(admin).await.expect("look for the template database")
+    }
+    if exists(admin, &name).await {
+        return name;
+    }
+    let mut lock = admin.acquire().await.expect("a connection for the template lock");
+    sqlx::query("SELECT pg_advisory_lock(7201117)").execute(&mut *lock).await.expect("take the template lock");
+    let built: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)").bind(&name).fetch_one(&mut *lock).await.expect("look for the template database");
+    if !built {
+        let building = format!("{name}_building");
+        sqlx::query(sqlx::AssertSqlSafe(format!("DROP DATABASE IF EXISTS \"{building}\" WITH (FORCE)"))).execute(&mut *lock).await.expect("drop a half-built template");
+        // Templates of older schemas are dropped once there are many (a branch switch leaves some behind).
+        let old: Vec<String> = sqlx::query_scalar("SELECT datname::text FROM pg_database WHERE datname LIKE 'rusty\\_tpl\\_%' AND datname <> $1 ORDER BY datname")
+            .bind(&name)
+            .fetch_all(&mut *lock)
+            .await
+            .expect("list the templates");
+        if old.len() > 6 {
+            for o in &old {
+                let _ = sqlx::query(sqlx::AssertSqlSafe(format!("DROP DATABASE IF EXISTS \"{o}\" WITH (FORCE)"))).execute(&mut *lock).await;
+            }
+        }
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE \"{building}\""))).execute(&mut *lock).await.expect("create the template database");
+        let mut parsed = Url::parse(admin_url).expect("RUSTY_TEST_PG_URL must be a URL");
+        parsed.set_path(&format!("/{building}"));
+        let db_url: String = parsed.into();
+        if roles {
+            apply_roles(&db_url).await;
+        }
+        let migrator = if roles { url_for(&db_url, "rusty_migrator", TEST_MIGRATOR_PASSWORD) } else { db_url.clone() };
+        crate::migrate_postgres(&migrator, &crate::PgSecurity::default(), roles).await.expect("migrate the template database");
+        let mut renamed = Err(sqlx::Error::PoolClosed);
+        for _ in 0..50 {
+            renamed = sqlx::query(sqlx::AssertSqlSafe(format!("ALTER DATABASE \"{building}\" RENAME TO \"{name}\""))).execute(&mut *lock).await;
+            if renamed.is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        renamed.expect("name the finished template");
+    }
+    sqlx::query("SELECT pg_advisory_unlock(7201117)").execute(&mut *lock).await.expect("release the template lock");
+    name
+}
+
 /// A database created from the admin URL. Its name contains only generated hex digits and
 /// underscores: `rusty_test_<creation unix time, 10 hex>_<random 32 hex>`.
 pub struct PgTestDb {
@@ -186,13 +237,26 @@ impl PgTestDb {
         if !REAPED.swap(true, Ordering::SeqCst) {
             reap_stale(&admin).await;
         }
+        // A migrated database is a copy of a template built once per schema (see `ensure_template`); the roles step is repeated on the copy because
+        // it sets database-level state a copy does not carry over. `RUSTY_TEST_PG_NO_TEMPLATE=1` migrates every database from scratch.
+        let template = if migrate && env::var("RUSTY_TEST_PG_NO_TEMPLATE").ok().as_deref() != Some("1") { Some(ensure_template(&admin, admin_url, roles).await) } else { None };
         // `name` is generated above from a fixed prefix and lowercase hex only. PostgreSQL
         // identifiers cannot be bound as parameters, so this is the sole intentional SQL
         // interpolation in the helper.
-        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE \"{name}\"")))
-            .execute(&admin)
-            .await
-            .expect("create isolated Postgres test database");
+        let create = match &template {
+            Some(t) => format!("CREATE DATABASE \"{name}\" TEMPLATE \"{t}\""),
+            None => format!("CREATE DATABASE \"{name}\""),
+        };
+        let mut made = sqlx::query(sqlx::AssertSqlSafe(create.clone())).execute(&admin).await;
+        // A copy fails while a session is still connected to the template (a slow close of the builder's pool): retry briefly.
+        for _ in 0..50 {
+            if made.is_ok() || template.is_none() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            made = sqlx::query(sqlx::AssertSqlSafe(create.clone())).execute(&admin).await;
+        }
+        made.expect("create isolated Postgres test database");
         admin.close().await;
 
         let mut parsed = Url::parse(admin_url).expect("RUSTY_TEST_PG_URL must be a URL");
@@ -208,7 +272,7 @@ impl PgTestDb {
         if roles {
             apply_roles(&admin_db_url).await;
         }
-        if migrate {
+        if migrate && template.is_none() {
             let migrator = if roles { url_for(&admin_db_url, "rusty_migrator", TEST_MIGRATOR_PASSWORD) } else { admin_db_url.clone() };
             crate::migrate_postgres(&migrator, &crate::PgSecurity::default(), roles)
                 .await
