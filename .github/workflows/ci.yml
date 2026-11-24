@@ -345,10 +345,11 @@ jobs:
 
   # The same suites through PgBouncer in transaction mode (scripts/ci-pgb-suites.sh): a job of its own, in parallel with test-postgres, because the pooled run
   # is the longer of the two. It builds the same feature graph (its own cache, so the two jobs do not race to save one).
+  # On a pull request this job (and musl-test) runs only with the `full-ci` label; every push to main, the schedule and manual runs always run it, so a failure it alone would find shows up on main.
   test-pgbouncer:
     name: Postgres suites through PgBouncer
     needs: changes
-    if: ${{ needs.changes.outputs.rust == 'true' }}
+    if: ${{ needs.changes.outputs.rust == 'true' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -459,10 +460,11 @@ jobs:
 
   # musl debug tests and the musl release build are independent (different profiles share no
   # artefacts), so they run as two parallel jobs instead of one after the other.
+  # Pull request: only with the `full-ci` label (see test-pgbouncer).
   musl-test:
     name: tests (musl)
     needs: changes
-    if: ${{ needs.changes.outputs.rust == 'true' }}
+    if: ${{ needs.changes.outputs.rust == 'true' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
