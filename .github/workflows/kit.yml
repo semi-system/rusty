@@ -1,6 +1,6 @@
 # The deployment kit of `main` on a Release: after docker.yml has built and signed the images of a commit on main, this makes rusty-deploy-main-<sha>.tar.gz and .zip (scripts/package-deploy.sh) with the
 # images of THAT commit pinned by digest (scripts/pin-release-images.sh, which only pins an image that carries docker.yml's signature on refs/heads/main), signs SHA256SUMS with cosign, and puts them on
-# the prerelease `kit-main`, replacing what was there: it always holds the kit of the newest main. A tagged release (release.yml) has its own kit, from the same scripts.
+# the release `kit-<date>-<sha>`, a new tag for every build of main (nothing is replaced; the newest is marked Latest). A tagged release (release.yml) has its own kit, from the same scripts.
 # Security rules as in release.yml: actions pinned by SHA, no code of a pull request runs here (only commits of main), the token is the job's own.
 name: kit
 
@@ -51,13 +51,17 @@ jobs:
           sha256sum -- * > SHA256SUMS
           cosign sign-blob --yes --bundle SHA256SUMS.cosign.bundle SHA256SUMS
           ls -l
-      - name: Put it on the release kit-main
+      - name: Put it on a release of its own
         run: |
           set -euo pipefail
           short="${SHA:0:7}"
-          notes="The deployment kit built from main at commit ${SHA}: unpack it and run ./rusty-swarm init (docs/swarm.md). The images are pinned by digest to that commit's, SHA256SUMS is signed with cosign (docs/docker.md). This prerelease is replaced at every build of main: for a fixed version use a tagged release."
-          gh release view kit-main >/dev/null 2>&1 || gh release create kit-main --prerelease --target "$SHA" --title "Deployment kit of main (latest)" --notes "$notes"
-          for old in $(gh release view kit-main --json assets -q '.assets[].name'); do gh release delete-asset kit-main "$old" --yes; done
-          gh release upload kit-main dist/*
-          gh release edit kit-main --notes "$notes" --title "Deployment kit of main (latest: ${short})"
-          echo "https://github.com/${REPO}/releases/tag/kit-main"
+          tag="kit-$(date -u +%Y%m%d)-${short}"
+          notes="The deployment kit built from main at commit ${SHA}: unpack it and run ./rusty-swarm init (docs/swarm.md). The images are pinned by digest to that commit's, SHA256SUMS is signed with cosign (docs/docker.md). Every build of main is a release of its own, so a version stays downloadable and an install can name the one it ran; the newest is marked Latest."
+          if gh release view "$tag" >/dev/null 2>&1; then
+            # a re-run of the same commit: replace the assets of this very release
+            for old in $(gh release view "$tag" --json assets -q '.assets[].name'); do gh release delete-asset "$tag" "$old" --yes; done
+          else
+            gh release create "$tag" --target "$SHA" --latest --title "Deployment kit ${tag#kit-}" --notes "$notes"
+          fi
+          gh release upload "$tag" dist/*
+          echo "https://github.com/${REPO}/releases/tag/${tag}"
