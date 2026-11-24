@@ -14,7 +14,7 @@ pub struct Moment {
 }
 
 /// Days from 1970-01-01 of a civil date (the algorithm of H. Hinnant); `None` for a date that does not exist.
-fn days_from_civil(y: i64, m: i64, d: i64) -> Option<i64> {
+pub(crate) fn days_from_civil(y: i64, m: i64, d: i64) -> Option<i64> {
     if !(1..=12).contains(&m) || d < 1 {
         return None;
     }
