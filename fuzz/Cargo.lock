@@ -1971,6 +1971,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusty-sieve"
+version = "0.1.0"
+
+[[package]]
 name = "rusty-smtp"
 version = "0.1.0"
 dependencies = [
@@ -1988,6 +1992,7 @@ dependencies = [
  "rusty-directory",
  "rusty-mime",
  "rusty-seal",
+ "rusty-sieve",
  "rusty-store",
  "rusty-svc",
  "rusty-valkey",
