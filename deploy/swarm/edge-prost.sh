@@ -108,16 +108,23 @@ prost_setup_routes() {
   for p in /autodiscover/autodiscover.xml /Autodiscover/Autodiscover.xml /autodiscover/autodiscover.json /mail/config.mobileconfig /mail/config-v1.1.xml /.well-known/autoconfig/mail/config-v1.1.xml; do
     printf '[[listeners.routes]]\nhost = "%s"\npath_prefix = "%s"\npriority = 100\nmethods = ["GET", "POST"]\nupstream = "web"\n\n' "$MAIL_HOST" "$p"
   done
+  # Calendars and contacts (DAV=1): /dav/ and the well-known addresses of CalDAV and CardDAV go to the DAV service, every method (WebDAV has its own).
+  if [ "$DAV" = 1 ]; then
+    for p in /dav /.well-known/caldav /.well-known/carddav; do
+      printf '[[listeners.routes]]\nhost = "%s"\npath_prefix = "%s"\npriority = 100\nupstream = "dav"\n\n' "$MAIL_HOST" "$p"
+    done
+  fi
 }
 
 conf_prost_edge() {
   prost_cert_paths
   # A line that starts with a marker is live (the marker is taken off) or is removed, as the inventory says.
-  local certd_re='^#CERTD ' s3_re='^#S3 ' aproxy_re='^#ADMINPROXY ' wm_re='^#WEBMAIL ' wm_acl=''
+  local certd_re='^#CERTD ' s3_re='^#S3 ' aproxy_re='^#ADMINPROXY ' wm_re='^#WEBMAIL ' dav_re='^#DAV ' wm_acl=''
   if [ -n "$WEBMAIL_HOST" ]; then wm_acl=", \"$WEBMAIL_HOST\""; fi
   SETUP_ROUTES="$(prost_setup_routes)" awk '{ if ($0 == "@SETUP_ROUTES@") print ENVIRON["SETUP_ROUTES"]; else print }' "$HERE/../standalone/templates/prost-edge.toml.in" \
     | sed -e "$(if [ "$ADMIN_PROXY" = 1 ]; then echo "s|$aproxy_re||"; else echo "/$aproxy_re/d"; fi)" \
           -e "$(if [ -n "$WEBMAIL_HOST" ]; then echo "s|$wm_re||"; else echo "/$wm_re/d"; fi)" \
+          -e "$(if [ "$DAV" = 1 ]; then echo "s|$dav_re||"; else echo "/$dav_re/d"; fi)" \
           -e "s|@WEBMAIL_ACL@|$wm_acl|g" -e "s|@WEBMAIL_HOST@|${WEBMAIL_HOST:-}|g" -e "s|@WEBMAIL_CERT@|$WEBMAIL_CERT|g" -e "s|@WEBMAIL_KEY@|$WEBMAIL_KEY|g" \
           -e "$(if prost_has_certd; then echo "s|$certd_re||"; else echo "/$certd_re/d"; fi)" \
           -e "$(if [ "$CERT_S3" = 1 ] && prost_certs_from_s3; then echo "s|$s3_re||"; else echo "/$s3_re/d"; fi)" \

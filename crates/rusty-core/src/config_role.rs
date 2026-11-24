@@ -35,6 +35,8 @@ pub enum Role {
     Admin,
     /// The webmail: the people who own a mailbox read and write mail in a browser.
     Webmail,
+    /// The calendar and contacts service (CalDAV and CardDAV), behind the edge.
+    Dav,
     /// The authoritative name server for the hosted domains.
     Dns,
 }
@@ -56,17 +58,18 @@ impl Role {
             Role::Gc => "gc",
             Role::Admin => "admin",
             Role::Webmail => "webmail",
+            Role::Dav => "dav",
             Role::Dns => "dns",
         }
     }
 
     pub fn from_name(name: &str) -> Option<Role> {
-        [Role::SmtpIn, Role::Submission, Role::Imap, Role::Outbound, Role::Gc, Role::Admin, Role::Webmail, Role::Dns].into_iter().find(|r| r.name() == name)
+        [Role::SmtpIn, Role::Submission, Role::Imap, Role::Outbound, Role::Gc, Role::Admin, Role::Webmail, Role::Dav, Role::Dns].into_iter().find(|r| r.name() == name)
     }
 
     /// Whether the service reads or writes message blobs (and so needs `blob_dir`).
     pub fn uses_blobs(self) -> bool {
-        !matches!(self, Role::Admin | Role::Dns)
+        !matches!(self, Role::Admin | Role::Dns | Role::Dav)
     }
 
     /// The top-level keys and sections beyond the shared ones that this role accepts.
@@ -79,6 +82,7 @@ impl Role {
             Role::Gc => &["blob_dir", "blob_s3", "unsealing", "gc_grace_seconds", "dns_check"],
             Role::Admin => &["tls", "valkey", "sealing", "admin"],
             Role::Webmail => &["blob_dir", "blob_s3", "unsealing", "max_message_bytes", "tls", "valkey", "webmail"],
+            Role::Dav => &["tls", "valkey", "dav"],
             Role::Dns => &["dns"],
         }
     }
@@ -90,9 +94,9 @@ impl Role {
 
 /// Every top-level key of the schema. Only these are named in a refusal: a key that is not one of them is
 /// reported as unknown, so nothing the operator typed (or pasted by mistake) is echoed.
-const SCHEMA_KEYS: [&str; 23] = [
+const SCHEMA_KEYS: [&str; 24] = [
     "blob_dir", "blob_s3", "filter", "resolver", "metrics", "log_level", "log_format", "hostname", "max_message_bytes", "gc_grace_seconds", "store", "tls", "smtp", "imap", "outbound",
-    "limits", "dns_check", "valkey", "sealing", "unsealing", "admin", "webmail", "dns",
+    "limits", "dns_check", "valkey", "sealing", "unsealing", "admin", "webmail", "dav", "dns",
 ];
 
 fn shown(key: &str) -> &'static str {

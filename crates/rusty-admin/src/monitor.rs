@@ -17,7 +17,7 @@ use crate::manage::platform_only;
 pub const SERVICES: [&str; 6] = ["smtp-in", "submission", "imap", "outbound", "gc", "admin"];
 
 /// Services a deployment may or may not run: shown, and counted as down when they stop, only once they have beaten (a deployment without a webmail or a name server has nothing to alarm about).
-pub const OPTIONAL_SERVICES: [&str; 2] = ["webmail", "dns"];
+pub const OPTIONAL_SERVICES: [&str; 3] = ["webmail", "dav", "dns"];
 
 /// An instance that has not beaten for this long (three beats of 15 seconds) is stale.
 pub const STALE_AFTER_SECS: i64 = 45;

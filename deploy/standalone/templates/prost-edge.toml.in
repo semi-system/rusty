@@ -233,6 +233,25 @@ address = "tasks.admin:8080"
 #WEBMAIL id = "webmail"
 #WEBMAIL address = "tasks.webmail:8090"
 
+#DAV # Calendars and contacts (docs/design-caldav-carddav.md): the edge ends TLS and sends the PROXY header ([dav] proxy_protocol); the routes of the mail host to it are generated below.
+#DAV [upstreams.dav]
+#DAV send_proxy_v2 = true
+#DAV connect_timeout_ms = 3000
+#DAV health_interval_ms = 5000
+#DAV [upstreams.dav.passive_health]
+#DAV max_fails = @PASSIVE_FAILS@
+#DAV fail_timeout_ms = 5000
+#DAV [upstreams.dav.dns]
+#DAV authoritative_ttl = true
+#DAV [upstreams.dav.health_check]
+#DAV fall = 3
+#DAV rise = 2
+#DAV protocol = "connect"
+#DAV proxy_v2_command = "local"
+#DAV [[upstreams.dav.endpoints]]
+#DAV id = "dav"
+#DAV address = "tasks.dav:8091"
+
 #CERTD [[upstreams.acme.endpoints]]
 #CERTD id = "certd"
 #CERTD address = "certd:8088"

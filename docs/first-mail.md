@@ -103,3 +103,7 @@ For old devices and scripts that speak POP3 and not IMAP (`docs/design-pop3.md`)
 ## Filters from a mail client (ManageSieve)
 
 A client that edits Sieve filters (Thunderbird with the Sieve add-on, Roundcube-style tools, `sieve-connect`) talks ManageSieve to the mail host on port 4190 with STARTTLS (`docs/design-sieve.md`). Sign in with the address and the password, or with an app password. The scripts are the ones of the filter editor in the webmail: one active script runs on every incoming message of the account, at most ten scripts of 64 KiB each. The mail rules of the account are not applied while a script is active.
+
+## Calendars and contacts (CalDAV and CardDAV)
+
+When the operator has turned the service on (`DAV=1`, `docs/swarm-runbook.md`), the calendar and the address book of an account are at `https://mail.example.org/dav/` (the mail host; `/.well-known/caldav` and `/.well-known/carddav` lead there). Sign in with the address and the password, or with an app password (needed when the second factor is on). Every account starts with a calendar and an address book named `default`. Thunderbird, iOS, macOS and DAVx5 find them from the server name; `docs/design-caldav-carddav.md` lists what is and is not supported (no invitations by mail and no sharing yet).

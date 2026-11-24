@@ -23,13 +23,14 @@ pub const TEST_RO_PASSWORD: &str = "rusty-test-ro";
 pub const TEST_ADMIN_PASSWORD: &str = "rusty-test-admin";
 
 /// The roles of the services (deploy/db/roles.sql) and their test passwords.
-pub const SERVICE_ROLES: [(&str, &str); 7] = [
+pub const SERVICE_ROLES: [(&str, &str); 8] = [
     ("rusty_smtp_in", "rusty-test-smtp-in"),
     ("rusty_submission", "rusty-test-submission"),
     ("rusty_imap", "rusty-test-imap"),
     ("rusty_outbound", "rusty-test-outbound"),
     ("rusty_gc", "rusty-test-gc"),
     ("rusty_webmail", "rusty-test-webmail"),
+    ("rusty_dav", "rusty-test-dav"),
     ("rusty_dns", "rusty-test-dns"),
 ];
 

@@ -35,6 +35,8 @@ pub struct GcSummary {
     pub searches_purged: u64,
     /// Messages sent from the webmail whose outbox entry is past its week.
     pub outbox_purged: u64,
+    /// Tombstones of calendars and address books past their month (docs/design-caldav-carddav.md).
+    pub dav_tombstones_purged: u64,
     /// Rows of the backup history past their 400 days.
     pub backup_runs_purged: u64,
     /// Messages expunged because a retention rule made them due.
@@ -134,6 +136,10 @@ impl GcService {
         match ctx.outbox.purge_finished(7 * 86_400, 500).await {
             Ok(n) => s.outbox_purged = n,
             Err(e) => step_failed(&mut s, "purge the outbox", &e),
+        }
+        match ctx.dav.purge_tombstones().await {
+            Ok(n) => s.dav_tombstones_purged = n,
+            Err(e) => step_failed(&mut s, "purge the DAV tombstones", &e),
         }
         match ctx.searches.purge_expired(500).await {
             Ok(n) => s.searches_purged = n,

@@ -84,7 +84,7 @@ BEGIN
   SELECT string_agg(quote_ident(column_name), ', ' ORDER BY ordinal_position) INTO cols
     FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = 'accounts' AND column_name <> 'password_hash';
-  FOREACH r IN ARRAY ARRAY['rusty_smtp_in', 'rusty_submission', 'rusty_imap', 'rusty_outbound', 'rusty_gc', 'rusty_webmail', 'rusty_dns'] LOOP
+  FOREACH r IN ARRAY ARRAY['rusty_smtp_in', 'rusty_submission', 'rusty_imap', 'rusty_outbound', 'rusty_gc', 'rusty_webmail', 'rusty_dav', 'rusty_dns'] LOOP
     IF to_regrole(r) IS NOT NULL THEN
       EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA public FROM %I', r);
       EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM %I', r);
@@ -165,6 +165,17 @@ BEGIN
     GRANT SELECT, INSERT, UPDATE, DELETE ON sieve_scripts TO rusty_webmail;   -- the filters of the person (docs/design-sieve.md)
   END IF;
 
+  -- rusty_dav: calendars and contacts (docs/design-caldav-carddav.md). It checks a password like the mail protocols (the accounts with their hashes, the app passwords, the second factor), keeps the
+  -- collections and objects of the people, and reads no mail, no blob and no sealed secret.
+  IF to_regrole('rusty_dav') IS NOT NULL THEN
+    GRANT SELECT ON accounts, domains, aliases, domain_aliases, lists, list_members, plans, address_owners TO rusty_dav;
+    GRANT UPDATE (last_login_at) ON accounts TO rusty_dav;   -- the time of the last sign-in (DirectoryRepo::record_login)
+    GRANT SELECT ON app_passwords TO rusty_dav;   -- a login may be with an app password (docs/design-app-passwords.md)
+    GRANT SELECT (account_id, confirmed_at) ON totp TO rusty_dav;   -- with the second factor on, the own password of the account is refused here (docs/design-2fa.md)
+    GRANT UPDATE (last_used_at) ON app_passwords TO rusty_dav;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON dav_collections, dav_objects, dav_tombstones TO rusty_dav;
+  END IF;
+
   -- rusty_dns: the authoritative name server (docs/design-authoritative-dns.md). It is the most exposed service and the least trusting one: it reads the domains, the public half of the DKIM keys, the SPF include of a relay and the
   -- extra records of the hosted domains, and nothing else. No mail, no account, no password hash, no sealed secret, no write (but the heartbeat, which the loop above grants).
   IF to_regrole('rusty_dns') IS NOT NULL THEN
@@ -196,6 +207,8 @@ BEGIN
   -- rusty_gc: garbage collection, store upkeep and the periodic jobs. Deletes what is no longer referenced; never creates a message.
   IF to_regrole('rusty_gc') IS NOT NULL THEN
     EXECUTE format('GRANT SELECT (%s) ON accounts TO rusty_gc', cols);
+    GRANT SELECT, DELETE ON dav_tombstones TO rusty_gc;   -- the tombstones of a calendar or an address book are dropped after a month (docs/design-caldav-carddav.md)
+    GRANT SELECT (id, tombstone_floor), UPDATE (tombstone_floor) ON dav_collections TO rusty_gc;
     GRANT SELECT ON domains, mailboxes, folders, deliveries, sealed_secrets TO rusty_gc;
     GRANT SELECT ON domain_dns_state TO rusty_gc;   -- the periodic DNS check asks which domains are due...
     GRANT UPDATE (created_at) ON domains TO rusty_gc;   -- ...and locks the domain row it queues a check for

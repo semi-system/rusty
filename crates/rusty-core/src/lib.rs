@@ -10,6 +10,7 @@ pub mod relay_policy;
 pub mod storage_policy;
 mod config_role;
 mod config_admin;
+mod config_dav;
 mod config_webmail;
 mod config_dns;
 mod config_blob_s3;
