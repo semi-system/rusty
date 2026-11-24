@@ -410,6 +410,25 @@ echo "  ok    the calendar and contacts service and its routes (HAProxy and Pros
   [ "$(dns_expected_ip)" = 198.51.100.4 ] || { echo "the public address of the inventory was not taken"; exit 1; }
 ) || fail "the DNS check before the setup"
 echo "  ok    the DNS check waits until the names point at the server"
+# The volume of a HAProxy edge with ACME: HAProxy does not make `acme/` (a new installation then restarted the edge for ever, "cannot create the file account.key"), so the deploy makes it, owned by the user 99.
+vlog="$tmp/volumes.log"; : > "$vlog"
+(
+  # shellcheck disable=SC2034  # read by the function evaluated below
+  STACK_NAME=rusty EDGE=haproxy TLS_MODE=acme
+  sw() { printf '%s\n' "$*" >> "$vlog"; }
+  lock_ref() { echo curlimg; }
+  die() { echo "$*" >&2; exit 1; }
+  haproxy_is_edge() { [ "$EDGE" != prost ]; }
+  prost_has_certd() { return 1; }
+  eval "$(sed -n '/^edge_prepare_volumes() {$/,/^}$/p' "$ROOT/deploy/swarm/edge-prost.sh")"
+  edge_prepare_volumes
+  # shellcheck disable=SC2034  # read by the function evaluated above
+  TLS_MODE=self
+  edge_prepare_volumes
+) || fail "edge_prepare_volumes failed"
+grep -q 'volume create --label com.docker.stack.namespace=rusty rusty_edgedata' "$vlog" && grep -q 'mkdir -p /v /v/acme; chown 99:99 /v /v/acme' "$vlog" || fail "the volume of the HAProxy edge is not given its acme directory and its owner"
+[ "$(grep -c 'volume create' "$vlog")" = 1 ] || fail "a volume was made for a stack that needs none (HAProxy with self-signed certificates)"
+echo "  ok    the volume of a HAProxy edge with ACME"
 
 # ---- the configuration keys match those of the standalone templates ----------------------------------------------------------------------------------------------------------------------------
 # section.key of a TOML text; a template's profile markers are switched on, its other comments dropped

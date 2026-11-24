@@ -301,12 +301,21 @@ cmd_edge_status() {
 
 # The volumes of the edge belong to the user 10001 (the image's user, which has no shell and cannot chown): a new named volume is made here and handed over by a throw-away container as root with
 # only the CHOWN capability, before the stack is deployed. Without this Prost cannot create its admin socket in /run/prost ("Permission denied").
+#
+# The same for HAProxy with TLS_MODE=acme: its volume `edgedata` holds the account key and the certificates it orders in `acme/`, a directory HAProxy does not make ("cannot create the file
+# '/var/lib/haproxy/acme/account.key'": the edge then restarts for ever and no certificate is ever ordered on a new installation), so it is made here, owned by the user 99 HAProxy runs as.
 edge_prepare_volumes() {
-  local v
-  [ "$EDGE" != haproxy ] || return 0
-  for v in prost_run $(prost_has_certd && echo certd_state certificates); do
+  local pair v d owner dirs paths list=""
+  if haproxy_is_edge && [ "$TLS_MODE" = acme ]; then list="edgedata:99:acme"; fi
+  if [ "$EDGE" != haproxy ]; then
+    for v in prost_run $(prost_has_certd && echo certd_state certificates); do list="$list $v:10001:"; done
+  fi
+  for pair in $list; do
+    v="${pair%%:*}"; owner="${pair#*:}"; dirs="${owner#*:}"; owner="${owner%%:*}"
     sw volume create --label "com.docker.stack.namespace=$STACK_NAME" "${STACK_NAME}_$v" >/dev/null
-    sw run --rm --user 0 --cap-drop ALL --cap-add CHOWN --entrypoint chown -v "${STACK_NAME}_$v:/v" "$(lock_ref 'curlimages/curl:8.15.0')" 10001:10001 /v \
+    paths="/v"; for d in $dirs; do paths="$paths /v/$d"; done
+    sw run --rm --user 0 --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --entrypoint sh -v "${STACK_NAME}_$v:/v" "$(lock_ref 'curlimages/curl:8.15.0')" \
+      -c "set -e; mkdir -p $paths; chown $owner:$owner $paths" \
       || die "the volume ${STACK_NAME}_$v could not be handed to the edge's user"
   done
 }
