@@ -328,7 +328,7 @@ services:
     sysctls: { net.ipv4.ip_unprivileged_port_start: 0 }
     # No depends_on: the edge starts first (the mail service needs the certificate it hands out); it finds the backends by name at run time.
     tmpfs: [/tmp]
-    ports: ["25:25", "80:80", "143:143", "443:443", "465:465", "587:587", "993:993", "110:110", "995:995"]
+    ports: ["25:25", "80:80", "143:143", "443:443", "465:465", "587:587", "993:993", "110:110", "995:995", "4190:4190"]
     volumes:
       - ${RUSTY_STATE:?run ./setup.sh first}/etc/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
       - ${RUSTY_STATE:?run ./setup.sh first}/edge:/var/lib/haproxy

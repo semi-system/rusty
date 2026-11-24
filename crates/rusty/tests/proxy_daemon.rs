@@ -98,6 +98,7 @@ async fn implicit_tls_ports_behind_the_edge_start_without_a_certificate_but_star
     cfg.tls.dev_self_signed = false;
     cfg.smtp.listen_587 = rusty_core::config::Listen::off();
     cfg.imap.listen_110 = rusty_core::config::Listen::off();
+    cfg.imap.listen_4190 = rusty_core::config::Listen::off();
     cfg.imap.listen_143 = rusty_core::config::Listen::off();
     cfg.smtp.proxy_protocol = true;
     cfg.smtp.trusted_proxies = vec!["127.0.0.0/8".parse().unwrap()];

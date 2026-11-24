@@ -2111,6 +2111,7 @@ dependencies = [
  "rusty-ctl",
  "rusty-directory",
  "rusty-imap",
+ "rusty-managesieve",
  "rusty-metrics",
  "rusty-pop3",
  "rusty-runtime",
@@ -2279,6 +2280,26 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "rusty-managesieve"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "proptest",
+ "rustls",
+ "rustls-pki-types",
+ "rusty-core",
+ "rusty-directory",
+ "rusty-sieve",
+ "rusty-store",
+ "rusty-svc",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
 ]
 
 [[package]]

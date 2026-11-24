@@ -120,7 +120,9 @@ async fn each_service_keeps_to_its_own_writes() {
         // the name server reads the domain data and writes nothing; it never sees mail, accounts or secrets
         ("rusty_smtp_in", "sieve_scripts", "SELECT", true),
         ("rusty_smtp_in", "sieve_scripts", "INSERT", false),
-        ("rusty_imap", "sieve_scripts", "SELECT", false),
+        ("rusty_imap", "sieve_scripts", "SELECT", true),
+        ("rusty_imap", "sieve_scripts", "DELETE", true),
+        ("rusty_submission", "sieve_scripts", "SELECT", false),
         ("rusty_dns", "domains", "SELECT", true),
         ("rusty_dns", "domains", "UPDATE", false),
         ("rusty_dns", "domain_dns_extra", "SELECT", true),

@@ -177,7 +177,10 @@ conf_admin() {
 # The webmail (docs/design-webmail.md): behind the edge only, which ends TLS and sends the PROXY header. It opens no sealed secret and has no key of the outbound service; the key pair of its own is for the second factor of the sign-in (docs/design-2fa.md).
 conf_webmail() {
   head_common
-  printf '[webmail]\nlisten = "0.0.0.0:8090"\npublic_origin = "https://%s"\nallowed_peers = ["127.0.0.1/32"]\nallowed_hosts = ["tasks.edge", "edge"]\nproxy_protocol = true\ntotp_key_file = "/etc/rusty-keys/totp.key"\n\n' "$WEBMAIL_HOST"
+  printf '[webmail]\nlisten = "0.0.0.0:8090"\npublic_origin = "https://%s"\nallowed_peers = ["127.0.0.1/32"]\nallowed_hosts = ["tasks.edge", "edge"]\nproxy_protocol = true\ntotp_key_file = "/etc/rusty-keys/totp.key"\n' "$WEBMAIL_HOST"
+  # The pilot is reached on its own port and the browser's Origin carries it (the same as for the admin web).
+  [ "$EDGE" != prost-pilot ] || printf 'extra_origins = ["https://%s:%s"]\n' "$WEBMAIL_HOST" "$(edge_port 443)"
+  printf '\n'
   blk_blob; blk_valkey webmail; blk_store webmail
 }
 # The name server (docs/design-authoritative-dns.md): its own database role, no blob store and no key; it listens on 5353 (the stack publishes port 53 to it).
@@ -558,7 +561,7 @@ gen_stack() {
       fi
       printf '    sysctls: { net.ipv4.ip_unprivileged_port_start: 0 }\n    ports:\n'
       local p
-      local ports="25 80 110 143 443 465 587 993 995"
+      local ports="25 80 110 143 443 465 587 993 995 4190"
       for p in $ports; do printf '      - { target: %s, published: %s, protocol: tcp, mode: host }\n' "$p" "$p"; done
       y_deploy 1 "node.role == manager" stop-first edge
       if [ "$TLS_MODE" = self ]; then

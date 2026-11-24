@@ -282,7 +282,7 @@ fn sighup_reloads_the_certificate_and_a_bad_reload_keeps_the_old_one() {
             "blob_dir = \"{blobs}\"\nhostname = \"mail.example.test\"\n\
              [tls]\ncert_file = \"{cert}\"\nkey_file = \"{key}\"\n\
              [smtp]\nlisten_25 = \"127.0.0.1:{p25}\"\nlisten_587 = \"\"\nlisten_465 = \"\"\n\
-             [imap]\nlisten_143 = \"\"\nlisten_993 = \"127.0.0.1:{p993}\"\nlisten_110 = \"\"\nlisten_995 = \"\"\n\
+             [imap]\nlisten_143 = \"\"\nlisten_993 = \"127.0.0.1:{p993}\"\nlisten_110 = \"\"\nlisten_995 = \"\"\nlisten_4190 = \"\"\n\
              [limits]\nshutdown_grace_secs = 2\n\
              [store]\nurl = \"{pgurl}\"\npassword_file = \"{pgpw}\"\nsslmode = \"disable\"\ninsecure_allow_unverified_tls = true\n",
             pgurl = pg.url,
@@ -360,7 +360,7 @@ async fn healthcheck_is_ok_against_a_running_daemon_and_fails_when_nothing_liste
     wait_for_port(9993 + off, &mut child);
     let out = hc(&off_s);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
-    assert!(String::from_utf8_lossy(&out.stdout).contains("healthy: 7 listeners"), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("healthy: 8 listeners"), "{out:?}");
     // a different port range is not this daemon
     assert_eq!(hc(&(off + 100).to_string()).status.code(), Some(1));
 

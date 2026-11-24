@@ -99,3 +99,7 @@ and avoid the question. Per-domain certificates at the edge (the decided ACME HT
 ## POP3
 
 For old devices and scripts that speak POP3 and not IMAP (`docs/design-pop3.md`). It is a listener of the IMAP service, on by default (switch it off under Protocols in the admin web, `docs/design-protocols.md`). The edge passes port `110` (clear text with `STLS`) and ends TLS on `995`; open both in the firewall. A password is taken only inside TLS (`STLS` on 110, or port 995); `APOP` is not offered. Messages are downloaded from the **Inbox** only, are deleted only when the client says `DELE` and then `QUIT`, and a connection that drops deletes nothing. A client that leaves its messages on the server (the default of most) just downloads what it has not seen, by `UIDL`.
+
+## Filters from a mail client (ManageSieve)
+
+A client that edits Sieve filters (Thunderbird with the Sieve add-on, Roundcube-style tools, `sieve-connect`) talks ManageSieve to the mail host on port 4190 with STARTTLS (`docs/design-sieve.md`). Sign in with the address and the password, or with an app password. The scripts are the ones of the filter editor in the webmail: one active script runs on every incoming message of the account, at most ten scripts of 64 KiB each. The mail rules of the account are not applied while a script is active.

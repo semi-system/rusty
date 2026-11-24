@@ -181,5 +181,6 @@ pub fn dev_config(dir: &Path) -> StartupConfig {
     c.imap.listen_993 = any;
     c.imap.listen_110 = any;
     c.imap.listen_995 = any;
+    c.imap.listen_4190 = any;
     c
 }

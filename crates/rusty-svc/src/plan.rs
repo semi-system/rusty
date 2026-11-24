@@ -21,6 +21,8 @@ pub enum ListenerKind {
     Pop3110,
     /// POP3 over implicit TLS.
     Pop3s995,
+    /// ManageSieve with STARTTLS (a listener of the IMAP service).
+    Sieve4190,
 }
 
 impl ListenerKind {
@@ -33,6 +35,7 @@ impl ListenerKind {
             ListenerKind::Imaps993 => "imaps-993",
             ListenerKind::Pop3110 => "pop3-110",
             ListenerKind::Pop3s995 => "pop3s-995",
+            ListenerKind::Sieve4190 => "managesieve-4190",
         }
     }
 
@@ -48,7 +51,11 @@ impl ListenerKind {
 
     /// A port of the IMAP service (POP3 is one of its listeners and shares `[imap]`'s connection limits, proxy settings and trusted edge).
     pub fn is_imap(self) -> bool {
-        matches!(self, ListenerKind::Imap143 | ListenerKind::Imaps993 | ListenerKind::Pop3110 | ListenerKind::Pop3s995)
+        matches!(self, ListenerKind::Imap143 | ListenerKind::Imaps993 | ListenerKind::Pop3110 | ListenerKind::Pop3s995 | ListenerKind::Sieve4190)
+    }
+
+    pub fn is_managesieve(self) -> bool {
+        self == ListenerKind::Sieve4190
     }
 
     pub fn is_pop3(self) -> bool {
@@ -60,7 +67,7 @@ impl ListenerKind {
         match self {
             ListenerKind::Smtp25 => Role::SmtpIn,
             ListenerKind::Submission587 | ListenerKind::Submissions465 => Role::Submission,
-            ListenerKind::Imap143 | ListenerKind::Imaps993 | ListenerKind::Pop3110 | ListenerKind::Pop3s995 => Role::Imap,
+            ListenerKind::Imap143 | ListenerKind::Imaps993 | ListenerKind::Pop3110 | ListenerKind::Pop3s995 | ListenerKind::Sieve4190 => Role::Imap,
         }
     }
 }
@@ -103,6 +110,7 @@ pub fn listener_plan(cfg: &StartupConfig) -> Vec<PlannedListener> {
         imap(ListenerKind::Imaps993, cfg.imap.listen_993),
         imap(ListenerKind::Pop3110, cfg.imap.listen_110),
         imap(ListenerKind::Pop3s995, cfg.imap.listen_995),
+        imap(ListenerKind::Sieve4190, cfg.imap.listen_4190),
     ]
     .into_iter()
     .flatten()

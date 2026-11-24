@@ -283,6 +283,7 @@ async fn build(
             ListenerKind::Imap143 | ListenerKind::Imaps993 => Arc::new(rusty_imap::ImapHandler::new(ctx.clone()).with_budget(budget.clone())),
             ListenerKind::Pop3110 => Arc::new(rusty_pop3::Pop3Handler::new(ctx.clone(), rusty_pop3::Port::Starttls).with_budget(budget.clone())),
             ListenerKind::Pop3s995 => Arc::new(rusty_pop3::Pop3Handler::new(ctx.clone(), rusty_pop3::Port::Implicit).with_budget(budget.clone())),
+            ListenerKind::Sieve4190 => Arc::new(rusty_managesieve::ManageSieveHandler::new(ctx.clone())),
         };
         services.push(Box::new(ListenerService::new(bound, accept, handler)));
     }
@@ -475,6 +476,7 @@ pub fn with_port_offset(mut cfg: StartupConfig, offset: u16) -> Result<StartupCo
     cfg.imap.listen_993 = shift(cfg.imap.listen_993)?;
     cfg.imap.listen_110 = shift(cfg.imap.listen_110)?;
     cfg.imap.listen_995 = shift(cfg.imap.listen_995)?;
+    cfg.imap.listen_4190 = shift(cfg.imap.listen_4190)?;
     Ok(cfg)
 }
 
@@ -494,5 +496,6 @@ pub fn with_bind(mut cfg: StartupConfig, ip: std::net::IpAddr) -> StartupConfig 
     cfg.imap.listen_993 = on(cfg.imap.listen_993);
     cfg.imap.listen_110 = on(cfg.imap.listen_110);
     cfg.imap.listen_995 = on(cfg.imap.listen_995);
+    cfg.imap.listen_4190 = on(cfg.imap.listen_4190);
     cfg
 }

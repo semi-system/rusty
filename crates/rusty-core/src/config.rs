@@ -282,7 +282,7 @@ impl StartupConfig {
 
     /// The listeners that accept authentication (submission and IMAP). Port 25 never does.
     pub fn authenticated_listeners(&self) -> usize {
-        [self.smtp.listen_587, self.smtp.listen_465, self.imap.listen_143, self.imap.listen_993, self.imap.listen_110, self.imap.listen_995]
+        [self.smtp.listen_587, self.smtp.listen_465, self.imap.listen_143, self.imap.listen_993, self.imap.listen_110, self.imap.listen_995, self.imap.listen_4190]
             .iter()
             .filter(|l| l.addr().is_some())
             .count()
@@ -303,6 +303,7 @@ impl StartupConfig {
             (Role::Imap, self.imap.listen_143, true),
             (Role::Imap, self.imap.listen_993, !self.imap.proxy_protocol),
             (Role::Imap, self.imap.listen_110, true),
+            (Role::Imap, self.imap.listen_4190, true),
             (Role::Imap, self.imap.listen_995, !self.imap.proxy_protocol),
         ]
         .iter()
@@ -350,6 +351,7 @@ impl StartupConfig {
             (Role::Imap, self.imap.listen_143),
             (Role::Imap, self.imap.listen_993),
             (Role::Imap, self.imap.listen_110),
+            (Role::Imap, self.imap.listen_4190),
             (Role::Imap, self.imap.listen_995),
         ]
         .iter()
@@ -417,6 +419,7 @@ impl StartupConfig {
                 listen_110: Listen::loopback(3110),
                 // Not near the other dev ports: concurrent test daemons are started with port offsets that differ by the gap of their process ids (tens to hundreds), and two dev ports that far apart collide (1143 and 1110 are 33 apart).
                 listen_995: Listen::loopback(8895),
+                listen_4190: Listen::loopback(6190),
                 ..ImapConfig::default()
             },
             outbound: OutboundConfig::default(),
