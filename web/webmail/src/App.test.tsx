@@ -56,6 +56,7 @@ function api(over: Partial<Api> = {}): Api {
     contacts: vi.fn().mockResolvedValue([]),
     events: vi.fn().mockResolvedValue({ items: [], truncated: false }),
     importContacts: vi.fn().mockResolvedValue({ imported: 0, updated: 0, invalid: 0, duplicates: 0 }),
+    createEvent: vi.fn().mockResolvedValue(undefined),
     settings: vi.fn().mockResolvedValue({ signature: 'Alice' }),
     saveSettings: vi.fn().mockImplementation(async (s: string) => ({ signature: s })),
     scripts: vi.fn().mockResolvedValue({ scripts: [], max_scripts: 10, max_bytes: 65536 }),
@@ -181,6 +182,38 @@ describe('the webmail page', () => {
     expect(events).toHaveBeenCalledTimes(1);
     const [from, to] = events.mock.calls[0] as [number, number];
     expect(to - from).toBe(14 * 86400);
+  });
+
+  it('adds an event from the agenda with the times as UTC seconds and shows the list again', async () => {
+    const createEvent = vi.fn().mockResolvedValue(undefined);
+    const events = vi.fn().mockResolvedValue({ items: [], truncated: false });
+    const a = api({ me: vi.fn().mockResolvedValue({ address: 'alice@one.test', csrf: 'tok' }), events, createEvent });
+    render(() => <App api={a} />);
+    fireEvent.click(await screen.findByText(en['folder.agenda']));
+    fireEvent.input(await screen.findByLabelText(en['agenda.what']), { target: { value: 'Lunch' } });
+    fireEvent.input(screen.getByLabelText(en['agenda.where']), { target: { value: 'Cafe' } });
+    fireEvent.input(screen.getByLabelText(en['agenda.date']), { target: { value: '2030-05-06' } });
+    fireEvent.input(screen.getByLabelText(en['agenda.from']), { target: { value: '12:00' } });
+    fireEvent.input(screen.getByLabelText(en['agenda.until']), { target: { value: '13:30' } });
+    fireEvent.submit(screen.getByLabelText(en['agenda.what']).closest('form') as HTMLFormElement);
+    await vi.waitFor(() => expect(createEvent).toHaveBeenCalledTimes(1));
+    const start = Math.floor(new Date('2030-05-06T12:00').getTime() / 1000);
+    expect(createEvent).toHaveBeenCalledWith({ summary: 'Lunch', location: 'Cafe', start, end: start + 5400, all_day: false });
+    await vi.waitFor(() => expect(events).toHaveBeenCalledTimes(2));
+  });
+
+  it('adds a whole-day event on the UTC midnights around its date', async () => {
+    const createEvent = vi.fn().mockResolvedValue(undefined);
+    const a = api({ me: vi.fn().mockResolvedValue({ address: 'alice@one.test', csrf: 'tok' }), createEvent });
+    render(() => <App api={a} />);
+    fireEvent.click(await screen.findByText(en['folder.agenda']));
+    fireEvent.input(await screen.findByLabelText(en['agenda.what']), { target: { value: 'Holiday' } });
+    fireEvent.input(screen.getByLabelText(en['agenda.date']), { target: { value: '2030-05-06' } });
+    fireEvent.click(screen.getByLabelText(en['agenda.wholeDay']));
+    fireEvent.submit(screen.getByLabelText(en['agenda.what']).closest('form') as HTMLFormElement);
+    await vi.waitFor(() => expect(createEvent).toHaveBeenCalledTimes(1));
+    const midnight = Date.UTC(2030, 4, 6) / 1000;
+    expect(createEvent).toHaveBeenCalledWith({ summary: 'Holiday', location: '', start: midnight, end: midnight + 86400, all_day: true });
   });
 
   it('offers the contacts as a .vcf download from the settings', async () => {

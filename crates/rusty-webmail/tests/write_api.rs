@@ -662,3 +662,30 @@ async fn a_vcf_file_is_imported_into_the_address_book_and_is_what_the_composer_a
     let nobook = call(r.addr, "POST", "/api/v1/contacts/import", &[("Cookie", &bob_cookie), ("Content-Type", "application/json"), ("Origin", ORIGIN), ("X-CSRF-Token", &bob_csrf)], Some(&serde_json::json!({ "vcf": vcf }).to_string())).await;
     assert_eq!(nobook.status, 409, "bob has no address book: the DAV service makes it, not the webmail");
 }
+
+#[tokio::test]
+async fn a_new_event_is_added_to_the_default_calendar_and_is_what_the_agenda_lists() {
+    let r = rig().await;
+    let dav = r.operator.repos().dav.clone();
+    dav.ensure_defaults(r.alice_id).await.unwrap();
+    let s = alice(&r).await;
+    let (start, end) = (1_709_634_000_i64, 1_709_637_600_i64);
+    let made = s.post(r.addr, "/api/v1/events", serde_json::json!({ "summary": "Lunch", "location": "Cafe", "start": start, "end": end })).await;
+    assert_eq!(made.status, 201, "{}", made.text());
+    assert!(made.json()["uid"].as_str().is_some_and(|u| u.starts_with("urn:uuid:")));
+    let listed = call(r.addr, "GET", &format!("/api/v1/events?from={}&to={}", start - 3600, end + 3600), &[("Cookie", &s.cookie)], None).await;
+    let items = listed.json()["items"].as_array().unwrap().clone();
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!((items[0]["summary"].as_str(), items[0]["location"].as_str(), items[0]["start"].as_i64(), items[0]["utc"].as_bool()), (Some("Lunch"), Some("Cafe"), Some(start), Some(true)));
+    // The calendar's change count moved, so a CalDAV client syncs it.
+    let cal = dav.collection(r.alice_id, "calendar", "default").await.unwrap().unwrap();
+    assert!(cal.revision >= 1, "{}", cal.revision);
+    // Refused: no title, an end before the start, no session or token; and a person with no calendar gets a 409.
+    assert_eq!(s.post(r.addr, "/api/v1/events", serde_json::json!({ "summary": "", "start": start, "end": end })).await.status, 400);
+    assert_eq!(s.post(r.addr, "/api/v1/events", serde_json::json!({ "summary": "x", "start": end, "end": start })).await.status, 400);
+    assert_eq!(call(r.addr, "POST", "/api/v1/events", &[("Content-Type", "application/json"), ("Origin", ORIGIN)], Some("{}")).await.status, 401);
+    let (bob_cookie, bob_csrf) = sign_in(r.addr, "bob@one.test", "another-long-password-2").await;
+    let body = serde_json::json!({ "summary": "x", "start": start, "end": end }).to_string();
+    let nocal = call(r.addr, "POST", "/api/v1/events", &[("Cookie", &bob_cookie), ("Content-Type", "application/json"), ("Origin", ORIGIN), ("X-CSRF-Token", &bob_csrf)], Some(&body)).await;
+    assert_eq!(nocal.status, 409, "the DAV service makes the calendar, not the webmail");
+}
