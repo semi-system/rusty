@@ -6,6 +6,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 tool="$PWD/deploy/swarm/rusty-swarm"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 export HOME="$tmp/home"; mkdir -p "$HOME"; export RUSTY_SWARM_UI=plain
+# `init` goes on after the questions: its wait for the DNS (dns-wait.sh) must not hold a test that only looks at what the questions wrote (the names here are not ours).
+export DNS_CHECK=0
 fail() { echo "swarm-wizard: $*" >&2; exit 1; }
 
 # 1. This machine, an external PostgreSQL (TLS on) and an external S3.

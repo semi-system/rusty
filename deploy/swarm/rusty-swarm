@@ -9,6 +9,7 @@
 #   ./rusty-swarm [--env FILE] inventory    what the tool understood of the inventory
 #   ./rusty-swarm [--env FILE] init [--yes]   the whole flow, automatic: Docker is installed where it is missing (Docker's apt repository, key checked), a swarm that is already there is offered for
 #                                                removal, then the check, the swarm, its proof and prepare db (the later steps join the chain as they are built); --yes answers the question with y
+#   ./rusty-swarm [--env FILE] dns check | dns wait   with TLS_MODE=acme: do the host names point at the Manager? (`init` waits for them before it sets anything up: dns-wait.sh; DNS_CHECK, DNS_WAIT_MINUTES)
 #   ./rusty-swarm [--env FILE] cluster check     what is wrong on the nodes (prints, changes nothing)
 #   ./rusty-swarm [--env FILE] cluster install-docker   install Docker (Docker's apt repository with its key checked, as root; get.docker.com on other systems) on the nodes that have none (`init` does it by itself)
 #   ./rusty-swarm [--env FILE] cluster init      start the swarm on the Manager, join the workers, set the labels (each part is skipped when it is already done)
@@ -364,6 +365,8 @@ cmd_prepare_db() {
 
 # shellcheck source=stack.sh
 . "$HERE/stack.sh"
+# shellcheck source=dns-wait.sh
+. "$HERE/dns-wait.sh"
 
 # ---- install docker --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 # Only where Docker is missing (owner's choice: automatic): get.docker.com is a script of the internet that runs as root. A node reached as a
@@ -449,6 +452,8 @@ cmd_all() {
   cmd_install_docker
   offer_swarm_removal "$yes"
   cmd_check
+  # Before anything is set up: the host names must point at this server (with ACME certificates), and the setup waits until they do.
+  wait_dns
   cmd_init
   cmd_verify
   # The secrets and configs first (the passwords are made here); then the database: an external one is prepared as it is, the default one is started first (the stack with only its
@@ -472,10 +477,12 @@ cmd_all() {
 # ---- main ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 validate_inventory
 # The defaults of the stack (the passwords and keys it makes itself) are worked out before any step that needs them.
-case "${1:-}" in init|prepare|migrate|deploy|stack|logs|verify|backup|restore|upgrade|certs|prune|edge) resolve_defaults ;; esac
+case "${1:-}" in init|prepare|migrate|deploy|stack|logs|verify|backup|restore|upgrade|certs|prune|edge|dns) resolve_defaults ;; esac
 case "${1:-}:${2:-}" in
   init:*) shift; cmd_all "$@" ;;
   inventory:*) cmd_inventory ;;
+  dns:check) cmd_dns_check ;;
+  dns:wait) cmd_dns_wait ;;
   cluster:check) cmd_check ;;
   cluster:install-docker) cmd_install_docker ;;
   cluster:init) cmd_init ;;
