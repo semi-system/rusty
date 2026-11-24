@@ -214,6 +214,25 @@ protocol = "connect"
 id = "admin"
 address = "tasks.admin:8080"
 
+#WEBMAIL # The webmail (docs/design-webmail.md): the edge ends TLS and sends the PROXY header ([webmail] proxy_protocol), so the sign-in throttle and the audit see the client's address.
+#WEBMAIL [upstreams.webmail]
+#WEBMAIL send_proxy_v2 = true
+#WEBMAIL connect_timeout_ms = 3000
+#WEBMAIL health_interval_ms = 5000
+#WEBMAIL [upstreams.webmail.passive_health]
+#WEBMAIL max_fails = @PASSIVE_FAILS@
+#WEBMAIL fail_timeout_ms = 5000
+#WEBMAIL [upstreams.webmail.dns]
+#WEBMAIL authoritative_ttl = true
+#WEBMAIL [upstreams.webmail.health_check]
+#WEBMAIL fall = 3
+#WEBMAIL rise = 2
+#WEBMAIL protocol = "connect"
+#WEBMAIL proxy_v2_command = "local"
+#WEBMAIL [[upstreams.webmail.endpoints]]
+#WEBMAIL id = "webmail"
+#WEBMAIL address = "tasks.webmail:8090"
+
 #CERTD [[upstreams.acme.endpoints]]
 #CERTD id = "certd"
 #CERTD address = "certd:8088"
@@ -334,7 +353,7 @@ client_write_timeout_ms = 30000
 header_read_timeout_ms = 10000
 [[listeners.plugins]]
 name = "host_acl"
-config = {hosts=["@ADMIN_HOST@", "@MAIL_HOST@"], status=421}
+config = {hosts=["@ADMIN_HOST@", "@MAIL_HOST@"@WEBMAIL_ACL@], status=421}
 [listeners.http2_settings]
 header_read_timeout_ms = 10000
 [listeners.tls]
@@ -349,9 +368,19 @@ private_key = "@ADMIN_KEY@"
 server_names = ["@MAIL_HOST@"]
 certificate = "@MAIL_CERT@"
 private_key = "@MAIL_KEY@"
+#WEBMAIL [[listeners.tls.certificates]]
+#WEBMAIL server_names = ["@WEBMAIL_HOST@"]
+#WEBMAIL certificate = "@WEBMAIL_CERT@"
+#WEBMAIL private_key = "@WEBMAIL_KEY@"
 [listeners.tls.policy]
 min_version = "tls12"
 session_resumption = false
+
+#WEBMAIL # The webmail host: open to everyone (a person signs in there); the webmail guards its own sessions.
+#WEBMAIL [[listeners.routes]]
+#WEBMAIL host = "@WEBMAIL_HOST@"
+#WEBMAIL path_prefix = "/"
+#WEBMAIL upstream = "webmail"
 
 [[listeners.routes]]
 host = "@ADMIN_HOST@"

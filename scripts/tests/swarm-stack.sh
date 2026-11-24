@@ -211,6 +211,20 @@ grep -q 'certificate = "/run/secrets/edge_mail_crt"' "$tmp/state-prostself/stack
 prost_check prostself
 o="$(run_tool "$tmp/prostself.env" backup --keep abc 2>&1 || true)"; case "$o" in *"number of backups"*) ;; *) fail "backup: a bad --keep is not refused";; esac
 o="$(run_tool "$tmp/prostself.env" backup verify 2>&1 || true)"; case "$o" in *"no dump"*|*"not readable"*) ;; *) fail "backup verify: a missing dump is not refused: $o";; esac
+# The webmail behind Prost (docs/design-webmail.md): its host gets a certificate, a route and an upstream; without WEBMAIL_HOST none of it is in the file.
+scenario prostwebmail "$EXT"$'\nEDGE=prost\nTLS_MODE=self\nWEBMAIL_HOST=webmail.example.org\nREPLICAS_DEFAULT=1' "edge webmail" "certd db s3"
+pw="$tmp/state-prostwebmail/stack/etc/prost-edge.toml"
+no_placeholders "$pw"
+! grep -q '^#WEBMAIL\|@WEBMAIL' "$pw" || fail "prostwebmail: a marker or a placeholder is left"
+grep -q '^server_names = \["webmail.example.org"\]' "$pw" && grep -q 'certificate = "/run/secrets/edge_webmail_crt"' "$pw" || fail "prostwebmail: the certificate of the webmail host is not given to the edge"
+grep -q '^address = "tasks.webmail:8090"' "$pw" && grep -q '^upstream = "webmail"' "$pw" && grep -q 'hosts=\["admin.example.org", "mail.example.org", "webmail.example.org"\]' "$pw" || fail "prostwebmail: the route or the host list of the webmail is missing"
+grep -q 'target: edge_webmail_key' "$tmp/prostwebmail.stack.yaml" || fail "prostwebmail: the key of the webmail host does not reach the edge as a secret"
+grep -q '^send_proxy_v2 = true' "$pw" || fail "prostwebmail: the webmail is not told the client address"
+prost_check prostwebmail
+! grep -q 'webmail' "$tmp/state-prostself/stack/etc/prost-edge.toml" || fail "prostself: the webmail is in the edge without WEBMAIL_HOST"
+scenario prostwebmailacme "$EXT"$'\nEDGE=prost\nTLS_MODE=acme\nWEBMAIL_HOST=webmail.example.org\nREPLICAS_DEFAULT=1' "edge webmail certd" "db s3"
+grep -q '^domains = \["mail.example.org", "admin.example.org", "webmail.example.org"\]' "$tmp/state-prostwebmailacme/stack/etc/prost-certd.toml" || fail "prostwebmailacme: prost-certd does not ask for the webmail host"
+grep -q 'server_names = \["webmail.example.org"\]' "$tmp/state-prostwebmailacme/stack/etc/prost-edge.toml" || fail "prostwebmailacme: the webmail host has no certificate entry"
 
 printf "https://hooks.example.org/T000/secret-token
 " > "$tmp/alert-url"
@@ -324,6 +338,7 @@ grep -q '^trusted_proxy_hosts = \["tasks.edge", "edge", "tasks.edge-prost", "edg
 grep -q '^allowed_hosts = \["tasks.edge", "edge", "tasks.edge-prost", "edge-prost"\]' "$pq/admin.toml" || fail "pilot: the admin web does not allow the Prost pilot"
 ! grep -q 'aws_access_key_id' "$pp" || fail "pilot: a key is in the stack file"
 echo "  ok    Prost as the edge, as a pilot beside HAProxy, and its certificates (files, S3, secrets)"
+echo "  ok    the webmail at the Prost edge (certificate, route, upstream)"
 
 # ---- the configuration keys match those of the standalone templates ----------------------------------------------------------------------------------------------------------------------------
 # section.key of a TOML text; a template's profile markers are switched on, its other comments dropped
@@ -385,8 +400,6 @@ refuse "a bad alert kind" 'ALERT_KIND=sms'
 refuse "a per-address limit of zero" 'PROST_MAX_PER_IP=0'
 refuse "the webmail on the admin host" 'WEBMAIL_HOST=admin.example.org'
 refuse "the webmail on something that is not a host name" 'WEBMAIL_HOST="not a host"'
-refuse "the webmail behind the Prost edge" 'EDGE=prost
-WEBMAIL_HOST=webmail.example.org'
 refuse "a bad image" 'PROST_IMAGE="Prost Latest"'
 echo "  ok    bad values are refused"
 # For a look at what the tool rendered (SWARM_STACK_KEEP=DIR): the Prost edge configuration of the scenario "prost".

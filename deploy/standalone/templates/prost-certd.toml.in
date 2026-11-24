@@ -17,7 +17,7 @@ delivery_retry_seconds = 10
 
 [[certificates]]
 id = "edge"
-domains = ["@MAIL_HOST@", "@ADMIN_HOST@"]
+domains = ["@MAIL_HOST@", "@ADMIN_HOST@"@WEBMAIL_DOMAIN@]
 listeners = ["smtps", "imaps", "pop3s", "admin"]
 # Keep the strict SNI allow-list of each listener as it is (the names are in the edge's configuration already).
 add_sni_names = false

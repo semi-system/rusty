@@ -63,7 +63,6 @@ check_edge_inputs() {
   case "$EDGE" in haproxy|prost|prost-pilot) ;; *) die "EDGE is haproxy (default), prost or prost-pilot" ;; esac
   case "$CERT_S3" in 0|1) ;; *) die "CERT_S3 is 0 or 1" ;; esac
   case "$ADMIN_PROXY" in 0|1) ;; *) die "ADMIN_PROXY is 0 or 1" ;; esac
-  [ -z "$WEBMAIL_HOST" ] || [ "$EDGE" != prost ] || die "WEBMAIL_HOST: the edge entry of the webmail is HAProxy's so far (EDGE=haproxy, or the Prost pilot beside it); the Prost edge follows"
   local v
   for v in PROST_MAX_PER_IP PROST_CONN_RATE PROST_CONN_BURST PROST_MAX_FAILS; do [[ "${!v}" =~ ^[0-9]{1,6}$ ]] && [ "${!v}" -ge 1 ] || die "$v is a number from 1 to 999999"; done
   [[ "$PROST_PILOT_OFFSET" =~ ^[0-9]{4,5}$ ]] && [ "$PROST_PILOT_OFFSET" -ge 10000 ] && [ "$PROST_PILOT_OFFSET" -le 60000 ] || die "PROST_PILOT_OFFSET is a number from 10000 to 60000 (so that every port stays below 65536)"
@@ -84,16 +83,19 @@ check_edge_inputs() {
 
 # ---- the configuration files ----------------------------------------------------------------------------------------------------------------------------------------------------------------
 # Where Prost reads the certificates from: the files of prost-certd, S3, or Docker secrets (self-signed).
-prost_cert_paths() { # -> MAIL_CERT MAIL_KEY ADMIN_CERT ADMIN_KEY (globals)
+prost_cert_paths() { # -> MAIL_CERT MAIL_KEY ADMIN_CERT ADMIN_KEY WEBMAIL_CERT WEBMAIL_KEY (globals)
   if prost_has_certd; then
     MAIL_CERT=/certificates/edge/current/fullchain.pem; MAIL_KEY=/certificates/edge/current/privkey.pem
     ADMIN_CERT=$MAIL_CERT; ADMIN_KEY=$MAIL_KEY
+    WEBMAIL_CERT=$MAIL_CERT; WEBMAIL_KEY=$MAIL_KEY
   elif prost_certs_from_s3; then
     MAIL_CERT="s3://$CERT_S3_BUCKET/mail/fullchain.pem"; MAIL_KEY="s3://$CERT_S3_BUCKET/mail/privkey.pem"
     ADMIN_CERT="s3://$CERT_S3_BUCKET/admin/fullchain.pem"; ADMIN_KEY="s3://$CERT_S3_BUCKET/admin/privkey.pem"
+    WEBMAIL_CERT="s3://$CERT_S3_BUCKET/webmail/fullchain.pem"; WEBMAIL_KEY="s3://$CERT_S3_BUCKET/webmail/privkey.pem"
   else
     MAIL_CERT=/run/secrets/edge_mail_crt; MAIL_KEY=/run/secrets/edge_mail_key
     ADMIN_CERT=/run/secrets/edge_admin_crt; ADMIN_KEY=/run/secrets/edge_admin_key
+    WEBMAIL_CERT=/run/secrets/edge_webmail_crt; WEBMAIL_KEY=/run/secrets/edge_webmail_key
   fi
 }
 
@@ -111,9 +113,12 @@ prost_setup_routes() {
 conf_prost_edge() {
   prost_cert_paths
   # A line that starts with a marker is live (the marker is taken off) or is removed, as the inventory says.
-  local certd_re='^#CERTD ' s3_re='^#S3 ' aproxy_re='^#ADMINPROXY '
+  local certd_re='^#CERTD ' s3_re='^#S3 ' aproxy_re='^#ADMINPROXY ' wm_re='^#WEBMAIL ' wm_acl=''
+  if [ -n "$WEBMAIL_HOST" ]; then wm_acl=", \"$WEBMAIL_HOST\""; fi
   SETUP_ROUTES="$(prost_setup_routes)" awk '{ if ($0 == "@SETUP_ROUTES@") print ENVIRON["SETUP_ROUTES"]; else print }' "$HERE/../standalone/templates/prost-edge.toml.in" \
     | sed -e "$(if [ "$ADMIN_PROXY" = 1 ]; then echo "s|$aproxy_re||"; else echo "/$aproxy_re/d"; fi)" \
+          -e "$(if [ -n "$WEBMAIL_HOST" ]; then echo "s|$wm_re||"; else echo "/$wm_re/d"; fi)" \
+          -e "s|@WEBMAIL_ACL@|$wm_acl|g" -e "s|@WEBMAIL_HOST@|${WEBMAIL_HOST:-}|g" -e "s|@WEBMAIL_CERT@|$WEBMAIL_CERT|g" -e "s|@WEBMAIL_KEY@|$WEBMAIL_KEY|g" \
           -e "$(if prost_has_certd; then echo "s|$certd_re||"; else echo "/$certd_re/d"; fi)" \
           -e "$(if [ "$CERT_S3" = 1 ] && prost_certs_from_s3; then echo "s|$s3_re||"; else echo "/$s3_re/d"; fi)" \
           -e "s|@MAIL_CERT@|$MAIL_CERT|g" -e "s|@MAIL_KEY@|$MAIL_KEY|g" -e "s|@ADMIN_CERT@|$ADMIN_CERT|g" -e "s|@ADMIN_KEY@|$ADMIN_KEY|g" \
@@ -124,7 +129,9 @@ conf_prost_edge() {
 
 conf_prost_certd() {
   local dir="${ACME_DIRECTORY:-https://acme-v02.api.letsencrypt.org/directory}"
-  sed -e "s|@ACME_DIRECTORY@|$dir|g" -e "s|@CONTACT@|${CONTACT:-}|g" -e "s|@MAIL_HOST@|$MAIL_HOST|g" -e "s|@ADMIN_HOST@|$ADMIN_HOST|g" "$HERE/../standalone/templates/prost-certd.toml.in"
+  local wm=""
+  if [ -n "$WEBMAIL_HOST" ]; then wm=", \"$WEBMAIL_HOST\""; fi
+  sed -e "s|@ACME_DIRECTORY@|$dir|g" -e "s|@CONTACT@|${CONTACT:-}|g" -e "s|@MAIL_HOST@|$MAIL_HOST|g" -e "s|@ADMIN_HOST@|$ADMIN_HOST|g" -e "s|@WEBMAIL_DOMAIN@|$wm|g" "$HERE/../standalone/templates/prost-certd.toml.in"
 }
 
 # ---- prepare ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -133,7 +140,7 @@ edge_prepare_secrets() { # STACK-DIR
   local d="$1" n
   [ "$EDGE" != haproxy ] || return 0
   if ! prost_has_certd && ! prost_certs_from_s3; then
-    for n in mail admin; do
+    for n in mail admin ${WEBMAIL_HOST:+webmail}; do
       ensure_secret "edge_${n}_crt" "$STATE_DIR/tls/$n.crt"
       ensure_secret "edge_${n}_key" "$STATE_DIR/tls/$n.key"
     done
@@ -167,7 +174,7 @@ edge_names_needed() {
       echo "C prost_edge"
       if prost_has_certd; then echo "C prost_certd"; fi
       if prost_certs_from_s3; then echo "S edge_s3_credentials"; fi
-      if ! prost_has_certd && ! prost_certs_from_s3; then echo "S edge_mail_crt"; echo "S edge_mail_key"; echo "S edge_admin_crt"; echo "S edge_admin_key"; fi
+      if ! prost_has_certd && ! prost_certs_from_s3; then echo "S edge_mail_crt"; echo "S edge_mail_key"; echo "S edge_admin_crt"; echo "S edge_admin_key"; [ -z "$WEBMAIL_HOST" ] || { echo "S edge_webmail_crt"; echo "S edge_webmail_key"; }; fi
       ;;
   esac
 }
@@ -199,6 +206,7 @@ gen_prost_services() {
     else
       y_secret edge_mail_crt edge_mail_crt 10001; y_secret edge_mail_key edge_mail_key 10001
       y_secret edge_admin_crt edge_admin_crt 10001; y_secret edge_admin_key edge_admin_key 10001
+      [ -z "$WEBMAIL_HOST" ] || { y_secret edge_webmail_crt edge_webmail_crt 10001; y_secret edge_webmail_key edge_webmail_key 10001; }
     fi
   fi
   printf '    configs:\n'
