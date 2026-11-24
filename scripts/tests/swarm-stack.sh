@@ -366,6 +366,23 @@ grep -q '^path_prefix = "/.well-known/carddav"' "$dq" || fail "davprost: no rout
 prost_check davprost
 ! grep -q 'dav' "$tmp/state-prostself/stack/etc/prost-edge.toml" || fail "prostself: a DAV upstream without DAV=1"
 echo "  ok    the calendar and contacts service and its routes (HAProxy and Prost)"
+# The volume of a HAProxy edge with ACME: HAProxy does not make `acme/` (a new installation then restarted the edge for ever, "cannot create the file account.key"), so the deploy makes it, owned by the user 99.
+vlog="$tmp/volumes.log"; : > "$vlog"
+(
+  STACK_NAME=rusty EDGE=haproxy TLS_MODE=acme
+  sw() { printf '%s\n' "$*" >> "$vlog"; }
+  lock_ref() { echo curlimg; }
+  die() { echo "$*" >&2; exit 1; }
+  haproxy_is_edge() { [ "$EDGE" != prost ]; }
+  prost_has_certd() { return 1; }
+  eval "$(sed -n '/^edge_prepare_volumes() {$/,/^}$/p' "$ROOT/deploy/swarm/edge-prost.sh")"
+  edge_prepare_volumes
+  TLS_MODE=self
+  edge_prepare_volumes
+) || fail "edge_prepare_volumes failed"
+grep -q 'volume create --label com.docker.stack.namespace=rusty rusty_edgedata' "$vlog" && grep -q 'mkdir -p /v /v/acme; chown 99:99 /v /v/acme' "$vlog" || fail "the volume of the HAProxy edge is not given its acme directory and its owner"
+[ "$(grep -c 'volume create' "$vlog")" = 1 ] || fail "a volume was made for a stack that needs none (HAProxy with self-signed certificates)"
+echo "  ok    the volume of a HAProxy edge with ACME"
 
 # ---- the configuration keys match those of the standalone templates ----------------------------------------------------------------------------------------------------------------------------
 # section.key of a TOML text; a template's profile markers are switched on, its other comments dropped
