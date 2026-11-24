@@ -114,11 +114,54 @@ async fn list(app: &WebmailApp, req: Request) -> Response {
     }
 }
 
+/// Most cards one export holds.
+const EXPORT_MAX: i64 = 5000;
+
+/// The text of an export: every card of the person, each ended by CRLF, the cards one after the other (a `.vcf` file is a concatenation of vCards).
+pub fn export_text(cards: &[String]) -> String {
+    let mut out = String::new();
+    for body in cards {
+        let body = body.trim_end_matches(['\r', '\n']);
+        if body.is_empty() {
+            continue;
+        }
+        out.push_str(&body.replace("\r\n", "\n").replace('\n', "\r\n"));
+        out.push_str("\r\n");
+    }
+    out
+}
+
+/// `GET /api/v1/contacts/export`: the contacts of the person as one `contacts.vcf` file (read only, like the suggestions).
+async fn export(app: &WebmailApp, req: Request) -> Response {
+    let session = match app.require(&req, false).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    match app.dav.search_cards(session.account_id(), "BEGIN:VCARD", EXPORT_MAX).await {
+        Ok(found) => {
+            let bodies: Vec<String> = found.into_iter().map(|o| o.body).collect();
+            Response::new(200)
+                .with_header("content-type", "text/vcard; charset=utf-8")
+                .with_header("content-disposition", "attachment; filename=\"contacts.vcf\"")
+                .with_header("cache-control", "no-store")
+                .with_header("x-content-type-options", "nosniff")
+                .with_body(export_text(&bodies).into_bytes())
+        }
+        Err(_) => error(503, "busy"),
+    }
+}
+
 pub fn routes(app: Arc<WebmailApp>, router: Router) -> Router {
-    router.route(Method::Get, "/api/v1/contacts", handler(move |req: Request| {
-        let app = app.clone();
-        async move { list(&app, req).await }
-    }))
+    let exporter = app.clone();
+    router
+        .route(Method::Get, "/api/v1/contacts/export", handler(move |req: Request| {
+            let app = exporter.clone();
+            async move { export(&app, req).await }
+        }))
+        .route(Method::Get, "/api/v1/contacts", handler(move |req: Request| {
+            let app = app.clone();
+            async move { list(&app, req).await }
+        }))
 }
 
 #[cfg(test)]
@@ -150,6 +193,13 @@ mod tests {
         let many: Vec<String> = (0..30).map(|i| card(&format!("Person {i:02}"), &[&format!("p{i}@example.org")])).collect();
         assert_eq!(suggestions(&many, "person").len(), MAX_ITEMS);
         assert!(suggestions(&["not a card".to_owned()], "x").is_empty());
+    }
+
+    #[test]
+    fn an_export_is_the_cards_one_after_the_other_each_ended_by_crlf() {
+        let out = export_text(&["BEGIN:VCARD\nFN:A\nEND:VCARD\n".to_owned(), "".to_owned(), "BEGIN:VCARD\r\nFN:B\r\nEND:VCARD".to_owned()]);
+        assert_eq!(out, "BEGIN:VCARD\r\nFN:A\r\nEND:VCARD\r\nBEGIN:VCARD\r\nFN:B\r\nEND:VCARD\r\n");
+        assert_eq!(export_text(&[]), "");
     }
 
     #[test]

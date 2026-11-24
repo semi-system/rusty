@@ -561,3 +561,30 @@ async fn the_composer_is_offered_the_contacts_of_the_person_from_their_address_b
     assert!(call(r.addr, "GET", "/api/v1/contacts?q=ada", &[("Cookie", &bob_cookie)], None).await.json()["items"].as_array().unwrap().is_empty());
     r.stop.cancel();
 }
+
+#[tokio::test]
+async fn the_contacts_of_the_person_are_exported_as_one_vcf_file_and_nobody_elses() {
+    let r = rig().await;
+    let dav = r.operator.repos().dav.clone();
+    dav.ensure_defaults(r.alice_id).await.unwrap();
+    let book = dav.collection(r.alice_id, "addressbook", "default").await.unwrap().unwrap().id;
+    for (name, uid, fnm) in [("ada.vcf", "ada", "Ada Lovelace"), ("alan.vcf", "alan", "Alan Turing")] {
+        let body = format!("BEGIN:VCARD\r\nVERSION:3.0\r\nUID:{uid}\r\nFN:{fnm}\r\nEND:VCARD\r\n");
+        let new = rusty_store::NewDavObject { name: name.into(), uid: uid.into(), body, component: "VCARD".into(), starts_at: None, ends_at: None, recurring: false };
+        dav.put(book, &new, &rusty_store::DavPrecondition::None).await.unwrap();
+    }
+    let s = alice(&r).await;
+    let out = call(r.addr, "GET", "/api/v1/contacts/export", &[("Cookie", &s.cookie)], None).await;
+    assert_eq!(out.status, 200, "{}", out.text());
+    let text = out.text();
+    assert_eq!(text.matches("BEGIN:VCARD").count(), 2, "{text}");
+    assert!(text.contains("FN:Ada Lovelace") && text.contains("FN:Alan Turing") && text.ends_with("END:VCARD\r\n"), "{text}");
+    assert!(out.header("content-disposition").is_some_and(|d| d.contains("attachment") && d.contains("contacts.vcf")));
+    assert!(out.header("content-type").is_some_and(|t| t.starts_with("text/vcard")));
+    // No session, no file; another person gets an empty file.
+    assert_eq!(call(r.addr, "GET", "/api/v1/contacts/export", &[], None).await.status, 401);
+    let (bob_cookie, _) = sign_in(r.addr, "bob@one.test", "another-long-password-2").await;
+    let none = call(r.addr, "GET", "/api/v1/contacts/export", &[("Cookie", &bob_cookie)], None).await;
+    assert_eq!(none.status, 200);
+    assert_eq!(none.text(), "");
+}

@@ -74,6 +74,13 @@ export const Settings: Component<{ api: Api; onSignature: () => void }> = (props
           <span class="note" role="status">{t('settings.signature.saved')}</span>
         </Show>
       </form>
+      <h2>{t('settings.contacts.title')}</h2>
+      <p class="note">{t('settings.contacts.about')}</p>
+      <p>
+        <a href="/api/v1/contacts/export" download="contacts.vcf">
+          {t('settings.contacts.export')}
+        </a>
+      </p>
       <Filters api={props.api} />
       <TwoStep api={props.api} />
       <h2>{t('settings.apppw.title')}</h2>
