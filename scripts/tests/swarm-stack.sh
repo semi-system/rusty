@@ -369,6 +369,7 @@ echo "  ok    the calendar and contacts service and its routes (HAProxy and Pros
 # The volume of a HAProxy edge with ACME: HAProxy does not make `acme/` (a new installation then restarted the edge for ever, "cannot create the file account.key"), so the deploy makes it, owned by the user 99.
 vlog="$tmp/volumes.log"; : > "$vlog"
 (
+  # shellcheck disable=SC2034  # read by the function evaluated below
   STACK_NAME=rusty EDGE=haproxy TLS_MODE=acme
   sw() { printf '%s\n' "$*" >> "$vlog"; }
   lock_ref() { echo curlimg; }
