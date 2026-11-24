@@ -437,3 +437,103 @@ pub fn records_with_facts(domain: &str, facts: &MailFacts<'_>, keys: &[(&str, &s
     }
     Ok((records, warnings))
 }
+
+/// Most characters of the value of a tenant's own TXT record.
+pub const MAX_EXTRA_TXT: usize = 2000;
+
+/// A record a tenant adds to a hosted zone (docs/design-authoritative-dns.md, section 3), checked before it is stored: the relative name (`@` is the domain itself, no wildcard), the type, and the value in the
+/// form the zone builder reads (`A`/`AAAA` an address, `CNAME` a host name, `MX` `10 host`, `SRV` `0 1 443 host`, `TXT` the text). Returns the name and type in their stored form (lower case, upper case) and the value.
+pub fn validate_extra(name: &str, rtype: &str, value: &str) -> Result<(String, String, String)> {
+    let bad = |m: &str| Err(Error::Invalid(format!("extra record: {m}")));
+    let name = name.trim().to_ascii_lowercase();
+    let ok_label = |l: &str| (1..=63).contains(&l.len()) && l.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_') && !l.starts_with('-') && !l.ends_with('-');
+    if name != "@" && (name.len() > 200 || !name.split('.').all(ok_label)) {
+        return bad("the name is a name inside the domain (letters, digits, - and _), or @; no wildcard");
+    }
+    let rtype = rtype.trim().to_ascii_uppercase();
+    let value = value.trim().to_owned();
+    let host_ok = |h: &str| valid_hostname(h.trim_end_matches('.')) && !h.is_empty();
+    match rtype.as_str() {
+        "A" => match value.parse::<std::net::Ipv4Addr>() {
+            Ok(a) if publishable_address(IpAddr::V4(a)) => {}
+            _ => return bad("A needs an IPv4 address that can be published"),
+        },
+        "AAAA" => match value.parse::<std::net::Ipv6Addr>() {
+            Ok(a) if publishable_address(IpAddr::V6(a)) => {}
+            _ => return bad("AAAA needs an IPv6 address that can be published"),
+        },
+        "CNAME" => {
+            if name == "@" {
+                return bad("a CNAME cannot stand at the top of the domain");
+            }
+            if !host_ok(&value) {
+                return bad("CNAME needs a host name");
+            }
+        }
+        "TXT" => {
+            if value.is_empty() || value.chars().count() > MAX_EXTRA_TXT || value.chars().any(char::is_control) {
+                return bad("TXT needs text of at most 2000 characters, without control characters");
+            }
+        }
+        "MX" => {
+            let mut it = value.split(' ');
+            let (pref, host) = (it.next().and_then(|p| p.parse::<u16>().ok()), it.next());
+            if pref.is_none() || !host.is_some_and(host_ok) || it.next().is_some() {
+                return bad("MX needs a preference and a host name: 10 mail.example.org");
+            }
+        }
+        "SRV" => {
+            let parts: Vec<&str> = value.split(' ').collect();
+            let numbers = parts.iter().take(3).all(|p| p.parse::<u16>().is_ok());
+            if parts.len() != 4 || !numbers || !host_ok(parts[3]) {
+                return bad("SRV needs priority, weight, port and a host name: 0 1 443 host.example.org");
+            }
+        }
+        _ => return bad("the type is A, AAAA, CNAME, TXT, MX or SRV"),
+    }
+    Ok((name, rtype, value))
+}
+
+#[cfg(test)]
+mod extra_tests {
+    use super::validate_extra;
+
+    #[test]
+    fn a_good_record_is_kept_in_its_stored_form() {
+        assert_eq!(validate_extra(" WWW ", "cname", "Host.Example.org.").unwrap(), ("www".into(), "CNAME".into(), "Host.Example.org.".into()));
+        assert!(validate_extra("@", "TXT", "v=spf1 -all").is_ok());
+        assert!(validate_extra("_acme-challenge.blog", "TXT", "token").is_ok());
+        assert!(validate_extra("mail", "MX", "10 mx.example.org").is_ok());
+        assert!(validate_extra("_sip._tcp", "SRV", "0 5 5060 sip.example.org").is_ok());
+        assert!(validate_extra("v6", "AAAA", "2001:db8::1").is_ok());
+    }
+
+    #[test]
+    fn what_cannot_be_served_or_could_do_harm_is_refused() {
+        for (n, t, v) in [
+            ("*", "A", "192.0.2.1"),
+            ("*.x", "A", "192.0.2.1"),
+            ("a b", "A", "192.0.2.1"),
+            ("", "A", "192.0.2.1"),
+            ("-x", "A", "192.0.2.1"),
+            ("x", "A", "127.0.0.1"),
+            ("x", "A", "999.0.0.1"),
+            ("x", "A", "2001:db8::1"),
+            ("x", "AAAA", "::1"),
+            ("@", "CNAME", "other.example.org"),
+            ("x", "CNAME", "not a host"),
+            ("x", "TXT", ""),
+            ("x", "TXT", "line\nbreak"),
+            ("x", "MX", "mail.example.org"),
+            ("x", "MX", "10 a b"),
+            ("x", "SRV", "0 1 443"),
+            ("x", "SRV", "0 1 99999 h.example.org"),
+            ("x", "NS", "ns.example.org"),
+            ("x", "AXFR", "1"),
+        ] {
+            assert!(validate_extra(n, t, v).is_err(), "{n} {t} {v}");
+        }
+        assert!(validate_extra("x", "TXT", &"a".repeat(2001)).is_err());
+        assert!(validate_extra(&"a".repeat(64), "A", "192.0.2.1").is_err(), "a label over 63");
+    }
+}

@@ -82,6 +82,7 @@ async fn build(with_sealing: bool) -> Rig {
     let repos = store.repos();
     let services = Services {
         dns: rusty_store::DnsStore::with_repo(repos.dns.clone()),
+        dns_zone: repos.dns_zone.clone(),
         relays: rusty_store::RelayStore::with_repo(repos.relay.clone()),
         blob_stores: rusty_store::BlobStoreAdmin::with_repo(repos.blob_stores.clone()),
         pools: rusty_store::BlobPoolAdmin::with_repos(repos.blob_stores.clone(), repos.blob_pool.clone()),
@@ -98,7 +99,7 @@ async fn build(with_sealing: bool) -> Rig {
         backups: repos.backups.clone(),
         transfers: repos.transfers.clone(),
         sealing: with_sealing.then_some(seal_key),
-        mail: Some(MailSettings { host: "mail.example.org".into(), public_ips: vec!["203.0.114.5".parse().unwrap()], spf_include: None }),
+        mail: Some(MailSettings { host: "mail.example.org".into(), public_ips: vec!["203.0.114.5".parse().unwrap()], spf_include: None, name_servers: vec!["ns1.platform.example".into(), "ns2.platform.example".into()] }),
     };
     let app = Arc::new(AdminApp::new(auth, dir.clone(), admins.clone(), None, ORIGIN, SessionConfig::default()).with_services(services).with_live(rusty_admin::live::Hub::with_timing(Duration::from_millis(300), Duration::from_millis(200))));
     let router = rusty_admin::autoconfig::routes(app.clone(), rusty_admin::dns::routes(app.clone(), outbound_routes(app.clone(), storage_routes(app.clone(), manage_routes(app.clone(), session_routes(app.clone(), Router::new()))))));

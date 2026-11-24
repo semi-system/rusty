@@ -102,6 +102,7 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     };
     let services = Services {
         dns: rusty_store::DnsStore::with_repo(repos.dns.clone()),
+        dns_zone: repos.dns_zone.clone(),
         relays: rusty_store::RelayStore::with_repo(repos.relay.clone()),
         blob_stores: rusty_store::BlobStoreAdmin::with_repo(repos.blob_stores.clone()),
         pools: rusty_store::BlobPoolAdmin::with_repos(repos.blob_stores.clone(), repos.blob_pool.clone()),
@@ -118,7 +119,7 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
         backups: repos.backups.clone(),
         transfers: repos.transfers.clone(),
         sealing,
-        mail: cfg.hostname.clone().map(|host| MailSettings { host, public_ips: admin.public_ips.clone(), spf_include: admin.spf_include.clone() }),
+        mail: cfg.hostname.clone().map(|host| MailSettings { host, public_ips: admin.public_ips.clone(), spf_include: admin.spf_include.clone(), name_servers: admin.name_servers.clone() }),
     };
     // The heartbeat of the admin web itself (docs/design-admin-monitor.md).
     {
