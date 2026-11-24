@@ -35,7 +35,9 @@ fn the_standard_set_for_a_domain() {
     assert_eq!(ptr[0].name, "10.2.0.192.in-addr.arpa.");
     assert!(ptr.iter().all(|p| p.value == "mail.example.com."));
     let srv: Vec<_> = recs.iter().filter(|r| r.rtype == RecordType::Srv).map(|r| r.value.as_str()).collect();
-    assert_eq!(srv, ["0 1 587 mail.example.com.", "0 1 465 mail.example.com.", "0 1 993 mail.example.com.", "0 1 443 mail.example.com."]);
+    // Mail clients, the calendar and contact apps (CalDAV and CardDAV), and Outlook.
+    assert_eq!(srv, ["0 1 587 mail.example.com.", "0 1 465 mail.example.com.", "0 1 993 mail.example.com.", "0 1 443 mail.example.com.", "0 1 443 mail.example.com.", "0 1 443 mail.example.com."]);
+    assert!(find(&recs, RecordType::Srv, "_carddavs._tcp.example.com.").iter().all(|r| r.required == Requirement::Optional));
     let auto = find(&recs, RecordType::A, "autoconfig.example.com.");
     assert_eq!(auto[0].value, "192.0.2.10", "autoconfig points at the mail host's address");
     assert!(auto.iter().all(|r| r.required == Requirement::Optional));
