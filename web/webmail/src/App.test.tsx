@@ -55,6 +55,11 @@ function api(over: Partial<Api> = {}): Api {
 
     settings: vi.fn().mockResolvedValue({ signature: 'Alice' }),
     saveSettings: vi.fn().mockImplementation(async (s: string) => ({ signature: s })),
+    scripts: vi.fn().mockResolvedValue({ scripts: [], max_scripts: 10, max_bytes: 65536 }),
+    script: vi.fn().mockResolvedValue({ name: 'main', body: 'keep;' }),
+    saveScript: vi.fn().mockResolvedValue(undefined),
+    activateScript: vi.fn().mockResolvedValue(undefined),
+    deleteScript: vi.fn().mockResolvedValue(undefined),
     totpStatus: vi.fn().mockResolvedValue({ available: true, enabled: false, pending: false }),
     totpBegin: vi.fn().mockResolvedValue({ secret: 'JBSWY3DPEHPK3PXP', uri: 'otpauth://totp/x' }),
     totpConfirm: vi.fn().mockResolvedValue({ recovery: ['abcde-fghjk'] }),
@@ -177,6 +182,26 @@ describe('the webmail page', () => {
     fireEvent.submit(code.closest('form') as HTMLFormElement);
     await waitFor(() => expect(signIn).toHaveBeenLastCalledWith('alice@one.test', 'pw-1', '123456'));
     expect(await screen.findByText(en['compose.new'])).toBeTruthy();
+  });
+
+  it('saves a filter, shows the line when the server refuses it, and turns one on', async () => {
+    const refused = new ApiError(400, 'script_invalid', { line: 3, message: 'a block is not closed' });
+    const a = api({
+      me: vi.fn().mockResolvedValue({ address: 'alice@one.test', csrf: 'tok' }),
+      saveScript: vi.fn().mockRejectedValueOnce(refused).mockResolvedValueOnce(undefined),
+      scripts: vi.fn().mockResolvedValue({ scripts: [{ name: 'main', active: false, size: 5 }], max_scripts: 10, max_bytes: 65536 }),
+    });
+    render(() => <App api={a} />);
+    fireEvent.click(await screen.findByText(en['folder.settings']));
+    const box = (await screen.findByLabelText(en['filters.script'])) as HTMLTextAreaElement;
+    fireEvent.input(box, { target: { value: 'if true {' } });
+    fireEvent.submit(box.closest('form') as HTMLFormElement);
+    expect((await screen.findByRole('alert')).textContent).toBe('The script is not correct. Line 3: a block is not closed');
+    fireEvent.input(box, { target: { value: 'keep;' } });
+    fireEvent.submit(box.closest('form') as HTMLFormElement);
+    await waitFor(() => expect(a.saveScript).toHaveBeenLastCalledWith('main', 'keep;'));
+    fireEvent.click(await screen.findByText(en['filters.turnOn']));
+    await waitFor(() => expect(a.activateScript).toHaveBeenCalledWith('main'));
   });
 
   it('deleting removes the message from the list', async () => {

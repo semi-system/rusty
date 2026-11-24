@@ -92,7 +92,7 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     let limits = MailboxLimits { max_message_bytes: usize::try_from(cfg.max_message_bytes).unwrap_or(usize::MAX), quota_bytes: None };
     let limits_max = limits.max_message_bytes;
     let hub = MailboxHub::new(repos.mailbox.clone(), stores, limits).with_directory(directory.clone());
-    let app = Arc::new(WebmailApp { auth, hub, blobs, outbox: repos.outbox.clone(), app_passwords: repos.app_passwords.clone(), settings: repos.webmail_settings.clone(), max_message_bytes: limits_max, public_origin: webmail.public_origin.clone(), extra_origins: webmail.extra_origins.clone() });
+    let app = Arc::new(WebmailApp { auth, hub, blobs, outbox: repos.outbox.clone(), app_passwords: repos.app_passwords.clone(), sieve: repos.sieve.clone(), settings: repos.webmail_settings.clone(), max_message_bytes: limits_max, public_origin: webmail.public_origin.clone(), extra_origins: webmail.extra_origins.clone() });
 
     // The heartbeat of the webmail itself, for the Monitor page of the admin web.
     {
@@ -106,7 +106,8 @@ pub async fn start(cfg: &StartupConfig, store: &Store, shutdown: CancellationTok
     let router = crate::send::routes(app.clone(), router);
     let router = crate::apppw::routes(app.clone(), router);
     let router = crate::settings::routes(app.clone(), router);
-    let router = crate::second::routes(app, router);
+    let router = crate::second::routes(app.clone(), router);
+    let router = crate::filters::routes(app, router);
     // The front end embedded at build time answers every other path; without one this is an API server only.
     let router = match crate::web::handler() {
         Some(h) => router.fallback(h),
