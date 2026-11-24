@@ -230,3 +230,15 @@ name = "fuzz_dav_moment"
 path = "fuzz_targets/fuzz_dav_moment.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "fuzz_dav_xml"
+path = "fuzz_targets/fuzz_dav_xml.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_dav_path"
+path = "fuzz_targets/fuzz_dav_path.rs"
+test = false
+doc = false

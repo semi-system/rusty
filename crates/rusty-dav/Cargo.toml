@@ -7,6 +7,10 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rusty-core = { path = "../rusty-core" }
+rusty-store = { path = "../rusty-store" }
 
 [dev-dependencies]
+rusty-store = { path = "../rusty-store", features = ["test-fixtures"] }
 proptest.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

@@ -8,6 +8,9 @@
 
 pub mod content;
 pub mod fuzz_checks;
+pub mod paths;
+pub mod server;
 pub mod ical;
 pub mod time;
 pub mod vcard;
+pub mod xml;

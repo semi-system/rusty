@@ -38,3 +38,37 @@ pub fn moment(data: &[u8]) {
         assert!(text.contains('P'));
     }
 }
+
+fn xml_depth(e: &crate::xml::Element) -> usize {
+    1 + e.elements().map(xml_depth).max().unwrap_or(0)
+}
+
+/// The reader of request bodies is total and bounded, and what it accepts is within its limits; the escape of any text reads back as the same text.
+pub fn xml(data: &[u8]) {
+    if let Ok(root) = crate::xml::parse(data) {
+        assert!(xml_depth(&root) <= crate::xml::MAX_DEPTH);
+        assert!(!root.name.is_empty());
+    }
+    if let Ok(text) = std::str::from_utf8(data) {
+        let doc = format!("<a>{}</a>", crate::xml::escape(text));
+        if let Ok(root) = crate::xml::parse(doc.as_bytes()) {
+            let wanted: String = text.chars().filter(|c| !c.is_control() || matches!(c, '\t' | '\n' | '\r')).collect();
+            assert_eq!(root.text(), wanted);
+        }
+    }
+}
+
+/// A path of the service names one resource or none; the path made from the resource names it again.
+pub fn path(data: &[u8]) {
+    use crate::paths::{self, Resource};
+    let Ok(text) = std::str::from_utf8(data) else { return };
+    let Some(res) = paths::parse(text) else { return };
+    let again = match &res {
+        Resource::Root => "/dav/".to_owned(),
+        Resource::Principal(a) => paths::principal_href(a),
+        Resource::Home(k, a) => paths::home_href(*k, a),
+        Resource::Collection(k, a, c) => paths::collection_href(*k, a, c),
+        Resource::Object(k, a, c, o) => paths::object_href(*k, a, c, o),
+    };
+    assert_eq!(paths::parse(&again), Some(res), "{again}");
+}

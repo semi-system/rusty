@@ -5,7 +5,7 @@ use rusty_dav::fuzz_checks as fz;
 
 type Target = (&'static str, fn(&[u8]));
 
-const TARGETS: [Target; 2] = [("fuzz_dav_object", fz::object), ("fuzz_dav_moment", fz::moment)];
+const TARGETS: [Target; 4] = [("fuzz_dav_object", fz::object), ("fuzz_dav_moment", fz::moment), ("fuzz_dav_xml", fz::xml), ("fuzz_dav_path", fz::path)];
 
 #[test]
 fn every_committed_seed_passes_its_target() {
@@ -27,6 +27,8 @@ proptest! {
     fn the_readers_are_total(data in proptest::collection::vec(any::<u8>(), 0..900)) {
         fz::object(&data);
         fz::moment(&data);
+        fz::xml(&data);
+        fz::path(&data);
     }
 
     #[test]
@@ -46,5 +48,19 @@ proptest! {
     #[test]
     fn moments_and_durations_shaped_like_themselves_keep_the_invariants(v in "[0-9]{0,9}(T[0-9]{0,7}Z?)?|[+-]?P[0-9]{0,4}[WD]?(T[0-9]{0,3}[HMS]?)?") {
         fz::moment(v.as_bytes());
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(2000))]
+
+    #[test]
+    fn documents_shaped_like_requests_keep_the_invariants(doc in "(<[?]xml version=\"1.0\"[?]>)?<(D|d|C):(propfind|calendar-query|prop|filter)( xmlns:(D|d|C)=\"(DAV:|urn:ietf:params:xml:ns:caldav)\")?>(<(D|C):[a-z-]{1,12}/>|[a-z&;<>]{0,6}){0,6}</(D|d|C):(propfind|calendar-query|prop|filter)>") {
+        fz::xml(doc.as_bytes());
+    }
+
+    #[test]
+    fn paths_shaped_like_the_services_keep_the_invariants(p in "/dav(/(principals|calendars|addressbooks|[a-z]{1,4}))?(/[A-Za-z0-9%._@-]{1,12}){0,4}/?") {
+        fz::path(p.as_bytes());
     }
 }
