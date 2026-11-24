@@ -54,6 +54,7 @@ export const en = {
   'compose.cancel': 'Discard',
   'compose.save': 'Save draft',
   'compose.saved': 'Draft saved.',
+  'compose.suggestions': 'Contacts',
   'action.edit': 'Edit draft',
   'compose.queued': 'Your message is queued. The Outbox shows how it went.',
   'compose.replyPrefix': 'Re: ',

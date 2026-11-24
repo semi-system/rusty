@@ -71,6 +71,8 @@ fn router(store: &Store, dir: &std::path::Path, blobs: Arc<FsBlobStore>) -> Arc<
 struct Rig {
     addr: SocketAddr,
     stop: CancellationToken,
+    operator: Store,
+    alice_id: rusty_core::AccountId,
     _db: pg::PgTestDb,
     _tmp: tempfile::TempDir,
 }
@@ -112,7 +114,7 @@ async fn rig() -> Rig {
     .unwrap();
     let stop = CancellationToken::new();
     let r = start(&cfg, &service, stop.clone()).await.unwrap();
-    Rig { addr: r.addr, stop, _db: db, _tmp: tmp }
+    Rig { addr: r.addr, stop, operator, alice_id, _db: db, _tmp: tmp }
 }
 
 
@@ -522,5 +524,40 @@ async fn filters_are_checked_by_the_parser_kept_per_account_activated_one_at_a_t
     assert_eq!(call(r.addr, "GET", "/api/v1/sieve/main", &[("Cookie", &bob_cookie)], None).await.status, 404);
     let body = serde_json::json!({ "body": "keep;" }).to_string();
     assert_eq!(call(r.addr, "PUT", "/api/v1/sieve/main", &[("Cookie", &s.cookie), ("Content-Type", "application/json"), ("Origin", ORIGIN)], Some(&body)).await.status, 403);
+    r.stop.cancel();
+}
+
+#[tokio::test]
+async fn the_composer_is_offered_the_contacts_of_the_person_from_their_address_books_and_nobody_elses() {
+    let r = rig().await;
+    // The contacts are kept through CardDAV (the operator's role stands in for the DAV service).
+    let dav = r.operator.repos().dav.clone();
+    dav.ensure_defaults(r.alice_id).await.unwrap();
+    let book = dav.collection(r.alice_id, "addressbook", "default").await.unwrap().unwrap().id;
+    for (name, uid, fnm, mail) in [("ada.vcf", "ada", "Ada Lovelace", "ada@example.org"), ("alan.vcf", "alan", "Alan Turing", "alan@example.org")] {
+        let body = format!("BEGIN:VCARD\r\nVERSION:3.0\r\nUID:{uid}\r\nFN:{fnm}\r\nEMAIL:{mail}\r\nEND:VCARD\r\n");
+        let new = rusty_store::NewDavObject { name: name.into(), uid: uid.into(), body, component: "VCARD".into(), starts_at: None, ends_at: None, recurring: false };
+        dav.put(book, &new, &rusty_store::DavPrecondition::None).await.unwrap();
+    }
+    let s = alice(&r).await;
+    let by = |q: &'static str| {
+        let (addr, cookie) = (r.addr, s.cookie.clone());
+        async move { call(addr, "GET", &format!("/api/v1/contacts?q={q}"), &[("Cookie", &cookie)], None).await }
+    };
+    let ada = by("ada").await;
+    assert_eq!(ada.status, 200, "{}", ada.text());
+    assert_eq!(ada.json()["items"], serde_json::json!([{ "name": "Ada Lovelace", "email": "ada@example.org" }]));
+    let both = by("example.org").await;
+    assert_eq!(both.json()["items"].as_array().unwrap().len(), 2);
+    assert!(by("zzz").await.json()["items"].as_array().unwrap().is_empty());
+    // A pattern character is itself: `%%` finds nothing.
+    assert!(by("%25%25").await.json()["items"].as_array().unwrap().is_empty());
+    // Too short, and nothing without a session.
+    assert_eq!(by("a").await.status, 400);
+    assert_eq!(call(r.addr, "GET", "/api/v1/contacts?q=ada", &[], None).await.status, 401);
+    assert_eq!(call(r.addr, "GET", "/api/v1/contacts", &[("Cookie", &s.cookie)], None).await.status, 400);
+    // Another person sees none of it.
+    let (bob_cookie, _) = sign_in(r.addr, "bob@one.test", "another-long-password-2").await;
+    assert!(call(r.addr, "GET", "/api/v1/contacts?q=ada", &[("Cookie", &bob_cookie)], None).await.json()["items"].as_array().unwrap().is_empty());
     r.stop.cancel();
 }

@@ -171,6 +171,7 @@ pub struct WebmailApp {
     pub outbox: Arc<dyn rusty_store::OutboxRepo>,
     pub app_passwords: Arc<dyn rusty_store::AppPasswordRepo>,
     pub sieve: Arc<dyn rusty_store::SieveRepo>,
+    pub dav: Arc<dyn rusty_store::DavRepo>,
     pub settings: Arc<dyn rusty_store::WebmailSettingsRepo>,
     /// The most bytes of a message the person may send.
     pub max_message_bytes: usize,

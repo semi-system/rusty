@@ -163,6 +163,7 @@ BEGIN
     GRANT SELECT, INSERT, UPDATE, DELETE ON totp TO rusty_webmail;   -- the second factor of the sign-in (docs/design-2fa.md)
     GRANT SELECT, INSERT, DELETE ON totp_recovery TO rusty_webmail;
     GRANT SELECT, INSERT, UPDATE, DELETE ON sieve_scripts TO rusty_webmail;   -- the filters of the person (docs/design-sieve.md)
+    GRANT SELECT ON dav_collections, dav_objects TO rusty_webmail;   -- the composer suggests the contacts of the person (docs/design-caldav-carddav.md): read only
   END IF;
 
   -- rusty_dav: calendars and contacts (docs/design-caldav-carddav.md). It checks a password like the mail protocols (the accounts with their hashes, the app passwords, the second factor), keeps the

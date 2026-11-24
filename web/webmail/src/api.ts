@@ -107,6 +107,12 @@ export interface Scripts {
 }
 export type Action = 'read' | 'unread' | 'flag' | 'unflag' | 'move' | 'copy' | 'delete';
 
+/** A suggestion for an address field: a name and one address. */
+export interface Contact {
+  name: string;
+  email: string;
+}
+
 export interface Api {
   me(): Promise<Me>;
   signIn(address: string, password: string, code?: string): Promise<Me>;
@@ -137,6 +143,8 @@ export interface Api {
   totpDisable(password: string, code: string): Promise<void>;
   settings(): Promise<{ signature: string }>;
   saveSettings(signature: string): Promise<{ signature: string }>;
+  /** The contacts of the person whose name or address holds `q` (two characters or more): what the composer suggests. */
+  contacts(q: string): Promise<Contact[]>;
 }
 
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
@@ -222,6 +230,7 @@ export function createApi(doFetch: Fetch = (i, init) => fetch(i, init)): Api {
       await call('POST', '/api/v1/totp/disable', { password, code });
     },
     settings: () => call('GET', '/api/v1/settings'),
+    contacts: async (q) => (await call<{ items: Contact[] }>('GET', `/api/v1/contacts?q=${encodeURIComponent(q)}`)).items,
     saveSettings: (signature) => call('PUT', '/api/v1/settings', { signature }),
   };
 }
