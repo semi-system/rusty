@@ -32,6 +32,11 @@ pub fn delivery_id_for(mail_from: &str, account: i64, original: &[u8]) -> Delive
     DeliveryId::derive(&BlobHash::of(original), &format!("account:{account}"), &format!("from:{mail_from}"))
 }
 
+/// The delivery id of the copy of a message that a Sieve script files into a folder other than the first one (docs/design-sieve.md): distinct from the first copy, the same on a retry.
+pub fn delivery_id_for_folder(mail_from: &str, account: i64, original: &[u8], folder: i64) -> DeliveryId {
+    DeliveryId::derive(&BlobHash::of(original), &format!("account:{account}:folder:{folder}"), &format!("from:{mail_from}"))
+}
+
 /// Make every line break CRLF: a bare LF gets its CR, and a bare CR gets its LF. A lone CR is a line
 /// break to some readers and not to others; leaving it would let a sender hide a forged header from
 /// the header filter below.

@@ -2402,6 +2402,7 @@ dependencies = [
  "rusty-directory",
  "rusty-mime",
  "rusty-seal",
+ "rusty-sieve",
  "rusty-store",
  "rusty-svc",
  "rusty-valkey",

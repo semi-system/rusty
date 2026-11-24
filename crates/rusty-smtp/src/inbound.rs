@@ -145,6 +145,16 @@ impl SubmitRefusal {
     }
 }
 
+/// What an account's Sieve script made of one message.
+struct SievePlan {
+    /// The message stays in the default folder (the Inbox, or Spam when it was held back).
+    keep: bool,
+    folders: Vec<String>,
+    redirects: Vec<String>,
+    vacation: Option<rusty_sieve::parse::Vacation>,
+    reject: Option<String>,
+}
+
 pub struct InboundHandler {
     auth: Arc<dyn Authenticator>,
     rate: Arc<dyn RateLimiter>,
@@ -158,6 +168,8 @@ pub struct InboundHandler {
     quota: Arc<dyn QuotaPolicy>,
     plans: Arc<dyn rusty_store::PlanRepo>,
     rules: Arc<dyn rusty_store::RulesRepo>,
+    /// The Sieve scripts of the accounts (docs/design-sieve.md).
+    sieve: Arc<dyn rusty_store::SieveRepo>,
     /// The delivery log the trace of the admin web reads (docs/design-queue.md).
     queue: Arc<dyn rusty_store::QueueRepo>,
     tls: TlsProvider,
@@ -226,6 +238,7 @@ impl InboundHandler {
             quota: ctx.quota.clone(),
             plans: ctx.plans.clone(),
             rules: ctx.rules.clone(),
+            sieve: ctx.sieve.clone(),
             queue: ctx.queue.clone(),
             tls: ctx.tls.clone(),
             hostname,
@@ -370,17 +383,15 @@ impl InboundHandler {
         }
     }
 
-    async fn deliver_one(
-        &self,
-        account: AccountId,
-        mail_from: &str,
-        original: &[u8],
-        stored: Bytes,
-        folder: FolderId,
-    ) -> Result<bool, Error> {
+    async fn deliver_one(&self, account: AccountId, mail_from: &str, original: &[u8], stored: Bytes, folder: FolderId) -> Result<bool, Error> {
+        self.deliver_one_in(account, mail_from, original, stored, folder, false).await
+    }
+
+    /// `deliver_one` into any folder; `distinct` gives the copy a delivery id of its own (a second copy of one message for one account, into another folder, is not a retry of the first).
+    async fn deliver_one_in(&self, account: AccountId, mail_from: &str, original: &[u8], stored: Bytes, folder: FolderId, distinct: bool) -> Result<bool, Error> {
         self.quota.check_append(account, stored.len() as u64)?;
         let mailbox = self.hub.open_for(account).await?;
-        let id = delivery_id_for(mail_from, account.0, original);
+        let id = if distinct { crate::message::delivery_id_for_folder(mail_from, account.0, original, folder.0) } else { delivery_id_for(mail_from, account.0, original) };
         let size = stored.len() as u64;
         match mailbox.deliver(folder, stored, Flags::default(), id).await {
             Ok(DeliverOutcome::Created(_)) => {
@@ -396,6 +407,129 @@ impl InboundHandler {
                 Ok(false)
             }
             Err(e) => Err(e),
+        }
+    }
+
+    /// What the active Sieve script of the account makes of this message (docs/design-sieve.md); `None` when the account has no active script, or when it cannot run (a script that does not parse is logged
+    /// and the message is delivered as if there were none: a filter never loses mail).
+    async fn sieve_plan(&self, account: AccountId, to: &str, mail_from: &str, original: &[u8]) -> Option<SievePlan> {
+        let body = match self.sieve.active_body(account).await {
+            Ok(Some(b)) => b,
+            Ok(None) => return None,
+            Err(e) => {
+                tracing::warn!(error = %e, "the Sieve script could not be read; the message is delivered as usual");
+                return None;
+            }
+        };
+        let script = match rusty_sieve::parse::parse(&body) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "the active Sieve script does not parse; the message is delivered as usual");
+                return None;
+            }
+        };
+        let outcome = rusty_sieve::run::run(&script, &rusty_sieve::run::Message::from_raw(original, mail_from, to));
+        let mut plan = SievePlan { keep: outcome.implicit_keep, folders: Vec::new(), redirects: Vec::new(), vacation: None, reject: None };
+        for a in outcome.actions {
+            match a {
+                rusty_sieve::run::Action::Keep => plan.keep = true,
+                rusty_sieve::run::Action::Discard => {}
+                rusty_sieve::run::Action::FileInto(f) => plan.folders.push(f),
+                rusty_sieve::run::Action::Redirect(r) => plan.redirects.push(r),
+                rusty_sieve::run::Action::Reject(r) => plan.reject = Some(r),
+                rusty_sieve::run::Action::Vacation(v) => plan.vacation = Some(v),
+            }
+        }
+        Some(plan)
+    }
+
+    /// The folder of an account by the name a script gives it: `INBOX` is the Inbox, a name that exists is that folder, any other is made. `None` for a name that cannot be a folder.
+    async fn folder_for_script(&self, account: AccountId, name: &str) -> Option<FolderId> {
+        if name.eq_ignore_ascii_case("inbox") {
+            return Some(system_folder("inbox"));
+        }
+        let mailbox = self.hub.open_for(account).await.ok()?;
+        if let Some(f) = mailbox.list_folders().await.ok()?.into_iter().find(|f| f.name == name) {
+            return Some(f.id);
+        }
+        match mailbox.create_folder(None, name).await {
+            Ok(id) => Some(id),
+            // Two deliveries made it at the same moment: the other one won, so it exists now.
+            Err(_) => mailbox.list_folders().await.ok()?.into_iter().find(|f| f.name == name).map(|f| f.id),
+        }
+    }
+
+    /// Store the message where a script says (and nowhere else): the default folder when it is kept, and each folder it files the message into, one copy each. Whether something was stored now.
+    async fn deliver_planned(&self, account: AccountId, mail_from: &str, original: &[u8], stored: Bytes, default_folder: FolderId, plan: &SievePlan) -> Result<bool, Error> {
+        let mut targets: Vec<FolderId> = Vec::new();
+        if plan.keep {
+            targets.push(default_folder);
+        }
+        for name in &plan.folders {
+            if let Some(f) = self.folder_for_script(account, name).await {
+                if !targets.contains(&f) {
+                    targets.push(f);
+                }
+            }
+        }
+        // A script whose folders could not be had still must not lose the message.
+        if targets.is_empty() && !plan.folders.is_empty() {
+            targets.push(default_folder);
+        }
+        let mut created = false;
+        for (n, f) in targets.iter().enumerate() {
+            // The first copy keeps the delivery id of an unfiltered message (a retry finds it); the others are distinct by their folder.
+            created |= self.deliver_one_in(account, mail_from, original, stored.clone(), *f, n > 0).await?;
+        }
+        // Nothing stored and nothing failed (a discard, a redirect, a reject): the actions that remain still run once.
+        Ok(created || targets.is_empty())
+    }
+
+    /// The side effects of a script that are not a stored copy: redirects and the automatic reply. Best effort, like the mail rules.
+    async fn apply_sieve_effects(&self, account: AccountId, to: &str, mail_from: &str, original: &[u8], plan: &SievePlan) {
+        let Some(queue) = &self.forwarder else { return };
+        let Some((_, domain)) = to.rsplit_once('@') else { return };
+        let now = self.options.clock.now_unix();
+        let targets: Vec<String> = plan.redirects.iter().filter(|a| !a.eq_ignore_ascii_case(to)).cloned().collect();
+        if !targets.is_empty() && !crate::rules::is_automatic(original, mail_from) {
+            let copy = Bytes::from(crate::rules::forwarded_copy(original, to));
+            let key = hex::encode(Sha256::digest(format!("sieve-redirect\0{}\0{}\0{}", account.0, targets.join(","), BlobHash::of(original).as_str()).as_bytes()));
+            match self.blobs.put(copy.clone()).await {
+                Ok(blob) => {
+                    let msg = OutboundMessage { blob, envelope_from: to.to_owned(), recipients: targets, sender_domain: domain.to_owned(), account: 0, submission_key: key, bytes: copy.len() as u64 };
+                    if let Err(e) = queue.enqueue(msg).await {
+                        tracing::warn!(error = %e, "a redirect of a script could not be queued");
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "a redirect of a script could not be stored"),
+            }
+        }
+        if let Some(v) = &plan.vacation {
+            if crate::rules::is_automatic(original, mail_from) || mail_from.is_empty() || mail_from.eq_ignore_ascii_case(to) {
+                return;
+            }
+            let window = i64::from(v.days) * 86_400;
+            match self.rules.claim_vacation_reply(account.0, &mail_from.to_ascii_lowercase(), window).await {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(e) => {
+                    tracing::warn!(error = %e, "the vacation book could not be read; no reply");
+                    return;
+                }
+            }
+            let v2 = crate::rules::Vacation { enabled: true, subject: v.subject.clone().unwrap_or_default(), body: v.reason.clone(), from: None, until: None };
+            let token = hex12(&BlobHash::of(format!("{}\0{}\0{}", account.0, mail_from, now).as_bytes()));
+            let reply = Bytes::from(crate::rules::vacation_reply(&v2, to, mail_from, original, &self.hostname, now, &token));
+            match self.blobs.put(reply.clone()).await {
+                Ok(blob) => {
+                    let key = hex::encode(Sha256::digest(format!("sieve-vacation\0{}\0{}\0{}", account.0, mail_from, BlobHash::of(original).as_str()).as_bytes()));
+                    let msg = OutboundMessage { blob, envelope_from: String::new(), recipients: vec![mail_from.to_owned()], sender_domain: domain.to_owned(), account: 0, submission_key: key, bytes: reply.len() as u64 };
+                    if let Err(e) = queue.enqueue(msg).await {
+                        tracing::warn!(error = %e, "an automatic reply of a script could not be queued");
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "an automatic reply of a script could not be stored"),
+            }
         }
     }
 
@@ -661,11 +795,25 @@ impl InboundHandler {
             t.recipients.iter().flat_map(|r| r.accounts.iter().copied()).filter(|a| seen.insert(*a)).collect();
         let mut results = Vec::with_capacity(accounts.len());
         for a in &accounts {
-            let delivered = self.deliver_one(*a, &t.mail_from, &t.data, stored.clone(), folder).await;
-            // A copy that was stored now (not a retry that found it) is what the account's rules act on.
+            let to = t.recipients.iter().find(|r| r.accounts.contains(a)).map(|r| r.address.as_str()).unwrap_or_default();
+            let plan = self.sieve_plan(*a, to, &t.mail_from, &t.data).await;
+            // A script that rejects, for a message with one recipient and nobody else to tell: the sender is refused now, with the script's own words (RFC 5429).
+            if let Some(reason) = plan.as_ref().and_then(|p| p.reject.as_ref()) {
+                if t.recipients.len() == 1 && accounts.len() == 1 && t.remote_recipients.is_empty() && !t.mail_from.is_empty() {
+                    let text: String = reason.chars().filter(|c| !c.is_control()).take(200).collect();
+                    return Reply::new(550, "5.7.1", if text.is_empty() { "Message refused".to_owned() } else { text });
+                }
+            }
+            let delivered = match &plan {
+                None => self.deliver_one(*a, &t.mail_from, &t.data, stored.clone(), folder).await,
+                Some(p) => self.deliver_planned(*a, &t.mail_from, &t.data, stored.clone(), folder, p).await,
+            };
+            // A copy that was stored now (not a retry that found it) is what the account's rules act on; with a script, the script is the rules.
             if let Ok(true) = delivered {
-                let to = t.recipients.iter().find(|r| r.accounts.contains(a)).map(|r| r.address.as_str()).unwrap_or_default();
-                self.apply_rules(*a, to, &t.mail_from, &t.data).await;
+                match &plan {
+                    None => self.apply_rules(*a, to, &t.mail_from, &t.data).await,
+                    Some(p) => self.apply_sieve_effects(*a, to, &t.mail_from, &t.data, p).await,
+                }
             }
             results.push(delivered.map(|_| ()));
         }
