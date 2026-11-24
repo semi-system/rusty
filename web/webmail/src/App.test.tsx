@@ -159,6 +159,15 @@ describe('the webmail page', () => {
     expect(frame.getAttribute('referrerpolicy')).toBe('no-referrer');
   });
 
+  it('offers the contacts as a .vcf download from the settings', async () => {
+    const a = api({ me: vi.fn().mockResolvedValue({ address: 'alice@one.test', csrf: 'tok' }) });
+    render(() => <App api={a} />);
+    fireEvent.click(await screen.findByText(en['folder.settings']));
+    const link = await screen.findByText(en['settings.contacts.export']);
+    expect(link.getAttribute('href')).toBe('/api/v1/contacts/export');
+    expect(link.getAttribute('download')).toBe('contacts.vcf');
+  });
+
   it('makes an app password after confirming the password and shows the secret once', async () => {
     const a = api({ me: vi.fn().mockResolvedValue({ address: 'alice@one.test', csrf: 'tok' }) });
     render(() => <App api={a} />);
