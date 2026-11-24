@@ -1,0 +1,6 @@
+BEGIN:VCARD
+VERSION:3.0
+FN:Ada
+  Lovelace
+item1.EMAIL;X="a:b;c":a@b.c
+END:VCARD

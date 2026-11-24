@@ -1,0 +1,7 @@
+BEGIN:VCARD
+VERSION:4.0
+UID:u
+FN:Ada Lovelace
+EMAIL;TYPE=work:ada@example.org
+TEL;VALUE=uri:tel:+1-555-0100
+END:VCARD
