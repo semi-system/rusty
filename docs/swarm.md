@@ -18,7 +18,7 @@ terminal it reads `swarm.env` (copy `swarm.env.example`). Then it does, in order
 
 1. **Docker**: installed on the nodes that have none (Docker's own apt repository, its signing key checked against the fingerprint of Docker's documentation; `get.docker.com` only on systems that are not Debian or Ubuntu); left alone where it is.
 2. **A swarm that exists**: offered for removal (`[y/N]`; `--yes` answers y, no terminal keeps it).
-3. `cluster check` (what is wrong on the nodes), the swarm and its labels, `cluster verify` (a task on every node, they reach each other).
+3. **DNS** (`TLS_MODE=acme`): the host names must point at the Manager; the setup waits here until they do (`dns-wait.sh`). Then `cluster check` (what is wrong on the nodes), the swarm and its labels, `cluster verify` (a task on every node, they reach each other).
 4. **Secrets** (swarm secrets with versioned names: `pg_imap_v1`; a change is `_v2`) and **configs** (named by the hash of their content): the service passwords, the sealing key, the S3 keys, the
    self-signed certificates, the per-service TOML files, the edge's configuration.
 5. With the default PostgreSQL or S3: the stack is started with only those, which are then prepared.
@@ -43,6 +43,7 @@ A file of shell variables, yours (not in the repository); `swarm.env.example` is
 | `TLS_MODE` | `acme` (default): the edge gets and renews the certificates of `MAIL_HOST` and `ADMIN_HOST` from Let's Encrypt (HTTP-01 on port 80; the names must point at the Manager). `self`: self-signed (a test installation). `ACME_DIRECTORY` names another ACME server (the staging one while you try) |
 | `FILTER=1`, `VALKEY=1` | the spam and virus filters (a validating resolver, rspamd, ClamAV; the scanners are on an internal network, ClamAV and its updater on the node labelled `av=true`; they need about 3 GB of memory) and the shared key-value store (TLS and one login per service) that makes the sending budget, the login throttle and the admin sessions one for every replica: turn it on when a service has more than one replica |
 | `LOG_LEVEL` | `error`, `warn`, `info` (default), `debug` or `trace`: the log level of every service; raise it to see why something is refused, then `prepare configs` and `deploy` |
+| `DNS_CHECK`, `DNS_WAIT_MINUTES`, `DNS_EXPECT_IP` | before anything is set up, `init` checks that `MAIL_HOST`, `ADMIN_HOST` and `WEBMAIL_HOST` resolve to the public address of the Manager and **waits until they do** (Let's Encrypt cannot order for a name that points elsewhere): `auto` (default) checks with `TLS_MODE=acme`, `1` forces it, `0` turns it off; `DNS_WAIT_MINUTES` (default 120, 0 fails at once) is how long it waits; `DNS_EXPECT_IP` names the address when the one in `NODES` is not the public one (a machine behind a NAT). `./rusty-swarm dns check` asks once, `dns wait` waits |
 | `IMAGE_TAG`, `REGISTRY` | the image tag when the kit has no digests (a checkout; default `main`), the registry |
 | `REPLICAS_DEFAULT`, `REPLICAS_ADMIN` | tasks per Rusty service (`smtp-in`, `submission`, `imap`, `outbound`, `gc`): default **2**, so an update never leaves one without a task; the admin console: default 1 (more needs `VALKEY=1`) |
 | `STATE_DIR` | where the tool keeps what it makes (default `~/.rusty-swarm`, mode 0700): the service passwords, the keys, the certificates, the generated files |

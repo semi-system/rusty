@@ -366,6 +366,50 @@ grep -q '^path_prefix = "/.well-known/carddav"' "$dq" || fail "davprost: no rout
 prost_check davprost
 ! grep -q 'dav' "$tmp/state-prostself/stack/etc/prost-edge.toml" || fail "prostself: a DAV upstream without DAV=1"
 echo "  ok    the calendar and contacts service and its routes (HAProxy and Prost)"
+# The DNS check before the setup (deploy/swarm/dns-wait.sh): the names must point at the Manager; the setup waits until they do.
+(
+  # shellcheck disable=SC2034  # read by the functions sourced below
+  MAIL_HOST=mx.example.org ADMIN_HOST=admin.example.org WEBMAIL_HOST=mail.example.org TLS_MODE=acme DNS_EXPECT_IP=203.0.113.7 DNS_POLL_SECS=0
+  die() { echo "DIE: $*"; exit 1; }
+  # shellcheck source=../../deploy/swarm/dns-wait.sh
+  . "$ROOT/deploy/swarm/dns-wait.sh"
+  zone="$tmp/zone.txt"
+  dns_lookup() { grep "^$1 " "$zone" | cut -d' ' -f2 || true; }
+  printf 'mx.example.org 203.0.113.7\nadmin.example.org 203.0.113.7\nmail.example.org 203.0.113.7\n' > "$zone"
+  out="$(dns_pass 203.0.113.7)" || { echo "a right zone was refused: $out"; exit 1; }
+  [ "$(printf '%s\n' "$out" | grep -c '  ok  ')" = 3 ] || { echo "three names are ok: $out"; exit 1; }
+  # A name that has no record, and one that points elsewhere, are waited for, each said in words.
+  printf 'mx.example.org 203.0.113.7\nmail.example.org 198.51.100.9\n' > "$zone"
+  out="$(dns_pass 203.0.113.7)" && { echo "a wrong zone was accepted"; exit 1; }
+  printf '%s\n' "$out" | grep -q 'WAIT  admin.example.org has no address record yet' || { echo "no record not said: $out"; exit 1; }
+  printf '%s\n' "$out" | grep -q 'WAIT  mail.example.org points at 198.51.100.9' || { echo "wrong address not said: $out"; exit 1; }
+  # The setup waits: the record appears after two passes.
+  : > "$tmp/passes"
+  dns_lookup() {
+    echo x >> "$tmp/passes"
+    if [ "$(wc -l < "$tmp/passes")" -gt 8 ]; then echo 203.0.113.7; fi
+  }
+  DNS_WAIT_MINUTES=5
+  res="$(cmd_dns_wait)" || { echo "the wait did not end well: $res"; exit 1; }
+  printf '%s\n' "$res" | grep -q 'the setup goes on' || { echo "the wait did not say it goes on: $res"; exit 1; }
+  # No wait: it fails at once, saying what to do.
+  dns_lookup() { :; }
+  DNS_WAIT_MINUTES=0
+  res="$(cmd_dns_wait 2>&1)" && { echo "no wait and no record passed"; exit 1; }
+  printf '%s\n' "$res" | grep -q 'DIE: dns: the names do not point at this server yet' || { echo "no failure text: $res"; exit 1; }
+  # Self-signed certificates need no DNS unless asked; a private address in the inventory is not what the world sees.
+  TLS_MODE=self; DNS_CHECK=auto
+  dns_enabled && { echo "the check is on for self-signed certificates"; exit 1; }
+  DNS_CHECK=1
+  dns_enabled || { echo "DNS_CHECK=1 does not force it"; exit 1; }
+  DNS_CHECK=0; TLS_MODE=acme
+  dns_enabled && { echo "DNS_CHECK=0 does not turn it off"; exit 1; }
+  DNS_EXPECT_IP=""; node_field() { echo 192.168.1.204; }; manager_name() { echo m; }; curl() { echo 203.0.113.50; }
+  [ "$(dns_expected_ip)" = 203.0.113.50 ] || { echo "a private inventory address was taken for the public one"; exit 1; }
+  node_field() { echo 198.51.100.4; }
+  [ "$(dns_expected_ip)" = 198.51.100.4 ] || { echo "the public address of the inventory was not taken"; exit 1; }
+) || fail "the DNS check before the setup"
+echo "  ok    the DNS check waits until the names point at the server"
 
 # ---- the configuration keys match those of the standalone templates ----------------------------------------------------------------------------------------------------------------------------
 # section.key of a TOML text; a template's profile markers are switched on, its other comments dropped

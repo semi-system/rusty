@@ -16,6 +16,7 @@ check_inputs() {
   valid_host "$MAIL_HOST" || die "MAIL_HOST is not a host name"
   valid_host "$ADMIN_HOST" || die "ADMIN_HOST is not a host name"
   case "$DAV" in 0|1) ;; *) die "DAV is 0 or 1" ;; esac
+  case "$DNS_CHECK" in auto|0|1) ;; *) die "DNS_CHECK is auto, 0 or 1" ;; esac
   if [ -n "$WEBMAIL_HOST" ]; then
     valid_host "$WEBMAIL_HOST" || die "WEBMAIL_HOST is not a host name"
     { [ "$WEBMAIL_HOST" != "$MAIL_HOST" ] && [ "$WEBMAIL_HOST" != "$ADMIN_HOST" ]; } || die "WEBMAIL_HOST is a host name of its own: not MAIL_HOST and not ADMIN_HOST"
