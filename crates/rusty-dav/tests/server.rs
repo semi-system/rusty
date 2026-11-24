@@ -208,7 +208,7 @@ async fn contacts_are_put_and_found_by_name_and_address() {
     let r = w.a(Verb::Report, BOOK, &either).await;
     assert!(r.body.contains("ada.vcf") && r.body.contains("grace.vcf") && !r.body.contains("alan.vcf"));
     let limited = "<CR:addressbook-query xmlns:CR=\"urn:ietf:params:xml:ns:carddav\"><CR:filter/><CR:limit><CR:nresults>2</CR:nresults></CR:limit></CR:addressbook-query>";
-    assert_eq!(w.a(Verb::Report, BOOK, &limited).await.body.matches("<D:response>").count(), 2);
+    assert_eq!(w.a(Verb::Report, BOOK, limited).await.body.matches("<D:response>").count(), 2);
 }
 
 #[tokio::test]
