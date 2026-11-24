@@ -29,21 +29,39 @@ use rusty_core::dns_check::{DnsFail, MxEntry, SrvEntry};
 /// The verifier/resolver stack: system resolver configuration, or one explicit nameserver
 /// (`[outbound] nameserver`, an operator setting read from the configuration file only).
 fn authenticator(nameserver: Option<SocketAddr>) -> rusty_core::Result<MessageAuthenticator> {
-    let built = match nameserver {
-        None => MessageAuthenticator::new_system_conf(),
-        Some(addr) => {
-            let mut udp = ConnectionConfig::udp();
-            let mut tcp = ConnectionConfig::tcp();
-            udp.port = addr.port();
-            tcp.port = addr.port();
-            let ns = NameServerConfig::new(addr.ip(), true, vec![udp, tcp]);
-            let mut opts = mail_auth::hickory_resolver::config::ResolverOpts::default();
-            opts.attempts = 2;
-            opts.timeout = Duration::from_secs(5);
-            MessageAuthenticator::new(ResolverConfig::from_parts(None, vec![], vec![ns]), opts)
+    authenticator_capped(nameserver, None)
+}
+
+/// How long the validation engine's resolver may keep an answer, a missing one included. The delivery and inbound paths keep answers for their TTL (the cache is what makes them fast); the check of a
+/// domain's records exists to show what DNS says NOW, so a "no such record" from before the operator made the record must not be served after it (the operator presses "Check now" a minute after the fix,
+/// and a long-lived process would otherwise answer "Missing" from its cache for as long as the zone's negative TTL, half an hour at Cloudflare).
+pub(crate) const CHECK_CACHE_CAP: Duration = Duration::from_secs(5);
+
+/// [`authenticator`], with every answer (and every missing answer) kept for at most `cap` when one is given.
+fn authenticator_capped(nameserver: Option<SocketAddr>, cap: Option<Duration>) -> rusty_core::Result<MessageAuthenticator> {
+    use mail_auth::hickory_resolver::config::ResolverOpts;
+    let built = (|| {
+        let (config, mut opts) = match nameserver {
+            None => mail_auth::hickory_resolver::system_conf::read_system_conf().ok()?,
+            Some(addr) => {
+                let mut udp = ConnectionConfig::udp();
+                let mut tcp = ConnectionConfig::tcp();
+                udp.port = addr.port();
+                tcp.port = addr.port();
+                let ns = NameServerConfig::new(addr.ip(), true, vec![udp, tcp]);
+                let mut opts = ResolverOpts::default();
+                opts.attempts = 2;
+                opts.timeout = Duration::from_secs(5);
+                (ResolverConfig::from_parts(None, vec![], vec![ns]), opts)
+            }
+        };
+        if let Some(cap) = cap {
+            opts.positive_max_ttl = Some(cap);
+            opts.negative_max_ttl = Some(cap);
         }
-    };
-    built.map_err(|_| rusty_core::Error::Invalid("cannot set up the DNS resolver".into()))
+        MessageAuthenticator::new(config, opts).ok()
+    })();
+    built.ok_or_else(|| rusty_core::Error::Invalid("cannot set up the DNS resolver".into()))
 }
 
 struct LibMx {
@@ -338,7 +356,8 @@ const MAX_TXT_JOINED: usize = 16 * 1024;
 
 impl LiveSource {
     pub(crate) fn new(nameserver: Option<SocketAddr>) -> rusty_core::Result<LiveSource> {
-        let authenticator = authenticator(nameserver)?;
+        // The check of a domain shows what DNS says now: its resolver keeps nothing for long (CHECK_CACHE_CAP).
+        let authenticator = authenticator_capped(nameserver, Some(CHECK_CACHE_CAP))?;
         Ok(LiveSource { mx: LibMx { authenticator: authenticator.clone() }, authenticator })
     }
 

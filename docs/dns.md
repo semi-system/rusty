@@ -33,7 +33,7 @@ One line per record: `ok`, `missing`, `mismatch` or `warning`, the finding codes
   With neither an address nor an include configured there is nothing to verify: `spf.not_verifiable`, a warning.
 * **DKIM**: the published key must equal the key Rusty holds (`dkim.key_differs`, `dkim.revoked`), testing mode and a short RSA key are warnings.
 * **DMARC**: one well-formed record (a stricter policy than the generated `p=none` is fine).
-* **MX**, **A/AAAA**, **PTR** (present, equal to the mail host, forward-confirmed; not checked at all through a relay) and **SRV** for client setup.
+* **MX**, **A/AAAA**, **PTR** (reverse DNS: *recommended*, not required; present, equal to the mail host, forward-confirmed; not checked at all through a relay, where the receiver sees the relay's address) and **SRV** for client setup.
 * A check that cannot be decided (a DNS failure, an SPF macro) is a `warning`, never a verdict.
 
 The run **fails** (exit 1) when a *required* record is missing or wrong; a recommended or optional one that is wrong, and anything undecided,

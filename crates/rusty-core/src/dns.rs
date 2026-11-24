@@ -292,8 +292,8 @@ pub fn records_for_domain(i: &DnsInputs<'_>) -> Result<Vec<DnsRecord>> {
             rtype: RecordType::Ptr,
             value: host.clone(),
             ttl_hint: TTL,
-            purpose: "Reverse DNS: set by the owner of the IP address (your provider), must match the mail host",
-            required: Requirement::Required,
+            purpose: "Reverse DNS (set by your IP provider; recommended, not needed through a relay)",
+            required: Requirement::Recommended,
         });
     }
     for (service, port) in [("_submission._tcp", 587u16), ("_submissions._tcp", 465), ("_imaps._tcp", 993)] {

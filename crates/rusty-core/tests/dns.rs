@@ -34,6 +34,7 @@ fn the_standard_set_for_a_domain() {
     assert_eq!(ptr.len(), 2);
     assert_eq!(ptr[0].name, "10.2.0.192.in-addr.arpa.");
     assert!(ptr.iter().all(|p| p.value == "mail.example.com."));
+    assert!(ptr.iter().all(|p| p.required == Requirement::Recommended), "reverse DNS is recommended, not required: mail through a relay needs none");
     let srv: Vec<_> = recs.iter().filter(|r| r.rtype == RecordType::Srv).map(|r| r.value.as_str()).collect();
     // Mail clients, the calendar and contact apps (CalDAV and CardDAV), and Outlook.
     assert_eq!(srv, ["0 1 587 mail.example.com.", "0 1 465 mail.example.com.", "0 1 993 mail.example.com.", "0 1 443 mail.example.com.", "0 1 443 mail.example.com.", "0 1 443 mail.example.com."]);
