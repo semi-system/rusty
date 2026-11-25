@@ -144,7 +144,7 @@ COPY --from=build /rootfs/usr/local/bin/rusty /rusty
 # binary. Same base as the mail image; it holds no mail data and needs no volume. TLS ends at the edge
 # (listen address and public origin come from /etc/rusty/admin.toml). Not the default target: the last
 # stage below is.
-FROM ghcr.io/semi-system/baseless-static@sha256:0818dee927a7fdd28e358e3337c891b878ebc58e9e20094d236ae3fe03a09f1b AS admin
+FROM ghcr.io/semi-system/baseless-static@sha256:f002cb52d5a06cb1ba8e66a28cba6d7b2d68d43d72c907b6fc88f9039744aa83 AS admin
 
 ARG VERSION=dev
 ARG REVISION=unknown
@@ -178,7 +178,7 @@ CMD ["--config", "/etc/rusty/admin.toml"]
 # ---- webmail image (docker build --target webmail) --------------------------------------------
 # One service, one image: the webmail (docs/design-webmail.md), one static binary. It faces the internet and will parse hostile messages, so it holds no sealing or unsealing key, no DKIM key and no relay
 # credential; its configuration file (/etc/rusty/webmail.toml) accepts only the sections it uses. TLS ends at the edge. Not the default target: the last stage below is.
-FROM ghcr.io/semi-system/baseless-static@sha256:0818dee927a7fdd28e358e3337c891b878ebc58e9e20094d236ae3fe03a09f1b AS webmail
+FROM ghcr.io/semi-system/baseless-static@sha256:f002cb52d5a06cb1ba8e66a28cba6d7b2d68d43d72c907b6fc88f9039744aa83 AS webmail
 
 ARG VERSION=dev
 ARG REVISION=unknown
@@ -212,7 +212,7 @@ CMD ["--config", "/etc/rusty/webmail.toml"]
 # One service, one image: CalDAV and CardDAV (docs/design-caldav-carddav.md), one static binary. It faces the internet behind the edge and parses calendars and cards that anyone with a password can upload, so it holds no
 # key and no mail: its database role reads the directory (to check a password) and writes the collections and objects of the people. Its configuration file (/etc/rusty/dav.toml) accepts only the sections it uses. TLS ends at
 # the edge. Not the default target: the last stage below is.
-FROM ghcr.io/semi-system/baseless-static@sha256:0818dee927a7fdd28e358e3337c891b878ebc58e9e20094d236ae3fe03a09f1b AS dav
+FROM ghcr.io/semi-system/baseless-static@sha256:f002cb52d5a06cb1ba8e66a28cba6d7b2d68d43d72c907b6fc88f9039744aa83 AS dav
 
 ARG VERSION=dev
 ARG REVISION=unknown
@@ -245,7 +245,7 @@ CMD ["--config", "/etc/rusty/dav.toml"]
 # ---- name server image (docker build --target dns) ---------------------------------------------
 # One service, one image: the authoritative name server for the hosted domains (docs/design-authoritative-dns.md), one static binary. It is the most exposed service and the least trusting one: its database role reads
 # the domain data and nothing else, it holds no key, and it is never recursive. It listens on 5353 (UDP and TCP) as an unprivileged user; the stack publishes port 53 to it. Not the default target: the last stage below is.
-FROM ghcr.io/semi-system/baseless-static@sha256:0818dee927a7fdd28e358e3337c891b878ebc58e9e20094d236ae3fe03a09f1b AS dns
+FROM ghcr.io/semi-system/baseless-static@sha256:f002cb52d5a06cb1ba8e66a28cba6d7b2d68d43d72c907b6fc88f9039744aa83 AS dns
 
 ARG VERSION=dev
 ARG REVISION=unknown
@@ -278,7 +278,7 @@ CMD ["--config", "/etc/rusty/dns.toml"]
 # ---- one image per service (docs/design-per-service-images.md) ------------------------------
 # `docker build --target rusty-imap`, and so on: one static binary, no shell, numeric non-root user, a configuration file of its own that accepts only the sections the
 # service uses (`/etc/rusty/<service>.toml`). Services with a port have the HEALTHCHECK of that port; outbound and gc have no port and their check only loads the configuration.
-FROM ghcr.io/semi-system/baseless-static@sha256:0818dee927a7fdd28e358e3337c891b878ebc58e9e20094d236ae3fe03a09f1b AS rusty-smtp-in
+FROM ghcr.io/semi-system/baseless-static@sha256:f002cb52d5a06cb1ba8e66a28cba6d7b2d68d43d72c907b6fc88f9039744aa83 AS rusty-smtp-in
 
 ARG VERSION=dev
 ARG REVISION=unknown
@@ -307,7 +307,7 @@ HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=3 \
 ENTRYPOINT ["/usr/local/bin/rusty-smtp-in"]
 CMD ["--config", "/etc/rusty/smtp-in.toml"]
 
-FROM ghcr.io/semi-system/baseless-static@sha256:0818dee927a7fdd28e358e3337c891b878ebc58e9e20094d236ae3fe03a09f1b AS rusty-submission
+FROM ghcr.io/semi-system/baseless-static@sha256:f002cb52d5a06cb1ba8e66a28cba6d7b2d68d43d72c907b6fc88f9039744aa83 AS rusty-submission
 
 ARG VERSION=dev
 ARG REVISION=unknown
@@ -336,7 +336,7 @@ HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=3 \
 ENTRYPOINT ["/usr/local/bin/rusty-submission"]
 CMD ["--config", "/etc/rusty/submission.toml"]
 
-FROM ghcr.io/semi-system/baseless-static@sha256:0818dee927a7fdd28e358e3337c891b878ebc58e9e20094d236ae3fe03a09f1b AS rusty-imap
+FROM ghcr.io/semi-system/baseless-static@sha256:f002cb52d5a06cb1ba8e66a28cba6d7b2d68d43d72c907b6fc88f9039744aa83 AS rusty-imap
 
 ARG VERSION=dev
 ARG REVISION=unknown
@@ -365,7 +365,7 @@ HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=3 \
 ENTRYPOINT ["/usr/local/bin/rusty-imap"]
 CMD ["--config", "/etc/rusty/imap.toml"]
 
-FROM ghcr.io/semi-system/baseless-static@sha256:0818dee927a7fdd28e358e3337c891b878ebc58e9e20094d236ae3fe03a09f1b AS rusty-outbound
+FROM ghcr.io/semi-system/baseless-static@sha256:f002cb52d5a06cb1ba8e66a28cba6d7b2d68d43d72c907b6fc88f9039744aa83 AS rusty-outbound
 
 ARG VERSION=dev
 ARG REVISION=unknown
@@ -393,7 +393,7 @@ HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=3 \
 ENTRYPOINT ["/usr/local/bin/rusty-outbound"]
 CMD ["--config", "/etc/rusty/outbound.toml"]
 
-FROM ghcr.io/semi-system/baseless-static@sha256:0818dee927a7fdd28e358e3337c891b878ebc58e9e20094d236ae3fe03a09f1b AS rusty-gc
+FROM ghcr.io/semi-system/baseless-static@sha256:f002cb52d5a06cb1ba8e66a28cba6d7b2d68d43d72c907b6fc88f9039744aa83 AS rusty-gc
 
 ARG VERSION=dev
 ARG REVISION=unknown
@@ -423,7 +423,7 @@ CMD ["--config", "/etc/rusty/gc.toml"]
 
 # ---- final stage -----------------------------------------------------------------------------
 # baseless static: CA certificates, tzdata, /tmp, no shell, no package manager. Default user 65532.
-FROM ghcr.io/semi-system/baseless-static@sha256:0818dee927a7fdd28e358e3337c891b878ebc58e9e20094d236ae3fe03a09f1b AS rusty
+FROM ghcr.io/semi-system/baseless-static@sha256:f002cb52d5a06cb1ba8e66a28cba6d7b2d68d43d72c907b6fc88f9039744aa83 AS rusty
 
 ARG VERSION=dev
 ARG REVISION=unknown
