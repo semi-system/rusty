@@ -58,7 +58,7 @@ if [ ! -r "$ENV_FILE" ]; then
     . "$HERE/wizard.sh"
     run_wizard "$ENV_FILE"
   else
-    die "no inventory at $ENV_FILE (run `init` in a terminal to be asked, or copy swarm.env.example, or use --env local.env)"
+    die "no inventory at $ENV_FILE (a new install: run 'init' in a terminal to be asked, or copy swarm.env.example; an upgrade from a new kit: the inventory is the swarm.env of the kit that ran 'init', so copy it here or pass it with --env OLD-KIT/swarm.env)"
   fi
 fi
 # shellcheck source=/dev/null
