@@ -41,7 +41,7 @@ RUN node scripts/check-deps.mjs && npx vite build && node scripts/check-bundle.m
 
 # ---- compile stage ---------------------------------------------------------------------------
 # Rust version = rust-toolchain.toml `channel` (checked by scripts/check-docker-pins.sh).
-FROM --platform=$BUILDPLATFORM rust:1.99.1-alpine3.22@sha256:9a744dc47d1ac2a7d17fc3cedfc8b4928b1696dfcba3274ab25bfb40988a9ff0 AS build
+FROM --platform=$BUILDPLATFORM rust:1.100.0-alpine3.22@sha256:f8ddfd4b265d9a9e7fd7c36821af4a55771aee2ac3894294687a66c709319be9 AS build
 
 ARG TARGETARCH
 # zig 0.15.2 (https://ziglang.org/download/index.json), SHA-256 of the official tarballs.
