@@ -63,8 +63,13 @@ pub fn guard_mutation(req: &Request, public_origin: &str, session_token: &str) -
     if !mutating(req.method) {
         return Ok(());
     }
-    if !origin_ok(req, public_origin) || !csrf_ok(req, session_token) {
-        return Err(Response::error(403, "forbidden"));
+    // Which of the two checks refused is said in a header (`x-refused: origin` or `csrf`), never with a value: the body stays the same for both, and a person or an operator who sees a 403 can tell a wrong Origin
+    // (a host name the service is not configured for) from a token that is missing or is not the session's (a stale page).
+    if !origin_ok(req, public_origin) {
+        return Err(Response::error(403, "forbidden").with_header("x-refused", "origin"));
+    }
+    if !csrf_ok(req, session_token) {
+        return Err(Response::error(403, "forbidden").with_header("x-refused", "csrf"));
     }
     if !is_json(req) {
         return Err(Response::error(415, "unsupported"));

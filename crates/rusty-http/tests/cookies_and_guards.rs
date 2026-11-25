@@ -140,8 +140,9 @@ fn the_three_guards_each_refuse_on_their_own_with_a_fixed_code() {
     let without = |skip: &str| -> Vec<(&str, &str)> { good.iter().copied().filter(|(n, _)| *n != skip).collect() };
     let r = guard_mutation(&req(Method::Post, &without("origin")), ORIGIN, TOKEN).unwrap_err();
     assert_eq!((r.status, r.body.as_ref()), (403, &b"{\"error\":\"forbidden\"}"[..]));
+    assert_eq!(r.header("x-refused"), Some("origin"), "a wrong or missing Origin is said to be the Origin");
     let r = guard_mutation(&req(Method::Post, &without("x-csrf-token")), ORIGIN, TOKEN).unwrap_err();
-    assert_eq!((r.status, r.body.as_ref()), (403, &b"{\"error\":\"forbidden\"}"[..]));
+    assert_eq!((r.status, r.body.as_ref(), r.header("x-refused")), (403, &b"{\"error\":\"forbidden\"}"[..], Some("csrf")), "a missing token is said to be the token");
     let r = guard_mutation(&req(Method::Post, &without("content-type")), ORIGIN, TOKEN).unwrap_err();
     assert_eq!((r.status, r.body.as_ref()), (415, &b"{\"error\":\"unsupported\"}"[..]));
 }
