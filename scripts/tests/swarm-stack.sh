@@ -226,6 +226,27 @@ scenario prostwebmailacme "$EXT"$'\nEDGE=prost\nTLS_MODE=acme\nWEBMAIL_HOST=webm
 grep -q '^domains = \["mail.example.org", "admin.example.org", "webmail.example.org"\]' "$tmp/state-prostwebmailacme/stack/etc/prost-certd.toml" || fail "prostwebmailacme: prost-certd does not ask for the webmail host"
 grep -q 'server_names = \["webmail.example.org"\]' "$tmp/state-prostwebmailacme/stack/etc/prost-edge.toml" || fail "prostwebmailacme: the webmail host has no certificate entry"
 
+# ---- one name for everything: WEBMAIL_HOST=MAIL_HOST (IMAP, SMTP, webmail, DAV and the auto-setup on one host name and one certificate) -----------------------------------------------------------------------
+scenario onehost "$EXT"$'\nWEBMAIL_HOST=mail.example.org\nDAV=1\nREPLICAS_DEFAULT=1' "edge webmail dav" "certd"
+oh="$tmp/state-onehost/stack/etc/haproxy.cfg"
+no_placeholders "$oh"
+! grep -q 'webmail.pem' "$oh" "$tmp/onehost.stack.yaml" || fail "onehost: the webmail asks for a certificate of its own on the mail host"
+! grep -q 'edge_webmail_pem' "$tmp/onehost.stack.yaml" || fail "onehost: the stack carries a webmail certificate secret"
+grep -q 'acl webmail_host hdr(host),lower,field(1,:) -m str mail.example.org' "$oh" || fail "onehost: the webmail host is not the mail host"
+# The paths of the auto-setup and of DAV go to their services first; the webmail takes the rest of the host.
+awk '/use_backend be_dav if mail_host dav_path/{a=NR} /use_backend be_admin if mail_host setup_path setup_method/{b=NR} /use_backend be_webmail if webmail_host/{w=NR} END{exit !(a && b && w && a < w && b < w)}' "$oh" || fail "onehost: the webmail comes before the auto-setup or DAV routes on the shared host"
+grep -q '^public_origin = "https://mail.example.org"' "$tmp/state-onehost/stack/etc/webmail.toml" || fail "onehost: the webmail's origin is not the mail host"
+scenario onehostacme "$EXT"$'\nWEBMAIL_HOST=mail.example.org\nTLS_MODE=acme\nREPLICAS_DEFAULT=1' "edge webmail" "certd"
+! grep -q 'load crt "webmail.pem"' "$tmp/state-onehostacme/stack/etc/haproxy.cfg" || fail "onehostacme: the edge orders a second certificate for the mail host"
+scenario onehostprost "$EXT"$'\nEDGE=prost\nTLS_MODE=self\nWEBMAIL_HOST=mail.example.org\nDAV=1\nREPLICAS_DEFAULT=1' "edge webmail dav" "certd db s3"
+oq="$tmp/state-onehostprost/stack/etc/prost-edge.toml"
+no_placeholders "$oq"
+! grep -q 'edge_webmail' "$oq" "$tmp/onehostprost.stack.yaml" || fail "onehostprost: the edge was given a certificate for the webmail on the mail host"
+[ "$(grep -c '^server_names = \["mail.example.org"\]' "$oq")" -ge 1 ] && ! grep -q 'server_names = \["mail.example.org", ' "$oq" || fail "onehostprost: the mail host has no single certificate entry"
+grep -q 'hosts=\["admin.example.org", "mail.example.org"\]' "$oq" || fail "onehostprost: the host list repeats or lacks a host"
+grep -q '^host = "mail.example.org"' "$oq" && grep -q '^upstream = "webmail"' "$oq" || fail "onehostprost: the mail host has no route to the webmail"
+echo "  ok    one name for everything: the webmail on the mail host (HAProxy self and ACME, Prost)"
+
 printf "https://hooks.example.org/T000/secret-token
 " > "$tmp/alert-url"
 scenario monitoring "$EXT"$'

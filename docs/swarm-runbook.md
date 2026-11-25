@@ -60,7 +60,7 @@ tar xzf rusty-deploy-<release>.tar.gz && cd rusty-deploy-<release>
 
 ## The webmail (`WEBMAIL_HOST`)
 
-* **Turn it on**: set `WEBMAIL_HOST=webmail.example.org` in `swarm.env` (a DNS name pointing at the edge, like `ADMIN_HOST`), then `upgrade`. The new service needs its own database role: `upgrade` makes it (`prepare db` runs before `migrate`; a kit older
+* **Turn it on**: set `WEBMAIL_HOST` in `swarm.env`: **the same name as `MAIL_HOST`** (what `init` writes: IMAP, SMTP, the webmail, CalDAV and the auto-setup on one name and one certificate; the paths of the auto-setup and of DAV go to their services, the webmail takes the rest of the host) or a name of its own (`webmail.example.org`, a DNS name pointing at the edge like `ADMIN_HOST`, with a certificate of its own). The admin web always keeps its own name, then `upgrade`. The new service needs its own database role: `upgrade` makes it (`prepare db` runs before `migrate`; a kit older
   than 2026-11-24 did not, and the webmail then fails to connect: run `prepare db` and `migrate` by hand once). The edge routes the webmail host with HAProxy, with `EDGE=prost` (its certificate comes from prost-certd, S3 or self-signed secrets like the other names) and in the Prost pilot (on the pilot port, which the webmail takes as an extra origin).
 * **Sending**: the webmail only queues a message (`webmail_outbox`); the **submission** service sends it. If the submission service is down, messages wait in the Outbox ("Waiting") and go when it is back; a message that was refused shows a fixed
   reason (`not_yours`, `limit`, `refused`, `busy`). The sending budget (messages an hour) is the same as for SMTP submission.

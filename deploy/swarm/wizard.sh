@@ -94,7 +94,7 @@ run_wizard() {
     pubip="$(ask_valid "Public IPv4 address of that server" "${host#*@}" "$re_ip" "An IPv4 address such as 203.0.113.10.")"
     nodes="  \"server|ssh:$host|manager|outbound=true,av=true,db=true,s3=true|$pubip\""
   fi
-  mailhost="$(ask_valid "Host name of the mail server (what mail clients connect to), for example mail.example.org" "" "$re_host" "A host name such as mail.example.org.")"
+  mailhost="$(ask_valid "The one host name for everything people use: mail clients, the webmail, calendars and contacts, and the auto-setup (for example mail.example.org)" "" "$re_host" "A host name such as mail.example.org.")"
   adminhost="$(ask_valid "Host name of the admin web, for example admin.example.org" "" "$re_host" "A host name such as admin.example.org.")"
   contact="$(ask_valid "E-mail address for the certificate authority (Let's Encrypt writes to it)" "" '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$' "An e-mail address.")"
   allow="$(ask_valid "Networks that may open the admin web (an address or a block, separated by spaces; for example 203.0.113.5/32)" "" '^[0-9]{1,3}(\.[0-9]{1,3}){3}(/[0-9]{1,2})?( [0-9]{1,3}(\.[0-9]{1,3}){3}(/[0-9]{1,2})?)*$' "IPv4 addresses or blocks.")"
@@ -153,6 +153,7 @@ $nodes
 ENCRYPTED=0
 STATE_DIR="$STATE_DIR"
 MAIL_HOST=$mailhost
+WEBMAIL_HOST=$mailhost
 ADMIN_HOST=$adminhost
 CONTACT=$contact
 TLS_MODE=$tlsmode

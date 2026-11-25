@@ -17,13 +17,10 @@ check_inputs() {
   valid_host "$ADMIN_HOST" || die "ADMIN_HOST is not a host name"
   case "$DAV" in 0|1) ;; *) die "DAV is 0 or 1" ;; esac
   case "$DNS_CHECK" in auto|0|1) ;; *) die "DNS_CHECK is auto, 0 or 1" ;; esac
+  # The webmail is on the mail host (WEBMAIL_HOST=MAIL_HOST: one name for IMAP, SMTP, webmail, CalDAV and the auto-setup) or on a host name of its own; never on the admin host.
   if [ -n "$WEBMAIL_HOST" ]; then
     valid_host "$WEBMAIL_HOST" || die "WEBMAIL_HOST is not a host name"
-    { [ "$WEBMAIL_HOST" != "$MAIL_HOST" ] && [ "$WEBMAIL_HOST" != "$ADMIN_HOST" ]; } || die "WEBMAIL_HOST is a host name of its own: not MAIL_HOST and not ADMIN_HOST"
-  fi
-  if [ -n "$WEBMAIL_HOST" ]; then
-    valid_host "$WEBMAIL_HOST" || die "WEBMAIL_HOST is not a host name"
-    [ "$WEBMAIL_HOST" != "$MAIL_HOST" ] && [ "$WEBMAIL_HOST" != "$ADMIN_HOST" ] || die "WEBMAIL_HOST is a host name of its own: not MAIL_HOST and not ADMIN_HOST"
+    [ "$WEBMAIL_HOST" != "$ADMIN_HOST" ] || die "WEBMAIL_HOST is not ADMIN_HOST: the admin web keeps a host name of its own"
   fi
   if [ -n "$DNS_NAME_SERVERS" ]; then
     n=0
