@@ -48,8 +48,9 @@ dns_expected_ip() {
 
 # The names this installation needs.
 dns_names() {
-  local n
-  for n in "$MAIL_HOST" "$ADMIN_HOST" ${WEBMAIL_HOST:+"$WEBMAIL_HOST"}; do printf '%s\n' "$n"; done
+  printf '%s\n%s\n' "$MAIL_HOST" "$ADMIN_HOST"
+  # The webmail on the mail host (WEBMAIL_HOST=MAIL_HOST) is not one more name.
+  if [ -n "${WEBMAIL_HOST:-}" ] && [ "$WEBMAIL_HOST" != "$MAIL_HOST" ]; then printf '%s\n' "$WEBMAIL_HOST"; fi
 }
 
 # Is this an address of Cloudflare (a name whose record is "Proxied" there answers with these, not with the address of the server)?

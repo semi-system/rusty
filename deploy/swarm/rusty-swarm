@@ -63,6 +63,8 @@ if [ ! -r "$ENV_FILE" ]; then
 fi
 # shellcheck source=/dev/null
 . "$ENV_FILE"
+# The webmail has a certificate and an edge route of its own only on a host name of its own; on the mail host (WEBMAIL_HOST=MAIL_HOST) it shares the mail host's certificate and takes the paths nothing else claims.
+WEBMAIL_OWN_HOST="$WEBMAIL_HOST"; [ "$WEBMAIL_HOST" != "$MAIL_HOST" ] || WEBMAIL_OWN_HOST=""
 [ "${#NODES[@]}" -gt 0 ] || die "$ENV_FILE has no NODES"
 
 # ---- the inventory ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------

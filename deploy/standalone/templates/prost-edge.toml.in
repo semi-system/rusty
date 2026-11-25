@@ -387,10 +387,10 @@ private_key = "@ADMIN_KEY@"
 server_names = ["@MAIL_HOST@"]
 certificate = "@MAIL_CERT@"
 private_key = "@MAIL_KEY@"
-#WEBMAIL [[listeners.tls.certificates]]
-#WEBMAIL server_names = ["@WEBMAIL_HOST@"]
-#WEBMAIL certificate = "@WEBMAIL_CERT@"
-#WEBMAIL private_key = "@WEBMAIL_KEY@"
+#WEBMAILCERT [[listeners.tls.certificates]]
+#WEBMAILCERT server_names = ["@WEBMAIL_HOST@"]
+#WEBMAILCERT certificate = "@WEBMAIL_CERT@"
+#WEBMAILCERT private_key = "@WEBMAIL_KEY@"
 [listeners.tls.policy]
 min_version = "tls12"
 session_resumption = false

@@ -104,7 +104,6 @@ frontend admin_https
     timeout http-request 10s
 #WEBMAIL     acl webmail_host hdr(host),lower,field(1,:) -m str @WEBMAIL_HOST@
 #WEBMAIL     http-request allow if webmail_host
-#WEBMAIL     use_backend be_webmail if webmail_host
     acl admin_host hdr(host),lower,field(1,:) -m str @ADMIN_HOST@
     acl admin_net  src @ADMIN_ALLOW@
     acl mail_host  hdr(host),lower,field(1,:) -m str @MAIL_HOST@
@@ -125,6 +124,8 @@ frontend admin_https
     http-request deny deny_status 421 unless admin_host
     http-request deny deny_status 403 unless admin_net
     use_backend be_admin if mail_host setup_path setup_method
+#WEBMAIL     # The webmail: on a host name of its own, or on the mail host itself (one name for everything), where it takes what the lines above did not send to the admin service or the DAV service.
+#WEBMAIL     use_backend be_webmail if webmail_host
     default_backend be_admin
 
 # The services by NAME, through Docker's resolver, so replicas (`docker compose up -d --scale smtp-in=3`) join and leave by themselves: each A record of the name is one server of the
