@@ -296,13 +296,13 @@ pub fn records_for_domain(i: &DnsInputs<'_>) -> Result<Vec<DnsRecord>> {
             required: Requirement::Recommended,
         });
     }
-    for (service, port) in [("_submission._tcp", 587u16), ("_submissions._tcp", 465), ("_imaps._tcp", 993)] {
+    for (service, port) in [("_submissions._tcp", 465u16), ("_imaps._tcp", 993)] {
         out.push(DnsRecord {
             name: format!("{service}.{domain}"),
             rtype: RecordType::Srv,
             value: format!("0 1 {port} {host}"),
             ttl_hint: TTL,
-            purpose: "Lets mail clients find the server (RFC 6186)",
+            purpose: "Lets mail clients find the server over TLS (RFC 6186)",
             required: Requirement::Optional,
         });
     }

@@ -2,7 +2,7 @@
 //!
 //! A client that is given `user@example.org` asks `http://autoconfig.example.org/mail/config-v1.1.xml?emailaddress=user@example.org`; the edge sends that one request (host
 //! `autoconfig.*`, exactly this path, port 80) to this service. The answer names the server of the platform (the configured mail host name) with IMAP over TLS on 993 and
-//! submission with STARTTLS on 587 and the address as the user name, whatever the domain: it says nothing about which domains or accounts exist, so it cannot be used to find
+//! submission over TLS on 465 (no port that starts in plain text is advertised) and the address as the user name, whatever the domain: it says nothing about which domains or accounts exist, so it cannot be used to find
 //! them out. Nothing here needs a session and nothing here reads the database.
 //!
 //! The domain echoed in the answer is the one of the address in the query (checked as a DNS name, so it can carry no markup), else the mail host's.
@@ -62,8 +62,8 @@ fn xml(host: &str, domain: &str, pop3: bool) -> String {
 {pop}\
     <outgoingServer type=\"smtp\">\n\
       <hostname>{host}</hostname>\n\
-      <port>587</port>\n\
-      <socketType>STARTTLS</socketType>\n\
+      <port>465</port>\n\
+      <socketType>SSL</socketType>\n\
       <authentication>password-cleartext</authentication>\n\
       <username>%EMAILADDRESS%</username>\n\
     </outgoingServer>\n\

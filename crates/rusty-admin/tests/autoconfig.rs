@@ -11,7 +11,7 @@ async fn the_answer_is_public_names_the_mail_servers_and_is_the_same_for_every_d
     assert_eq!(none.status, 200, "{}", none.body);
     assert!(none.header("content-type").is_some_and(|t| t.starts_with("application/xml")), "{:?}", none.header("content-type"));
     assert!(none.header("set-cookie").is_none(), "no session is made");
-    for want in ["<hostname>mail.example.org</hostname>", "<port>993</port>", "<socketType>SSL</socketType>", "<port>587</port>", "<socketType>STARTTLS</socketType>", "<username>%EMAILADDRESS%</username>"] {
+    for want in ["<hostname>mail.example.org</hostname>", "<port>993</port>", "<socketType>SSL</socketType>", "<port>465</port>", "<username>%EMAILADDRESS%</username>"] {
         assert!(none.body.contains(want), "{want}: {}", none.body);
     }
     // The domain of the address is echoed, whether or not it exists here: the answer is the same for all, so it tells nothing.
