@@ -77,7 +77,7 @@ Spam and virus filtering (design: `docs/design-filters-and-resolver.md`), the we
 ## Mail client auto-setup (Thunderbird, Outlook, Apple Mail, and the clients that read the SRV records)
 
 The admin service answers the requests of the clients that set an account up from an address alone. The answer is the same for every domain and says nothing about which domains or accounts exist: it names the
-configured mail host with IMAP over TLS on 993 and submission over TLS on 465 (Thunderbird: STARTTLS on 587), and the address as the user name. Nothing needs a session.
+configured mail host with IMAP over TLS on 993 and submission over TLS on 465 (Thunderbird too: no port that starts in plain text is advertised), and the address as the user name. Nothing needs a session.
 
 | Client | How it finds the settings | What serves it |
 |---|---|---|
@@ -86,10 +86,10 @@ configured mail host with IMAP over TLS on 993 and submission over TLS on 465 (T
 | Apple Mail (iPhone, iPad, Mac) | a configuration profile: `https://<mail host>/mail/config.mobileconfig?emailaddress=user@example.org` (give the person this link, or show it as a QR code); installing it adds the account and asks for the password | the same route on the mail host; the profile holds no password and its identifiers depend on the address, so installing it again updates the account |
 | The newer Outlook (Autodiscover v2) | `GET https://autodiscover.<domain>/autodiscover/autodiscover.json?Email=...&Protocol=AutodiscoverV1`, then the XML form above | the same route on the mail host answers `{"Protocol":"AutodiscoverV1","Url":"https://<mail host>/autodiscover/autodiscover.xml"}`; any other protocol (ActiveSync, EWS) is `400 InvalidProtocol`, which Outlook reads as "not here" |
 | Clients given the mail host itself (K-9, FairEmail, Spark, eM Client, Samsung Email read the same Mozilla/Microsoft answers) | `https://<mail host>/.well-known/autoconfig/mail/config-v1.1.xml` | the same Mozilla answer, at the well-known path as well |
-| Clients that read RFC 6186 SRV records | `_imaps._tcp`, `_submission._tcp`, `_submissions._tcp` | DNS only |
+| Clients that read RFC 6186 SRV records | `_imaps._tcp`, `_submissions._tcp` (the TLS ports only; there is no `_submission._tcp` for 587) | DNS only |
 
 What you do per domain: publish the records the DNS page lists as optional: `autoconfig.example.org` (an `A`/`AAAA` record at the addresses of the edge, or a `CNAME` to the mail host: the check compares addresses, so
-either passes), `_autodiscover._tcp.example.org` (`SRV 0 1 443 <mail host>`) and the three RFC 6186 SRV records; keep port 80 open to the edge (autoconfig, and the certificate challenges).
+either passes), `_autodiscover._tcp.example.org` (`SRV 0 1 443 <mail host>`) and the two RFC 6186 SRV records; keep port 80 open to the edge (autoconfig, and the certificate challenges).
 
 Outlook first asks `https://autodiscover.example.org/...`. This installation has a certificate for the mail host and the admin host only, not for every customer domain's `autodiscover.` name, so that first request
 cannot succeed (the TLS handshake is refused, the edge serves no certificate for a name it was not given) and Outlook goes on to the SRV record, which sends it to the mail host: Outlook then asks the person to confirm

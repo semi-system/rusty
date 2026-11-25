@@ -469,7 +469,8 @@ async fn client_setup_records() {
     z.srv.insert("_imaps._tcp.example.net".into(), vec![SrvEntry { priority: 0, weight: 1, port: 143, target: HOST.into() }]);
     let c = run(&z).await;
     assert_eq!(one(&c, RecordType::Srv, "_imaps._tcp").status, RecordStatus::Mismatch);
-    assert_eq!(one(&c, RecordType::Srv, "_submission._tcp").status, RecordStatus::Ok);
+    // Only the TLS-from-the-first-byte services are advertised: no record for submission on 587 (STARTTLS) is expected.
+    assert!(find(&c, RecordType::Srv, "_submission._tcp").is_empty(), "587 is not advertised");
 }
 
 // ------------------------------------------------------------------------------- failures and bounds
